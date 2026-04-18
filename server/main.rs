@@ -1,4 +1,5 @@
 mod config;
+mod cron;
 mod db;
 mod game;
 mod logging;
@@ -9,6 +10,7 @@ mod ops_http;
 mod protocol;
 mod world;
 
+use crate::world::WorldProvider;
 use anyhow::Result;
 use std::env;
 use std::io::ErrorKind;
@@ -74,17 +76,6 @@ async fn main() -> Result<()> {
     bootstrap_grant_admin(&database)?;
     tracing::info!("Database ready");
 
-    let game_state = game::GameState::new(
-        std::sync::Arc::new(world),
-        std::sync::Arc::new(database),
-        cfg.clone(),
-    );
-
-    {
-        let mut ecs = game_state.ecs.write();
-        ecs.insert_resource(game::GameStateResource(game_state.clone()));
-    }
-
     // Shutdown broadcast: SIGINT/SIGTERM → graceful stop pipeline.
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
     let shutdown_tx_signal = shutdown_tx.clone();
@@ -107,6 +98,20 @@ async fn main() -> Result<()> {
 
         let _ = shutdown_tx_signal.send(());
     });
+
+    let game_state = game::GameState::new(
+        std::sync::Arc::new(world),
+        std::sync::Arc::new(database),
+        cfg.clone(),
+    );
+
+    // Cron system.
+    cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
+
+    {
+        let mut ecs = game_state.ecs.write();
+        ecs.insert_resource(game::GameStateResource(game_state.clone()));
+    }
 
     // Mapviewer HTTP: пока не поднимаем (будет OIDC позже).
 

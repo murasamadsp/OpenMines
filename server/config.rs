@@ -23,6 +23,27 @@ pub struct Config {
     /// `None` — не поднимать. Нужен `M3R_MAPVIEWER_TOKEN` (Bearer или заголовок `X-Map-Token`).
     #[serde(default)]
     pub mapviewer_http_port: Option<u16>,
+    /// Настройки фоновых задач.
+    #[serde(default)]
+    pub cron: CronConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CronConfig {
+    #[serde(default = "default_hourly_log_enabled")]
+    pub hourly_log_enabled: bool,
+}
+
+impl Default for CronConfig {
+    fn default() -> Self {
+        Self {
+            hourly_log_enabled: default_hourly_log_enabled(),
+        }
+    }
+}
+
+const fn default_hourly_log_enabled() -> bool {
+    true
 }
 
 /// Настройки вывода логов (см. `crate::logging::init`).
@@ -104,6 +125,7 @@ impl Config {
                 data_dir: default_data_dir(),
                 logging: LoggingConfig::default(),
                 mapviewer_http_port: None,
+                cron: CronConfig::default(),
             };
             fs::write(path, serde_json::to_string_pretty(&cfg)?)?;
             Ok(cfg)
