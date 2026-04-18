@@ -58,6 +58,9 @@ GoogleService-Info.plist
 .DS_Store
 Thumbs.db
 
+# Локальные настройки линтера (если меняются локально)
+.markdownlint.json
+
 # Legacy/temporary artifacts
 MinesSetup.exe
 MinesServer_DO_NOT_READ_ME/
