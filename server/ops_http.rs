@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::game::GameState;
+use crate::world::WorldProvider;
 
 #[derive(Clone)]
 struct OpsState {

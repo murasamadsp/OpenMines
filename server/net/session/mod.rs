@@ -30,7 +30,7 @@ mod auth;
 mod connection;
 pub mod play;
 mod player;
-mod social;
+pub mod social;
 mod ui;
 
 pub use connection::handle;

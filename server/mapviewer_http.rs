@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::game::GameState;
+use crate::world::WorldProvider;
 
 #[allow(dead_code)]
 #[derive(Clone)]

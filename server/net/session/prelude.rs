@@ -16,7 +16,9 @@ pub use crate::game::crafting::{Recipe, recipe_by_id, recipes};
 pub use crate::game::direction::dir_offset;
 pub use crate::game::skills::skill_progress_payload;
 pub use crate::game::skills::{SkillType, add_skill_exp, get_player_skill_effect};
-pub use crate::game::{ActivePlayer, ChatMessage, GameState, PackData, PackType, PlayerId};
+pub use crate::game::chat::ChatMessage;
+pub use crate::game::buildings::{PackData, PackType};
+pub use crate::game::{ActivePlayer, GameState, PlayerId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
     AuAuthType, AuClientPacket, LoclClient, PongClient, TyPacket, XbldClient, au_session,
@@ -26,7 +28,7 @@ pub use crate::protocol::packets::{
     hb_map, hb_packs, health, inventory_close, inventory_show, level, money, ok_message, online,
     ping, programmator_status, skills_packet, speed, status, tp, world_info,
 };
-pub use crate::world::World;
+pub use crate::world::{World, WorldProvider};
 pub use crate::world::cells::{
     cell_type, crystal_multiplier, crystal_type, is_boulder, is_crystal,
 };
@@ -45,10 +47,9 @@ pub fn is_pack_owner_or_clan_member(
     pid: PlayerId,
     pack: &PackData,
 ) -> bool {
-    let player_clan = state
-        .active_players
-        .get(&pid)
-        .map_or(0, |p| p.data.clan_id.unwrap_or(0));
+    let player_clan = state.query_player(pid, |world, entity| {
+        world.get::<crate::game::PlayerStats>(entity).and_then(|s| s.clan_id)
+    }).flatten().unwrap_or(0);
 
     pack.owner_id == pid || (pack.clan_id != 0 && pack.clan_id == player_clan)
 }

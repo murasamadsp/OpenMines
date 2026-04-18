@@ -1,17 +1,17 @@
 use crate::game::GameStateResource;
+use crate::game::player::PlayerPosition;
 use crate::world::cells::cell_type;
+use crate::world::WorldProvider;
 use bevy_ecs::prelude::*;
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn sand_physics_system(state_res: Res<GameStateResource>) {
+pub fn sand_physics_system(state_res: Res<GameStateResource>, query: Query<&PlayerPosition>) {
     let state = &state_res.0;
     let mut tasks = Vec::new();
 
-    // Scan around active players
-    for entry in &state.active_players {
-        let p = entry.value();
-        let px = p.data.x;
-        let py = p.data.y;
+    // Scan around active players using ECS query
+    for pos in &query {
+        let (px, py) = (pos.x, pos.y);
 
         // Radius of 16 cells for physics
         for dy in (-16..=16).rev() {

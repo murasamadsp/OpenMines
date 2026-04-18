@@ -164,12 +164,12 @@ pub fn handle_clan_create(
         return;
     }
 
-    let (p_creds, p_money) = {
-        let Some(p) = state.active_players.get(&pid) else {
-            return;
-        };
-        (p.data.creds, p.data.money)
-    };
+    let stats = state.query_player(pid, |ecs, entity| {
+        let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+        Some((s.creds, s.money))
+    }).flatten();
+
+    let Some((p_creds, p_money)) = stats else { return; };
 
     if p_creds < 1000 {
         send_clan_ok(tx, "Ошибка", "Недостаточно кредитов (нужно 1000)");
@@ -181,11 +181,13 @@ pub fn handle_clan_create(
 
     match state.db.create_clan(new_id, name, tag, pid) {
         Ok(()) => {
-            if let Some(mut p) = state.active_players.get_mut(&pid) {
-                p.data.creds -= 1000;
-                p.data.clan_id = Some(new_id);
-                p.data.clan_rank = crate::db::ClanRank::Leader as i32;
-            }
+            state.modify_player(pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                s.creds -= 1000;
+                s.clan_id = Some(new_id);
+                s.clan_rank = crate::db::ClanRank::Leader as i32;
+                Some(())
+            });
             send_u_packet(tx, "P$", &money(p_money, p_creds - 1000).1);
             send_u_packet(tx, "CS", &clan_show(new_id).1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
@@ -213,17 +215,20 @@ pub fn handle_clan_leave(
     };
 
     if is_clan_owner(state, clan_id, pid) {
-        // Disband clan if owner leaves? For now, let's just delete it to keep it simple
         match state.db.delete_clan(clan_id) {
             Ok(()) => {
-                // Update all members if they are online
                 for entry in &state.active_players {
-                    if entry.data.clan_id == Some(clan_id) {
-                        let mut p = state.active_players.get_mut(entry.key()).unwrap();
-                        p.data.clan_id = None;
-                        p.data.clan_rank = 0;
-                        let _ = p.tx.send(make_u_packet_bytes("CH", &clan_hide().1));
-                    }
+                    let target_pid = *entry.key();
+                    state.modify_player(target_pid, |ecs, entity| {
+                        let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                        if s.clan_id == Some(clan_id) {
+                            s.clan_id = None;
+                            s.clan_rank = 0;
+                            let conn = ecs.get::<crate::game::PlayerConnection>(entity)?;
+                            let _ = conn.tx.send(make_u_packet_bytes("CH", &clan_hide().1));
+                        }
+                        Some(())
+                    });
                 }
                 send_clan_ok(tx, "Клан", "Клан расформирован");
                 handle_clan_menu(state, tx, pid);
@@ -236,10 +241,12 @@ pub fn handle_clan_leave(
     } else {
         match state.db.leave_clan(pid) {
             Ok(()) => {
-                if let Some(mut p) = state.active_players.get_mut(&pid) {
-                    p.data.clan_id = None;
-                    p.data.clan_rank = 0;
-                }
+                state.modify_player(pid, |ecs, entity| {
+                    let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                    s.clan_id = None;
+                    s.clan_rank = 0;
+                    Some(())
+                });
                 send_u_packet(tx, "CH", &clan_hide().1);
                 send_clan_ok(tx, "Клан", "Вы покинули клан");
                 handle_clan_menu(state, tx, pid);
@@ -266,7 +273,6 @@ pub fn handle_clan_join_request(
     match state.db.add_clan_request(clan_id, pid) {
         Ok(()) => {
             send_clan_ok(tx, "Клан", "Заявка отправлена");
-            // Optionally notify owner/officers
         }
         Err(e) => {
             tracing::error!("add_clan_request error: {e}");
@@ -352,17 +358,21 @@ pub fn handle_clan_invite_list(
         if target_pid == pid {
             continue;
         }
-        if entry.data.clan_id.is_none() {
-            buttons.push(serde_json::json!(format!("Пригласить {}", entry.data.name)));
-            buttons.push(serde_json::json!(format!(
-                "clan_invite_send:{}",
-                target_pid
-            )));
+        
+        let target_data = state.query_player(target_pid, |ecs, entity| {
+            let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+            let m = ecs.get::<crate::game::PlayerMetadata>(entity)?;
+            if s.clan_id.is_none() {
+                Some(m.name.clone())
+            } else { None }
+        }).flatten();
+
+        if let Some(name) = target_data {
+            buttons.push(serde_json::json!(format!("Пригласить {}", name)));
+            buttons.push(serde_json::json!(format!("clan_invite_send:{}", target_pid)));
             count += 1;
         }
-        if count >= 20 {
-            break;
-        }
+        if count >= 20 { break; }
     }
 
     if count == 0 {
@@ -408,13 +418,11 @@ pub fn handle_clan_invite_send(
     match state.db.add_clan_invite(clan_id, target_pid) {
         Ok(()) => {
             send_clan_ok(tx, "Клан", "Приглашение отправлено");
-            // Optionally notify target if online
-            if let Some(target) = state.active_players.get(&target_pid) {
-                let msg = "Вас пригласили в клан!".to_string();
-                let _ = target
-                    .tx
-                    .send(make_u_packet_bytes("OK", &ok_message("Клан", &msg).1));
-            }
+            state.query_player(target_pid, |ecs, entity| {
+                if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
+                    let _ = conn.tx.send(make_u_packet_bytes("OK", &ok_message("Клан", "Вас пригласили в клан!").1));
+                }
+            });
         }
         Err(e) => {
             tracing::error!("add_clan_invite error: {e}");
@@ -467,10 +475,12 @@ pub fn handle_clan_invite_accept(
 
     match state.db.accept_clan_invite(clan_id, pid) {
         Ok(()) => {
-            if let Some(mut p) = state.active_players.get_mut(&pid) {
-                p.data.clan_id = Some(clan_id);
-                p.data.clan_rank = crate::db::ClanRank::Member as i32;
-            }
+            state.modify_player(pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                s.clan_id = Some(clan_id);
+                s.clan_rank = crate::db::ClanRank::Member as i32;
+                Some(())
+            });
             send_u_packet(tx, "CS", &clan_show(clan_id).1);
             send_clan_ok(tx, "Клан", "Вы вступили в клан!");
         }
@@ -511,9 +521,11 @@ pub fn handle_clan_promote(
         .set_clan_rank(target_pid, crate::db::ClanRank::Officer)
     {
         Ok(()) => {
-            if let Some(mut p) = state.active_players.get_mut(&target_pid) {
-                p.data.clan_rank = crate::db::ClanRank::Officer as i32;
-            }
+            state.modify_player(target_pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                s.clan_rank = crate::db::ClanRank::Officer as i32;
+                Some(())
+            });
             send_clan_ok(tx, "Клан", "Игрок повышен до Офицера");
             handle_clan_members_view(state, tx, pid);
         }
@@ -587,13 +599,15 @@ pub fn handle_clan_accept(
     }
     match state.db.accept_clan_request(clan_id, target_pid) {
         Ok(()) => {
-            if let Some(mut p) = state.active_players.get_mut(&target_pid) {
-                p.data.clan_id = Some(clan_id);
-                p.data.clan_rank = crate::db::ClanRank::Member as i32;
-                let ptx = p.tx.clone();
-                drop(p);
-                let _ = ptx.send(make_u_packet_bytes("CS", &clan_show(clan_id).1));
-            }
+            state.modify_player(target_pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+                s.clan_id = Some(clan_id);
+                s.clan_rank = crate::db::ClanRank::Member as i32;
+                if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
+                    let _ = conn.tx.send(make_u_packet_bytes("CS", &clan_show(clan_id).1));
+                }
+                Some(())
+            });
             handle_clan_requests_view(state, tx, pid);
         }
         Err(e) => {
@@ -662,13 +676,15 @@ pub fn handle_clan_kick(
     }
 
     let _ = state.db.kick_from_clan(target_pid);
-    if let Some(mut p) = state.active_players.get_mut(&target_pid) {
-        p.data.clan_id = None;
-        p.data.clan_rank = crate::db::ClanRank::None as i32;
-        let ptx = p.tx.clone();
-        drop(p);
-        let _ = ptx.send(make_u_packet_bytes("CH", &clan_hide().1));
-    }
+    state.modify_player(target_pid, |ecs, entity| {
+        let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
+        s.clan_id = None;
+        s.clan_rank = crate::db::ClanRank::None as i32;
+        if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
+            let _ = conn.tx.send(make_u_packet_bytes("CH", &clan_hide().1));
+        }
+        Some(())
+    });
     send_clan_ok(tx, "Клан", "Игрок исключён из клана");
     handle_clan_members_view(state, tx, pid);
 }
@@ -690,7 +706,9 @@ pub fn handle_clan_kick_by_name(
 }
 
 fn player_clan_id(state: &Arc<GameState>, pid: PlayerId) -> Option<i32> {
-    state.active_players.get(&pid).and_then(|p| p.data.clan_id)
+    state.query_player(pid, |ecs, entity| {
+        ecs.get::<crate::game::PlayerStats>(entity).and_then(|s| s.clan_id)
+    }).flatten()
 }
 
 fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> bool {

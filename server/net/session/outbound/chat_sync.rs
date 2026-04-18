@@ -1,3 +1,4 @@
+use crate::game::player::PlayerStats;
 use crate::net::session::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -19,38 +20,38 @@ pub fn send_chat_init(
         )
     } else if channel_tag == "CLAN" {
         // Special case for dynamic clan channel
-        if let Some(p) = state.active_players.get(&pid) {
-            if let Some(cid) = p.data.clan_id {
-                let clan_name = state
-                    .db
-                    .get_clan(cid)
-                    .ok()
-                    .flatten()
-                    .map(|c| c.name)
-                    .unwrap_or_else(|| "Клан".to_string());
-                // For history, we might want to load it from DB too, but let's see.
-                // Global list doesn't have CLAN history because it's dynamic.
-                // But we can load it from DB here.
-                let mut history = VecDeque::new();
-                if let Ok(msgs) = state
-                    .db
-                    .get_recent_chat_messages(&format!("CLAN_{cid}"), 50)
-                {
-                    for (name, text, ts) in msgs {
-                        history.push_back(ChatMessage {
-                            time: ts / 60,
-                            clan_id: cid,
-                            user_id: 0,
-                            nickname: name,
-                            text,
-                            color: 1,
-                        });
-                    }
+        let clan_id = state.query_player(pid, |world, entity| {
+            world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
+        }).flatten();
+
+        if let Some(cid) = clan_id {
+            let clan_name = state
+                .db
+                .get_clan(cid)
+                .ok()
+                .flatten()
+                .map(|c| c.name)
+                .unwrap_or_else(|| "Клан".to_string());
+            // For history, we might want to load it from DB too, but let's see.
+            // Global list doesn't have CLAN history because it's dynamic.
+            // But we can load it from DB here.
+            let mut history = VecDeque::new();
+            if let Ok(msgs) = state
+                .db
+                .get_recent_chat_messages(&format!("CLAN_{cid}"), 50)
+            {
+                for (name, text, ts) in msgs {
+                    history.push_back(ChatMessage {
+                        time: ts / 60,
+                        clan_id: cid,
+                        user_id: 0,
+                        nickname: name,
+                        text,
+                        color: 1,
+                    });
                 }
-                (clan_name, history.into_iter().collect::<Vec<_>>())
-            } else {
-                return;
             }
+            (clan_name, history.into_iter().collect::<Vec<_>>())
         } else {
             return;
         }
@@ -60,7 +61,9 @@ pub fn send_chat_init(
 
     send_u_packet(tx, "mO", &chat_current(channel_tag, &name).1);
 
-    let player_clan_id = state.active_players.get(&pid).and_then(|p| p.data.clan_id);
+    let player_clan_id = state.query_player(pid, |world, entity| {
+        world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
+    }).flatten();
 
     let mut entries: Vec<(String, bool, String, String)> = channels
         .iter()

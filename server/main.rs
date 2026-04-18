@@ -11,6 +11,7 @@ mod protocol;
 mod world;
 
 use crate::world::WorldProvider;
+use crate::game::buildings::load_buildings_config;
 use anyhow::Result;
 use std::env;
 use std::io::ErrorKind;
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
     } else {
         "data/buildings.json"
     };
-    crate::game::load_buildings_config(buildings_cfg_path)?;
+    crate::game::buildings::load_buildings_config(buildings_cfg_path)?;
     tracing::info!("Loaded buildings configurations");
 
     let world = world::World::new(
@@ -124,8 +125,15 @@ async fn main() -> Result<()> {
     // Final flush/save on shutdown.
     tracing::info!("Shutdown: saving all players and flushing world...");
     for entry in &game_state.active_players {
-        if let Err(e) = game_state.db.save_player(&entry.value().data) {
-            tracing::error!("Shutdown save failed for player {}: {e}", entry.key());
+        let pid = *entry.key();
+        let player_row = game_state.query_player(pid, |ecs, entity| {
+            crate::game::player::extract_player_row(ecs, entity)
+        }).flatten();
+
+        if let Some(row) = player_row {
+            if let Err(e) = game_state.db.save_player(&row) {
+                tracing::error!("Shutdown save failed for player {}: {e}", pid);
+            }
         }
     }
     if let Err(e) = game_state.world.flush() {

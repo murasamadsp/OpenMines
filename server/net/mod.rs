@@ -26,7 +26,7 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
         let state = state.clone();
         let shutdown_rx = shutdown.subscribe();
         tokio::spawn(async move {
-            if let Err(e) = session::handle(stream, addr, state, shutdown_rx).await {
+            if let Err(e) = session::handle(Arc::clone(&state), stream, addr).await {
                 tracing::warn!("Session {addr} ended: {e}");
             }
         });

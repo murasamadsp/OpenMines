@@ -198,10 +198,13 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
 
 /// mU — chat messages for a channel
 /// Format: {"ch":"TAG","h":["±COLOR±CLANID±TIME±NICKNAME±TEXT±USERID",...]}
+use crate::game::chat::ChatMessage;
+
 pub fn chat_messages(
-    channel_tag: &str,
-    messages: &[crate::game::ChatMessage],
+    tag: &str,
+    messages: &[ChatMessage],
 ) -> (&'static str, Vec<u8>) {
+
     let msg_strs: Vec<String> = messages
         .iter()
         .map(|m| {
@@ -213,7 +216,7 @@ pub fn chat_messages(
         .collect();
     let json = format!(
         "{{\"ch\":\"{}\",\"h\":[{}]}}",
-        channel_tag,
+        tag,
         msg_strs.join(",")
     );
     ("mU", json.into_bytes())
@@ -293,6 +296,15 @@ pub fn hb_fx(x: u16, y: u16, fx_type: u8) -> Vec<u8> {
     buf.put_u8(fx_type);
     buf.put_u16_le(x);
     buf.put_u16_le(y);
+    buf.to_vec()
+}
+
+/// HB sub-packet: Delete object/bot (type "X")
+/// [1B tag 'X'] [u16 LE id]
+pub fn hb_bot_del(id: u16) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(3);
+    buf.put_u8(b'X');
+    buf.put_u16_le(id);
     buf.to_vec()
 }
 

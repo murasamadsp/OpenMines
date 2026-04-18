@@ -1,0 +1,34 @@
+    /// Send a raw encoded packet to a specific player
+    pub fn send_to_player(&self, id: PlayerId, data: Vec<u8>) {
+        self.query_player(id, |ecs, entity| {
+            if let Ok(conn) = ecs.get::<PlayerConnection>(entity) {
+                let _ = conn.tx.send(data);
+            }
+        });
+    }
+
+    /// Broadcast packet bytes to all players in chunks visible from (`chunk_x`, `chunk_y`)
+    pub fn broadcast_to_nearby(
+        &self,
+        chunk_x: u32,
+        chunk_y: u32,
+        data: &[u8],
+        exclude_id: Option<PlayerId>,
+    ) {
+        for (ncx, ncy) in self.visible_chunks_around(chunk_x, chunk_y) {
+            if let Some(players) = self.chunk_players.get(&(ncx, ncy)) {
+                for &pid in players.value() {
+                    if Some(pid) == exclude_id {
+                        continue;
+                    }
+                    self.send_to_player(pid, data.to_vec());
+                }
+            }
+        }
+    }
+
+    pub fn tick(&self) {
+        let mut ecs = self.ecs.write();
+        let mut schedule = self.schedule.write();
+        schedule.run(&mut ecs);
+    }

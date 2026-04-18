@@ -70,6 +70,20 @@ pub enum PackType {
 }
 
 impl PackType {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Teleport => "Teleport",
+            Self::Resp => "Resp",
+            Self::Gun => "Gun",
+            Self::Market => "Market",
+            Self::Up => "Up",
+            Self::Storage => "Storage",
+            Self::Craft => "Craft",
+            Self::Spot => "Spot",
+            Self::Gate => "Gate",
+        }
+    }
+
     pub const fn code(self) -> u8 {
         match self {
             Self::Teleport => b'T',

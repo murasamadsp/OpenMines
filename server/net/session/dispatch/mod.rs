@@ -1,5 +1,2 @@
-//! Маршрутизация входящих событий (`TY` и т.п.) к доменным обработчикам.
-
-pub mod ty;
-
-pub use ty::handle_ty;
+mod ty;
+pub use ty::dispatch_ty_packet;
