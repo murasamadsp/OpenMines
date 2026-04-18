@@ -8,9 +8,9 @@ COPY Cargo.toml Cargo.lock ./
 # Предварительная сборка зависимостей с кэшированием
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
-    mkdir src && echo "fn main() {}" > src/main.rs && \
+    mkdir -p server && echo "fn main() {}" > server/main.rs && \
     cargo build --release && \
-    rm -rf src
+    rm -rf server
 
 COPY server ./server
 COPY config.json cells.json buildings.json ./
