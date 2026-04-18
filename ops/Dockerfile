@@ -26,16 +26,17 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
-COPY --from=builder /usr/local/bin/openmines-server /usr/local/bin/openmines-server
-COPY --from=builder /app/config.json /app/config.json
-COPY --from=builder /app/cells.json /app/cells.json
-COPY --from=builder /app/buildings.json /app/buildings.json
+# Директория для данных и конфигов
+WORKDIR /data
 
-RUN chmod +x /usr/local/bin/openmines-server \
- && mkdir -p /data
+COPY --from=builder /usr/local/bin/openmines-server /usr/local/bin/openmines-server
+COPY --from=builder /app/config.json ./config.json
+COPY --from=builder /app/cells.json ./cells.json
+COPY --from=builder /app/buildings.json ./buildings.json
+
+RUN chmod +x /usr/local/bin/openmines-server
 
 EXPOSE 8090
 
-# Рабочий каталог /data: config.json + cells.json + buildings.json в корне тома; БД и .mapb — в подкаталоге `data/` (см. config `data_dir`).
-CMD ["sh", "-c", "cp -n /app/config.json /data/config.json && cp -n /app/cells.json /data/cells.json && cp -n /app/buildings.json /data/buildings.json && cd /data && mkdir -p data && exec /usr/local/bin/openmines-server"]
+# Запуск сервера напрямую из /data
+ENTRYPOINT ["/usr/local/bin/openmines-server"]
