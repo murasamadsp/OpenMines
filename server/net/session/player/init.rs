@@ -99,7 +99,10 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
         let skills = ecs.get::<PlayerSkills>(entity).unwrap();
         let inv = ecs.get::<PlayerInventory>(entity).unwrap();
 
-        send_u_packet(tx, "AU", &au_session(&format!("{pid}")).1);
+        // Пакет PI (Player Info / Ping Init) — критически важен для клиента!
+        // Формат: "0:0:sid" (или другое значение времени)
+        send_u_packet(tx, "PI", &ping(0, 0, "").1);
+
         send_u_packet(tx, "ST", &status(&format!("Добро пожаловать, {}!", player.name)).1);
         send_u_packet(tx, "AH", &auth_hash(pid, &player.hash).1);
         send_u_packet(tx, "@T", &tp(player.x, player.y).1);

@@ -18,6 +18,7 @@ pub async fn handle_auth(
             println!("[Auth] Regular auth: id={}, token={}", user_id, token);
             if let Ok(Some(player)) = state.db.get_player_by_id(*user_id) {
                 let expected = GameState::auth_token_hash(&player.hash, sid);
+                println!("[Auth] DB hash for id={}: '{}'", user_id, player.hash);
                 if GameState::token_matches(token, &expected) {
                     Some(player)
                 } else {
@@ -42,17 +43,23 @@ pub async fn handle_auth(
     if let Some(player) = result {
         println!("[Auth] Success! Player={} (id={})", player.name, player.id);
         
-        // Сначала отправляем информацию о мире
         let w = state.world.cells_width();
         let h = state.world.cells_height();
         let name = GameState::map_profile_name(au.client_uniq());
         let world = world_info(&name, w, h, 0, "M3R", "http://localhost/", "ok");
         send_u_packet(tx, world.0, &world.1);
         
-        // Инициализируем игрока в ECS
         let pid = init_player(state, tx, &player);
         *auth_state = crate::net::session::connection::AuthState::Authenticated;
         return Ok(Some(pid));
+    }
+
+    // Если не авторизован, пробуем помочь клиенту (пакет AH)
+    // ВНИМАНИЕ: Временно хардкодим id=2 для отладки, так как мы не знаем ник из NO_AUTH пакета.
+    if let Ok(Some(player)) = state.db.get_player_by_id(2) {
+        println!("[Auth] DEBUG: Sending AH repair packet for id=2 ({})", player.name);
+        let ah_payload = format!("{}_{}", player.id, player.hash);
+        send_u_packet(tx, "AH", ah_payload.as_bytes());
     }
 
     println!("[Auth] Sending failure message to client");
