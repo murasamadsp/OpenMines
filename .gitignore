@@ -75,6 +75,9 @@ MinesServer_DO_NOT_READ_ME/
 web/mapviewer/node_modules/
 web/mapviewer/dist/
 
+# Reference / legacy server sources (не коммитить)
+server_reference/
+
 # Логи
 *.log
 
