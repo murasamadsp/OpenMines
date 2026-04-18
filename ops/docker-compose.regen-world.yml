@@ -1,0 +1,6 @@
+# Только для `scripts/vps-regen-world.sh`: одноразово M3R_REGEN_WORLD=1.
+# Не подключать к обычному `docker compose up` — иначе каждый старт сотрёт мир.
+services:
+  server:
+    environment:
+      M3R_REGEN_WORLD: "1"

@@ -1,0 +1,42 @@
+name: Предложение по улучшению
+description: Предложить улучшение или новую функцию
+title: "[УЛУЧШЕНИЕ] Кратко описать идею"
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за идею. Укажите контекст, для кого это нужно и как реализовать без рисков.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какая проблема решается?
+      description: Опишите текущее неудобство и его эффект.
+      validations:
+        required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Предлагаемое решение
+      description: Коротко опишите ожидаемое поведение.
+      validations:
+        required: true
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Какой компонент затронет изменение?
+      options:
+        - label: Сервер (ядро Rust)
+        - label: Протокол / сетевой обмен
+        - label: Клиент (Unity)
+        - label: docs
+        - label: CI / релизы
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативные варианты
+      description: Что вы пробовали или рассматриваете как обходной путь
+  - type: textarea
+    id: extra
+    attributes:
+      label: Дополнительно

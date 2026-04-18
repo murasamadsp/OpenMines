@@ -1,0 +1,13 @@
+services:
+  openmines-server:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - openmines_data:/data
+
+volumes:
+  openmines_data:

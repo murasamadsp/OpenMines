@@ -1,0 +1,56 @@
+name: Сообщение об ошибке
+description: Сообщить о неисправности в сервере или документации
+title: "[ОШИБКА] Кратко описать проблему"
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете улучшать проект. Заполните поля ниже, чтобы мы могли быстро воспроизвести проблему.
+  - type: input
+    id: version
+    attributes:
+      label: Версия/хэш коммита
+      description: Например, `0.0.2`, `git rev-parse HEAD`, или hash релиза.
+      placeholder: 0.0.2
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги для воспроизведения
+      description: Опишите последовательность действий от запуска до ошибки
+      placeholder: |
+        1. cp config.example.json config.json
+        2. cargo run --release
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Что ожидалось
+      validations:
+        required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Что произошло
+      validations:
+        required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи и вывод
+      description: Прикрепите фрагмент stderr/stdout, если есть
+      render: shell
+  - type: checkboxes
+    id: areas
+    attributes:
+      label: Где проявляется баг?
+      options:
+        - label: Запуск сервера
+        - label: Сетевой протокол / подключение клиентов
+        - label: Проблемы с миром или базой данных
+        - label: Документация
+        - label: CI / релизный процесс

@@ -1,0 +1,50 @@
+* text=auto
+
+*.md text
+*.txt text
+*.yml text
+*.yaml text
+*.toml text
+*.sln text
+*.csproj text
+*.json text
+*.jsonc text
+*.rs text
+*.cs text
+*.cfg text
+*.xml text
+*.lock text
+*.gradle text
+*.sh text eol=lf
+*.unity text eol=lf
+*.asset text eol=lf
+*.meta text eol=lf
+*.prefab text eol=lf
+*.anim text eol=lf
+*.mat text eol=lf
+*.controller text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.bmp binary
+*.wav binary
+*.ogg binary
+*.mp3 binary
+*.flac binary
+*.zip binary
+*.7z binary
+*.mapb binary
+*.db binary
+*.db-shm binary
+*.db-wal binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.so binary
+*.dylib binary
+*.unitypackage binary
+*.a binary
+*.wasm binary

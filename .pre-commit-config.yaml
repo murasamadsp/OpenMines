@@ -1,0 +1,10 @@
+repos:
+  - repo: local
+    hooks:
+      - id: rust-pre-commit
+        name: Rust pre-commit checks
+        entry: bash scripts/pre-commit.sh
+        language: system
+        files: \.rs$
+        pass_filenames: false
+        types_or: [rust]

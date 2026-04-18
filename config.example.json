@@ -1,0 +1,12 @@
+{
+  "world_name": "world",
+  "port": 8090,
+  "world_chunks_w": 260,
+  "world_chunks_h": 420,
+  "data_dir": "data",
+  "logging": {
+    "filter": "openmines_server=info,openmines_server::net::session=debug,tokio=warn,h2=warn",
+    "format": "pretty",
+    "file": null
+  }
+}
