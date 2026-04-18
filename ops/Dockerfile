@@ -1,5 +1,5 @@
-# edition 2024 + let-chains в коде — нужен rustc ≥ 1.88
-FROM rust:1.88-bookworm AS builder
+# bevy_ecs 0.18.1 требует rustc ≥ 1.89
+FROM rust:1.89-bookworm AS builder
 
 WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
@@ -22,7 +22,7 @@ COPY --from=builder /app/buildings.json /app/buildings.json
 RUN chmod +x /usr/local/bin/openmines-server \
  && mkdir -p /data
 
-EXPOSE 8090 8091
+EXPOSE 8090
 
 # Рабочий каталог /data: config.json + cells.json + buildings.json в корне тома; БД и .mapb — в подкаталоге `data/` (см. config `data_dir`).
 CMD ["sh", "-c", "cp -n /app/config.json /data/config.json && cp -n /app/cells.json /data/cells.json && cp -n /app/buildings.json /data/buildings.json && cd /data && mkdir -p data && exec /usr/local/bin/openmines-server"]
