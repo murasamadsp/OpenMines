@@ -3,9 +3,10 @@ use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
-    building_extra_for_pack_type, make_pack_data, place_building_in_world, validate_building_area,
+    building_extra_for_pack_type, place_building_in_world, validate_building_area,
 };
 use crate::game::player::{PlayerPosition, PlayerStats, PlayerCooldowns, PlayerConnection, PlayerInventory};
+use crate::game::buildings::{BuildingMetadata, BuildingStats, BuildingStorage, BuildingCrafting, BuildingOwnership, GridPosition, BuildingFlags};
 
 // ─── Healing ────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,7 @@ pub fn use_geopack(state: &Arc<GameState>, _tx: &mpsc::UnboundedSender<Vec<u8>>,
 
 pub fn place_building_from_item(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, code: &str) -> bool {
     let Some(pack_type) = PackType::from_str(code) else { return false; };
-    let pos = state.query_player(pid, |ecs, entity| {
+    let pos = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y, p.dir))
     }).flatten();
@@ -114,14 +115,35 @@ pub fn place_building_from_item(state: &Arc<GameState>, tx: &mpsc::UnboundedSend
     let extra = building_extra_for_pack_type(pack_type);
     let id = state.db.insert_building(code, bx, by, pid, 0, &extra).ok();
     if let Some(db_id) = id {
-        let pack = make_pack_data(state, db_id, pack_type, bx, by, pid, &extra);
-        place_building_in_world(state, tx, pid, &pack, false);
+        let entity = state.ecs.write().spawn((
+            BuildingMetadata { id: db_id, pack_type },
+            GridPosition { x: bx, y: by },
+            BuildingStats { charge: extra.charge, max_charge: extra.max_charge, cost: extra.cost, hp: extra.hp, max_hp: extra.max_hp },
+            BuildingStorage { money: extra.money_inside, crystals: extra.crystals_inside, items: extra.items_inside.clone() },
+            BuildingOwnership { owner_id: pid, clan_id: 0 },
+            BuildingCrafting { recipe_id: extra.craft_recipe_id, num: extra.craft_num, end_ts: extra.craft_end_ts },
+            BuildingFlags { dirty: false },
+        )).id();
+        state.building_index.insert((bx, by), entity);
+        let view = PackView {
+            id: db_id,
+            pack_type,
+            x: bx,
+            y: by,
+            owner_id: pid,
+            clan_id: 0,
+            charge: extra.charge,
+            max_charge: extra.max_charge,
+            hp: extra.hp,
+            max_hp: extra.max_hp,
+        };
+        place_building_in_world(state, tx, pid, &view, false);
         true
     } else { false }
 }
 
 pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state.query_player(pid, |ecs, entity| {
+    let pos = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y))
     }).flatten();
@@ -134,7 +156,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let now = std::time::Instant::now();
     for entry in &state.active_players {
         let opid = *entry.key();
-        state.modify_player(opid, |ecs, entity| {
+        state.modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
             let (px_o, py_o, h, mh, conn_tx) = {
                 let p = ecs.get::<PlayerPosition>(entity)?;
                 let s = ecs.get::<PlayerStats>(entity)?;
@@ -158,7 +180,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
 }
 
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
         cd.protection_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
         let pos = ecs.get::<PlayerPosition>(entity)?;
@@ -169,17 +191,21 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
 }
 
 pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state.query_player(pid, |ecs, entity| { ecs.get::<PlayerPosition>(entity).map(|p| (p.x, p.y)) }).flatten();
+    let pos = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| { ecs.get::<PlayerPosition>(entity).map(|p| (p.x, p.y)) }).flatten();
     let Some((px, py)) = pos else { return false; };
-    for mut entry in state.packs.iter_mut() {
-        let p = entry.value_mut();
-        if p.pack_type == PackType::Gun && (p.x - px).abs() <= 15 && (p.y - py).abs() <= 15 { p.charge = 0.0; }
+    
+    let mut ecs = state.ecs.write();
+    let mut query = ecs.query::<(&BuildingMetadata, &GridPosition, &mut BuildingStats)>();
+    for (meta, bpos, mut stats) in query.iter_mut(&mut ecs) {
+        if meta.pack_type == PackType::Gun && (bpos.x - px).abs() <= 15 && (bpos.y - py).abs() <= 15 {
+            stats.charge = 0.0;
+        }
     }
     true
 }
 
 pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let data = state.query_player(pid, |ecs, entity| {
+    let data = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y, p.dir))
     }).flatten();
@@ -193,7 +219,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         let mut hit = None;
         for entry in &state.active_players {
             let opid = *entry.key();
-            let h = state.query_player(opid, |ecs, entity| {
+            let h = state.query_player(opid, |ecs: &bevy_ecs::prelude::World, entity| {
                 let p = ecs.get::<PlayerPosition>(entity)?;
                 let is_hit = p.x == tx && p.y == ty;
                 let protected = if let Some(cd) = ecs.get::<crate::game::player::PlayerCooldowns>(entity) {
@@ -204,7 +230,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
             if h.is_some() { hit = h; break; }
         }
         if let Some(t_pid) = hit {
-            state.modify_player(t_pid, |ecs, entity| {
+            state.modify_player(t_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
                 let (h_val, mh_val, conn_tx) = {
                     let s = ecs.get::<PlayerStats>(entity)?;
                     let c = ecs.get::<PlayerConnection>(entity)?;

@@ -17,7 +17,7 @@ pub use crate::game::direction::dir_offset;
 pub use crate::game::skills::skill_progress_payload;
 pub use crate::game::skills::{SkillType, add_skill_exp, get_player_skill_effect};
 pub use crate::game::chat::ChatMessage;
-pub use crate::game::buildings::{PackData, PackType};
+pub use crate::game::buildings::{PackView, PackType};
 pub use crate::game::{ActivePlayer, GameState, PlayerId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
@@ -45,32 +45,32 @@ pub enum PackAccessError {
 pub fn is_pack_owner_or_clan_member(
     state: &Arc<GameState>,
     pid: PlayerId,
-    pack: &PackData,
+    view: &PackView,
 ) -> bool {
     let player_clan = state.query_player(pid, |world, entity| {
         world.get::<crate::game::PlayerStats>(entity).and_then(|s| s.clan_id)
     }).flatten().unwrap_or(0);
 
-    pack.owner_id == pid || (pack.clan_id != 0 && pack.clan_id == player_clan)
+    view.owner_id == pid || (view.clan_id != 0 && view.clan_id == player_clan)
 }
 
 #[inline]
 pub fn validate_pack_access(
-    pack: &PackData,
+    view: &PackView,
     player_pos: (i32, i32),
     player_clan: i32,
     pid: PlayerId,
 ) -> Result<(), PackAccessError> {
-    if !pack
+    if !view
         .pack_type
         .building_cells()
         .iter()
-        .any(|(dx, dy, _)| pack.x + dx == player_pos.0 && pack.y + dy == player_pos.1)
+        .any(|(dx, dy, _)| view.x + dx == player_pos.0 && view.y + dy == player_pos.1)
     {
         return Err(PackAccessError::NotAtObject);
     }
 
-    if pack.owner_id == pid || (pack.clan_id != 0 && pack.clan_id == player_clan) {
+    if view.owner_id == pid || (view.clan_id != 0 && view.clan_id == player_clan) {
         Ok(())
     } else {
         Err(PackAccessError::NoRights)

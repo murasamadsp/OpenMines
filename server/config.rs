@@ -19,10 +19,6 @@ pub struct Config {
     /// См. `LoggingConfig`; при отсутствии ключа в JSON подставляются значения по умолчанию.
     #[serde(default)]
     pub logging: LoggingConfig,
-    /// HTTP для map viewer / будущей админки: метаданные мира и сырые чанки (`/api/map/*`).
-    /// `None` — не поднимать. Нужен `M3R_MAPVIEWER_TOKEN` (Bearer или заголовок `X-Map-Token`).
-    #[serde(default)]
-    pub mapviewer_http_port: Option<u16>,
     /// Настройки фоновых задач.
     #[serde(default)]
     pub cron: CronConfig,
@@ -124,7 +120,6 @@ impl Config {
                 world_chunks_h: default_chunks_h(),
                 data_dir: default_data_dir(),
                 logging: LoggingConfig::default(),
-                mapviewer_http_port: None,
                 cron: CronConfig::default(),
             };
             fs::write(path, serde_json::to_string_pretty(&cfg)?)?;

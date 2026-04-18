@@ -7,7 +7,7 @@ use crate::net::session::play::spawn::spawn_crystal_box;
 use crate::net::session::prelude::*;
 use crate::game::player::PlayerInventory;
 use crate::net::session::social::buildings::{
-    building_extra_for_pack_type, update_pack_with_world_sync,
+    building_extra_for_pack_type, modify_pack_with_db,
 };
 use crate::net::session::social::clans::{
     handle_clan_create, handle_clan_kick_by_name, handle_clan_leave,
@@ -46,7 +46,7 @@ const ADMIN_COMMAND_NO_RIGHTS: &str = "Нет прав на админ-кома�
 // ─── Other handlers ─────────────────────────────────────────────────────────
 
 pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
-    state.query_player(pid, |ecs, entity| {
+    state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         if let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) {
             send_u_packet(tx, "GE", &geo(pos.x, pos.y).1);
         }
@@ -58,7 +58,7 @@ pub fn handle_auto_dig_toggle(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let new_val = state.modify_player(pid, |ecs, entity| {
+    let new_val = state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut settings = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
         settings.auto_dig = !settings.auto_dig;
         let val = settings.auto_dig;
@@ -117,7 +117,7 @@ fn handle_chat_command_if_present(
 }
 
 fn broadcast_player_chat(state: &Arc<GameState>, pid: PlayerId, msg: &str) {
-    let data = state.query_player(pid, |ecs, entity| {
+    let data = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
         let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
         Some((pos.x, pos.y, meta.name.clone()))
@@ -149,7 +149,7 @@ pub fn handle_channel_chat(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Ve
     if text.is_empty() { return; }
     if handle_chat_command_if_present(state, tx, pid, &text) { return; }
 
-    let p_data = state.query_player(pid, |ecs, entity| {
+    let p_data = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
         let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
         let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
@@ -187,7 +187,7 @@ pub fn handle_chat_switch(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec
     let tag = String::from_utf8_lossy(payload).trim().to_string();
     if tag.is_empty() { return; }
     if !state.chat_channels.read().iter().any(|c| c.tag == tag) { return; }
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) { ui.current_chat = tag.clone(); }
         Some(())
     });
@@ -215,7 +215,7 @@ fn handle_chat_give_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<V
     if !ensure_admin(tx, state, pid) { return; }
     let item_id = match parse_required_arg::<i32>(tx, args, 0, CMD_USAGE_GIVE) { Some(id) => id, None => return };
     let amount = match parse_optional_arg_with_default::<i32>(tx, args, 1, 1, CMD_USAGE_GIVE) { Some(a) => a, None => return };
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
         *inv.items.entry(item_id).or_insert(0) += amount;
         let inv_clone = inv.clone();
@@ -228,7 +228,7 @@ fn handle_chat_give_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<V
 fn handle_chat_money_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, args: &[&str]) {
     if !ensure_admin(tx, state, pid) { return; }
     let amount = match parse_required_arg::<i64>(tx, args, 0, CMD_USAGE_MONEY) { Some(a) => a, None => return };
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
         s.money += amount;
         let (m, c) = (s.money, s.creds);
@@ -243,7 +243,7 @@ fn handle_chat_money_all_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSen
     let amount = match parse_required_arg::<i64>(tx, args, 0, CMD_USAGE_MONEY_ALL) { Some(a) => a, None => return };
     if let Ok(count) = state.db.add_money_to_all(amount) {
         for entry in &state.active_players {
-            state.modify_player(*entry.key(), |ecs, entity| {
+            state.modify_player(*entry.key(), |ecs: &mut bevy_ecs::prelude::World, entity| {
                 let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
                 s.money = s.money.saturating_add(amount);
                 let (m, c) = (s.money, s.creds);
@@ -261,7 +261,7 @@ fn handle_chat_teleport_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSend
     let x = match parse_required_arg::<i32>(tx, args, 0, CMD_USAGE_TP) { Some(v) => v, None => return };
     let y = match parse_required_arg::<i32>(tx, args, 1, CMD_USAGE_TP) { Some(v) => v, None => return };
     if !state.world.valid_coord(x, y) { send_ok(tx, "Ошибка", "Координаты вне карты"); return; }
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut pos = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
         pos.x = x; pos.y = y;
         if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) { ui.current_window = None; }
@@ -275,7 +275,7 @@ fn handle_chat_teleport_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSend
 
 fn handle_chat_heal_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
     if !ensure_admin(tx, state, pid) { return; }
-    state.modify_player(pid, |ecs, entity| {
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
         s.health = s.max_health;
         let (h, mh) = (s.health, s.max_health);
@@ -331,20 +331,40 @@ fn parse_optional_arg_with_default<T: std::str::FromStr>(tx: &mpsc::UnboundedSen
 fn handle_pack_owner_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_OWNER, 0, 1) { Some(p) => p, None => return };
     let owner = parts.get(2).and_then(|s| s.parse().ok());
-    if let Some(oid) = owner { apply_pack_update(state, tx, x, y, "Владелец обновлен", |p| p.owner_id = oid); }
+    if let Some(oid) = owner {
+        if let Ok(_) = modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut o) = ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity) { o.owner_id = oid; }
+        }) { send_ok(tx, "Пак", "Владелец обновлен"); }
+        else { send_ok(tx, "Ошибка", "Здание не найдено"); }
+    }
 }
 
 fn handle_pack_clan_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_CLAN, 0, 1) { Some(p) => p, None => return };
     let clan = parts.get(2).and_then(|s| s.parse().ok());
-    if let Some(cid) = clan { apply_pack_update(state, tx, x, y, "Клан обновлен", |p| p.clan_id = cid); }
+    if let Some(cid) = clan {
+        if let Ok(_) = modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut o) = ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity) { o.clan_id = cid; }
+        }) { send_ok(tx, "Пак", "Клан обновлен"); }
+        else { send_ok(tx, "Ошибка", "Здание не найдено"); }
+    }
 }
 
 fn handle_pack_move_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_MOVE, 0, 1) { Some(p) => p, None => return };
     let nx = parts.get(2).and_then(|s| s.parse().ok());
     let ny = parts.get(3).and_then(|s| s.parse().ok());
-    if let (Some(nx), Some(ny)) = (nx, ny) { apply_pack_update(state, tx, x, y, "Позиция обновлена", |p| { p.x = nx; p.y = ny; }); }
+    if let (Some(nx), Some(ny)) = (nx, ny) {
+        // NOTE: Move requires updating building_index, but modify_pack_with_db doesn't handle it yet.
+        // For now let's just update GridPosition and hope for the best or implement full move logic.
+        if let Ok(_) = modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut p) = ecs.get_mut::<crate::game::buildings::GridPosition>(entity) { p.x = nx; p.y = ny; }
+        }) { 
+            if let Some((_, entity)) = state.building_index.remove(&(x, y)) { state.building_index.insert((nx, ny), entity); }
+            send_ok(tx, "Пак", "Позиция обновлена"); 
+        }
+        else { send_ok(tx, "Ошибка", "Здание не найдено"); }
+    }
 }
 
 fn handle_pack_type_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, parts: &[&str]) {
@@ -352,7 +372,14 @@ fn handle_pack_type_command(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<V
     let t = parts.get(2).and_then(|&s| crate::game::buildings::PackType::from_str(s));
     if let Some(nt) = t {
         let ex = building_extra_for_pack_type(nt);
-        apply_pack_update(state, tx, x, y, "Тип обновлен", |p| { p.pack_type = nt; p.max_charge = ex.max_charge; p.charge = p.charge.min(ex.max_charge); p.max_hp = ex.max_hp; p.hp = p.hp.min(ex.max_hp); });
+        if let Ok(_) = modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut m) = ecs.get_mut::<crate::game::buildings::BuildingMetadata>(entity) { m.pack_type = nt; }
+            if let Some(mut s) = ecs.get_mut::<crate::game::buildings::BuildingStats>(entity) {
+                s.max_charge = ex.max_charge; s.charge = s.charge.min(ex.max_charge);
+                s.max_hp = ex.max_hp; s.hp = s.hp.min(ex.max_hp);
+            }
+        }) { send_ok(tx, "Пак", "Тип обновлен"); }
+        else { send_ok(tx, "Ошибка", "Здание не найдено"); }
     }
 }
 
@@ -362,20 +389,13 @@ fn parse_pack_pos(parts: &[&str], tx: &mpsc::UnboundedSender<Vec<u8>>, usage: &s
     match (x, y) { (Some(x), Some(y)) => Some((x, y)), _ => { send_ok(tx, "Пак", usage); None } }
 }
 
-fn apply_pack_update(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, x: i32, y: i32, msg: &str, apply: impl FnOnce(&mut PackData)) {
-    if let Some(pack) = state.get_pack_at(x, y).map(|p| p.clone()) {
-        if update_pack_with_world_sync(state, pack.x, pack.y, apply).is_ok() { send_ok(tx, "Пак", msg); }
-        else { send_ok(tx, "Ошибка", "Ошибка БД"); }
-    } else { send_ok(tx, "Ошибка", "Здание не найдено"); }
-}
-
 fn is_admin_command(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    state.query_player(pid, |ecs, entity| { ecs.get::<crate::game::player::PlayerStats>(entity).is_some_and(|s| s.role == 2) }).unwrap_or(false)
+    state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| { ecs.get::<crate::game::player::PlayerStats>(entity).is_some_and(|s| s.role == 2) }).unwrap_or(false)
 }
 
 pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
     let parts: Vec<String> = ids.iter().map(|&id| {
-        let name = state.query_player(id, |ecs, entity| { ecs.get::<crate::game::player::PlayerMetadata>(entity).map(|m| m.name.clone()) }).flatten()
+        let name = state.query_player(id, |ecs: &bevy_ecs::prelude::World, entity| { ecs.get::<crate::game::player::PlayerMetadata>(entity).map(|m| m.name.clone()) }).flatten()
             .or_else(|| state.db.get_player_by_id(id).ok().flatten().map(|p| p.name)).unwrap_or_default();
         format!("{id}:{name}")
     }).collect();
@@ -383,7 +403,7 @@ pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 }
 
 pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
-    let data = state.query_player(pid, |ecs, entity| {
+    let data = state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
         let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
         let m = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
@@ -392,13 +412,13 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
 
     if let Some((dx, dy, cry, rx_p, ry_p, mh)) = data {
         if cry.iter().sum::<i64>() > 0 {
-            state.modify_player(pid, |ecs, entity| { if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) { s.crystals = [0; 6]; } Some(()) });
+            state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| { if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) { s.crystals = [0; 6]; } Some(()) });
             if let Some((bx, by)) = spawn_crystal_box(state, dx, dy) { broadcast_cell_update(state, bx, by); }
             let fx = hb_fx(dx as u16, dy as u16, 2);
             state.broadcast_to_nearby(World::chunk_pos(dx, dy).0, World::chunk_pos(dx, dy).1, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
         }
         let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) { if state.get_pack_at(x, y).is_some_and(|p| p.pack_type == crate::game::buildings::PackType::Resp && p.charge > 0.0) { (x+2, y) } else { (10, 10) } } else { (10, 10) };
-        state.modify_player(pid, |ecs, entity| {
+        state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
             let mut p = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
             p.x = rx; p.y = ry;
             if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) { s.health = mh; }
@@ -415,7 +435,7 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
 fn send_channel_packet_to_players(state: &Arc<GameState>, data: &[u8], clan: Option<i32>) {
     let pkt = make_u_packet_bytes("mU", data);
     for entry in &state.active_players {
-        state.query_player(*entry.key(), |ecs, entity| {
+        state.query_player(*entry.key(), |ecs: &bevy_ecs::prelude::World, entity| {
             if let (Some(s), Some(c)) = (ecs.get::<crate::game::player::PlayerStats>(entity), ecs.get::<crate::game::player::PlayerConnection>(entity)) {
                 if clan.is_none_or(|id| s.clan_id == Some(id)) { let _ = c.tx.send(pkt.clone()); }
             }

@@ -3,10 +3,10 @@ use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
-    building_extra_from_pack, building_extra_for_pack_type, update_pack_with_db,
+    building_extra_for_pack_type, modify_pack_with_db,
 };
 use crate::game::player::{PlayerPosition, PlayerStats, PlayerInventory, PlayerSkills, PlayerUI, PlayerFlags, PlayerMetadata};
-use crate::game::buildings::{PackData, PackType};
+use crate::game::buildings::{PackView, PackType, BuildingStats, BuildingStorage};
 
 pub fn handle_gui_button(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, button: &str) {
     if button == "exit" || button == "close" {
@@ -79,7 +79,7 @@ fn handle_pack_operation(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<
     let x = parts[1].parse::<i32>().unwrap_or(0);
     let y = parts[2].parse::<i32>().unwrap_or(0);
 
-    let Some(pack) = state.get_pack_at(x, y).map(|p| p.clone()) else { return; };
+    let Some(view) = state.get_pack_at(x, y) else { return; };
     
     let p_info = state.query_player(pid, |ecs, entity| {
         let pos = ecs.get::<PlayerPosition>(entity)?;
@@ -88,24 +88,33 @@ fn handle_pack_operation(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<
     }).flatten();
     
     let Some((px, py, p_clan)) = p_info else { return; };
-    if validate_pack_access(&pack, (px, py), p_clan, pid).is_err() { return; }
+    if validate_pack_access(&view, (px, py), p_clan, pid).is_err() { return; }
 
     match cmd {
-        "open" => open_pack_gui(state, tx, pid, &pack),
-        "take_money" => handle_pack_take_money(state, tx, pid, &pack),
-        "take_crys" => handle_pack_take_crystals(state, tx, pid, &pack),
+        "open" => open_pack_gui(state, tx, pid, &view),
+        "take_money" => handle_pack_take_money(state, tx, pid, &view),
+        "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
         "remove" => crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y),
         _ => {}
     }
 }
 
-fn open_pack_gui(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, pack: &PackData) {
-    let title = pack.pack_type.name();
-    let text = format!("Здание: {}\nЗаряд: {:.1}/{:.1}\nПрочность: {}/{}", title, pack.charge, pack.max_charge, pack.hp, pack.max_hp);
+fn open_pack_gui(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, view: &PackView) {
+    let title = view.pack_type.name();
+    
+    // Fetch detailed stats from ECS for GUI
+    let stats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let stats = ecs.get::<BuildingStats>(*ent)?;
+        Some((stats.hp, stats.max_hp))
+    });
+    let (hp, mhp) = stats_info.unwrap_or((0, 0));
+
+    let text = format!("Здание: {}\nЗаряд: {:.1}\nПрочность: {}/{}", title, view.charge, hp, mhp);
     let mut buttons = vec![
-        serde_json::json!("Забрать деньги"), serde_json::json!(format!("pack_op:take_money:{}:{}", pack.x, pack.y)),
-        serde_json::json!("Забрать кристаллы"), serde_json::json!(format!("pack_op:take_crys:{}:{}", pack.x, pack.y)),
-        serde_json::json!("Удалить"), serde_json::json!(format!("pack_op:remove:{}:{}", pack.x, pack.y)),
+        serde_json::json!("Забрать деньги"), serde_json::json!(format!("pack_op:take_money:{}:{}", view.x, view.y)),
+        serde_json::json!("Забрать кристаллы"), serde_json::json!(format!("pack_op:take_crys:{}:{}", view.x, view.y)),
+        serde_json::json!("Удалить"), serde_json::json!(format!("pack_op:remove:{}:{}", view.x, view.y)),
     ];
     buttons.extend(CLOSE_WINDOW_BUTTON_LABELS.iter().map(|l| serde_json::json!(l)));
     
@@ -113,35 +122,45 @@ fn open_pack_gui(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pi
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
     
     state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) { ui.current_window = Some(format!("pack:{}:{}", pack.x, pack.y)); }
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) { ui.current_window = Some(format!("pack:{}:{}", view.x, view.y)); }
         Some(())
     });
 }
 
-fn handle_pack_take_money(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, pack: &PackData) {
-    if pack.money_inside <= 0 { return; }
-    let amount = pack.money_inside;
-    
-    if update_pack_with_db(state, pack.x, pack.y, |p| { p.money_inside = 0; }).is_ok() {
-        state.modify_player(pid, |ecs, entity| {
-            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-            s.money += amount;
-            send_u_packet(tx, "P$", &money(s.money, s.creds).1);
-            Some(())
-        });
+fn handle_pack_take_money(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, view: &PackView) {
+    let mut amount = 0i64;
+    if let Ok(_) = modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
+        if let Some(mut s) = ecs.get_mut::<BuildingStorage>(entity) {
+            amount = s.money;
+            s.money = 0;
+        }
+    }) {
+        if amount > 0 {
+            state.modify_player(pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                s.money += amount;
+                send_u_packet(tx, "P$", &money(s.money, s.creds).1);
+                Some(())
+            });
+        }
     }
 }
 
-fn handle_pack_take_crystals(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, pack: &PackData) {
-    let amount = pack.crystals_inside;
-    if amount.iter().sum::<i64>() <= 0 { return; }
-    
-    if update_pack_with_db(state, pack.x, pack.y, |p| { p.crystals_inside = [0; 6]; }).is_ok() {
-        state.modify_player(pid, |ecs, entity| {
-            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-            for i in 0..6 { s.crystals[i] += amount[i]; }
-            send_u_packet(tx, "@B", &basket(&s.crystals, 1000).1);
-            Some(())
-        });
+fn handle_pack_take_crystals(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, view: &PackView) {
+    let mut amount = [0i64; 6];
+    if let Ok(_) = modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
+        if let Some(mut s) = ecs.get_mut::<BuildingStorage>(entity) {
+            amount = s.crystals;
+            s.crystals = [0; 6];
+        }
+    }) {
+        if amount.iter().sum::<i64>() > 0 {
+            state.modify_player(pid, |ecs, entity| {
+                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                for i in 0..6 { s.crystals[i] += amount[i]; }
+                send_u_packet(tx, "@B", &basket(&s.crystals, 1000).1);
+                Some(())
+            });
+        }
     }
 }

@@ -2,7 +2,8 @@
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use std::collections::HashMap;
-use crate::game::buildings::{PackData, PackType, get_building_config};
+use bevy_ecs::prelude::{Entity, World as EcsWorld};
+use crate::game::buildings::{PackType, PackView, get_building_config, BuildingMetadata, BuildingStats, BuildingStorage, BuildingCrafting, BuildingOwnership, GridPosition, BuildingFlags};
 use crate::game::player::{PlayerPosition, PlayerStats, PlayerUI, PlayerConnection};
 
 // ─── Buildings ─────────────────────────────────────────────────────────
@@ -81,17 +82,55 @@ pub fn handle_place_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<
         }
     };
 
-    let mut pack = make_pack_data(state, db_id, pack_type, bx, by, pid, &extra);
-    pack.clan_id = initial_clan;
-    place_building_in_world(state, tx, pid, &pack, true);
+    let entity = state.ecs.write().spawn((
+        BuildingMetadata { id: db_id, pack_type },
+        GridPosition { x: bx, y: by },
+        BuildingStats {
+            charge: extra.charge,
+            max_charge: extra.max_charge,
+            cost: extra.cost,
+            hp: extra.hp,
+            max_hp: extra.max_hp,
+        },
+        BuildingStorage {
+            money: extra.money_inside,
+            crystals: extra.crystals_inside,
+            items: extra.items_inside.clone(),
+        },
+        BuildingOwnership {
+            owner_id: pid,
+            clan_id: initial_clan,
+        },
+        BuildingCrafting {
+            recipe_id: extra.craft_recipe_id,
+            num: extra.craft_num,
+            end_ts: extra.craft_end_ts,
+        },
+        BuildingFlags { dirty: false },
+    )).id();
+
+    state.building_index.insert((bx, by), entity);
+    
+    let view = PackView {
+        id: db_id,
+        pack_type,
+        x: bx,
+        y: by,
+        owner_id: pid,
+        clan_id: initial_clan,
+        charge: extra.charge,
+        max_charge: extra.max_charge,
+        hp: extra.hp,
+        max_hp: extra.max_hp,
+    };
+    place_building_in_world(state, tx, pid, &view, true);
 }
 
-pub fn place_building_in_world(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, pack: &PackData, close_gui: bool) {
-    place_building_cells(state, pack.x, pack.y, pack.pack_type);
-    state.packs.insert((pack.x, pack.y), pack.clone());
-    broadcast_pack_to_nearby(state, pack);
+pub fn place_building_in_world(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, view: &PackView, close_gui: bool) {
+    place_building_cells(state, view.x, view.y, view.pack_type);
+    broadcast_pack_to_nearby(state, view);
     if close_gui { send_u_packet(tx, "Gu", &[]); }
-    tracing::info!("Player {pid} placed building {} at ({}, {})", pack.pack_type.code(), pack.x, pack.y);
+    tracing::info!("Player {pid} placed building {} at ({}, {})", view.pack_type.code(), view.x, view.y);
 }
 
 pub fn handle_remove_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, bx: i32, by: i32) {
@@ -102,30 +141,36 @@ pub fn handle_remove_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender
     }).flatten();
 
     let Some(actor) = actor else { return; };
-    let Some(pack) = state.get_pack_at(bx, by).map(|p| p.clone()) else {
+    let Some(view) = state.get_pack_at(bx, by) else {
         send_building_error(tx, "Объект не найден"); return;
     };
 
-    if pack.owner_id != pid && !(pack.clan_id != 0 && pack.clan_id == actor.2) {
+    if view.owner_id != pid && !(view.clan_id != 0 && view.clan_id == actor.2) {
         send_building_error(tx, "Нет прав"); return;
     }
 
-    if !pack.pack_type.building_cells().iter().any(|(dx, dy, _)| pack.x + dx == actor.0 && pack.y + dy == actor.1) {
+    if !view.pack_type.building_cells().iter().any(|(dx, dy, _)| view.x + dx == actor.0 && view.y + dy == actor.1) {
         send_building_error(tx, "Вы не у объекта"); return;
     }
 
-    if state.db.delete_building(pack.id).is_err() {
+    if state.db.delete_building(view.id).is_err() {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1); return;
     }
 
-    state.packs.remove(&(pack.x, pack.y));
-    clear_pack_cells(state, &pack);
-    broadcast_pack_clear(state, &pack);
-    close_pack_windows(state, &pack);
+    state.building_index.remove(&(view.x, view.y));
+    // We should also despawn from ECS, but need the entity. 
+    // Let's modify get_pack_at or use building_index again.
+    if let Some((_, entity)) = state.building_index.remove(&(view.x, view.y)) {
+        state.ecs.write().despawn(entity);
+    }
+    
+    clear_pack_cells(state, &view);
+    broadcast_pack_clear(state, &view);
+    close_pack_windows(state, &view);
     
     state.modify_player(pid, |ecs, entity| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            let window = format!("pack:{}:{}", pack.x, pack.y);
+            let window = format!("pack:{}:{}", view.x, view.y);
             if ui.current_window.as_deref() == Some(window.as_str()) { ui.current_window = None; }
         }
         Some(())
@@ -157,8 +202,8 @@ pub fn validate_building_area(state: &Arc<GameState>, bx: i32, by: i32, pack_typ
     Ok(())
 }
 
-pub fn broadcast_pack_to_nearby(state: &Arc<GameState>, pack: &PackData) {
-    broadcast_pack_update(state, pack);
+pub fn broadcast_pack_to_nearby(state: &Arc<GameState>, view: &PackView) {
+    broadcast_pack_update(state, view);
 }
 
 fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u16, u16, u8)> {
@@ -175,100 +220,66 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
     out
 }
 
-pub fn broadcast_pack_update(state: &Arc<GameState>, pack: &PackData) {
-    if let Some(block_pos) = pack_block_pos(state, pack.x, pack.y) {
+pub fn broadcast_pack_update(state: &Arc<GameState>, view: &PackView) {
+    if let Some(block_pos) = pack_block_pos(state, view.x, view.y) {
         let packs = gather_block_packs(state, block_pos);
         let sub = hb_packs(block_pos, &packs);
         let data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-        let (cx, cy) = World::chunk_pos(pack.x, pack.y);
+        let (cx, cy) = World::chunk_pos(view.x, view.y);
         state.broadcast_to_nearby(cx, cy, &data, None);
     }
 }
 
-pub fn broadcast_pack_clear(state: &Arc<GameState>, pack: &PackData) {
-    broadcast_pack_update(state, pack);
+pub fn broadcast_pack_clear(state: &Arc<GameState>, view: &PackView) {
+    broadcast_pack_update(state, view);
 }
 
-pub fn update_pack_with_db(state: &Arc<GameState>, pack_x: i32, pack_y: i32, mutate: impl FnOnce(&mut PackData)) -> Result<PackData, String> {
-    let mut pack = state.packs.get_mut(&(pack_x, pack_y)).ok_or_else(|| "Объект не найден".to_string())?;
-    let old = pack.clone(); mutate(&mut pack);
-    let extra = building_extra_from_pack(&pack);
-    let id = pack.id; let updated = pack.clone(); drop(pack);
-    if state.db.update_building_extra(id, &extra).is_err() {
-        if let Some(mut cur) = state.packs.get_mut(&(pack_x, pack_y)) { *cur = old; }
-        return Err("Ошибка БД".to_string());
+pub fn modify_pack_with_db<F, R>(state: &Arc<GameState>, pack_x: i32, pack_y: i32, f: F) -> Result<R, String>
+where F: FnOnce(&mut EcsWorld, Entity) -> R
+{
+    let entity = *state.building_index.get(&(pack_x, pack_y)).ok_or_else(|| "Объект не найден".to_string())?;
+    let mut ecs = state.ecs.write();
+    let res = f(&mut ecs, entity);
+    
+    // Auto-save check or just mark dirty
+    if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(entity) { flags.dirty = true; }
+    
+    // In current sync mode we might want to save immediately if it's critical
+    if let Some(row) = crate::game::buildings::extract_building_row(&ecs, entity) {
+        let _ = state.db.save_building(&row); 
     }
-    Ok(updated)
+    
+    Ok(res)
 }
 
-pub fn update_pack_with_world_sync(state: &Arc<GameState>, pack_x: i32, pack_y: i32, mutate: impl FnOnce(&mut PackData)) -> Result<PackData, String> {
-    let old = state.packs.get(&(pack_x, pack_y)).map(|p| p.clone()).ok_or_else(|| "Объект не найден".to_string())?;
-    let mut updated = old.clone(); mutate(&mut updated);
-    let footprint_changed = old.pack_type != updated.pack_type || old.x != updated.x || old.y != updated.y;
-    if footprint_changed { if let Err(msg) = validate_pack_footprint(state, &old, &updated) { return Err(msg.to_string()); } }
-    let extra = building_extra_from_pack(&updated);
-    if state.db.update_building_state(updated.id, updated.pack_type.code(), updated.x, updated.y, updated.owner_id, updated.clan_id, &extra).is_err() { return Err("Ошибка БД".to_string()); }
-    let new_key = (updated.x, updated.y);
-    if (old.x, old.y) != new_key && state.packs.contains_key(&new_key) { return Err("Место занято".to_string()); }
-    state.packs.remove(&(old.x, old.y));
-    state.packs.insert(new_key, updated.clone());
-    if footprint_changed { broadcast_pack_clear(state, &old); clear_pack_cells(state, &old); place_pack_cells(state, &updated); }
-    broadcast_pack_update(state, &updated);
-    Ok(updated)
-}
-
-fn place_pack_cells(state: &Arc<GameState>, pack: &PackData) {
-    for (dx, dy, cell) in pack.pack_type.building_cells() {
-        state.world.set_cell(pack.x + dx, pack.y + dy, cell);
-        broadcast_cell_update(state, pack.x + dx, pack.y + dy);
+fn place_pack_cells(state: &Arc<GameState>, view: &PackView) {
+    for (dx, dy, cell) in view.pack_type.building_cells() {
+        state.world.set_cell(view.x + dx, view.y + dy, cell);
+        broadcast_cell_update(state, view.x + dx, view.y + dy);
     }
 }
 
-fn pack_has_cell(pack: &PackData, cx: i32, cy: i32) -> bool {
-    pack.pack_type.building_cells().iter().any(|(dx, dy, _)| pack.x + dx == cx && pack.y + dy == cy)
+fn pack_has_cell(state: &Arc<GameState>, bx: i32, by: i32, pack_type: PackType, cx: i32, cy: i32) -> bool {
+    pack_type.building_cells().iter().any(|(dx, dy, _)| bx + dx == cx && by + dy == cy)
 }
 
-fn validate_pack_footprint(state: &Arc<GameState>, old: &PackData, updated: &PackData) -> Result<(), &'static str> {
-    for (dx, dy, _) in updated.pack_type.building_cells() {
-        let tx = updated.x + dx; let ty = updated.y + dy;
+fn validate_pack_footprint(state: &Arc<GameState>, old_view: &PackView, new_x: i32, new_y: i32, new_type: PackType) -> Result<(), &'static str> {
+    for (dx, dy, _) in new_type.building_cells() {
+        let tx = new_x + dx; let ty = new_y + dy;
         if !state.world.valid_coord(tx, ty) { return Err("Нет места"); }
-        if !state.world.is_empty(tx, ty) && !pack_has_cell(old, tx, ty) { return Err("Нет места"); }
-        if let Some((px, py)) = state.find_pack_covering(tx, ty) { if px != old.x || py != old.y { return Err("Место занято"); } }
+        if !state.world.is_empty(tx, ty) && !pack_has_cell(state, old_view.x, old_view.y, old_view.pack_type, tx, ty) { return Err("Нет места"); }
+        if let Some((px, py)) = state.find_pack_covering(tx, ty) { if px != old_view.x || py != old_view.y { return Err("Место занято"); } }
     }
     Ok(())
-}
-
-pub fn make_pack_data(state: &Arc<GameState>, db_id: i32, pack_type: PackType, x: i32, y: i32, pid: PlayerId, extra: &BuildingExtra) -> PackData {
-    let ecs_entity = state.ecs.write().spawn((
-        crate::game::buildings::Position { x, y },
-        crate::game::buildings::Building { id: db_id, type_code: pack_type.code() },
-        crate::game::buildings::Owner { pid, clan_id: 0 },
-        crate::game::buildings::Health { state: extra.hp, max_state: extra.max_hp },
-    )).id();
-
-    PackData {
-        id: db_id, ecs_entity, pack_type, x, y, owner_id: pid, clan_id: 0,
-        charge: extra.charge, max_charge: extra.max_charge, cost: extra.cost, hp: extra.hp, max_hp: extra.max_hp,
-        money_inside: extra.money_inside, crystals_inside: extra.crystals_inside, items_inside: extra.items_inside.clone(),
-        craft_recipe_id: extra.craft_recipe_id, craft_num: extra.craft_num, craft_end_ts: extra.craft_end_ts,
-    }
-}
-
-pub fn building_extra_from_pack(pack: &PackData) -> BuildingExtra {
-    BuildingExtra {
-        charge: pack.charge, max_charge: pack.max_charge, cost: pack.cost, hp: pack.hp, max_hp: pack.max_hp,
-        money_inside: pack.money_inside, crystals_inside: pack.crystals_inside, items_inside: pack.items_inside.clone(),
-        craft_recipe_id: pack.craft_recipe_id, craft_num: pack.craft_num, craft_end_ts: pack.craft_end_ts,
-    }
 }
 
 fn send_building_error(tx: &mpsc::UnboundedSender<Vec<u8>>, text: &str) {
     send_u_packet(tx, "OK", &ok_message("Ошибка", text).1);
 }
 
-fn close_pack_windows(state: &Arc<GameState>, pack: &PackData) {
-    let window_key = format!("pack:{}:{}", pack.x, pack.y);
-    let (pcx, pcy) = World::chunk_pos(pack.x, pack.y);
+fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
+    let window_key = format!("pack:{}:{}", view.x, view.y);
+    let (pcx, pcy) = World::chunk_pos(view.x, view.y);
     for (cx, cy) in state.visible_chunks_around(pcx, pcy) {
         if let Some(players) = state.chunk_players.get(&(cx, cy)) {
             let ids: Vec<PlayerId> = players.value().clone();
@@ -296,9 +307,9 @@ pub fn place_building_cells(state: &Arc<GameState>, bx: i32, by: i32, pack_type:
     }
 }
 
-pub fn clear_pack_cells(state: &Arc<GameState>, pack: &PackData) {
-    for (cdx, cdy, _) in pack.pack_type.building_cells() {
-        state.world.set_cell(pack.x + cdx, pack.y + cdy, cell_type::EMPTY);
-        broadcast_cell_update(state, pack.x + cdx, pack.y + cdy);
+pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
+    for (cdx, cdy, _) in view.pack_type.building_cells() {
+        state.world.set_cell(view.x + cdx, view.y + cdy, cell_type::EMPTY);
+        broadcast_cell_update(state, view.x + cdx, view.y + cdy);
     }
 }

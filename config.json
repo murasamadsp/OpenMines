@@ -1,7 +1,6 @@
 {
   "world_name": "world",
   "port": 8090,
-  "mapviewer_http_port": 8091,
   "world_chunks_w": 157,
   "world_chunks_h": 3125,
   "data_dir": "data",

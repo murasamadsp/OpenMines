@@ -3,10 +3,8 @@ mod cron;
 mod db;
 mod game;
 mod logging;
-mod mapviewer_http;
 mod metrics;
 mod net;
-mod ops_http;
 mod protocol;
 mod world;
 
@@ -113,11 +111,6 @@ async fn main() -> Result<()> {
         let mut ecs = game_state.ecs.write();
         ecs.insert_resource(game::GameStateResource(game_state.clone()));
     }
-
-    // Mapviewer HTTP: пока не поднимаем (будет OIDC позже).
-
-    // Ops HTTP (localhost): health/ready/metrics.
-    ops_http::maybe_spawn(std::sync::Arc::clone(&game_state), shutdown_tx.clone());
 
     // Run TCP server until shutdown signal.
     let net_res = net::run(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).await;

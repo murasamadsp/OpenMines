@@ -11,7 +11,7 @@ pub mod skills;
 use crate::config::Config;
 use crate::db::Database;
 use crate::world::{World, WorldProvider};
-use bevy_ecs::prelude::{Resource, World as EcsWorld};
+use bevy_ecs::prelude::{Resource, World as EcsWorld, Entity};
 use bevy_ecs::schedule::Schedule;
 use dashmap::DashMap;
 use parking_lot::RwLock;
@@ -21,6 +21,7 @@ use tracing::info;
 use std::time::{Duration, Instant};
 
 pub use player::{ActivePlayer, PlayerId, PlayerPosition, PlayerConnection, PlayerStats, PlayerMetadata, PlayerFlags, PlayerUI, PlayerView, PlayerCooldowns, PlayerSettings, PlayerSkills};
+pub use buildings::{PackType, PackView, BuildingMetadata, BuildingStats, BuildingStorage, BuildingCrafting, BuildingOwnership, GridPosition, BuildingFlags};
 
 #[derive(Resource)]
 pub struct GameStateResource(pub Arc<GameState>);
@@ -31,7 +32,7 @@ pub struct GameState {
     pub config: Config,
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub chunk_players: DashMap<(u32, u32), Vec<PlayerId>>,
-    pub packs: DashMap<(i32, i32), buildings::PackData>,
+    pub building_index: DashMap<(i32, i32), Entity>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     pub ecs: RwLock<EcsWorld>,
     pub schedule: RwLock<Schedule>,
@@ -59,7 +60,7 @@ impl GameState {
             config,
             active_players: DashMap::new(),
             chunk_players: DashMap::new(),
-            packs: DashMap::new(),
+            building_index: DashMap::new(),
             chat_channels: RwLock::new(default_channels),
             ecs: RwLock::new(EcsWorld::new()),
             schedule: RwLock::new(schedule),
@@ -68,27 +69,48 @@ impl GameState {
 
         if let Ok(all_rows) = state.db.load_all_buildings() {
             let count = all_rows.len();
+            let mut ecs = state.ecs.write();
             for row in all_rows {
                 let pack_type = buildings::PackType::from_str(&row.type_code).unwrap_or(buildings::PackType::Resp);
-                let extra = crate::db::buildings::BuildingExtra {
-                    charge: row.charge, max_charge: row.max_charge, cost: row.cost, hp: row.hp, max_hp: row.max_hp,
-                    money_inside: row.money_inside, crystals_inside: row.crystals_inside, items_inside: row.items_inside,
-                    craft_recipe_id: row.craft_recipe_id, craft_num: row.craft_num, craft_end_ts: row.craft_end_ts,
-                };
-                let pack = crate::net::session::social::buildings::make_pack_data(&state, row.id, pack_type, row.x, row.y, row.owner_id, &extra);
-                state.packs.insert((pack.x, pack.y), pack);
+                let entity = ecs.spawn((
+                    BuildingMetadata { id: row.id, pack_type },
+                    GridPosition { x: row.x, y: row.y },
+                    BuildingStats {
+                        charge: row.charge,
+                        max_charge: row.max_charge,
+                        cost: row.cost,
+                        hp: row.hp,
+                        max_hp: row.max_hp,
+                    },
+                    BuildingStorage {
+                        money: row.money_inside,
+                        crystals: row.crystals_inside,
+                        items: row.items_inside.clone(),
+                    },
+                    BuildingOwnership {
+                        owner_id: row.owner_id,
+                        clan_id: row.clan_id,
+                    },
+                    BuildingCrafting {
+                        recipe_id: row.craft_recipe_id,
+                        num: row.craft_num,
+                        end_ts: row.craft_end_ts,
+                    },
+                    BuildingFlags { dirty: false },
+                )).id();
+                state.building_index.insert((row.x, row.y), entity);
             }
-            info!("Loaded {count} buildings from DB");
+            info!("Loaded {count} buildings into ECS from DB");
         }
         state
     }
 
-    pub fn get_player_entity(&self, pid: PlayerId) -> Option<bevy_ecs::entity::Entity> {
+    pub fn get_player_entity(&self, pid: PlayerId) -> Option<Entity> {
         self.active_players.get(&pid).map(|p| p.ecs_entity)
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
-    where F: FnOnce(&EcsWorld, bevy_ecs::entity::Entity) -> R,
+    where F: FnOnce(&EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
         let ecs = self.ecs.read();
@@ -96,9 +118,16 @@ impl GameState {
     }
 
     pub fn modify_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
-    where F: FnOnce(&mut EcsWorld, bevy_ecs::entity::Entity) -> R,
+    where F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
+        let mut ecs = self.ecs.write();
+        Some(f(&mut ecs, entity))
+    }
+
+    pub fn modify_building<F, R>(&self, entity: Entity, f: F) -> Option<R>
+    where F: FnOnce(&mut EcsWorld, Entity) -> R,
+    {
         let mut ecs = self.ecs.write();
         Some(f(&mut ecs, entity))
     }
@@ -134,15 +163,35 @@ impl GameState {
         self.auth_failures.retain(|_, (_, last)| now.duration_since(*last) < Self::AUTH_FAILURE_WINDOW);
     }
 
-    pub fn get_pack_at(&self, x: i32, y: i32) -> Option<dashmap::mapref::one::Ref<'_, (i32, i32), buildings::PackData>> {
-        self.packs.get(&(x, y))
+    pub fn get_pack_at(&self, x: i32, y: i32) -> Option<PackView> {
+        let entity = *self.building_index.get(&(x, y))?;
+        let ecs = self.ecs.read();
+        let meta = ecs.get::<BuildingMetadata>(entity)?;
+        let pos = ecs.get::<GridPosition>(entity)?;
+        let ownership = ecs.get::<BuildingOwnership>(entity)?;
+        let stats = ecs.get::<BuildingStats>(entity)?;
+        
+        Some(PackView {
+            id: meta.id,
+            pack_type: meta.pack_type,
+            x: pos.x,
+            y: pos.y,
+            owner_id: ownership.owner_id,
+            clan_id: ownership.clan_id,
+            charge: stats.charge,
+            max_charge: stats.max_charge,
+            hp: stats.hp,
+            max_hp: stats.max_hp,
+        })
     }
 
     pub fn find_pack_covering(&self, x: i32, y: i32) -> Option<(i32, i32)> {
-        for entry in &self.packs {
-            let (px, py) = entry.key();
-            let p = entry.value();
-            for (dx, dy, _) in p.pack_type.building_cells() { if px + dx == x && py + dy == y { return Some((*px, *py)); } }
+        let mut ecs = self.ecs.write();
+        let mut query = ecs.query::<(&GridPosition, &BuildingMetadata)>();
+        for (pos, meta) in query.iter(&ecs) {
+            for (dx, dy, _) in meta.pack_type.building_cells() {
+                if pos.x + dx == x && pos.y + dy == y { return Some((pos.x, pos.y)); }
+            }
         }
         None
     }
@@ -157,13 +206,14 @@ impl GameState {
 
     pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<(u8, u16, u16, u16, u8)> {
         let mut result = Vec::new();
-        for entry in &self.packs {
-            let p = entry.value();
-            let (pcx, pcy) = crate::world::World::chunk_pos(p.x, p.y);
+        let mut ecs = self.ecs.write();
+        let mut query = ecs.query::<(&GridPosition, &BuildingMetadata, &BuildingOwnership, &BuildingStats)>();
+        for (pos, meta, ownership, stats) in query.iter(&ecs) {
+            let (pcx, pcy) = crate::world::World::chunk_pos(pos.x, pos.y);
             if (pcx as i64 - cx as i64).abs() <= 1 && (pcy as i64 - cy as i64).abs() <= 1 {
-                let cid = p.clan_id as u16;
-                if self.pack_block_pos(p.x, p.y).is_none() { continue; }
-                result.push((p.pack_type.code(), p.x as u16, p.y as u16, cid, p.off()));
+                let cid = ownership.clan_id as u16;
+                if self.pack_block_pos(pos.x, pos.y).is_none() { continue; }
+                result.push((meta.pack_type.code(), pos.x as u16, pos.y as u16, cid, u8::from(stats.charge > 0.0)));
             }
         }
         result

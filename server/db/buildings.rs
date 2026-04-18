@@ -161,4 +161,22 @@ impl Database {
         )?;
         Ok(())
     }
+
+    pub fn save_building(&self, row: &BuildingRow) -> Result<()> {
+        let extra = BuildingExtra {
+            charge: row.charge,
+            max_charge: row.max_charge,
+            cost: row.cost,
+            hp: row.hp,
+            max_hp: row.max_hp,
+            money_inside: row.money_inside,
+            crystals_inside: row.crystals_inside,
+            items_inside: row.items_inside.clone(),
+            craft_recipe_id: row.craft_recipe_id,
+            craft_num: row.craft_num,
+            craft_end_ts: row.craft_end_ts,
+        };
+        let type_code = row.type_code.chars().next().map(|c| c as u8).unwrap_or(b' ');
+        self.update_building_state(row.id, type_code, row.x, row.y, row.owner_id, row.clan_id, &extra)
+    }
 }

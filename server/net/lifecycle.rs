@@ -3,6 +3,7 @@
 
 use crate::game::GameState;
 use crate::world::WorldProvider;
+use bevy_ecs::prelude::Entity;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -59,6 +60,50 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
             }
             if saved > 0 {
                 tracing::debug!("Periodic save: flushed {saved} players");
+            }
+        }
+    });
+}
+
+/// Сохранение «грязных» зданий в БД.
+pub fn spawn_building_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(45));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.recv() => break,
+            }
+            
+            let mut dirty_entities = Vec::new();
+            {
+                let mut ecs = state.ecs.write();
+                let mut query = ecs.query::<(Entity, &crate::game::BuildingFlags)>();
+                for (entity, flags) in query.iter(&ecs) {
+                    if flags.dirty { dirty_entities.push(entity); }
+                }
+            }
+
+            let mut saved = 0usize;
+            for entity in dirty_entities {
+                let row = state.modify_building(entity, |ecs, ent| {
+                    let mut flags = ecs.get_mut::<crate::game::BuildingFlags>(ent)?;
+                    if flags.dirty {
+                        flags.dirty = false;
+                        crate::game::buildings::extract_building_row(ecs, ent)
+                    } else { None }
+                }).flatten();
+
+                if let Some(r) = row {
+                    if let Err(e) = state.db.save_building(&r) {
+                        tracing::error!("Periodic save failed for building {}: {e}", r.id);
+                    } else {
+                        saved += 1;
+                    }
+                }
+            }
+            if saved > 0 {
+                tracing::debug!("Periodic save: flushed {saved} buildings");
             }
         }
     });

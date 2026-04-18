@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::sync::OnceLock;
+use bevy_ecs::prelude::{Component, Entity};
+use crate::game::player::PlayerId;
+use crate::db::buildings::BuildingRow;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BuildingCellConfig {
@@ -66,7 +69,7 @@ pub enum PackType {
     Storage,  // 'L'
     Craft,    // 'F'
     Spot,     // 'O'
-    Gate,     // 'N' (клановые ворота — блокируют чужих, без GUI)
+    Gate,     // 'N'
 }
 
 impl PackType {
@@ -113,8 +116,6 @@ impl PackType {
         }
     }
 
-    /// Cell offsets that this building occupies and the cell type to place.
-    /// Returns Vec<(dx, dy, `cell_type`)>. First entry is the anchor.
     pub fn building_cells(self) -> Vec<(i32, i32, u8)> {
         get_building_config(self).map_or_else(Vec::new, |cfg| {
             cfg.cells
@@ -125,87 +126,100 @@ impl PackType {
     }
 }
 
-#[derive(Clone)]
-pub struct PackData {
+// ─── ECS Components ───────────────────────────────────────────────────
+
+#[derive(Component)]
+pub struct BuildingMetadata {
     pub id: i32,
-    #[allow(dead_code)]
-    pub ecs_entity: bevy_ecs::entity::Entity,
     pub pack_type: PackType,
-    pub x: i32,
-    pub y: i32,
-    pub owner_id: i32,
-    pub clan_id: i32,
+}
+
+#[derive(Component)]
+pub struct BuildingStats {
     pub charge: f32,
     pub max_charge: f32,
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
-    pub money_inside: i64,
-    pub crystals_inside: [i64; 6],
-    pub items_inside: std::collections::HashMap<i32, i32>,
-    pub craft_recipe_id: Option<i32>,
-    pub craft_num: i32,
-    pub craft_end_ts: i64,
 }
 
-#[allow(clippy::missing_fields_in_debug)]
-impl fmt::Debug for PackData {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PackData")
-            .field("id", &self.id)
-            .field("pack_type", &self.pack_type)
-            .field("x", &self.x)
-            .field("y", &self.y)
-            .field("owner_id", &self.owner_id)
-            .field("clan_id", &self.clan_id)
-            .field("charge", &self.charge)
-            .field("max_charge", &self.max_charge)
-            .field("cost", &self.cost)
-            .field("hp", &self.hp)
-            .field("max_hp", &self.max_hp)
-            .field("money_inside", &self.money_inside)
-            .finish()
-    }
+#[derive(Component)]
+pub struct BuildingStorage {
+    pub money: i64,
+    pub crystals: [i64; 6],
+    pub items: HashMap<i32, i32>,
 }
 
-impl PackData {
+#[derive(Component)]
+pub struct BuildingCrafting {
+    pub recipe_id: Option<i32>,
+    pub num: i32,
+    pub end_ts: i64,
+}
+
+#[derive(Component)]
+pub struct BuildingOwnership {
+    pub owner_id: PlayerId,
+    pub clan_id: i32,
+}
+
+#[derive(Component)]
+pub struct GridPosition {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Component)]
+pub struct BuildingFlags {
+    pub dirty: bool,
+}
+
+pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> Option<BuildingRow> {
+    let meta = ecs.get::<BuildingMetadata>(entity)?;
+    let pos = ecs.get::<GridPosition>(entity)?;
+    let stats = ecs.get::<BuildingStats>(entity)?;
+    let storage = ecs.get::<BuildingStorage>(entity)?;
+    let ownership = ecs.get::<BuildingOwnership>(entity)?;
+    let craft = ecs.get::<BuildingCrafting>(entity)?;
+
+    Some(BuildingRow {
+        id: meta.id,
+        type_code: (meta.pack_type.code() as char).to_string(),
+        x: pos.x,
+        y: pos.y,
+        owner_id: ownership.owner_id,
+        clan_id: ownership.clan_id,
+        charge: stats.charge,
+        max_charge: stats.max_charge,
+        cost: stats.cost,
+        hp: stats.hp,
+        max_hp: stats.max_hp,
+        money_inside: storage.money,
+        crystals_inside: storage.crystals,
+        items_inside: storage.items.clone(),
+        craft_recipe_id: craft.recipe_id,
+        craft_num: craft.num,
+        craft_end_ts: craft.end_ts,
+    })
+}
+
+/// Helper structure for network sync (temporary "view")
+#[derive(Debug, Clone)]
+pub struct PackView {
+    pub id: i32,
+    pub pack_type: PackType,
+    pub x: i32,
+    pub y: i32,
+    pub owner_id: PlayerId,
+    pub clan_id: i32,
+    pub charge: f32,
+    pub max_charge: f32,
+    pub hp: i32,
+    pub max_hp: i32,
+}
+
+impl PackView {
     pub fn off(&self) -> u8 {
         u8::from(self.charge > 0.0)
     }
 }
-
-#[derive(bevy_ecs::prelude::Component)]
-pub struct Position {
-    #[allow(dead_code)]
-    pub x: i32,
-    #[allow(dead_code)]
-    pub y: i32,
-}
-
-#[derive(bevy_ecs::prelude::Component)]
-pub struct Building {
-    #[allow(dead_code)]
-    pub id: i32,
-    #[allow(dead_code)]
-    pub type_code: u8,
-}
-
-#[derive(bevy_ecs::prelude::Component)]
-pub struct Owner {
-    #[allow(dead_code)]
-    pub pid: i32,
-    #[allow(dead_code)]
-    pub clan_id: i32,
-}
-
-#[derive(bevy_ecs::prelude::Component)]
-pub struct Health {
-    #[allow(dead_code)]
-    pub state: i32,
-    #[allow(dead_code)]
-    pub max_state: i32,
-}
-
-#[derive(bevy_ecs::prelude::Component)]
-#[allow(dead_code)]
-pub struct Sand;
