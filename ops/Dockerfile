@@ -5,7 +5,7 @@ WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
 COPY server ./server
-COPY config.json cells.json ./
+COPY config.json cells.json buildings.json ./
 RUN cargo build --release
 
 FROM debian:bookworm-slim AS runtime
@@ -17,11 +17,12 @@ WORKDIR /app
 COPY --from=builder /app/target/release/openmines-server /usr/local/bin/openmines-server
 COPY --from=builder /app/config.json /app/config.json
 COPY --from=builder /app/cells.json /app/cells.json
+COPY --from=builder /app/buildings.json /app/buildings.json
 
 RUN chmod +x /usr/local/bin/openmines-server \
  && mkdir -p /data
 
 EXPOSE 8090 8091
 
-# Рабочий каталог /data: config.json + cells.json в корне тома; БД и .mapb — в подкаталоге `data/` (см. config `data_dir`).
-CMD ["sh", "-c", "cp -n /app/config.json /data/config.json && cp -n /app/cells.json /data/cells.json && cd /data && mkdir -p data && exec /usr/local/bin/openmines-server"]
+# Рабочий каталог /data: config.json + cells.json + buildings.json в корне тома; БД и .mapb — в подкаталоге `data/` (см. config `data_dir`).
+CMD ["sh", "-c", "cp -n /app/config.json /data/config.json && cp -n /app/cells.json /data/cells.json && cp -n /app/buildings.json /data/buildings.json && cd /data && mkdir -p data && exec /usr/local/bin/openmines-server"]

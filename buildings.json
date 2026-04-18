@@ -1,0 +1,118 @@
+{
+  "buildings": {
+    "Resp": {
+      "code": "R",
+      "cost": 5000,
+      "charge": 100.0,
+      "max_charge": 1000.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37}, {"dx": 1, "dy": 0, "type": 37}, {"dx": 2, "dy": 0, "type": 37},
+        {"dx": 3, "dy": 0, "type": 37}, {"dx": 4, "dy": 0, "type": 37}, {"dx": 5, "dy": 0, "type": 37},
+        {"dx": 0, "dy": 1, "type": 106}, {"dx": 1, "dy": 1, "type": 106}, {"dx": 2, "dy": 1, "type": 106},
+        {"dx": 3, "dy": 1, "type": 106}, {"dx": 4, "dy": 1, "type": 106}, {"dx": 5, "dy": 1, "type": 106},
+        {"dx": 0, "dy": 2, "type": 37}, {"dx": 1, "dy": 2, "type": 37}, {"dx": 2, "dy": 2, "type": 37},
+        {"dx": 3, "dy": 2, "type": 37}, {"dx": 4, "dy": 2, "type": 37}, {"dx": 5, "dy": 2, "type": 37}
+      ]
+    },
+    "Teleport": {
+      "code": "T",
+      "cost": 3000,
+      "charge": 1000.0,
+      "max_charge": 10000.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37},
+        {"dx": 1, "dy": 0, "type": 37}
+      ]
+    },
+    "Up": {
+      "code": "U",
+      "cost": 4000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37}, {"dx": 1, "dy": 0, "type": 37},
+        {"dx": 0, "dy": 1, "type": 106}, {"dx": 1, "dy": 1, "type": 106},
+        {"dx": 0, "dy": 2, "type": 106}, {"dx": 1, "dy": 2, "type": 106},
+        {"dx": 0, "dy": 3, "type": 37}, {"dx": 1, "dy": 3, "type": 37}
+      ]
+    },
+    "Market": {
+      "code": "M",
+      "cost": 6000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37}, {"dx": 1, "dy": 0, "type": 37}, {"dx": 2, "dy": 0, "type": 37},
+        {"dx": 0, "dy": 1, "type": 106}, {"dx": 1, "dy": 1, "type": 106}, {"dx": 2, "dy": 1, "type": 106},
+        {"dx": 0, "dy": 2, "type": 37}, {"dx": 1, "dy": 2, "type": 37}, {"dx": 2, "dy": 2, "type": 37}
+      ]
+    },
+    "Gun": {
+      "code": "G",
+      "cost": 8000,
+      "charge": 1000.0,
+      "max_charge": 10000.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 32},
+        {"dx": 1, "dy": 0, "type": 35}, {"dx": -1, "dy": 0, "type": 35},
+        {"dx": 0, "dy": 1, "type": 35}, {"dx": 0, "dy": -1, "type": 35}
+      ]
+    },
+    "Storage": {
+      "code": "L",
+      "cost": 4000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37},
+        {"dx": 1, "dy": 0, "type": 37}
+      ]
+    },
+    "Craft": {
+      "code": "F",
+      "cost": 5000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 37}, {"dx": 1, "dy": 0, "type": 37},
+        {"dx": 0, "dy": 1, "type": 106}, {"dx": 1, "dy": 1, "type": 106}
+      ]
+    },
+    "Spot": {
+      "code": "O",
+      "cost": 3000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 32}
+      ]
+    },
+    "Gate": {
+      "code": "N",
+      "cost": 2000,
+      "charge": 0.0,
+      "max_charge": 0.0,
+      "hp": 1000,
+      "max_hp": 1000,
+      "cells": [
+        {"dx": 0, "dy": 0, "type": 30}
+      ]
+    }
+  }
+}

@@ -43,7 +43,12 @@ async fn main() -> Result<()> {
     let cell_defs = world::cells::CellDefs::load("cells.json")?;
     tracing::info!("Loaded {} cell definitions", cell_defs.cells.len());
 
-    crate::game::load_buildings_config("data/buildings.json")?;
+    let buildings_cfg_path = if Path::new("buildings.json").exists() {
+        "buildings.json"
+    } else {
+        "data/buildings.json"
+    };
+    crate::game::load_buildings_config(buildings_cfg_path)?;
     tracing::info!("Loaded buildings configurations");
 
     let world = world::World::new(

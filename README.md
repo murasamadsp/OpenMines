@@ -43,7 +43,7 @@ docker build -t openmines-server -f ops/Dockerfile .
 docker run --rm -p 8090:8090 -v openmines_state:/data openmines-server
 ```
 
-В образе нужны `config.json` и `cells.json`; при первом запуске они копируются в том `/data`. База (`openmines.db`) и слои мира лежат в `/data/data/` (подкаталог по умолчанию `data_dir`). Старые файлы в корне `/data` при старте переносятся в `/data/data/`; при необходимости `mines3.db*` переименовывается в `openmines.db*`.
+В образе нужны `config.json`, `cells.json` и `buildings.json`; при первом запуске они копируются в том `/data`. База (`openmines.db`) и слои мира лежат в `/data/data/` (подкаталог по умолчанию `data_dir`). Старые файлы в корне `/data` при старте переносятся в `/data/data/`; при необходимости `mines3.db*` переименовывается в `openmines.db*`.
 
 ### 4. Полная переустановка сервера на VPS
 
