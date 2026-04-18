@@ -32,8 +32,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "==> Проверка доступности VPS ($REMOTE_HOST)"
-vps_ssh "$REMOTE_HOST" "echo OK" >/dev/null
+vps_assert_reachable "$REMOTE_HOST"
 
 if [[ "$WIPE_DATA" == true ]]; then
   echo "!!! ВНИМАНИЕ: будет удалён Docker-том с данными сервера (БД, мир), см. compose volume name."

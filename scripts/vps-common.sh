@@ -33,6 +33,12 @@ vps_need_commands() {
   done
 }
 
+vps_assert_reachable() {
+  local remote_host=$1
+  echo "==> Проверка доступности VPS ($remote_host)"
+  vps_ssh "$remote_host" "echo OK" >/dev/null
+}
+
 # Синхронизирует на VPS только то, что нужно для сборки Docker-образа сервера.
 vps_rsync_repo() {
   local root_dir=$1
@@ -58,6 +64,7 @@ vps_rsync_repo() {
     "$root_dir/Cargo.toml" \
     "$root_dir/Cargo.lock" \
     "$root_dir/cells.json" \
+    "$root_dir/buildings.json" \
     "$root_dir/config.json" \
     "$root_dir/.dockerignore" \
     "$remote_host:$remote_dir/"
@@ -75,4 +82,37 @@ vps_ssh_compose() {
   # shellcheck disable=SC2145
   vps_ssh "$remote_host" \
     "cd $(printf '%q' "$remote_dir") && $VPS_DOCKER_COMPOSE_LEAD docker compose -f $(printf '%q' "$compose_file") $(printf '%q ' "$@")"
+}
+
+vps_ssh_compose_multi() {
+  local remote_host=$1
+  local remote_dir=$2
+  local base_compose_file=$3
+  shift 3
+
+  local compose_flags
+  compose_flags="-f $(printf '%q' "$base_compose_file")"
+  while [[ "${1:-}" == "--compose" ]]; do
+    local extra=$2
+    compose_flags+=" -f $(printf '%q' "$extra")"
+    shift 2
+  done
+
+  # shellcheck disable=SC2145
+  vps_ssh "$remote_host" \
+    "cd $(printf '%q' "$remote_dir") && $VPS_DOCKER_COMPOSE_LEAD docker compose $compose_flags $(printf '%q ' "$@")"
+}
+
+vps_sync_runtime_configs() {
+  local remote_host=$1
+  local remote_dir=$2
+  local compose_file=$3
+  local service=$4
+
+  echo "==> Синхронизирую config.json, cells.json, buildings.json в том контейнера (/data)"
+  vps_ssh_compose "$remote_host" "$remote_dir" "$compose_file" cp config.json "$service:/data/config.json"
+  vps_ssh_compose "$remote_host" "$remote_dir" "$compose_file" cp cells.json "$service:/data/cells.json"
+  vps_ssh_compose "$remote_host" "$remote_dir" "$compose_file" cp buildings.json "$service:/data/buildings.json"
+  echo "==> Рестарт $service (подхватить новые config/cells/buildings)"
+  vps_ssh_compose "$remote_host" "$remote_dir" "$compose_file" restart "$service"
 }
