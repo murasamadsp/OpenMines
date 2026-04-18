@@ -17,11 +17,11 @@ pub async fn handle_auth(
         AuAuthType::Regular { user_id, token } => {
             println!("[Auth] Regular auth: id={}, token={}", user_id, token);
             if let Ok(Some(player)) = state.db.get_player_by_id(*user_id) {
-                let expected = GameState::auth_token_hash(&player.hash);
+                let expected = GameState::auth_token_hash(&player.hash, sid);
                 if GameState::token_matches(token, &expected) {
                     Some(player)
                 } else {
-                    println!("[Auth] Token mismatch for id={}", user_id);
+                    println!("[Auth] Token mismatch for id={}. Expected: {}", user_id, expected);
                     None
                 }
             } else {

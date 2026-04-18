@@ -254,8 +254,15 @@ impl GameState {
     pub fn encode_password_hash(p: &str, h: &str) -> String { format!("{p}:{h}") }
     pub fn verify_password(p: &str, hp: &str, h: &str) -> bool { format!("{p}:{h}") == hp }
     pub fn map_profile_name(n: &str) -> String { n.to_string() }
-    pub fn auth_token_hash(s: &str) -> String { s.to_string() }
-    pub fn token_matches(t: &str, e: &str) -> bool { t == e }
+    pub fn auth_token_hash(hash: &str, sid: &str) -> String {
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{}{}", hash, sid).as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
+    pub fn token_matches(token: &str, expected: &str) -> bool { 
+        token.to_lowercase() == expected.to_lowercase() 
+    }
 
     pub fn tick(&self) {
         let mut ecs = self.ecs.write();

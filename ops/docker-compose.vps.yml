@@ -7,7 +7,9 @@ services:
       dockerfile: ops/Dockerfile
     image: openmines-server-dev:latest
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "8090:8090"
+      - "8091:8091"
     volumes:
       - development_server_data:/data
     labels:
@@ -32,7 +34,6 @@ volumes:
     name: mines3_server_data
 
 networks:
-  # Мы не используем внешние сети в host-mode, но оставим секцию если потребуется прокси.
   default:
     name: infra-net
     external: true
