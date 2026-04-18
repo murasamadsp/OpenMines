@@ -3,73 +3,68 @@ use crate::net::session::prelude::*;
 use crate::net::session::auth::login::handle_auth;
 use crate::net::session::dispatch::dispatch_ty_packet;
 use crate::net::session::player::init::on_disconnect;
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use bytes::BytesMut;
 
 pub async fn handle(
     state: Arc<GameState>,
     mut stream: TcpStream,
     addr: SocketAddr,
 ) -> Result<()> {
+    println!("[Net] New session from {}", addr);
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let client_ip = addr.ip();
     let mut auth_state = AuthState::PreAuth;
     let mut pid: Option<PlayerId> = None;
     let mut buf = BytesMut::with_capacity(4096);
-    let mut blocked_remaining: Option<Duration> = None;
 
-    let now = Instant::now();
-    state.prune_auth_failures_by_addr(now);
-
-    if let Some(rem) = state.auth_blocked_remaining_by_addr(&client_ip, now) {
-        let msg = format!("IP blocked for {}s", rem.as_secs());
-        stream.write_all(&make_u_packet_bytes("ST", &status(&msg).1)).await?;
-        return Ok(());
-    }
-
+    // Сразу после подключения отправляем пакет AU (handshake).
+    // Клиент Unity ждет его, чтобы начать процесс авторизации.
     let sid = GameState::generate_session_id();
+    let au_init = au_session(&sid);
+    let handshake_pkt = make_u_packet_bytes(au_init.0, &au_init.1);
+    stream.write_all(&handshake_pkt).await?;
+    println!("[Net] Sent AU handshake (sid={}) to {}", sid, addr);
 
     loop {
+        let blocked_remaining = state.auth_blocked_remaining_by_addr(&client_ip, Instant::now());
+        
         tokio::select! {
             result = stream.read_buf(&mut buf) => {
                 let n = result?;
-                if n == 0 { break; }
+                if n == 0 { 
+                    println!("[Net] Connection closed by remote: {}", addr);
+                    break; 
+                }
+                println!("[Net] Read {} bytes from {}", n, addr);
                 while let Some(packet) = Packet::try_decode(&mut buf)? {
+                    let ev = packet.event_str();
+                    println!("[Net] Received packet {} from {}", ev, addr);
                     match auth_state {
                         AuthState::PreAuth => {
-                            if packet.event_str() == "AU" {
+                            if ev == "AU" {
                                 if let Some(au) = AuClientPacket::decode(&packet.payload) {
                                     let now = Instant::now();
-                                    if let Some(rem) = state.auth_blocked_remaining_by_addr(&client_ip, now) {
-                                        stream.write_all(&make_u_packet_bytes("ST", &status(&format!("Blocked {}s", rem.as_secs())).1)).await?;
-                                        continue;
-                                    }
-
-                                    match handle_auth(&state, &tx, &au, &sid, &mut auth_state).await {
-                                        Ok(Some(id)) => {
-                                            pid = Some(id);
-                                            state.clear_auth_failure_by_addr(&client_ip);
-                                        }
-                                        Ok(None) => {
-                                            let res = state.record_auth_failure_by_addr(&client_ip, now);
-                                            blocked_remaining = merge_blocked_duration(blocked_remaining, res);
-                                        }
-                                        Err(e) => {
-                                            tracing::error!("Auth error: {e}");
-                                            let res = state.record_auth_failure_by_addr(&client_ip, now);
-                                            blocked_remaining = merge_blocked_duration(blocked_remaining, res);
-                                        }
+                                    let mut new_auth = auth_state;
+                                    let res = handle_auth(&state, &tx, &au, &sid, &mut new_auth).await?;
+                                    if let Some(id) = res {
+                                        pid = Some(id);
+                                        auth_state = new_auth;
+                                        println!("[Net] Player {} authenticated (id={:?})", addr, pid);
+                                    } else {
+                                        println!("[Net] Auth failed for {}", addr);
+                                        let wait = state.record_auth_failure_by_addr(&client_ip, now);
+                                        if wait.is_some() { break; }
                                     }
                                 }
                             }
                         }
                         AuthState::Authenticated => {
                             if let Some(id) = pid {
-                                if packet.event_str() == "TY" {
+                                if ev == "TY" {
                                     if let Some(ty) = TyPacket::decode(&packet.payload) {
                                         let _ = dispatch_ty_packet(&state, &tx, id, &ty);
-                                    }
-                                } else if packet.event_str() == "PI" {
-                                    if let Some(p) = PongClient::decode(&packet.payload) {
-                                        send_u_packet(&tx, "PI", &ping(p.response, p.current_time, "ok").1);
                                     }
                                 }
                             }
@@ -82,7 +77,10 @@ pub async fn handle(
             }
         }
         if let Some(rem) = blocked_remaining {
-            if rem > Duration::from_secs(0) { break; }
+            if rem > Duration::from_secs(0) { 
+                println!("[Net] IP {} is blocked. Closing.", client_ip);
+                break; 
+            }
         }
     }
 
@@ -92,15 +90,7 @@ pub async fn handle(
     Ok(())
 }
 
-fn merge_blocked_duration(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
-    match (a, b) {
-        (Some(d1), Some(d2)) => Some(d1.max(d2)),
-        (s @ Some(_), None) | (None, s @ Some(_)) => s,
-        (None, None) => None,
-    }
-}
-
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub enum AuthState {
     PreAuth,
     Authenticated,

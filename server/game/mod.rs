@@ -246,7 +246,11 @@ impl GameState {
 
     pub fn online_count(&self) -> usize { self.active_players.len() }
     pub fn generate_hash() -> String { "TODO_HASH".to_string() }
-    pub fn generate_session_id() -> String { "TODO_SESSION".to_string() }
+    pub fn generate_session_id() -> String {
+        use rand::Rng;
+        let mut rng = rand::rng();
+        (0..16).map(|_| rng.sample(rand::distr::Alphanumeric) as char).collect()
+    }
     pub fn encode_password_hash(p: &str, h: &str) -> String { format!("{p}:{h}") }
     pub fn verify_password(p: &str, hp: &str, h: &str) -> bool { format!("{p}:{h}") == hp }
     pub fn map_profile_name(n: &str) -> String { n.to_string() }

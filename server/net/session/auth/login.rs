@@ -11,38 +11,51 @@ pub async fn handle_auth(
     sid: &str,
     auth_state: &mut crate::net::session::connection::AuthState,
 ) -> Result<Option<PlayerId>> {
-    tracing::trace!(uniq_len = au.client_uniq().len(), "AU auth packet");
+    println!("[Auth] Attempting auth for uniq={}", au.client_uniq());
     
-    let w = state.world.cells_width();
-    let h = state.world.cells_height();
-    let name = GameState::map_profile_name(au.client_uniq());
-    let world = world_info(&name, w, h, 0, "M3R", "http://localhost/", "ok");
-    send_u_packet(tx, world.0, &world.1);
-
-    match &au.auth_type {
+    let result = match &au.auth_type {
         AuAuthType::Regular { user_id, token } => {
+            println!("[Auth] Regular auth: id={}, token={}", user_id, token);
             if let Ok(Some(player)) = state.db.get_player_by_id(*user_id) {
                 let expected = GameState::auth_token_hash(&player.hash);
                 if GameState::token_matches(token, &expected) {
-                    let pid = init_player(state, tx, &player);
-                    *auth_state = crate::net::session::connection::AuthState::Authenticated;
-                    return Ok(Some(pid));
+                    Some(player)
+                } else {
+                    println!("[Auth] Token mismatch for id={}", user_id);
+                    None
                 }
+            } else {
+                println!("[Auth] Player not found: id={}", user_id);
+                None
             }
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Неверный ID или токен").1);
         }
         AuAuthType::ServerSide => {
-            if let Ok(Some(player)) = state.db.get_player_by_name(au.client_uniq()) {
-                let pid = init_player(state, tx, &player);
-                *auth_state = crate::net::session::connection::AuthState::Authenticated;
-                return Ok(Some(pid));
-            }
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Аккаунт не найден").1);
+            println!("[Auth] ServerSide auth for name={}", au.client_uniq());
+            state.db.get_player_by_name(au.client_uniq()).ok().flatten()
         }
         AuAuthType::NoAuth => {
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Анонимный вход отключен").1);
+            println!("[Auth] NoAuth attempt denied");
+            None
         }
+    };
+
+    if let Some(player) = result {
+        println!("[Auth] Success! Player={} (id={})", player.name, player.id);
+        
+        // Сначала отправляем информацию о мире
+        let w = state.world.cells_width();
+        let h = state.world.cells_height();
+        let name = GameState::map_profile_name(au.client_uniq());
+        let world = world_info(&name, w, h, 0, "M3R", "http://localhost/", "ok");
+        send_u_packet(tx, world.0, &world.1);
+        
+        // Инициализируем игрока в ECS
+        let pid = init_player(state, tx, &player);
+        *auth_state = crate::net::session::connection::AuthState::Authenticated;
+        return Ok(Some(pid));
     }
-    
+
+    println!("[Auth] Sending failure message to client");
+    send_u_packet(tx, "OK", &ok_message("Ошибка", "Авторизация не удалась").1);
     Ok(None)
 }

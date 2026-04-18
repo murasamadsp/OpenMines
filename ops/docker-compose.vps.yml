@@ -5,40 +5,25 @@ services:
     build:
       context: ..
       dockerfile: ops/Dockerfile
-      # Virtuozzo 7 (ядро *.vz7.*): новые контейнеры с изолированным netns падают в runc
-      # («can't get final child's PID from pipe: EOF»). Сборка с host-сетью — рабочий обход.
-      network: host
     image: openmines-server-dev:latest
     restart: unless-stopped
-    ports:
-      - "8090:8090"
-      # Map viewer / admin HTTP API (`mapviewer_http_port` в config.json, по умолчанию 8091).
-      - "8091:8091"
+    network_mode: host
     volumes:
       - development_server_data:/data
     labels:
       - "com.example.group=games"
       - "com.example.environment=development"
     environment:
-      RUST_LOG: openmines_server=info
       # Временно усилить копание (множитель урона по НЕ-кристаллам).
       M3R_DIG_MULT: "6"
       # Включить точечные логи копания сыпучки (см. dig_build.rs); выключать, когда отладим.
       M3R_TRACE_DIG: "1"
       # Роли: `players.role` — 0 игрок, 1 модератор, 2 админ (ручной SQL: UPDATE … SET role=2).
-      M3R_GRANT_ADMIN: Murasama
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - net_core
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2048M
+      M3R_GRANT_ADMIN: Murasama,Admin
     logging:
+      driver: "json-file"
       options:
-        max-size: 20m
+        max-size: "10m"
         max-file: "3"
 
 volumes:
@@ -47,6 +32,7 @@ volumes:
     name: mines3_server_data
 
 networks:
-  net_core:
+  # Мы не используем внешние сети в host-mode, но оставим секцию если потребуется прокси.
+  default:
     name: infra-net
     external: true
