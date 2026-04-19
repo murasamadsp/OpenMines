@@ -70,6 +70,11 @@ impl GameState {
             auth_failures: DashMap::new(),
         });
 
+        {
+            let mut ecs = state.ecs.write();
+            ecs.insert_resource(combat::DeathQueue::default());
+        }
+
         if let Ok(all_rows) = state.db.load_all_buildings() {
             let count = all_rows.len();
             let mut ecs = state.ecs.write();

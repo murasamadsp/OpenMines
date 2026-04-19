@@ -1,5 +1,6 @@
 //! Копание клеток и установка блоков (Xdig, Xbld).
 use crate::net::session::prelude::*;
+use crate::net::session::social::misc::hurt_player_pure;
 
 fn dig_mult() -> f32 {
     std::env::var("M3R_DIG_MULT").ok().and_then(|v| v.trim().parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(1.0)
@@ -38,9 +39,18 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
     if !state.world.valid_coord(tx_c, ty_c) { return; }
 
     let cell = state.world.get_cell(tx_c, ty_c);
-    let binding = state.world.cell_defs();
-    let prop = binding.get(cell);
-    if !prop.is_diggable() { return; }
+    let (touch_damage, diggable) = {
+        let defs = state.world.cell_defs();
+        let p = defs.get(cell);
+        (p.damage, p.is_diggable())
+    };
+    // Референс `Player.Bz`: сначала `Hurt(damage)` если `GetProp(cell).damage > 0`, потом проверка `is_diggable`.
+    if touch_damage > 0 {
+        hurt_player_pure(state, tx, pid, touch_damage);
+    }
+    if !diggable {
+        return;
+    }
 
     let hit = if is_crystal(cell) { 1.0 } else { ((dig_power / 500.0) * dig_mult()).max(1.0e-6) };
     let destroyed = state.world.damage_cell(tx_c, ty_c, hit);

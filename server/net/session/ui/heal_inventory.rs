@@ -1,7 +1,8 @@
 //! Лечение и инвентарь.
-use crate::net::session::outbound::inventory_sync::send_inventory;
+use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
+use crate::net::session::social::misc::handle_death;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, place_building_in_world, validate_building_area,
 };
@@ -34,9 +35,13 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 
 // ─── Inventory ──────────────────────────────────────────────────────────────
 
-pub fn handle_inventory_open(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
-    state.query_player(pid, |ecs, entity| {
-        if let Some(inv) = ecs.get::<PlayerInventory>(entity) { send_inventory(tx, inv); }
+/// `Session.Invn`: переключить `minv` и отправить инвентарь (`player.inventory.minv = !minv; SendInventory`).
+pub fn handle_invn_toggle(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+    state.modify_player(pid, |ecs, entity| {
+        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+        inv.minv = !inv.minv;
+        send_inventory(tx, &mut inv);
+        Some(())
     });
 }
 
@@ -69,8 +74,12 @@ pub fn handle_inventory_use(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<V
         state.modify_player(pid, |ecs, entity| {
             let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
             let c = inv.items.entry(sel).or_insert(0);
-            *c -= 1; if *c <= 0 { inv.items.remove(&sel); }
-            send_inventory(tx, &inv);
+            *c -= 1;
+            if *c <= 0 {
+                inv.items.remove(&sel);
+                inv.miniq.retain(|&x| x != sel);
+            }
+            send_inventory(tx, &mut inv);
             Some(())
         });
     }
@@ -81,9 +90,15 @@ pub fn handle_inventory_choose(state: &Arc<GameState>, tx: &mpsc::UnboundedSende
     let Ok(id) = s.parse::<i32>() else { return; };
     state.modify_player(pid, |ecs, entity| {
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+        if id != -1 {
+            add_choose_miniq(&mut inv.miniq, id);
+        }
         inv.selected = id;
-        if id == -1 { send_u_packet(tx, "IN", &inventory_close().1); }
-        else { send_inventory(tx, &inv); }
+        if id == -1 {
+            send_u_packet(tx, "IN", &inventory_close().1);
+        } else {
+            send_inventory(tx, &mut inv);
+        }
         Some(())
     });
 }
@@ -154,6 +169,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
         if state.world.valid_coord(tx, ty) { state.world.set_cell(tx, ty, cell_type::EMPTY); broadcast_cell_update(state, tx, ty); }
     }}
     let now = std::time::Instant::now();
+    let mut killed: Vec<(PlayerId, mpsc::UnboundedSender<Vec<u8>>)> = Vec::new();
     for entry in &state.active_players {
         let opid = *entry.key();
         state.modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
@@ -168,11 +184,29 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
                     if cd.protection_until.is_some_and(|u| now < u) { return Some(()); }
                 }
                 let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                s_mut.health = (h - 50).max(0);
-                let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(s_mut.health, mh).1));
+                // Референс `Player.Hurt`: при смертельном уроне — `Death()`, не «залипание» на 0 HP.
+                if h > 50 {
+                    s_mut.health = h - 50;
+                    let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(s_mut.health, mh).1));
+                } else {
+                    s_mut.health = 0;
+                    let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(0, mh).1));
+                }
             }
             Some(())
         });
+        // Проверка смерти после modify (урон 50+ при низком HP)
+        let dead = state.query_player(opid, |ecs, entity| {
+            let s = ecs.get::<PlayerStats>(entity)?;
+            let c = ecs.get::<PlayerConnection>(entity)?;
+            (s.health <= 0).then(|| c.tx.clone())
+        }).flatten();
+        if let Some(tx) = dead {
+            killed.push((opid, tx));
+        }
+    }
+    for (opid, tx) in killed {
+        handle_death(state, &tx, opid);
     }
     let fx = hb_fx(cx as u16, cy as u16, 0);
     state.broadcast_to_nearby(World::chunk_pos(cx, cy).0, World::chunk_pos(cx, cy).1, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
@@ -230,17 +264,26 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
             if h.is_some() { hit = h; break; }
         }
         if let Some(t_pid) = hit {
-            state.modify_player(t_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            let tx_death = state.modify_player(t_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
                 let (h_val, mh_val, conn_tx) = {
                     let s = ecs.get::<PlayerStats>(entity)?;
                     let c = ecs.get::<PlayerConnection>(entity)?;
                     (s.health, s.max_health, c.tx.clone())
                 };
                 let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                s_mut.health = (h_val - 20).max(0);
-                let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(s_mut.health, mh_val).1));
-                Some(())
-            });
+                if h_val > 20 {
+                    s_mut.health = h_val - 20;
+                    let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(s_mut.health, mh_val).1));
+                    None
+                } else {
+                    s_mut.health = 0;
+                    let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes("@L", &health(0, mh_val).1));
+                    Some(conn_tx)
+                }
+            }).flatten();
+            if let Some(tx) = tx_death {
+                handle_death(state, &tx, t_pid);
+            }
             break;
         }
     }

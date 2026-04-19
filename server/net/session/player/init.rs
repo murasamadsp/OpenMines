@@ -45,6 +45,8 @@ pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         PlayerInventory {
             items: player.inventory.clone(),
             selected: -1,
+            minv: true,
+            miniq: Vec::new(),
         },
         PlayerSkills { states: player.skills.clone() },
         PlayerView {
@@ -100,10 +102,9 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
 fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, player: &PlayerRow) {
     let pid = player.id;
-    state.query_player(pid, |ecs, entity| {
-        let stats = ecs.get::<PlayerStats>(entity).unwrap();
-        let skills = ecs.get::<PlayerSkills>(entity).unwrap();
-        let inv = ecs.get::<PlayerInventory>(entity).unwrap();
+    state.modify_player(pid, |ecs, entity| {
+        let stats = ecs.get::<PlayerStats>(entity)?;
+        let skills = ecs.get::<PlayerSkills>(entity)?;
 
         // 1. SendAutoDigg
         send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
@@ -127,8 +128,10 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
         send_u_packet(tx, "P$", &money(player.money, player.creds).1);
         // 8. SendLvl
         send_player_level(tx, skills);
-        // 9. SendInventory
-        send_inventory(tx, inv);
+        // 9. SendInventory (`Inventory.InvToSend` — нужен `&mut` для `miniq` префилла)
+        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+        send_inventory(tx, &mut inv);
+        Some(())
     });
     // 10. CheckChunkChanged(true)
     check_chunk_changed(state, tx, pid);

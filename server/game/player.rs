@@ -30,6 +30,10 @@ pub struct PlayerStats {
 pub struct PlayerInventory {
     pub items: HashMap<i32, i32>,
     pub selected: i32,
+    /// Как `Inventory.minv`: `true` — сетка из `miniq` (до 4 слотов), `false` — полный инвентарь.
+    pub minv: bool,
+    /// Очередь выбранных слотов для мини-режима (`Inventory.miniq` в C#).
+    pub miniq: Vec<i32>,
 }
 
 #[derive(Component, Clone)]

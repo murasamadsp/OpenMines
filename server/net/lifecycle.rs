@@ -118,10 +118,24 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 _ = interval.tick() => {}
                 _ = shutdown.recv() => break,
             }
-            // Execute systems
-            let mut ecs = state.ecs.write();
-            let mut schedule = state.schedule.write();
-            schedule.run(&mut ecs);
+            // Execute systems + смерть от пушки (`DeathQueue`, см. `game/combat.rs` — как `Hurt`→`Death` в референсе).
+            let pending = {
+                let mut ecs = state.ecs.write();
+                let mut schedule = state.schedule.write();
+                schedule.run(&mut ecs);
+                let p = crate::net::session::social::misc::flush_player_death_queue_after_tick(&state, &mut ecs);
+                drop(schedule);
+                p
+            };
+            for (pid, rx, ry, mh) in pending {
+                let tx = state.query_player(pid, |ecs, entity| {
+                    ecs.get::<crate::game::player::PlayerConnection>(entity).map(|c| c.tx.clone())
+                }).flatten();
+                if let Some(tx) = tx {
+                    crate::net::session::social::misc::send_respawn_after_death(&tx, rx, ry, mh);
+                    crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
+                }
+            }
         }
     });
 }

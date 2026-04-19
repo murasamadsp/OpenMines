@@ -12,7 +12,9 @@ use crate::net::session::social::misc::{
     send_admin_help, send_ok,
 };
 use crate::net::session::ui::gui_buttons::handle_gui_button;
-use crate::net::session::ui::heal_inventory::{handle_heal, handle_inventory_open, handle_inventory_use, handle_inventory_choose};
+use crate::net::session::ui::heal_inventory::{
+    handle_heal, handle_invn_toggle, handle_inventory_use, handle_inventory_choose,
+};
 
 pub fn dispatch_ty_packet(
     state: &Arc<GameState>,
@@ -55,7 +57,7 @@ pub fn dispatch_ty_packet(
             handle_heal(state, tx, pid);
         }
         "INVN" => {
-            handle_inventory_open(state, tx, pid);
+            handle_invn_toggle(state, tx, pid);
         }
         "INUS" => {
             handle_inventory_use(state, tx, pid);
@@ -104,6 +106,8 @@ pub fn dispatch_ty_packet(
         "PROG" | "PDEL" | "pRST" | "PREN" => {
             handle_prog_ty(tx, packet.event_str(), &packet.sub_payload);
         }
+        // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
+        // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.
         "Miss" | "Rndm" | "TAGR" | "TAUR" => {}
         _ => {
             tracing::warn!("Unknown TY event: {event}");
