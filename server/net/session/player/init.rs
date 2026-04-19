@@ -1,8 +1,9 @@
 use crate::db::players::PlayerRow;
 use crate::game::player::{
-    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerInventory,
+    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerInventory,
     PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI, PlayerView,
 };
+use crate::game::programmator::ProgrammatorState;
 use crate::net::session::outbound::chat_sync::send_chat_login_per_reference;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
@@ -57,9 +58,12 @@ pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         PlayerCooldowns {
             last_move: now,
             last_dig: now,
+            last_geo: now,
             protection_until: None,
             last_shot: None,
         },
+        PlayerGeoStack::default(),
+        ProgrammatorState::new(),
         PlayerSettings {
             auto_dig: player.auto_dig,
         },
@@ -103,8 +107,13 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
 
         // 1. SendAutoDigg
         send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
-        // 2. SendGeo (пустая строка — у нас пока нет geo-стека)
-        send_u_packet(tx, "GE", &geo("").1);
+        // 2. SendGeo (`pSenders.cs` — `World.GetProp(geo.Peek()).name` или "")
+        let geo_label = ecs
+            .get::<PlayerGeoStack>(entity)
+            .and_then(|gs| gs.0.last().copied())
+            .map(|cell| state.world.cell_defs().get(cell).name.clone())
+            .unwrap_or_default();
+        send_u_packet(tx, "GE", &geo(&geo_label).1);
         // 3. SendHealth
         send_player_health(tx, stats);
         // 4. SendBotInfo

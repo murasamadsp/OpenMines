@@ -53,9 +53,15 @@ pub struct PlayerUI {
 pub struct PlayerCooldowns {
     pub last_move: Instant,
     pub last_dig: Instant,
+    /// Как `Player.TryAct(..., 200)` для `Xgeo` в референсе.
+    pub last_geo: Instant,
     pub protection_until: Option<Instant>,
     pub last_shot: Option<Instant>,
 }
+
+/// Клетки, поднятые гео-киркой (`PEntity.geo` в C#). Верх стека — последний элемент.
+#[derive(Component, Default)]
+pub struct PlayerGeoStack(pub Vec<u8>);
 
 #[derive(Component)]
 pub struct PlayerMetadata {

@@ -20,7 +20,10 @@ use tokio::sync::mpsc;
 use tracing::info;
 use std::time::{Duration, Instant};
 
-pub use player::{ActivePlayer, PlayerId, PlayerPosition, PlayerConnection, PlayerStats, PlayerMetadata, PlayerFlags, PlayerUI, PlayerView, PlayerCooldowns, PlayerSettings, PlayerSkills};
+pub use player::{
+    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerMetadata,
+    PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI, PlayerView,
+};
 pub use buildings::{PackType, PackView, BuildingMetadata, BuildingStats, BuildingStorage, BuildingCrafting, BuildingOwnership, GridPosition, BuildingFlags};
 
 #[derive(Resource)]
@@ -185,15 +188,33 @@ impl GameState {
         })
     }
 
-    pub fn find_pack_covering(&self, x: i32, y: i32) -> Option<(i32, i32)> {
-        let mut ecs = self.ecs.write();
-        let mut query = ecs.query::<(&GridPosition, &BuildingMetadata)>();
-        for (pos, meta) in query.iter(&ecs) {
+    /// Покрытие клетки (x,y) зданием — без отдельного `ecs` lock (для вызова из `modify_player`).
+    pub(crate) fn find_pack_covering_with(
+        ecs: &EcsWorld,
+        building_index: &DashMap<(i32, i32), Entity>,
+        x: i32,
+        y: i32,
+    ) -> Option<(i32, i32)> {
+        for entry in building_index.iter() {
+            let entity = *entry.value();
+            let Some(pos) = ecs.get::<GridPosition>(entity) else {
+                continue;
+            };
+            let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
+                continue;
+            };
             for (dx, dy, _) in meta.pack_type.building_cells() {
-                if pos.x + dx == x && pos.y + dy == y { return Some((pos.x, pos.y)); }
+                if pos.x + dx == x && pos.y + dy == y {
+                    return Some((pos.x, pos.y));
+                }
             }
         }
         None
+    }
+
+    pub fn find_pack_covering(&self, x: i32, y: i32) -> Option<(i32, i32)> {
+        let ecs = self.ecs.read();
+        Self::find_pack_covering_with(&ecs, &self.building_index, x, y)
     }
 
     pub fn pack_block_pos(&self, x: i32, y: i32) -> Option<i32> {
@@ -202,6 +223,52 @@ impl GameState {
         let w = self.world.chunks_w() as i32;
         if cx >= w || cy >= self.world.chunks_h() as i32 { return None; }
         Some(cy * w + cx)
+    }
+
+    /// Как `World.AccessGun` — без отдельного lock ECS.
+    pub(crate) fn access_gun_with(
+        ecs: &EcsWorld,
+        building_index: &DashMap<(i32, i32), Entity>,
+        x: i32,
+        y: i32,
+        player_clan_id: i32,
+    ) -> bool {
+        let mut ret = true;
+        for entry in building_index.iter() {
+            let entity = *entry.value();
+            let Some(pos) = ecs.get::<GridPosition>(entity) else {
+                continue;
+            };
+            let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
+                continue;
+            };
+            let Some(stats) = ecs.get::<BuildingStats>(entity) else {
+                continue;
+            };
+            let Some(own) = ecs.get::<BuildingOwnership>(entity) else {
+                continue;
+            };
+            if meta.pack_type != PackType::Gun || stats.charge <= 0.0 {
+                continue;
+            }
+            for (dx, dy, _) in meta.pack_type.building_cells() {
+                let bx = pos.x + dx;
+                let by = pos.y + dy;
+                let ddx = (bx - x) as f32;
+                let ddy = (by - y) as f32;
+                if (ddx * ddx + ddy * ddy).sqrt() <= 20.0 {
+                    ret = ret && own.clan_id == player_clan_id;
+                }
+            }
+        }
+        ret
+    }
+
+    /// Как `World.AccessGun` (`World.cs`): заряженные пушки `Gun` в радиусе 20 клеток от (x, y)
+    /// должны принадлежать клану `player_clan_id` (0 — без клана).
+    pub fn access_gun(&self, x: i32, y: i32, player_clan_id: i32) -> bool {
+        let ecs = self.ecs.read();
+        Self::access_gun_with(&ecs, &self.building_index, x, y, player_clan_id)
     }
 
     /// Как `Chunk.pPacks`: только паки с типом != `PackType.None` (ворота в референсе — `None`, в HB не попадают).
@@ -256,7 +323,16 @@ impl GameState {
     }
 
     pub fn online_count(&self) -> usize { self.active_players.len() }
-    pub fn generate_hash() -> String { "TODO_HASH".to_string() }
+
+    /// Как `Player.GenerateHash()` в `Player.cs`: 12 символов `A-Z0-9`.
+    pub fn generate_hash() -> String {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut rng = rand::rng();
+        (0..12)
+            .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+            .collect()
+    }
     /// Как `Auth.GenerateSessionId()` в server_reference: длина 5, алфавит без `q`/`v`/`w`.
     pub fn generate_session_id() -> String {
         use rand::Rng;
