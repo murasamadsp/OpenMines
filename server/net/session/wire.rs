@@ -17,6 +17,7 @@ pub fn make_u_packet_bytes(event: &str, payload: &[u8]) -> Vec<u8> {
 
 pub fn send_u_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: &[u8]) {
     trace_outgoing_packet("U", event, payload);
+    println!("[Net] >>> [U] event={} len={}", event, payload.len());
     metrics::PACKETS_OUT_TOTAL.with_label_values(&[event]).inc();
     let p = u_packet(event, payload);
     let mut buf = BytesMut::with_capacity(p.wire_len());
@@ -28,6 +29,7 @@ pub fn send_u_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: 
 
 pub fn send_b_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: &[u8]) {
     trace_outgoing_packet("B", event, payload);
+    println!("[Net] >>> [B] event={} len={}", event, payload.len());
     metrics::PACKETS_OUT_TOTAL.with_label_values(&[event]).inc();
     let p = b_packet(event, payload);
     let mut buf = BytesMut::with_capacity(p.wire_len());

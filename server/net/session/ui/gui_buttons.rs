@@ -14,7 +14,8 @@ pub fn handle_gui_button(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<
             if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) { ui.current_window = None; }
             Some(())
         });
-        send_u_packet(tx, "Gu", &[]);
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
         return;
     }
 
@@ -26,6 +27,14 @@ pub fn handle_gui_button(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<
     }
 
     match button {
+        "open_buildings" => crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid),
+        "createprog_stub" => {
+            crate::net::session::social::misc::send_ok(
+                tx,
+                "Программатор",
+                "Создание программы из GUI пока не подключено к БД.",
+            );
+        }
         "clan_menu" => crate::net::session::social::clans::handle_clan_menu(state, tx, pid),
         "clan_back" => crate::net::session::social::clans::handle_clan_menu(state, tx, pid),
         "clan_create_view" => handle_clan_create_view(tx),

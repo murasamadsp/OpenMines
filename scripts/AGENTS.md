@@ -14,11 +14,11 @@
 | `bootstrap-quality.sh` | Установка quality-инструментов (cargo-* + pre-commit) |
 | `build-client.sh` | Headless-сборка Unity-клиента (win/mac) |
 | `ci-quality.sh` | Полный локальный прогон качества (fmt/clippy/deny/audit/tests/docs) |
-| `deploy-vps.sh` | Деплой на VPS: rsync → compose build/up → обновление config/cells/buildings в /data |
+| `deploy-vps.sh` | Деплой на VPS: rsync → `docker run`+cargo (обход runc/BuildKit на Virtuozzo) → образ `ops/Dockerfile.vps` → compose up |
 | `full-reinstall-vps.sh` | Переустановка на VPS: compose down (+опциональный wipe volume) → deploy |
 | `pre-commit.sh` | Быстрый pre-commit прогон (fmt/clippy/deny/audit/tests + optional extended) |
 | `quality-common.sh` | Общие шаги quality-loop (shared между ci-quality/pre-commit) |
-| `vps-common.sh` | Общие функции для VPS-скриптов (ssh/rsync/compose) |
+| `vps-common.sh` | Общие функции для VPS-скриптов (ssh/rsync/compose, `vps_build_openmines_binary`) |
 | `vps-regen-world.sh` | Regen мира на VPS (удаляет только `.mapb` + здания в SQLite) |
 | `wipe-players.sh` | Опасно: чистит игроков/здания/кланы/сообщения в SQLite |
 

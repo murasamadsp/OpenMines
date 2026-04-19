@@ -52,7 +52,8 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
             let leveled_dig = add_skill_exp(&mut skills.states, "d", 1.0);
             let leveled_mine = if cry_idx.is_some() { add_skill_exp(&mut skills.states, "m", 1.0) } else { false };
             if leveled_dig || leveled_mine {
-                send_u_packet(tx, "SK", &skills_packet(&skill_progress_payload(&skills.states)).1);
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
             }
         }
         {

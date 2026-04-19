@@ -21,7 +21,12 @@ const DB_FILENAME: &str = "openmines.db";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = config::Config::load("config.json")?;
+    println!("[Main] Process started");
+    let cfg = config::Config::load("config.json").map_err(|e| {
+        println!("[Main] CRITICAL: Failed to load config.json: {}", e);
+        e
+    })?;
+    println!("[Main] Config loaded, initializing logging...");
     let _logging_guard = logging::init(&cfg.logging)?;
     tracing::info!("Config loaded: world={}, port={}", cfg.world_name, cfg.port);
 
@@ -79,22 +84,33 @@ async fn main() -> Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(16);
     let shutdown_tx_signal = shutdown_tx.clone();
     tokio::spawn(async move {
-        // SIGINT (Ctrl+C)
-        let ctrl_c = tokio::signal::ctrl_c();
-
         #[cfg(unix)]
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
-
-        #[cfg(unix)]
-        tokio::select! {
-            _ = ctrl_c => {},
-            _ = sigterm.recv() => {},
+        {
+            // В Docker `ctrl_c()` иногда готовится сразу — сервер выходит до accept. В compose: `M3R_USE_CTRL_C=0`.
+            let use_ctrl_c = env::var("M3R_USE_CTRL_C")
+                .map(|v| {
+                    !matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no"
+                    )
+                })
+                .unwrap_or(true);
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("SIGTERM handler");
+            if use_ctrl_c {
+                let ctrl_c = tokio::signal::ctrl_c();
+                tokio::select! {
+                    _ = ctrl_c => {},
+                    _ = sigterm.recv() => {},
+                }
+            } else {
+                let _ = sigterm.recv().await;
+            }
         }
-
         #[cfg(not(unix))]
-        let _ = ctrl_c.await;
-
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
         let _ = shutdown_tx_signal.send(());
     });
 

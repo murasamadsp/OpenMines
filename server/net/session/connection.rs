@@ -18,14 +18,25 @@ pub async fn handle(
     let mut auth_state = AuthState::PreAuth;
     let mut pid: Option<PlayerId> = None;
     let mut buf = BytesMut::with_capacity(4096);
+    let mut next_expected: i32 = 0;
 
-    // Сразу после подключения отправляем пакет AU (handshake).
-    // Клиент Unity ждет его, чтобы начать процесс авторизации.
+    // Референс: OnConnected шлёт ST → AU → PI (именно в таком порядке).
     let sid = GameState::generate_session_id();
+
+    // Версия в ST — быстрая проверка, что клиент попал на свежую сборку (не старый процесс/образ).
+    let st = status(concat!("OpenMines ", env!("CARGO_PKG_VERSION"), " rust"));
+    let st_pkt = make_u_packet_bytes(st.0, &st.1);
+
     let au_init = au_session(&sid);
-    let handshake_pkt = make_u_packet_bytes(au_init.0, &au_init.1);
-    stream.write_all(&handshake_pkt).await?;
-    println!("[Net] Sent AU handshake (sid={}) to {}", sid, addr);
+    let au_pkt = make_u_packet_bytes(au_init.0, &au_init.1);
+
+    let pi = ping(0, 0, "");
+    let pi_pkt = make_u_packet_bytes(pi.0, &pi.1);
+
+    stream.write_all(&st_pkt).await?;
+    stream.write_all(&au_pkt).await?;
+    stream.write_all(&pi_pkt).await?;
+    println!("[Net] Sent ST+AU+PI handshake (sid={}) to {}", sid, addr);
 
     loop {
         let blocked_remaining = state.auth_blocked_remaining_by_addr(&client_ip, Instant::now());
@@ -41,6 +52,26 @@ pub async fn handle(
                 while let Some(packet) = Packet::try_decode(&mut buf)? {
                     let ev = packet.event_str();
                     println!("[Net] Received packet {} from {}", ev, addr);
+                    // PO (Pong) обрабатывается в любом состоянии — как в референсе Session.Ping()
+                    if ev == "PO" {
+                        if let Some(pong) = PongClient::decode(&packet.payload) {
+                            if next_expected == 0 {
+                                next_expected = pong.current_time;
+                            }
+                            let ct = pong.current_time;
+                            let ne = next_expected;
+                            let tx2 = tx.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                                let text = format!("{} ", ct - (ne - 201));
+                                let pi = ping(52, ct + 1, &text);
+                                send_u_packet(&tx2, pi.0, &pi.1);
+                            });
+                            next_expected = ct + 201;
+                        }
+                        continue;
+                    }
+
                     match auth_state {
                         AuthState::PreAuth => {
                             if ev == "AU" {

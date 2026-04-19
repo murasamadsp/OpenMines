@@ -189,7 +189,8 @@ pub fn handle_clan_create(
                 Some(())
             });
             send_u_packet(tx, "P$", &money(p_money, p_creds - 1000).1);
-            send_u_packet(tx, "CS", &clan_show(new_id).1);
+            let cs = clan_show(new_id);
+            send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
             handle_clan_info_view(state, tx, pid, new_id);
         }
@@ -225,7 +226,8 @@ pub fn handle_clan_leave(
                             s.clan_id = None;
                             s.clan_rank = 0;
                             let conn = ecs.get::<crate::game::PlayerConnection>(entity)?;
-                            let _ = conn.tx.send(make_u_packet_bytes("CH", &clan_hide().1));
+                            let ch = clan_hide();
+                            let _ = conn.tx.send(make_u_packet_bytes(ch.0, &ch.1));
                         }
                         Some(())
                     });
@@ -247,7 +249,8 @@ pub fn handle_clan_leave(
                     s.clan_rank = 0;
                     Some(())
                 });
-                send_u_packet(tx, "CH", &clan_hide().1);
+                let ch = clan_hide();
+                send_u_packet(tx, ch.0, &ch.1);
                 send_clan_ok(tx, "Клан", "Вы покинули клан");
                 handle_clan_menu(state, tx, pid);
             }
@@ -481,7 +484,8 @@ pub fn handle_clan_invite_accept(
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 Some(())
             });
-            send_u_packet(tx, "CS", &clan_show(clan_id).1);
+            let cs = clan_show(clan_id);
+            send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Вы вступили в клан!");
         }
         Err(e) => {
@@ -604,7 +608,8 @@ pub fn handle_clan_accept(
                 s.clan_id = Some(clan_id);
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let _ = conn.tx.send(make_u_packet_bytes("CS", &clan_show(clan_id).1));
+                    let cs = clan_show(clan_id);
+                    let _ = conn.tx.send(make_u_packet_bytes(cs.0, &cs.1));
                 }
                 Some(())
             });
@@ -681,7 +686,8 @@ pub fn handle_clan_kick(
         s.clan_id = None;
         s.clan_rank = crate::db::ClanRank::None as i32;
         if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-            let _ = conn.tx.send(make_u_packet_bytes("CH", &clan_hide().1));
+            let ch = clan_hide();
+            let _ = conn.tx.send(make_u_packet_bytes(ch.0, &ch.1));
         }
         Some(())
     });

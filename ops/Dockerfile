@@ -5,19 +5,16 @@ WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
 
-# Предварительная сборка зависимостей с кэшированием
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    mkdir -p server && echo "fn main() {}" > server/main.rs && \
+# Предварительная сборка зависимостей (deps layer)
+RUN mkdir -p server && echo "fn main() {}" > server/main.rs && \
     cargo build --release && \
     rm -rf server
 
 COPY server ./server
 COPY config.json cells.json buildings.json ./
 
-# Сборка проекта с кэшированием
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
+# Сборка проекта (touch для инвалидации fingerprints после заглушки)
+RUN find server -name '*.rs' -exec touch {} + && \
     cargo build --release && \
     cp target/release/openmines-server /usr/local/bin/openmines-server
 
@@ -26,7 +23,6 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# Директория для данных и конфигов
 WORKDIR /data
 
 COPY --from=builder /usr/local/bin/openmines-server /usr/local/bin/openmines-server

@@ -18,6 +18,65 @@ fn pack_block_pos(state: &GameState, x: i32, y: i32) -> Option<i32> {
     chunk_y.checked_mul(width)?.checked_add(chunk_x)
 }
 
+/// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
+pub fn handle_programmator_pope_menu(_state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, _pid: PlayerId) {
+    let gui = serde_json::json!({
+        "title": "ПРОГРАММАТОР",
+        "text": "",
+        "buttons": ["СОЗДАТЬ ПРОГРАММУ", "createprog_stub", "ВЫЙТИ", "exit"],
+        "back": false
+    });
+    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+}
+
+/// TY `Blds` → `Player.OpenMyBuildings()` (список построек владельца).
+pub fn handle_my_buildings_list(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+    let mine: Vec<crate::db::buildings::BuildingRow> = state
+        .db
+        .load_all_buildings()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.owner_id == pid)
+        .collect();
+    let text = if mine.is_empty() {
+        "(нет построек)".to_string()
+    } else {
+        mine.iter()
+            .map(|r| format!("{} {}:{}", r.type_code, r.x, r.y))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let gui = serde_json::json!({
+        "title": "мои здания да",
+        "text": text,
+        "buttons": ["ВЫЙТИ", "exit"],
+        "back": false
+    });
+    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+}
+
+/// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
+pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+    let Some(cry) = state
+        .query_player(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
+        .flatten()
+    else {
+        return;
+    };
+    let lines: Vec<String> = cry
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("тип {i}: {n}"))
+        .collect();
+    let gui = serde_json::json!({
+        "title": "Создание бокса",
+        "text": format!("Кристаллы (как ref OpenBoxGui, без слайдеров):\n{}", lines.join("\n")),
+        "buttons": ["ВЫЙТИ", "exit"],
+        "back": false
+    });
+    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+}
+
 pub fn handle_buildings_menu(_state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, _pid: PlayerId) {
     let mut buttons = vec![
         "Респ (5000$)", "bld_place:R", "Телепорт (3000$)", "bld_place:T", "Пушка (8000$)", "bld_place:G",
@@ -129,7 +188,10 @@ pub fn handle_place_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<
 pub fn place_building_in_world(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, view: &PackView, close_gui: bool) {
     place_building_cells(state, view.x, view.y, view.pack_type);
     broadcast_pack_to_nearby(state, view);
-    if close_gui { send_u_packet(tx, "Gu", &[]); }
+    if close_gui {
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
+    }
     tracing::info!("Player {pid} placed building {} at ({}, {})", view.pack_type.code(), view.x, view.y);
 }
 
@@ -175,7 +237,8 @@ pub fn handle_remove_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender
         }
         Some(())
     });
-    send_u_packet(tx, "Gu", &[]);
+    let g = gu_close();
+    send_u_packet(tx, g.0, &g.1);
 }
 
 pub fn building_extra_for_pack_type(pack_type: PackType) -> BuildingExtra {
@@ -206,7 +269,7 @@ pub fn broadcast_pack_to_nearby(state: &Arc<GameState>, view: &PackView) {
     broadcast_pack_update(state, view);
 }
 
-fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u16, u16, u8)> {
+fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u16, u8, u8)> {
     let width = i32::try_from(state.world.chunks_w()).unwrap_or(0).max(1);
     let chunk_y = block_pos.div_euclid(width);
     let chunk_x = block_pos.rem_euclid(width);
@@ -289,7 +352,8 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
                         if ui.current_window.as_deref() == Some(window_key.as_str()) {
                             ui.current_window = None;
                             if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
-                                let _ = conn.tx.send(make_u_packet_bytes("Gu", &[]));
+                                let g = gu_close();
+                                let _ = conn.tx.send(make_u_packet_bytes(g.0, &g.1));
                             }
                         }
                     }

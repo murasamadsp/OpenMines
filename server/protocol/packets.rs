@@ -29,7 +29,8 @@ pub fn world_info(
     let json = format!(
         r#"{{"width":{width},"height":{height},"name":"{name}","v":{version_code},"version":"{version_name}","update_url":"{update_url}","update_desc":"{update_desc}"}}"#
     );
-    // Client WorldInitScript registers OnU("cf", ...) — event name is case-sensitive.
+    // Client WorldInitScript registers OnU("cf", ...) — case-sensitive.
+    // Референс сервер: `"CF"`, но клиент ожидает lowercase `"cf"`.
     ("cf", json.into_bytes())
 }
 
@@ -45,10 +46,20 @@ pub fn tp(x: i32, y: i32) -> (&'static str, Vec<u8>) {
     ("@T", s.into_bytes())
 }
 
-/// Encode a `BotInfo` packet (BI): JSON {"x":X,"y":Y,"id":ID,"name":"NAME"}
+/// Encode a BotInfo packet (`BotInfoPacket.packetName` = `"BI"`).
 pub fn bot_info(name: &str, x: i32, y: i32, id: i32) -> (&'static str, Vec<u8>) {
-    let s = format!(r#"{{"x":{x},"y":{y},"id":{id},"name":"{name}"}}"#);
-    ("BI", s.into_bytes())
+    let json = serde_json::json!({
+        "x": x,
+        "y": y,
+        "id": id,
+        "name": name
+    });
+    ("BI", json.to_string().into_bytes())
+}
+
+/// Encode a Gu (close window) packet: payload is just "_"
+pub fn gu_close() -> (&'static str, Vec<u8>) {
+    ("Gu", b"_".to_vec())
 }
 
 /// Encode an OK packet: "title#message"
@@ -93,10 +104,11 @@ pub fn auto_digg(enabled: bool) -> (&'static str, Vec<u8>) {
     )
 }
 
-/// Encode a Geo packet (GE): "x:y"
-pub fn geo(x: i32, y: i32) -> (&'static str, Vec<u8>) {
-    let s = format!("{x}:{y}");
-    ("GE", s.into_bytes())
+/// Encode a Geo packet (GE): имя региона (строка), НЕ координаты.
+/// Ref: `pSenders.cs:28` — `World.GetProp(p.geo.Peek()).name`
+/// Клиент отображает payload как текст: `GUIManager.THIS.GeoTF.text = " " + msg + " "`
+pub fn geo(name: &str) -> (&'static str, Vec<u8>) {
+    ("GE", name.as_bytes().to_vec())
 }
 
 /// Encode a Live/Health packet (@L): "health:max"
@@ -117,6 +129,29 @@ pub fn basket(crys: &[i64; 6], capacity: i64) -> (&'static str, Vec<u8>) {
 /// Encode a Config packet (#F): UTF-8 string
 pub fn config_packet(content: &str) -> (&'static str, Vec<u8>) {
     ("#F", content.as_bytes().to_vec())
+}
+
+/// Пакет `#S` как `SettingsPacket` в `server_reference/Server/Network/SettingsPacket.cs`:
+/// `"#" + join("#", key + "#" + value ...)` для словаря из `Settings(bool)` в `Settings.cs`.
+pub fn settings_default_wire() -> (&'static str, Vec<u8>) {
+    const PAIRS: &[(&str, &str)] = &[
+        ("cc", "10"),
+        ("snd", "0"),
+        ("mus", "0"),
+        ("isca", "0"),
+        ("tsca", "0"),
+        ("mous", "1"),
+        ("pot", "0"),
+        ("frc", "1"),
+        ("ctrl", "1"),
+        ("mof", "1"),
+    ];
+    let inner = PAIRS
+        .iter()
+        .map(|(k, v)| format!("{k}#{v}"))
+        .collect::<Vec<_>>()
+        .join("#");
+    ("#S", format!("#{inner}").into_bytes())
 }
 
 /// Encode a Programmator status packet (@P): "0" or "1"
@@ -151,24 +186,25 @@ pub fn inventory_close() -> (&'static str, Vec<u8>) {
     ("IN", b"close:".to_vec())
 }
 
-/// Encode a Skills packet (SK): "code:percent,code:percent,..."
+/// `MinesServer.Network.GUI.SkillsPacket`: имя `@S`, тело `Join("#", k:v...) + "#"`.
 pub fn skills_packet(skills: &[(String, i32)]) -> (&'static str, Vec<u8>) {
-    let s = skills
+    let body = skills
         .iter()
         .map(|(code, pct)| format!("{code}:{pct}"))
         .collect::<Vec<_>>()
-        .join(",");
-    ("SK", s.into_bytes())
+        .join("#");
+    let s = format!("{body}#");
+    ("@S", s.into_bytes())
 }
 
-/// Encode a `ClanHide` packet (CH): empty
+/// Encode a `ClanHide` packet (`ClanHidePacket.packetName` = `"cH"`).
 pub const fn clan_hide() -> (&'static str, Vec<u8>) {
-    ("CH", Vec::new())
+    ("cH", Vec::new())
 }
 
-/// Encode a `ClanShow` packet (CS): `clan_id` as string
+/// Encode a `ClanShow` packet (`ClanShowPacket.packetName` = `"cS"`).
 pub fn clan_show(clan_id: i32) -> (&'static str, Vec<u8>) {
-    ("CS", format!("{clan_id}").into_bytes())
+    ("cS", format!("{clan_id}").into_bytes())
 }
 
 // ─── Chat channel packets ────────────────────────────────────────────────────
@@ -269,8 +305,10 @@ pub fn hb_bot(id: u16, x: u16, y: u16, dir: u8, skin: u8, clan_id: u16, tail: u8
 
 /// HB sub-packet: Pack/building (type "O")
 /// [1B tag 'O'] [i32 LE `block_pos`] [u16 LE count] [packs...]
-/// Each pack: [1B type] [u16 LE x] [u16 LE y] [u16 LE cid] [1B off] = 8 bytes
-pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u16, u8)]) -> Vec<u8> {
+///
+/// В `server_reference` у `HBPack` **Encode и Decode расходятся** (клан пишут в [5], читают с [6]).
+/// На проводе ориентируемся на **`Decode`** — то, что реально читает приёмник: `[6]` clan, `[7]` off, `[5]` не используется.
+pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u8, u8)]) -> Vec<u8> {
     let Ok(n) = u16::try_from(packs.len()) else {
         return vec![];
     };
@@ -282,7 +320,8 @@ pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u16, u8)]) -> Vec<u8> {
         buf.put_u8(code);
         buf.put_u16_le(x);
         buf.put_u16_le(y);
-        buf.put_u16_le(clan_id);
+        buf.put_u8(0);
+        buf.put_u8(clan_id);
         buf.put_u8(off);
     }
     buf.to_vec()
@@ -299,12 +338,22 @@ pub fn hb_fx(x: u16, y: u16, fx_type: u8) -> Vec<u8> {
     buf.to_vec()
 }
 
-/// HB sub-packet: Delete object/bot (type "X")
-/// [1B tag 'X'] [u16 LE id]
+/// HB sub-packet: Delete object/bot (type "L")
+/// [1B tag 'L'] [u16 LE id]
 pub fn hb_bot_del(id: u16) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(3);
-    buf.put_u8(b'X');
+    buf.put_u8(b'L');
     buf.put_u16_le(id);
+    buf.to_vec()
+}
+
+/// HB sub-packet: Bot leave block (type "S")
+/// [1B tag 'S'] [u16 LE id] [i32 LE block_pos]
+pub fn hb_bot_leave_block(id: u16, block_pos: i32) -> Vec<u8> {
+    let mut buf = BytesMut::with_capacity(7);
+    buf.put_u8(b'S');
+    buf.put_u16_le(id);
+    buf.put_i32_le(block_pos);
     buf.to_vec()
 }
 

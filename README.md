@@ -47,7 +47,7 @@ docker run --rm -p 8090:8090 -v openmines_state:/data openmines-server
 
 ### 4. Полная переустановка сервера на VPS
 
-Обычный деплой (синхронизация + пересборка контейнера):
+Обычный деплой (синхронизация, затем на VPS `docker run`+`cargo build` — обход нестабильного runc при BuildKit в слое `rust:*` на Virtuozzo — и сборка образа по `ops/Dockerfile.vps`):
 
 ```bash
 ./scripts/deploy-vps.sh

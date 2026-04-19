@@ -1,6 +1,5 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::fmt;
 use std::fs;
 use std::sync::OnceLock;
 use bevy_ecs::prelude::{Component, Entity};
@@ -45,22 +44,14 @@ pub fn load_buildings_config(path: &str) -> anyhow::Result<()> {
 
 pub fn get_building_config(pack_type: PackType) -> Option<&'static BuildingConfig> {
     let cfg = BUILDINGS_CONFIG.get()?;
-    let key = match pack_type {
-        PackType::Teleport => "Teleport",
-        PackType::Resp => "Resp",
-        PackType::Gun => "Gun",
-        PackType::Market => "Market",
-        PackType::Up => "Up",
-        PackType::Storage => "Storage",
-        PackType::Craft => "Craft",
-        PackType::Spot => "Spot",
-        PackType::Gate => "Gate",
-    };
+    let key = pack_type.config_json_key()?;
     cfg.buildings.get(key)
 }
 
+/// Как `MinesServer.GameShit.Buildings.PackType` в server_reference (`PackType.cs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackType {
+    None, // ' ' — в т.ч. класс Gate в C# объявлен как `PackType.None`
     Teleport, // 'T'
     Resp,     // 'R'
     Gun,      // 'G'
@@ -68,13 +59,41 @@ pub enum PackType {
     Up,       // 'U'
     Storage,  // 'L'
     Craft,    // 'F'
+    Vulkan,   // 'Q'
     Spot,     // 'O'
-    Gate,     // 'N'
+    Levi,     // 'W'
+    Jobs,     // 'J'
+    Zalupa,   // 'Y'
+    /// В референсе отдельное enum-значение; в Rust для ворот используем `Gate` (логика), на wire — пробел как у `None`.
+    FLAGBLYAT, // 'D'
+    /// Клановые ворота: в C# `Gate : Pack` с `type => PackType.None` — тот же символ, что у `None`.
+    Gate,
 }
 
 impl PackType {
+    fn config_json_key(self) -> Option<&'static str> {
+        match self {
+            Self::Teleport => Some("Teleport"),
+            Self::Resp => Some("Resp"),
+            Self::Gun => Some("Gun"),
+            Self::Market => Some("Market"),
+            Self::Up => Some("Up"),
+            Self::Storage => Some("Storage"),
+            Self::Craft => Some("Craft"),
+            Self::Spot => Some("Spot"),
+            Self::Gate => Some("Gate"),
+            _ => None,
+        }
+    }
+
+    /// Участвует в HB «O»-подпакете; в C# `if (p.type != PackType.None)`.
+    pub const fn included_in_hb_overlay(self) -> bool {
+        self.code() != b' '
+    }
+
     pub const fn name(self) -> &'static str {
         match self {
+            Self::None => "None",
             Self::Teleport => "Teleport",
             Self::Resp => "Resp",
             Self::Gun => "Gun",
@@ -82,13 +101,19 @@ impl PackType {
             Self::Up => "Up",
             Self::Storage => "Storage",
             Self::Craft => "Craft",
+            Self::Vulkan => "Vulkan",
             Self::Spot => "Spot",
+            Self::Levi => "Levi",
+            Self::Jobs => "Jobs",
+            Self::Zalupa => "Zalupa",
+            Self::FLAGBLYAT => "FLAGBLYAT",
             Self::Gate => "Gate",
         }
     }
 
     pub const fn code(self) -> u8 {
         match self {
+            Self::None | Self::Gate => b' ',
             Self::Teleport => b'T',
             Self::Resp => b'R',
             Self::Gun => b'G',
@@ -96,13 +121,23 @@ impl PackType {
             Self::Up => b'U',
             Self::Storage => b'L',
             Self::Craft => b'F',
+            Self::Vulkan => b'Q',
             Self::Spot => b'O',
-            Self::Gate => b'N',
+            Self::Levi => b'W',
+            Self::Jobs => b'J',
+            Self::Zalupa => b'Y',
+            Self::FLAGBLYAT => b'D',
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
+        // Ворота: в C# `type => None` (' '), у нас отдельный вариант для логики клана.
         match s {
+            "N" | "Gate" | " " => return Some(Self::Gate),
+            _ => {}
+        }
+        match s.trim() {
+            "" | "None" => Some(Self::None),
             "T" | "Teleport" => Some(Self::Teleport),
             "R" | "Resp" => Some(Self::Resp),
             "G" | "Gun" => Some(Self::Gun),
@@ -110,8 +145,12 @@ impl PackType {
             "U" | "Up" => Some(Self::Up),
             "L" | "Storage" => Some(Self::Storage),
             "F" | "Craft" => Some(Self::Craft),
+            "Q" | "Vulkan" => Some(Self::Vulkan),
             "O" | "Spot" => Some(Self::Spot),
-            "N" | "Gate" => Some(Self::Gate),
+            "W" | "Levi" => Some(Self::Levi),
+            "J" | "Jobs" => Some(Self::Jobs),
+            "Y" | "Zalupa" => Some(Self::Zalupa),
+            "D" | "FLAGBLYAT" => Some(Self::FLAGBLYAT),
             _ => None,
         }
     }

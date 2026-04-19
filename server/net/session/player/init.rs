@@ -3,9 +3,10 @@ use crate::game::player::{
     ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerInventory,
     PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI, PlayerView,
 };
+use crate::net::session::outbound::chat_sync::send_chat_login_per_reference;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
-    send_player_basket, send_player_health, send_player_level, send_player_skills, send_player_speed,
+    send_player_basket, send_player_health, send_player_level, send_player_speed,
 };
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
@@ -92,6 +93,7 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
     }
 }
 
+/// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
 fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, player: &PlayerRow) {
     let pid = player.id;
     state.query_player(pid, |ecs, entity| {
@@ -99,26 +101,51 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
         let skills = ecs.get::<PlayerSkills>(entity).unwrap();
         let inv = ecs.get::<PlayerInventory>(entity).unwrap();
 
-        // Пакет PI (Player Info / Ping Init) — критически важен для клиента!
-        // Формат: "0:0:sid" (или другое значение времени)
-        send_u_packet(tx, "PI", &ping(0, 0, "").1);
-
-        send_u_packet(tx, "ST", &status(&format!("Добро пожаловать, {}!", player.name)).1);
-        send_u_packet(tx, "AH", &auth_hash(pid, &player.hash).1);
-        send_u_packet(tx, "@T", &tp(player.x, player.y).1);
-
-        send_player_health(tx, stats);
-        send_player_speed(tx, skills);
-        send_player_basket(tx, stats, skills);
-        send_player_level(tx, skills);
-
-        let online_val = i32::try_from(state.online_count()).unwrap_or(i32::MAX);
-        send_u_packet(tx, "ON", &online(online_val, 200).1);
-        send_u_packet(tx, "P$", &money(player.money, player.creds).1);
+        // 1. SendAutoDigg
         send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
-
+        // 2. SendGeo (пустая строка — у нас пока нет geo-стека)
+        send_u_packet(tx, "GE", &geo("").1);
+        // 3. SendHealth
+        send_player_health(tx, stats);
+        // 4. SendBotInfo
+        let bi = bot_info(&player.name, player.x, player.y, pid);
+        send_u_packet(tx, bi.0, &bi.1);
+        // 5. SendSpeed
+        send_player_speed(tx, skills);
+        // 6. SendCrys
+        send_player_basket(tx, stats, skills);
+        // 7. SendMoney
+        send_u_packet(tx, "P$", &money(player.money, player.creds).1);
+        // 8. SendLvl
+        send_player_level(tx, skills);
+        // 9. SendInventory
         send_inventory(tx, inv);
-        send_player_skills(tx, skills);
     });
+    // 10. CheckChunkChanged(true)
     check_chunk_changed(state, tx, pid);
+    state.query_player(pid, |ecs, entity| {
+        let stats = ecs.get::<PlayerStats>(entity).unwrap();
+
+        // 11. tp(x, y)
+        send_u_packet(tx, "@T", &tp(player.x, player.y).1);
+        // 12 консоль — пропускаем
+        // 13. SendSettings (#S)
+        let stg = settings_default_wire();
+        send_u_packet(tx, stg.0, &stg.1);
+        // 14. SendClan
+        if let Some(cid) = stats.clan_id {
+            if cid != 0 {
+                send_u_packet(tx, "cS", &clan_show(cid).1);
+            } else {
+                send_u_packet(tx, "cH", &clan_hide().1);
+            }
+        } else {
+            send_u_packet(tx, "cH", &clan_hide().1);
+        }
+    });
+    // 15. SendChat — как `Player.SendChat()` в server_reference: только `mO` и при наличии — `mU`.
+    send_chat_login_per_reference(state, tx, pid);
+    // 16–17. ConfigPacket + ProgStatus
+    send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
+    send_u_packet(tx, "@P", &programmator_status(false).1);
 }

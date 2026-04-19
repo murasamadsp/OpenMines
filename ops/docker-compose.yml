@@ -1,5 +1,6 @@
 services:
   openmines-server:
+    init: true # см. ops/docker-compose.vps.yml — стабильный PID 1 в контейнере
     build:
       context: ..
       dockerfile: ops/Dockerfile

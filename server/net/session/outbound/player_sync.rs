@@ -33,9 +33,8 @@ pub fn send_player_skills(
     skills: &PlayerSkillsComponent,
 ) {
     let payload = skill_progress_payload(&skills.states);
-    if !payload.is_empty() {
-        send_u_packet(tx, "SK", &skills_packet(&payload).1);
-    }
+    let sk = skills_packet(&payload);
+    send_u_packet(tx, sk.0, &sk.1);
 }
 
 pub fn send_player_basket(

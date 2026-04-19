@@ -6,6 +6,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::RecvError;
 
 pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Result<()> {
     let port = state.config.port;
@@ -21,7 +22,19 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
     loop {
         let (stream, addr) = tokio::select! {
             accept = listener.accept() => accept?,
-            _ = shutdown_rx.recv() => break,
+            recv = shutdown_rx.recv() => {
+                match recv {
+                    Ok(()) => break,
+                    Err(RecvError::Lagged(_)) => {
+                        tracing::debug!("shutdown broadcast lagged; continue accepting");
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        tracing::info!("shutdown broadcast closed");
+                        break;
+                    }
+                }
+            }
         };
         tracing::info!("Connection from {addr}");
         let state = state.clone();

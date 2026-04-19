@@ -17,6 +17,7 @@ REGEN_OVERRIDE="ops/docker-compose.regen-world.yml"
 echo "==> VPS $REMOTE_HOST — regen (override $REGEN_OVERRIDE; --force-recreate $SERVICE; VPS_REGEN_BUILD=1 для --build)"
 compose_up_flags="-d --force-recreate"
 if [[ "${VPS_REGEN_BUILD:-}" == "1" ]]; then
+  vps_build_openmines_binary "$REMOTE_HOST" "$REMOTE_DIR"
   compose_up_flags="-d --build --force-recreate"
 fi
 vps_ssh_compose_multi "$REMOTE_HOST" "$REMOTE_DIR" "$COMPOSE_FILE" \

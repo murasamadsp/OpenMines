@@ -204,16 +204,27 @@ impl GameState {
         Some(cy * w + cx)
     }
 
-    pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<(u8, u16, u16, u16, u8)> {
+    /// Как `Chunk.pPacks`: только паки с типом != `PackType.None` (ворота в референсе — `None`, в HB не попадают).
+    /// Для `HBPack` как в референсе: `(byte)cid` на проводе.
+    pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<(u8, u16, u16, u8, u8)> {
         let mut result = Vec::new();
         let mut ecs = self.ecs.write();
         let mut query = ecs.query::<(&GridPosition, &BuildingMetadata, &BuildingOwnership, &BuildingStats)>();
         for (pos, meta, ownership, stats) in query.iter(&ecs) {
             let (pcx, pcy) = crate::world::World::chunk_pos(pos.x, pos.y);
             if (pcx as i64 - cx as i64).abs() <= 1 && (pcy as i64 - cy as i64).abs() <= 1 {
-                let cid = ownership.clan_id as u16;
+                if !meta.pack_type.included_in_hb_overlay() {
+                    continue;
+                }
+                let cid = ownership.clan_id.clamp(0, 255) as u8;
                 if self.pack_block_pos(pos.x, pos.y).is_none() { continue; }
-                result.push((meta.pack_type.code(), pos.x as u16, pos.y as u16, cid, u8::from(stats.charge > 0.0)));
+                result.push((
+                    meta.pack_type.code(),
+                    pos.x as u16,
+                    pos.y as u16,
+                    cid,
+                    u8::from(stats.charge > 0.0),
+                ));
             }
         }
         result
@@ -246,22 +257,37 @@ impl GameState {
 
     pub fn online_count(&self) -> usize { self.active_players.len() }
     pub fn generate_hash() -> String { "TODO_HASH".to_string() }
+    /// Как `Auth.GenerateSessionId()` в server_reference: длина 5, алфавит без `q`/`v`/`w`.
     pub fn generate_session_id() -> String {
         use rand::Rng;
+        const CHARSET: &[u8] = b"abcdefghijklmnoprtsuxyz0123456789";
         let mut rng = rand::rng();
-        (0..16).map(|_| rng.sample(rand::distr::Alphanumeric) as char).collect()
+        (0..5)
+            .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
+            .collect()
     }
     pub fn encode_password_hash(p: &str, h: &str) -> String { format!("{p}:{h}") }
     pub fn verify_password(p: &str, hp: &str, h: &str) -> bool { format!("{p}:{h}") == hp }
     pub fn map_profile_name(n: &str) -> String { n.to_string() }
-    pub fn auth_token_hash(hash: &str, sid: &str) -> String {
-        use sha2::{Sha256, Digest};
+
+    /// Как `Auth.CalculateMD5Hash` в `server_reference/Server/Auth.cs` (ASCII `hash+sid`, hex lowercase).
+    pub fn auth_token_hash_md5(hash: &str, sid: &str) -> String {
+        let input = format!("{hash}{sid}");
+        let digest = md5::compute(input.as_bytes());
+        format!("{digest:x}")
+    }
+
+    /// Некоторые клиенты считают SHA256 — оставляем второй вариант для совместимости.
+    pub fn auth_token_hash_sha256(hash: &str, sid: &str) -> String {
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(format!("{}{}", hash, sid).as_bytes());
+        hasher.update(format!("{hash}{sid}").as_bytes());
         format!("{:x}", hasher.finalize())
     }
-    pub fn token_matches(token: &str, expected: &str) -> bool { 
-        token.to_lowercase() == expected.to_lowercase() 
+
+    #[must_use]
+    pub fn token_matches_legacy_auth(token: &str, hash: &str, sid: &str) -> bool {
+        token == Self::auth_token_hash_md5(hash, sid) || token == Self::auth_token_hash_sha256(hash, sid)
     }
 
     pub fn tick(&self) {

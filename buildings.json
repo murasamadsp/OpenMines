@@ -104,7 +104,7 @@
       ]
     },
     "Gate": {
-      "code": "N",
+      "code": " ",
       "cost": 2000,
       "charge": 0.0,
       "max_charge": 0.0,

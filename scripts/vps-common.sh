@@ -74,6 +74,27 @@ vps_rsync_repo() {
     "$remote_host:$remote_dir/ops/"
 }
 
+# Virtuozzo/OpenVZ: BuildKit RUN в образе rust:* даёт runc «PID pipe EOF»;
+# обычный путь создания контейнеров (`docker run`) с тем же образом — стабилен.
+vps_build_openmines_binary() {
+  local remote_host=$1
+  local remote_dir=$2
+
+  echo "==> Сборка openmines-server на VPS (docker run + cargo, не BuildKit rust-слой)"
+  vps_ssh "$remote_host" "set -euo pipefail
+cd $(printf '%q' "$remote_dir")
+docker volume create openmines-cargo-registry >/dev/null 2>&1 || true
+docker volume create openmines-cargo-git >/dev/null 2>&1 || true
+docker run --rm \
+  -e CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse \
+  -v $(printf '%q' "$remote_dir"):/build \
+  -v openmines-cargo-registry:/usr/local/cargo/registry \
+  -v openmines-cargo-git:/usr/local/cargo/git \
+  -w /build \
+  rust:1.89-bookworm \
+  bash /build/ops/vps-cargo-docker.sh"
+}
+
 vps_ssh_compose() {
   local remote_host=$1
   local remote_dir=$2

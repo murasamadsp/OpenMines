@@ -33,13 +33,7 @@ pub fn check_chunk_changed(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Ve
         sub_packets.push(hb_map(ox, oy, 32, 32, &cells));
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
 
-        for (code, px, py, cid, off) in state.get_packs_in_chunk_area(ncx, ncy) {
-            if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
-                sub_packets.push(hb_packs(block_pos, &[(code, px, py, cid, off)]));
-                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-            }
-        }
-
+        // Сначала отправляем ботов (игроков), чтобы клиент знал о них до обработки построек
         for entry in &state.active_players {
             let opid = *entry.key();
             let bot_data = state.query_player(opid, |ecs, entity| {
@@ -51,6 +45,14 @@ pub fn check_chunk_changed(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Ve
             }).flatten();
             if let Some(bot) = bot_data {
                 sub_packets.push(bot);
+                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+            }
+        }
+
+        // Затем отправляем постройки
+        for (code, px, py, cid, off) in state.get_packs_in_chunk_area(ncx, ncy) {
+            if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
+                sub_packets.push(hb_packs(block_pos, &[(code, px, py, cid, off)]));
                 sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
             }
         }

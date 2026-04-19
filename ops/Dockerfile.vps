@@ -1,0 +1,19 @@
+# Образ только для Virtuozzo/OpenVZ: бинарник собирается вне BuildKit
+# (`docker run rust:… cargo build` в scripts), иначе RUN в rust-слое даёт
+# runc «can't get final child's PID from pipe: EOF».
+FROM debian:bookworm-slim AS runtime
+WORKDIR /data
+
+COPY openmines-server /usr/local/bin/openmines-server
+COPY config.json cells.json buildings.json ./
+
+# Один RUN: на Virtuozzo второй подряд RUN в том же стейдже BuildKit снова даёт runc PID pipe EOF.
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && chmod +x /usr/local/bin/openmines-server
+
+EXPOSE 8090
+
+ENTRYPOINT ["/usr/local/bin/openmines-server"]

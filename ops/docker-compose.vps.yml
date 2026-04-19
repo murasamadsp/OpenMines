@@ -2,9 +2,11 @@ name: development
 
 services:
   server:
+    # Docker: tini как PID 1 (сигналы/zombie) — не часть игрового референса, только рантайм контейнера.
+    init: true
     build:
       context: ..
-      dockerfile: ops/Dockerfile
+      dockerfile: ops/Dockerfile.vps
     image: openmines-server-dev:latest
     restart: unless-stopped
     ports:
@@ -16,6 +18,8 @@ services:
       - "com.example.group=games"
       - "com.example.environment=development"
     environment:
+      # Не ждать SIGINT от `ctrl_c()` в контейнере (см. server/main.rs shutdown task).
+      M3R_USE_CTRL_C: "0"
       # Временно усилить копание (множитель урона по НЕ-кристаллам).
       M3R_DIG_MULT: "6"
       # Включить точечные логи копания сыпучки (см. dig_build.rs); выключать, когда отладим.
