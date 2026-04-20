@@ -18,6 +18,11 @@ services:
       - "com.example.group=games"
       - "com.example.environment=development"
     environment:
+      # Паники в логах Docker: строка + стек (см. server/logging.rs `log_panic_to_stderr`).
+      RUST_BACKTRACE: "1"
+      # Жёстко выйти после паники (exit 101), чтобы `restart` и метрики явно зафиксировали сбой.
+      # Раскомментируй на время расследования «немых» падений воркеров Tokio.
+      # M3R_ABORT_ON_PANIC: "1"
       # Не ждать SIGINT от `ctrl_c()` в контейнере (см. server/main.rs shutdown task).
       M3R_USE_CTRL_C: "0"
       # Временно усилить копание (множитель урона по НЕ-кристаллам).

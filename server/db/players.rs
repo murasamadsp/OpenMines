@@ -40,7 +40,7 @@ pub fn default_skills() -> HashMap<String, SkillState> {
     let mut s = HashMap::new();
     // Skill codes from C# SkillType enum comments
     s.insert("d".into(), SkillState { level: 1, exp: 0.0 }); // Digging
-    s.insert("M".into(), SkillState { level: 1, exp: 0.0 }); // Movement
+    s.insert("M".into(), SkillState { level: 60, exp: 0.0 }); // Movement
     s.insert("L".into(), SkillState { level: 1, exp: 0.0 }); // BuildGreen
     s.insert("A".into(), SkillState { level: 1, exp: 0.0 }); // BuildRoad
     s.insert("O".into(), SkillState { level: 1, exp: 0.0 }); // BuildStructure

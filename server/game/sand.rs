@@ -1,11 +1,11 @@
-use crate::game::GameStateResource;
+use crate::game::{GameStateResource, BroadcastQueue, BroadcastEffect};
 use crate::game::player::PlayerPosition;
 use crate::world::cells::cell_type;
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::*;
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn sand_physics_system(state_res: Res<GameStateResource>, query: Query<&PlayerPosition>) {
+pub fn sand_physics_system(state_res: Res<GameStateResource>, mut bcast_q: ResMut<BroadcastQueue>, query: Query<&PlayerPosition>) {
     let state = &state_res.0;
     let mut tasks = Vec::new();
 
@@ -45,9 +45,8 @@ pub fn sand_physics_system(state_res: Res<GameStateResource>, query: Query<&Play
             state.world.set_cell(x, y, cell_type::EMPTY);
             state.world.set_cell(x, dy, cell);
 
-            // Broadcast cell updates
-            crate::game::broadcast_cell_update(state, x, y);
-            crate::game::broadcast_cell_update(state, x, dy);
+            bcast_q.0.push(BroadcastEffect::CellUpdate(x, y));
+            bcast_q.0.push(BroadcastEffect::CellUpdate(x, dy));
         }
     }
 }

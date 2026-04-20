@@ -114,6 +114,11 @@ pub const fn crystal_multiplier(cell: u8) -> i64 {
     }
 }
 
+/// Референс `World.isRoad`
+pub const fn is_road(cell: u8) -> bool {
+    matches!(cell, cell_type::ROAD | cell_type::GOLDEN_ROAD | cell_type::POLYMER_ROAD)
+}
+
 /// Check if cell is a boulder (can be pushed)
 pub const fn is_boulder(cell: u8) -> bool {
     matches!(
@@ -199,7 +204,20 @@ pub struct CellDefs {
 impl CellDefs {
     pub fn load(path: &str) -> Result<Self> {
         if let Ok(data) = fs::read_to_string(path) {
-            let cells: Vec<CellDef> = serde_json::from_str(&data)?;
+            let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
+
+            // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
+            // We normalize the loaded file into a dense 126-slot table keyed by `type` to preserve
+            // client expectations even if the JSON order is shuffled or has holes.
+            let mut cells: Vec<CellDef> = (0..126u8).map(|i| CellDef { cell_type: i, ..Default::default() }).collect();
+            for mut def in parsed {
+                if def.cell_type < 126 {
+                    let idx = def.cell_type as usize;
+                    // Ensure the in-memory slot's type matches its index, even if the JSON was inconsistent.
+                    def.cell_type = idx as u8;
+                    cells[idx] = def;
+                }
+            }
             Ok(Self { cells })
         } else {
             let cells: Vec<CellDef> = (0..126u8)

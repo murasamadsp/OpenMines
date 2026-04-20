@@ -21,7 +21,16 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
     let mut shutdown_rx = shutdown.subscribe();
     loop {
         let (stream, addr) = tokio::select! {
-            accept = listener.accept() => accept?,
+            accept = listener.accept() => match accept {
+                Ok(pair) => pair,
+                Err(e) => {
+                    // Критично: здесь раньше стояло `accept?` — одна ошибка accept()
+                    // (EMFILE/ENOMEM/временный сбой) завершала весь процесс → «сервер упал».
+                    tracing::error!("TCP accept failed: {e}; retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    continue;
+                }
+            },
             recv = shutdown_rx.recv() => {
                 match recv {
                     Ok(()) => break,
@@ -38,7 +47,7 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
         };
         tracing::info!("Connection from {addr}");
         let state = state.clone();
-        let shutdown_rx = shutdown.subscribe();
+        let _shutdown_rx = shutdown.subscribe();
         tokio::spawn(async move {
             if let Err(e) = session::handle(Arc::clone(&state), stream, addr).await {
                 tracing::warn!("Session {addr} ended: {e}");

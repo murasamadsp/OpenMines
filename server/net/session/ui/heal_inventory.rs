@@ -214,14 +214,19 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
 }
 
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+    let pos_data = state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
         cd.protection_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
         let pos = ecs.get::<PlayerPosition>(entity)?;
-        let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(pos.x), net_u16_nonneg(pos.y), 6, 0, 0);
-        state.broadcast_to_nearby(World::chunk_pos(pos.x, pos.y).0, World::chunk_pos(pos.x, pos.y).1, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
-        Some(true)
-    }).flatten().unwrap_or(false)
+        Some((pos.x, pos.y))
+    }).flatten();
+    if let Some((px, py)) = pos_data {
+        let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(px), net_u16_nonneg(py), 6, 0, 0);
+        state.broadcast_to_nearby(World::chunk_pos(px, py).0, World::chunk_pos(px, py).1, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
+        true
+    } else {
+        false
+    }
 }
 
 pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {

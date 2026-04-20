@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::Component;
 use crate::game::player::{PlayerPosition, PlayerConnection, PlayerMetadata};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
@@ -135,14 +135,13 @@ impl<'a> Parser<'a> {
     }
 }
 
-use crate::game::{GameStateResource};
-use crate::net::session::play::dig_build::handle_dig;
-use crate::net::session::play::movement::handle_move;
-use bevy_ecs::prelude::{Query, Res};
+use crate::game::{GameStateResource, ProgrammatorQueue, ProgrammatorAction};
+use bevy_ecs::prelude::{Query, Res, ResMut};
 
 #[allow(clippy::needless_pass_by_value)]
 pub fn programmator_system(
-    state_res: Res<GameStateResource>,
+    _state_res: Res<GameStateResource>,
+    mut prog_q: ResMut<ProgrammatorQueue>,
     mut query: Query<(
         &PlayerMetadata,
         &PlayerPosition,
@@ -150,16 +149,26 @@ pub fn programmator_system(
         &mut ProgrammatorState,
     )>,
 ) {
-    let state = &state_res.0;
-    for (meta, _pos, conn, mut prog) in &mut query {
+    for (meta, pos, conn, mut prog) in &mut query {
         if prog.running {
             if let Some(cmd) = prog.fetch_next() {
                 match cmd {
                     Command::Move(dir) => {
-                        handle_move(state, &conn.tx, meta.id, dir);
+                        let (dx, dy) = crate::game::direction::dir_offset(dir);
+                        prog_q.0.push(ProgrammatorAction::Move {
+                            pid: meta.id,
+                            tx: conn.tx.clone(),
+                            x: pos.x + dx,
+                            y: pos.y + dy,
+                            dir,
+                        });
                     }
                     Command::Dig(dir) => {
-                        handle_dig(state, &conn.tx, meta.id, dir);
+                        prog_q.0.push(ProgrammatorAction::Dig {
+                            pid: meta.id,
+                            tx: conn.tx.clone(),
+                            dir,
+                        });
                     }
                     _ => {}
                 }

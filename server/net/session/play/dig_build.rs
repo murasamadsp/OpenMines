@@ -7,9 +7,9 @@ fn dig_mult() -> f32 {
 }
 
 pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, dir: i32) {
-    let (px, py, pdir, dig_power, mine_mult) = {
+    let (px, py, actual_dir, dig_power, mine_mult) = {
         let player_data = state.modify_player(pid, |ecs, entity| {
-            let (px, py, pdir, dig_p, m_mult) = {
+            let (px, py, dig_p, m_mult) = {
                 let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
                 let cd = ecs.get::<crate::game::player::PlayerCooldowns>(entity)?;
                 let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
@@ -18,8 +18,9 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
                 if ui.current_window.is_some() { return None; }
                 let dp = crate::game::skills::get_player_skill_effect(&skills.states, SkillType::Digging);
                 let mm = crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineGeneral);
-                (pos.x, pos.y, pos.dir, dp, mm)
+                (pos.x, pos.y, dp, mm)
             };
+            // Референс: `player.Move(x, y, direction)` сначала, потом `player.Bz()` в текущем направлении.
             {
                 let mut pos_mut = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
                 if (0..=3).contains(&dir) { pos_mut.dir = dir; }
@@ -28,13 +29,13 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
                 let mut cd_mut = ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)?;
                 cd_mut.last_dig = std::time::Instant::now();
             }
-            Some((px, py, pdir, dig_p, m_mult))
+            Some((px, py, dir, dig_p, m_mult))
         }).flatten();
         let Some(data) = player_data else { return; };
         data
     };
 
-    let (dx, dy) = dir_offset(pdir);
+    let (dx, dy) = dir_offset(actual_dir);
     let (tx_c, ty_c) = (px + dx, py + dy);
     if !state.world.valid_coord(tx_c, ty_c) { return; }
 
@@ -46,7 +47,7 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
     };
     // Референс `Player.Bz`: сначала `Hurt(damage)` если `GetProp(cell).damage > 0`, потом проверка `is_diggable`.
     if touch_damage > 0 {
-        hurt_player_pure(state, tx, pid, touch_damage);
+        hurt_player_pure(state, pid, touch_damage);
     }
     if !diggable {
         return;
@@ -94,7 +95,7 @@ pub fn handle_dig(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
         }
     }
     let (cx, cy) = World::chunk_pos(px, py);
-    let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(px), net_u16_nonneg(py), 0, pdir as u8, 0);
+    let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(px), net_u16_nonneg(py), 0, actual_dir as u8, 0);
     state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
 }
 
