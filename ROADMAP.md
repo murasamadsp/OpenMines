@@ -29,18 +29,18 @@
 
 ## 2. Копание и стройка
 
-- [ ] TY-события 1:1 (референс `server_reference/Server/Session.cs`, типовые пакеты в `server_reference/Server/Network/TypicalEvents/*`):
-  - [ ] `Xdig`: `sub_payload` = direction (UTF-8 int). Поведение 1:1: `TryAct(..., 200)`, внутри: `Move(x, y, dir)` + `Bz()` (эффекты/разрушение/валуны — как в референсе)
-  - [ ] `Xbld`: `sub_payload` = `"{direction}{blockType}"` (dir = `data[..^1]`, blockType = `data[^1..]`). Поведение 1:1: `TryAct(() => Build(blockType), 200)`; поддерживаемые blockType — как в клиенте
-  - [ ] `TADG`: toggle авто-копания 1:1: `player.autoDig = !player.autoDig`, ответ сервер→клиент `BD` (`"0"`/`"1"`)
-  - [ ] `GUI_`: `sub_payload` = JSON `{"b":"button_name"}` (кнопка берётся из поля `b`). Роутинг 1:1: если auth-окно — `auth.CallAction(button)`, иначе `player.CallWinAction(button)` и `SendWindow()`
-  - [ ] `Xhea`: лечение 1:1: `player.Heal()`
-  - [ ] `INVN`: toggle инвентаря 1:1: `minv = !minv`, затем `SendInventory()`
-  - [ ] `INUS`: use item 1:1: `inventory.Use(player)`
-  - [ ] `INCL`: выбор слота 1:1: payload `"_"` = служебный пакет без selection; иначе UTF-8 int selection (включая `-1`), поведение выбора как в референсе
-- [ ] Кристаллы/корзина 1:1: сервер→клиент `@B` `"G:R:B:V:W:C:Capacity"` (в т.ч. изменения после dig/build/box/use)
-- [ ] Смерть/респавн 1:1: `RESP` (TY) вызывает `Death()`; drop кристаллов/позиция/снятие deadlock — строго по референсу
-- [ ] “Геопаки” в контексте TY/мира: определить и реализовать строго по референсу (пока не специфицировано в `docs/PROTOCOL.md`, нельзя “галочку” без ссылки на C#)
+- [x] TY-события 1:1 (референс `server_reference/Server/Session.cs`, типовые пакеты в `server_reference/Server/Network/TypicalEvents/*`):
+  - [x] `Xdig`: 200ms cooldown, BOX/MilitaryBlock special cases, crystal FX(fx=2), cb accumulator, boulder push every hit, exp on destroy only — 1:1
+  - [x] `Xbld`: 200ms cooldown, crystal cost from skill.Effect, AccessGun/PackPart checks, build exp, durability from skill — 1:1
+  - [x] `TADG`: toggle авто-копания 1:1
+  - [ ] `GUI_`: JSON parsing 1:1. Auth-window routing — stub (gui_flow.rs TODO). Generic CallWinAction — не портирован
+  - [x] `Xhea`: HP from Repair skill Effect, Repair XP — 1:1
+  - [x] `INVN`: toggle инвентаря 1:1
+  - [x] `INUS`: все предметы (0-46), Gate(27), Poli(35), geopack mapping с pickup-back — 1:1
+  - [x] `INCL`: “_” no-op, id==-1 InvToSend+Close, selection — 1:1
+- [x] Кристаллы/корзина 1:1: @B после dig/build/heal/box/death, capacity=1
+- [x] Смерть/респавн 1:1: crystal box drop, hb_bot_del broadcast, prog stop, Gu close, resp Y-offset random, HP reset, @T
+- [x] Геопаки: Xgeo pick/place stack 1:1, geopack items с correct cell mapping и pickup-back
 
 ## 3. Здания
 
