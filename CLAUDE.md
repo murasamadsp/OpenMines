@@ -297,13 +297,13 @@ GameState {
 
 **Движение:** direction 0-3, проверка дистанции ≤1.2, доступ через Gate (клан), чанк-переключение.
 
-**Копание:** 120ms cooldown, удар = `dig_power/500 * dig_mult`, кристаллы умножаются Mining скиллом. XGreen 4x, XBlue 3x, XRed/XViolet/XCyan 2x. Валуны толкаются.
+**Копание:** 200ms cooldown, удар = `dig_power/500 * dig_mult`, кристаллы через cb-аккумулятор (фракционное накопление). XGreen 4x, XBlue 3x, XRed/XViolet/XCyan 2x. Валуны толкаются на каждый удар. BOX(90) special case: pickup crystals. MilitaryBlock(81): fixed 1.0 damage. Crystal FX(fx=2) broadcast. Exp только при разрушении.
 
-**Строительство:** типы G (Green→Yellow→Red цепочка), R (Road), O (Support), V (Military). Стоимость в кристаллах.
+**Строительство:** 200ms cooldown, типы G (Green→Yellow→Red цепочка), R (Road), O (Support), V (Military). Стоимость из skill.Effect. AccessGun + PackPart проверки. Durability из skill. Build exp.
 
 **Бой:** Gun стреляет в радиусе 20 клеток, 60 HP урон (снижается AntiGun скиллом), не стреляет по своему клану и владельцу. Protection item блокирует на 30s.
 
-**Смерть:** кристаллы выпадают как Box (ячейка 90), TP на respawn, reset HP.
+**Смерть:** кристаллы выпадают как Box (ячейка 90), hb_bot_del broadcast, prog stop, Gu close, TP на respawn (random Y-offset), reset HP, resp charge decrement + cost deduction.
 
 **Предметы:** boom (AoE 3x3, 50HP), protector (30s неуязвимость), razryadka (разрядка ганов), C190 (лазер 10 клеток).
 
@@ -350,22 +350,21 @@ GameState {
 
 | Компонент | Статус | Что не хватает |
 |-----------|--------|----------------|
-| Здания | ~70% | Размещение/удаление работает. Не работает: телепорт-меню, маркет, крафтер, хранилище |
-| Скиллы | ~60% | Типы + эффекты есть. Нет: прокачка за деньги, GUI, полные формулы exp |
+| Здания | ~40% | Placement/removal + Gun firing + Gate blocking работают. Нет: Teleport GUI/action, Up skill GUI, Market buy/sell, Storage deposit, Crafter execution, Resp fill GUI |
+| Скиллы | ~80% | Дерево + формулы + @S/@LV + exp gain при dig/build/heal — всё 1:1. Нет: Up GUI (install/delete/slot management) |
 | Настройки | stub | Упрощённый GUI, полный RichList не портирован |
-| GUI регистрация | stub | `handle_gui_auth_flow()` — TODO, регистрация через GUI не работает |
+| GUI регистрация | stub | `handle_gui_auth_flow()` — TODO |
+| Песок/Боулдеры | ~90% | Straight down + diagonal slide + boulder fall. Нет: Gate pass-through |
 
 ### ❌ Не реализовано
 
-| Компонент | Описание | Что нужно сделать |
-|-----------|----------|-------------------|
-| Программатор | Парсер есть, исполнение заглушено | Подключить execution loop, GUI создания программ, сохранение в БД |
-| Крафтинг | 8 рецептов определены | Подключить к зданию Crafter, очередь крафта, GUI |
-| Здания — внутренности | PackType enum есть | Телепорт: список + TP. Market: buy/sell. Storage: доп. инвентарь. Crafter: очередь |
-| Skill GUI | Нет | Окно прокачки, Up за деньги, формулы cost/exp |
-| Пакеты | Определены но не отправляются | `AE`, `RC`, `#P`, `#p`, `BC`, `BA`, `SP`, `SU`, `BB`, `@R`, `GO`, `DR`, `MM`, `MP` |
-| Физика мира | Частично | Кислота, alive-клетки, лава — не реализованы |
-| Missions | Нет | `Miss` TY-событие — no-op |
+| Компонент | Что нужно сделать |
+|-----------|-------------------|
+| Программатор | PROG→parse→store в ECS, running=true, If/Loop execution, tail=1 в hb_bot, DB persistence |
+| Building GUIs | Teleport: TP list + action. Market: buy/sell/auction. Storage: deposit slider. Crafter: recipe start/timer. Resp: fill slider. Up: skill management |
+| Alive-клетки | 7 типов поведения (AliveCyan flood, AliveBlack colony, etc.) — ECS system нужен |
+| Market system | Dynamic pricing, crystal buy/sell, auction |
+| Acid physics | Active corrosion (не только fall_damage) |
 
 ---
 
@@ -412,31 +411,12 @@ GameState {
 | `GameShit/Programmator/Program.cs` | Программы: парсер, ActionType enum (28+ действий) |
 | `GameShit/WorldSystem/World.cs` | Мир: 260×420 чанков, 32×32 ячеек/чанк |
 
-### Ключевые механики из референса (не портированы в Rust)
+### Механики из референса — статус портирования
 
-**Скиллы — полная система:**
+**Скиллы:** ✅ портировано — дерево, формулы (Health x*3, Movement, Digging, Packing, Mine*, AntiGun, Repair), exp threshold flat 1.0, @S/@LV пакеты. ❌ нет Up GUI.
 
-- SkillEffectType: OnMove, OnDig, OnDigCrys, OnBld, OnExp, OnHealth, OnHurt, OnRepair
-- Up(player): level up если exp ≥ Expiriense
-- AddExp(player, amount): накопление опыта
-- Cost: стоимость прокачки (кристаллы)
+**Программатор:** ❌ не работает end-to-end — парсер есть (move/dig/if/loop/call), ECS system зарегистрирован, но PROG TY не мутирует running, If/Loop не исполняются, tail всегда 0.
 
-**Программатор — полная система:**
+**Здания GUI:** ❌ — все здания показывают generic GUI (take money/crystals/delete). Нет: Teleport list+TP, Resp fill, Market buy/sell, Crafter recipes, Storage deposit, Up skills.
 
-- ActionType enum: 28+ действий (Move, Dig, Rotate, Build, Heal, If, Loop, Call, Return)
-- Условия: CheckUp/Down/Left/Right, IsEmpty, IsCrystal, IsFalling
-- Операторы: Or, And
-- RunProgramm(prog) → programsData.Step() → execute action
-
-**Здания — внутренности:**
-
-- Teleport: GUIWin показывает список TP в радиусе 1000, canvas карта, кнопка TP
-- Resp: Fill(crystals→charge), OnRespawn(cost→moneyinside), ClanZone radius
-- Market: buy/sell items
-- Crafter: recipe queue, completion timer
-
-**Настройки — ключи:**
-
-- `cc` (char size), `snd` (sound), `mus` (music), `isca` (interface scale)
-- `tsca` (territory scale), `mous` (mouse), `pot` (graphics), `frc` (force updates)
-- `ctrl` (CTRL speed), `mof` (mute nearby)
+**Настройки:** ⚠️ — ключи определены, #S отправляется при логине. Нет полного Settings GUI (RichList с слайдерами).
