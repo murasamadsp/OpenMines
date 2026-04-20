@@ -388,39 +388,6 @@ pub fn hb_chat(bot_id: u16, x: u16, y: u16, text: &str) -> Vec<u8> {
     buf.to_vec()
 }
 
-/// HB sub-packet: Bot list (type "B")
-/// Layout: `[1B tag 'B'][u16 LE count][u16 LE bot_id]*count`
-pub fn hb_bots_list(bot_ids: &[u16]) -> Vec<u8> {
-    let Ok(n) = u16::try_from(bot_ids.len()) else {
-        return vec![];
-    };
-    let mut buf = BytesMut::with_capacity(1 + 2 + bot_ids.len() * 2);
-    buf.put_u8(b'B');
-    buf.put_u16_le(n);
-    for &id in bot_ids {
-        buf.put_u16_le(id);
-    }
-    buf.to_vec()
-}
-
-/// HB sub-packet: Gun/shot (type "Z")
-/// Layout: `[1B tag 'Z'][1B amount][1B color][u16 LE x][u16 LE y][u16 LE bot_id]*amount`
-pub fn hb_gun(x: u16, y: u16, color: u8, bot_ids: &[u16]) -> Vec<u8> {
-    let Ok(n) = u8::try_from(bot_ids.len()) else {
-        return vec![];
-    };
-    let mut buf = BytesMut::with_capacity(1 + 2 + 4 + bot_ids.len() * 2);
-    buf.put_u8(b'Z');
-    buf.put_u8(n);
-    buf.put_u8(color);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    for &id in bot_ids {
-        buf.put_u16_le(id);
-    }
-    buf.to_vec()
-}
-
 /// HB sub-packet: single cell update — wraps `hb_map` with 1x1
 pub fn hb_cell(x: u16, y: u16, cell: u8) -> Vec<u8> {
     hb_map(x, y, 1, 1, &[cell])
@@ -578,12 +545,11 @@ fn parse_i32_text(data: &[u8]) -> Option<i32> {
     std::str::from_utf8(data).ok()?.trim().parse().ok()
 }
 
-/// Decode GUI_ button press (inside TY `sub_payload`): JSON `{"b":"button_name"}`
-/// Референс `GUI_Packet.Decode`: `JSON.Parse(UTF8.GetString(data))["b"]`
+/// Decode GUI_ button press (inside TY `sub_payload)`: UTF-8 string
 pub fn decode_gui_button(data: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(data).ok()?;
-    let v: serde_json::Value = serde_json::from_str(s).ok()?;
-    v.get("b")?.as_str().map(std::string::ToString::to_string)
+    std::str::from_utf8(data)
+        .ok()
+        .map(std::string::ToString::to_string)
 }
 
 /// Decode local chat (inside TY `sub_payload`): legacy `length:message` or plain UTF-8 text

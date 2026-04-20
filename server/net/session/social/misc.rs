@@ -4,9 +4,9 @@ use crate::net::session::outbound::chat_sync::send_chat_init;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::game::broadcast_cell_update;
+use crate::net::session::play::spawn::spawn_crystal_box;
 use crate::net::session::prelude::*;
 use crate::game::player::PlayerInventory;
-use crate::db::pick_box_coord;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, modify_pack_with_db,
 };
@@ -562,20 +562,12 @@ pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
     send_u_packet(tx, "NL", parts.join(",").as_bytes());
 }
 
-/// Broadcast-данные, собранные внутри `ecs.write()`, выполняются снаружи.
-pub(crate) struct DeathBroadcasts {
-    pub box_cell: Option<(i32, i32)>,
-    pub fx_death: Option<(i32, i32)>,
-}
-
-/// Мутации ECS как в `Player.Death()` (`Player.cs`).
-/// **НЕ** вызывает ничего, что лочит `state.ecs` (broadcast/get_pack_at) —
-/// вместо этого возвращает `DeathBroadcasts` для вы��ывающего.
+/// Мутации ECS как в `Player.Death()` (`Player.cs`), **без** `check_chunk_changed` и без U-пакетов — вызывать при уже удерживаемом `ecs.write()` или из одного блока с `schedule.run`.
 pub(crate) fn apply_player_death_core(
     state: &Arc<GameState>,
     ecs: &mut bevy_ecs::prelude::World,
     pid: PlayerId,
-) -> Option<(i32, i32, i32, DeathBroadcasts)> {
+) -> Option<(i32, i32, i32)> {
     let entity = state.get_player_entity(pid)?;
     let (dx, dy, cry, rx_p, ry_p, mh) = {
         let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
@@ -584,80 +576,13 @@ pub(crate) fn apply_player_death_core(
         (p.x, p.y, s.crystals, m.resp_x, m.resp_y, s.max_health)
     };
 
-    let mut bcast = DeathBroadcasts { box_cell: None, fx_death: None };
-
     if cry.iter().sum::<i64>() > 0 {
-        let c = cry;
-        let box_placed = pick_box_coord(
-            dx, dy,
-            |x, y| state.world.valid_coord(x, y),
-            |x, y| {
-                if !state.world.is_empty(x, y) {
-                    return false;
-                }
-                let cell = state.world.get_cell(x, y);
-                state.world.cell_defs().get(cell).can_place_over()
-            },
-        ).and_then(|(bx, by)| {
-            if GameState::find_pack_covering_with(ecs, &state.building_index, bx, by).is_none() {
-                state.world.set_cell(bx, by, crate::world::cells::cell_type::BOX);
-                let _ = state.db.upsert_box(bx, by, &c);
-                if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
-                    s.crystals = [0; 6];
-                }
-                Some((bx, by))
-            } else {
-                // Даже без бокса — обнулить кристаллы
-                if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
-                    s.crystals = [0; 6];
-                }
-                None
-            }
-        });
-        bcast.box_cell = box_placed;
-        bcast.fx_death = Some((dx, dy));
-    }
-
-    // Респаун: проверяем pack через уже имеющийся &mut ecs (б��з отдельного лока)
-    let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
-        let has_resp = state.building_index.get(&(x, y)).and_then(|ent| {
-            let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(*ent)?;
-            let stats = ecs.get::<crate::game::buildings::BuildingStats>(*ent)?;
-            Some(meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0)
-        }).unwrap_or(false);
-        if has_resp { (x + 2, y) } else { (10, 10) }
-    } else {
-        (10, 10)
-    };
-
-    {
-        let mut p = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
-        p.x = rx;
-        p.y = ry;
-    }
-    if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
-        s.health = mh;
-    }
-    if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
-        ui.current_window = None;
-    }
-    if let Some(mut v) = ecs.get_mut::<crate::game::player::PlayerView>(entity) {
-        v.last_chunk = None;
-        v.visible_chunks.clear();
-    }
-    if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-        f.dirty = true;
-    }
-
-    Some((rx, ry, mh, bcast))
-}
-
-/// Выполнить отложенные broadcast'ы после отпускания `ecs.write()`.
-pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts) {
-    if let Some((bx, by)) = bcast.box_cell {
-        broadcast_cell_update(state, bx, by);
-    }
-    if let Some((dx, dy)) = bcast.fx_death {
+        if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
+            s.crystals = [0; 6];
+        }
+        if let Some((bx, by)) = spawn_crystal_box(state, dx, dy) {
+            broadcast_cell_update(state, bx, by);
+        }
         let fx = hb_fx(dx as u16, dy as u16, 2);
         state.broadcast_to_nearby(
             World::chunk_pos(dx, dy).0,
@@ -666,30 +591,61 @@ pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcas
             None,
         );
     }
+
+    let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
+        if state.get_pack_at(x, y).is_some_and(|p| {
+            p.pack_type == crate::game::buildings::PackType::Resp && p.charge > 0.0
+        }) {
+            (x + 2, y)
+        } else {
+            (10, 10)
+        }
+    } else {
+        (10, 10)
+    };
+
+    {
+        let mut p = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
+        p.x = rx;
+        p.y = ry;
+        if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
+            s.health = mh;
+        }
+        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+            ui.current_window = None;
+        }
+        if let Some(mut v) = ecs.get_mut::<crate::game::player::PlayerView>(entity) {
+            v.last_chunk = None;
+            v.visible_chunks.clear();
+        }
+        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            f.dirty = true;
+        }
+    }
+
+    Some((rx, ry, mh))
 }
 
-pub fn send_respawn_after_death(tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, rx: i32, ry: i32, mh: i32) {
-    tracing::warn!("[Respawn] @T pid={pid} to=({rx},{ry}) mh={mh}");
+pub fn send_respawn_after_death(tx: &mpsc::UnboundedSender<Vec<u8>>, rx: i32, ry: i32, mh: i32) {
     send_u_packet(tx, "@T", &tp(rx, ry).1);
     send_u_packet(tx, "@L", &health(mh, mh).1);
     send_u_packet(tx, "@B", &basket(&[0; 6], 1000).1);
 }
 
-/// `RESP` / очередь после пушки: `ecs.write()` для мутаций, broadcast'ы снаружи.
+/// `RESP` / очередь после пушки: один `ecs.write()` + пакеты (референс `Player.Death` + `SendHealth`).
 pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
-    let result = {
+    let coords = {
         let mut ecs = state.ecs.write();
         apply_player_death_core(state, &mut ecs, pid)
     };
-    if let Some((rx, ry, mh, bcast)) = result {
-        run_death_broadcasts(state, &bcast);
-        send_respawn_after_death(tx, pid, rx, ry, mh);
+    if let Some((rx, ry, mh)) = coords {
+        send_respawn_after_death(tx, rx, ry, mh);
         check_chunk_changed(state, tx, pid);
     }
 }
 
 /// `Player.Hurt(num, Pure)` — без AntiGun; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
-pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
+pub fn hurt_player_pure(state: &Arc<GameState>, _tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;
     }
@@ -720,19 +676,18 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
 }
 
 /// Внутри одного `ecs.write()` после `schedule.run`: снять `DeathQueue` и применить `Player.Death` для пушки.
-/// Возвращает `(pid, rx, ry, mh, broadcasts)` — broadcast'ы выполнить ПОСЛЕ отпускания `ecs.write()`.
 pub fn flush_player_death_queue_after_tick(
     state: &Arc<GameState>,
     ecs: &mut bevy_ecs::prelude::World,
-) -> Vec<(PlayerId, i32, i32, i32, DeathBroadcasts)> {
+) -> Vec<(PlayerId, i32, i32, i32)> {
     use std::collections::HashSet;
     let raw = std::mem::take(&mut ecs.resource_mut::<crate::game::combat::DeathQueue>().0);
     let mut seen = HashSet::new();
     let pids: Vec<PlayerId> = raw.into_iter().filter(|p| seen.insert(*p)).collect();
     let mut pending = Vec::new();
     for pid in pids {
-        if let Some((rx, ry, mh, bcast)) = apply_player_death_core(state, ecs, pid) {
-            pending.push((pid, rx, ry, mh, bcast));
+        if let Some((rx, ry, mh)) = apply_player_death_core(state, ecs, pid) {
+            pending.push((pid, rx, ry, mh));
         }
     }
     pending

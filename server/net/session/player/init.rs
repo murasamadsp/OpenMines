@@ -15,10 +15,6 @@ use crate::net::session::prelude::*;
 pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, player: &PlayerRow) -> PlayerId {
     let pid = player.id;
     let now = std::time::Instant::now();
-    // 1:1-ish ref behavior: immediately allow first actions after login.
-    // If we initialize cooldown timestamps to `now`, the first few client `Xmov` packets can be ignored,
-    // causing the next accepted move to be "too far" and trigger a server correction (@T).
-    let ready = now - std::time::Duration::from_secs(1);
 
     let entity = state.ecs.write().spawn((
         PlayerMetadata {
@@ -62,9 +58,9 @@ pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
             current_chat: "FED".to_string(),
         },
         PlayerCooldowns {
-            last_move: ready,
-            last_dig: ready,
-            last_geo: ready,
+            last_move: now,
+            last_dig: now,
+            last_geo: now,
             protection_until: None,
             last_shot: None,
         },
@@ -82,34 +78,25 @@ pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 }
 
 pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
-    let Some((_, p)) = state.active_players.remove(&pid) else {
-        return;
-    };
-    let entity = p.ecs_entity;
-
-    // После `remove` `modify_player(pid, …)` уже не найдёт сущность в `active_players` — сохраняем и чанк из ECS напрямую.
-    let (cx, cy) = {
-        let ecs = state.ecs.read();
-        let chunk = ecs
-            .get::<PlayerPosition>(entity)
-            .map(|pos| (pos.chunk_x(), pos.chunk_y()))
-            .unwrap_or((0, 0));
-        if let Some(row) = crate::game::player::extract_player_row(&ecs, entity) {
+    if let Some((_, p)) = state.active_players.remove(&pid) {
+        let (cx, cy) = state.modify_player(pid, |ecs, entity| {
+            let pos = ecs.get::<PlayerPosition>(entity)?;
+            let row = crate::game::player::extract_player_row(ecs, entity)?;
             if let Err(e) = state.db.save_player(&row) {
                 tracing::error!("Failed to save player {pid} on disconnect: {e}");
             }
-        }
-        chunk
-    };
+            Some((pos.chunk_x(), pos.chunk_y()))
+        }).flatten().unwrap_or((0, 0));
 
-    state.chunk_players.get_mut(&(cx, cy)).map(|mut e| e.retain(|&id| id != pid));
+        state.chunk_players.get_mut(&(cx, cy)).map(|mut e| e.retain(|&id| id != pid));
+        
+        let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
+        let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
+        state.broadcast_to_nearby(cx, cy, &hb_data, None);
 
-    let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
-    let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-    state.broadcast_to_nearby(cx, cy, &hb_data, None);
-
-    state.ecs.write().despawn(entity);
-    tracing::info!("Player {pid} disconnected and ECS entity despawned");
+        state.ecs.write().despawn(p.ecs_entity);
+        tracing::info!("Player {pid} disconnected and ECS entity despawned");
+    }
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
@@ -149,17 +136,9 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
     // 10. CheckChunkChanged(true)
     check_chunk_changed(state, tx, pid);
     state.query_player(pid, |ecs, entity| {
-        let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-            tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
-            return;
-        };
+        let stats = ecs.get::<PlayerStats>(entity).unwrap();
 
         // 11. tp(x, y)
-        tracing::info!(
-            "[Init] @T pid={pid} to=({},{}) (db/player row position)",
-            player.x,
-            player.y
-        );
         send_u_packet(tx, "@T", &tp(player.x, player.y).1);
         // 12 консоль — пропускаем
         // 13. SendSettings (#S)

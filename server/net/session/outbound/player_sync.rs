@@ -8,16 +8,12 @@ use crate::game::skills::{
 use crate::net::session::prelude::*;
 
 pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
-    // 1:1 ref (`pSenders.SendSpeed`):
-    // `new SpeedPacket((int)(p.pause * 5 * 1.4 / 1000 * 1.7),
-    //                 (int)(p.pause * 0.80 * 5 * 1.4 / 1000 * 1.7),
-    //                 100000)`
-    // where `p.pause = (int)(Movement.Effect * 100)`.
-    let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
-    let pause = move_effect * 100.0;
-    let xy_pause = (pause * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
-    let road_pause = (pause * 0.80 * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
-    send_u_packet(tx, "sp", &speed(xy_pause, road_pause, 100000).1);
+    let sk = PlayerSkillsHelper {
+        skills: &skills.states,
+    };
+    let xy_pause = sk.on_move(ROBOT_XY_PAUSE_MS as f32) as i32;
+    let road_pause = sk.on_move_road(ROBOT_ROAD_PAUSE_MS as f32) as i32;
+    send_u_packet(tx, "sp", &speed(xy_pause, road_pause, 5000).1);
 }
 
 pub fn send_player_health(tx: &mpsc::UnboundedSender<Vec<u8>>, stats: &PlayerStats) {

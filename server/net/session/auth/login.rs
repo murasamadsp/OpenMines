@@ -6,36 +6,31 @@ use serde_json::json;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
 fn send_auth_failure(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, au: &AuClientPacket) {
+    let name = GameState::map_profile_name(au.client_uniq());
     let w = state.world.cells_width();
     let h = state.world.cells_height();
-    // 1:1 ref: WorldInfoPacket(World.W.name, ...)
-    // ref: WorldInfoPacket(..., 0, "COCK", "http://pi.door/", "ok")
-    let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
+    let world = world_info(&name, w, h, 0, "M3R", "http://localhost/", "ok");
     send_u_packet(tx, world.0, &world.1);
 
-    // 1:1 ref: BotInfoPacket("pidor", 0, 0, -1)
-    let bi = bot_info("pidor", 0, 0, -1);
+    let gx = (w / 2).max(1) as i32;
+    let gy = (h / 2).max(1) as i32;
+    let bi = bot_info("Гость", gx, gy, -1);
     send_u_packet(tx, bi.0, &bi.1);
 
     let cells = state.world.read_chunk_cells(0, 0);
     let sub = hb_map(0, 0, 32, 32, &cells);
-    // 1:1 ref: SendU(new HBPacket(...)) — HB payload, но outer data_type = "U"
     let bundle = hb_bundle(&[sub]).1;
-    send_u_packet(tx, "HB", &bundle);
+    send_b_packet(tx, "HB", &bundle);
 
-    // 1:1 ref: `authwin = def; initiator.SendWin(authwin.ToString());`
-    // Window.ToString() builds `horb:{...}` with `buttons` as alternating label/action entries.
+    let text = match &au.auth_type {
+        AuAuthType::NoAuth => "Гостевой вход на этом сервере отключён.",
+        _ => "Неверный логин, пароль или токен.",
+    };
     let gui = json!({
-        "title": "ВХОД",
-        "buttons": [
-            "Новый акк", "newakk",
-            "ok", "nick:%I%",
-            "ВЫЙТИ", "exit"
-        ],
-        "back": false,
-        "text": "Авторизация",
-        "input_place": " ",
-        "input_console": true
+        "title": "АВТОРИЗАЦИЯ",
+        "text": text,
+        "buttons": ["ОК", "exit"],
+        "back": false
     });
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
@@ -87,9 +82,8 @@ pub async fn handle_auth(
         //    который регистрирует ВСЕ остальные обработчики пакетов. Без CF клиент мёртв.
         let w = state.world.cells_width();
         let h = state.world.cells_height();
-        // 1:1 ref: WorldInfoPacket(World.W.name, ...)
-        // ref: WorldInfoPacket(..., 0, "COCK", "http://pi.door/", "ok")
-        let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
+        let name = GameState::map_profile_name(au.client_uniq());
+        let world = world_info(&name, w, h, 0, "M3R", "http://localhost/", "ok");
         send_u_packet(tx, world.0, &world.1);
 
         // 2. Gu (закрыть окно авторизации) — референс: SendU(new GuPacket()) перед Init()

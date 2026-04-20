@@ -16,6 +16,7 @@ use bevy_ecs::schedule::Schedule;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::info;
 use std::time::{Duration, Instant};
 
@@ -27,26 +28,6 @@ pub use buildings::{PackType, PackView, BuildingMetadata, BuildingStats, Buildin
 
 #[derive(Resource)]
 pub struct GameStateResource(pub Arc<GameState>);
-
-/// Отложенные broadcast'ы из ECS-систем.
-/// Нельзя вызывать `broadcast_to_nearby`/`broadcast_cell_update` изнутри `schedule.run()`:
-/// они ре-лочат `ecs.read()` а schedule уже держит `ecs.write()` → self-deadlock.
-#[derive(Resource, Default)]
-pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
-
-pub enum BroadcastEffect {
-    CellUpdate(i32, i32),
-    Nearby { cx: u32, cy: u32, data: Vec<u8>, exclude: Option<PlayerId> },
-}
-
-/// Отложенные команды программатора (handle_move/handle_dig ре-лочат ecs).
-#[derive(Resource, Default)]
-pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
-
-pub enum ProgrammatorAction {
-    Move { pid: PlayerId, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>, x: i32, y: i32, dir: i32 },
-    Dig { pid: PlayerId, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>, dir: i32 },
-}
 
 pub struct GameState {
     pub world: Arc<World>,
@@ -67,7 +48,6 @@ impl GameState {
     pub fn new(world: Arc<World>, database: Arc<Database>, config: Config) -> Arc<Self> {
         let mut schedule = Schedule::default();
         schedule.add_systems(sand::sand_physics_system);
-        schedule.add_systems(combat::standing_cell_hazard_system);
         schedule.add_systems(combat::gun_firing_system);
         schedule.add_systems(programmator::programmator_system);
 
@@ -93,8 +73,6 @@ impl GameState {
         {
             let mut ecs = state.ecs.write();
             ecs.insert_resource(combat::DeathQueue::default());
-            ecs.insert_resource(BroadcastQueue::default());
-            ecs.insert_resource(ProgrammatorQueue::default());
         }
 
         if let Ok(all_rows) = state.db.load_all_buildings() {
@@ -245,13 +223,11 @@ impl GameState {
     }
 
     pub fn pack_block_pos(&self, x: i32, y: i32) -> Option<i32> {
-        // 1:1 reference (`Chunk.PACKPOS`): `x + y * World.ChunksW`
-        // IMPORTANT: x/y are world cell coordinates (not chunk coords).
-        if !self.world.valid_coord(x, y) {
-            return None;
-        }
+        if x < 0 || y < 0 { return None; }
+        let cx = x / 32; let cy = y / 32;
         let w = self.world.chunks_w() as i32;
-        y.checked_mul(w)?.checked_add(x)
+        if cx >= w || cy >= self.world.chunks_h() as i32 { return None; }
+        Some(cy * w + cx)
     }
 
     /// Как `World.AccessGun` — без отдельного lock ECS.
@@ -304,13 +280,9 @@ impl GameState {
     /// Для `HBPack` как в референсе: `(byte)cid` на проводе.
     pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<(u8, u16, u16, u8, u8)> {
         let mut result = Vec::new();
-        let ecs = self.ecs.read();
-        for entry in self.building_index.iter() {
-            let entity = *entry.value();
-            let Some(pos) = ecs.get::<GridPosition>(entity) else { continue; };
-            let Some(meta) = ecs.get::<BuildingMetadata>(entity) else { continue; };
-            let Some(ownership) = ecs.get::<BuildingOwnership>(entity) else { continue; };
-            let Some(stats) = ecs.get::<BuildingStats>(entity) else { continue; };
+        let mut ecs = self.ecs.write();
+        let mut query = ecs.query::<(&GridPosition, &BuildingMetadata, &BuildingOwnership, &BuildingStats)>();
+        for (pos, meta, ownership, stats) in query.iter(&ecs) {
             let (pcx, pcy) = crate::world::World::chunk_pos(pos.x, pos.y);
             if (pcx as i64 - cx as i64).abs() <= 1 && (pcy as i64 - cy as i64).abs() <= 1 {
                 if !meta.pack_type.included_in_hb_overlay() {

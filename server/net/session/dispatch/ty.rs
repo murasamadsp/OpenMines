@@ -27,15 +27,7 @@ pub fn dispatch_ty_packet(
     match event {
         "Xmov" => {
             if let Some(dir) = decode_xmov(&packet.sub_payload) {
-                handle_move(
-                    state,
-                    tx,
-                    pid,
-                    packet.time,
-                    packet.x as i32,
-                    packet.y as i32,
-                    dir,
-                );
+                handle_move(state, tx, pid, dir);
             }
         }
         "Xdig" => {

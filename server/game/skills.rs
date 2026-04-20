@@ -463,9 +463,7 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
     let x = level as f32;
     match skill {
         SkillType::Digging => x.mul_add(10.0, 100.0),
-        // 1:1 ref (`server_reference/.../PlayerSkills.cs`, SkillType.Movement):
-        // effectfunc = (x) => 70f - x * 0.05f > 30f ? 70f - x * 0.05f : 30f
-        SkillType::Movement => (70.0 - x * 0.05).max(30.0),
+        SkillType::Movement => (500.0 - x * 5.0).max(200.0),
         SkillType::MineGeneral => {
             if x <= 0.0 {
                 0.08

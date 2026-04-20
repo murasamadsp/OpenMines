@@ -2,7 +2,7 @@
 
 use crate::config::{LogFileConfig, LogFormat, LoggingConfig};
 use anyhow::{Context, Result};
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::Path;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::layer::SubscriberExt;
@@ -40,58 +40,11 @@ fn daily_rolling_appender(
     Ok(tracing_appender::rolling::daily(dir, stem))
 }
 
-fn log_panic_to_stderr(info: &std::panic::PanicHookInfo<'_>) {
-    let loc = info
-        .location()
-        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-        .unwrap_or_else(|| "unknown location".to_string());
-    let payload = info.payload();
-    let msg = payload
-        .downcast_ref::<&'static str>()
-        .copied()
-        .map(String::from)
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| format!("{payload:?}"));
-    let _ = writeln!(
-        std::io::stderr(),
-        "[openmines-server PANIC] {loc}\n  message: {msg}"
-    );
-    if std::env::var("RUST_BACKTRACE")
-        .ok()
-        .is_some_and(|v| !matches!(v.trim(), "" | "0"))
-    {
-        let bt = std::backtrace::Backtrace::capture();
-        let _ = writeln!(std::io::stderr(), "{bt}");
-    }
-    let _ = std::io::stderr().flush();
-}
-
-/// Вызывать в самом начале `main` до `logging::init`, чтобы паники при старте не «терялись».
-pub fn install_early_panic_hook() {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        log_panic_to_stderr(info);
-        previous(info);
-    }));
-}
-
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // stderr уже пишет цепочка из `install_early_panic_hook`; здесь — в subscriber.
-        tracing::error!(target: "openmines_server::panic", %info, "panic (see stderr for message + RUST_BACKTRACE)");
+        tracing::error!(target: "openmines_server::panic", %info, "panic");
         previous(info);
-        if std::env::var("M3R_ABORT_ON_PANIC")
-            .ok()
-            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        {
-            let _ = writeln!(
-                std::io::stderr(),
-                "[openmines-server] M3R_ABORT_ON_PANIC: exiting with status 101"
-            );
-            let _ = std::io::stderr().flush();
-            std::process::exit(101);
-        }
     }));
 }
 
