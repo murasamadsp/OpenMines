@@ -1,4 +1,5 @@
 pub mod buildings;
+pub mod boxes;
 pub mod chats;
 pub mod clans;
 pub mod players;
@@ -6,6 +7,7 @@ pub mod programs;
 pub mod provider;
 
 pub use buildings::*;
+pub use boxes::*;
 pub use clans::*;
 pub use players::*;
 pub use programs::ProgramRow;
@@ -83,6 +85,15 @@ impl Database {
                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
             );
 
+            -- Reference-compatible chat lines (GLine) table.
+            -- Kept alongside chat_messages for backward compatibility.
+            CREATE TABLE IF NOT EXISTS lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playerid INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                chat_tag TEXT NOT NULL DEFAULT 'FED'
+            );
+
             CREATE TABLE IF NOT EXISTS buildings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type_code TEXT NOT NULL,
@@ -124,6 +135,25 @@ impl Database {
                 name TEXT NOT NULL,
                 code TEXT NOT NULL,
                 FOREIGN KEY(player_id) REFERENCES players(id)
+            );
+
+            -- Boxes (Cell 90): crystal storage like reference `boxes` table
+            CREATE TABLE IF NOT EXISTS boxes (
+                x INTEGER NOT NULL,
+                y INTEGER NOT NULL,
+                ze INTEGER NOT NULL DEFAULT 0,
+                cr INTEGER NOT NULL DEFAULT 0,
+                si INTEGER NOT NULL DEFAULT 0,
+                be INTEGER NOT NULL DEFAULT 0,
+                fi INTEGER NOT NULL DEFAULT 0,
+                go INTEGER NOT NULL DEFAULT 0,
+                cry_green INTEGER NOT NULL DEFAULT 0,
+                cry_blue INTEGER NOT NULL DEFAULT 0,
+                cry_red INTEGER NOT NULL DEFAULT 0,
+                cry_violet INTEGER NOT NULL DEFAULT 0,
+                cry_white INTEGER NOT NULL DEFAULT 0,
+                cry_cyan INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (x, y)
             );",
             )?;
         }
@@ -157,6 +187,171 @@ impl Database {
             )?;
             did_migrate = true;
             tracing::info!("Migrated DB: added programs table");
+        }
+
+        // boxes table (Cell 90 crystal storage)
+        let conn = self.conn.lock();
+        let has_boxes_table = conn
+            .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='boxes'")?
+            .query_row([], |r| r.get::<_, i32>(0))
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        drop(conn);
+        if !has_boxes_table {
+            let conn = self.conn.lock();
+            conn.execute(
+                "CREATE TABLE boxes (
+                    x INTEGER NOT NULL,
+                    y INTEGER NOT NULL,
+                    ze INTEGER NOT NULL DEFAULT 0,
+                    cr INTEGER NOT NULL DEFAULT 0,
+                    si INTEGER NOT NULL DEFAULT 0,
+                    be INTEGER NOT NULL DEFAULT 0,
+                    fi INTEGER NOT NULL DEFAULT 0,
+                    go INTEGER NOT NULL DEFAULT 0,
+                    cry_green INTEGER NOT NULL DEFAULT 0,
+                    cry_blue INTEGER NOT NULL DEFAULT 0,
+                    cry_red INTEGER NOT NULL DEFAULT 0,
+                    cry_violet INTEGER NOT NULL DEFAULT 0,
+                    cry_white INTEGER NOT NULL DEFAULT 0,
+                    cry_cyan INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (x, y)
+                )",
+                [],
+            )?;
+            did_migrate = true;
+            tracing::info!("Migrated DB: added boxes table");
+        }
+
+        // Reference-compatible `boxes` crystal columns: ze/cr/si/be/fi/go
+        {
+            let conn = self.conn.lock();
+            let has_ze = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='ze'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            let has_cr = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='cr'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            let has_si = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='si'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            let has_be = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='be'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            let has_fi = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='fi'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            let has_go = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='go'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            drop(conn);
+
+            if !has_ze {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN ze INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.ze");
+            }
+            if !has_cr {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN cr INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.cr");
+            }
+            if !has_si {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN si INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.si");
+            }
+            if !has_be {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN be INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.be");
+            }
+            if !has_fi {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN fi INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.fi");
+            }
+            if !has_go {
+                self.conn
+                    .lock()
+                    .execute("ALTER TABLE boxes ADD COLUMN go INTEGER NOT NULL DEFAULT 0", [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added boxes.go");
+            }
+
+            // Best-effort backfill from legacy cry_* columns if present.
+            let conn = self.conn.lock();
+            let has_legacy = conn
+                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='cry_green'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            drop(conn);
+            if has_legacy {
+                let conn = self.conn.lock();
+                let updated = conn.execute(
+                    "UPDATE boxes SET
+                        ze = CASE WHEN ze = 0 THEN cry_green ELSE ze END,
+                        cr = CASE WHEN cr = 0 THEN cry_blue ELSE cr END,
+                        si = CASE WHEN si = 0 THEN cry_red ELSE si END,
+                        be = CASE WHEN be = 0 THEN cry_violet ELSE be END,
+                        fi = CASE WHEN fi = 0 THEN cry_white ELSE fi END,
+                        go = CASE WHEN go = 0 THEN cry_cyan ELSE go END
+                    WHERE cry_green != 0 OR cry_blue != 0 OR cry_red != 0 OR cry_violet != 0 OR cry_white != 0 OR cry_cyan != 0",
+                    [],
+                )?;
+                if updated > 0 {
+                    did_migrate = true;
+                    tracing::info!("Migrated DB: backfilled boxes ze/cr/si/be/fi/go from legacy cry_* for {updated} rows");
+                }
+            }
+        }
+
+        // Reference-compatible `lines` table for chat history.
+        {
+            let conn = self.conn.lock();
+            let has_lines_table = conn
+                .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lines'")?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false);
+            drop(conn);
+            if !has_lines_table {
+                let conn = self.conn.lock();
+                conn.execute(
+                    "CREATE TABLE lines (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        playerid INTEGER NOT NULL DEFAULT 0,
+                        message TEXT NOT NULL DEFAULT '',
+                        chat_tag TEXT NOT NULL DEFAULT 'FED'
+                    )",
+                    [],
+                )?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added lines table");
+            }
         }
 
         let conn = self.conn.lock();
@@ -290,6 +485,18 @@ impl Database {
                         Err(e) => tracing::warn!("Migrated DB: could not DROP is_moderator: {e}"),
                     }
                 }
+            }
+        }
+
+        // Bump Movement skill to level 60 for all existing players with lower level
+        {
+            let conn = self.conn.lock();
+            let updated = conn.execute(
+                "UPDATE players SET skills = json_set(skills, '$.M.level', 60) WHERE json_extract(skills, '$.M.level') < 60",
+                [],
+            ).unwrap_or(0);
+            if updated > 0 {
+                tracing::info!("Migrated DB: bumped Movement skill to 60 for {updated} players");
             }
         }
 

@@ -1,17 +1,18 @@
 //! Обработка нажатий GUI-кнопок игроком.
-use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, modify_pack_with_db,
 };
-use crate::game::player::{PlayerPosition, PlayerStats, PlayerInventory, PlayerSkills, PlayerUI, PlayerFlags, PlayerMetadata};
-use crate::game::buildings::{PackView, PackType, BuildingStats, BuildingStorage};
+use crate::game::player::{PlayerPosition, PlayerStats, PlayerInventory, PlayerUI};
+use crate::game::buildings::{PackView, BuildingStats, BuildingStorage};
 
 pub fn handle_gui_button(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId, button: &str) {
-    if button == "exit" || button == "close" {
+    // ref `Session.GUI`: `"exit"` or `"exit:0"` => CloseWindow()
+    if button == "exit" || button == "exit:0" || button == "close" {
         state.modify_player(pid, |ecs, entity| {
             if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) { ui.current_window = None; }
+            // ref `CloseWindow`: сброс выбранного слота (у нас это `inventory.selected`).
+            if let Some(mut inv) = ecs.get_mut::<PlayerInventory>(entity) { inv.selected = -1; }
             Some(())
         });
         let g = gu_close();

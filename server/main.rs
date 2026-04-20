@@ -21,6 +21,8 @@ const DB_FILENAME: &str = "openmines.db";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // До `logging::init` паники не попадали в tracing — ловим в stderr сразу.
+    logging::install_early_panic_hook();
     println!("[Main] Process started");
     let cfg = config::Config::load("config.json").map_err(|e| {
         println!("[Main] CRITICAL: Failed to load config.json: {}", e);
@@ -130,11 +132,15 @@ async fn main() -> Result<()> {
 
     // Run TCP server until shutdown signal.
     let net_res = net::run(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).await;
+    match &net_res {
+        Ok(()) => tracing::info!("net::run finished Ok (accept loop ended, e.g. shutdown)"),
+        Err(e) => tracing::error!("net::run finished with error (process may exit): {e:#}"),
+    }
 
     // Final flush/save on shutdown.
     tracing::info!("Shutdown: saving all players and flushing world...");
-    for entry in &game_state.active_players {
-        let pid = *entry.key();
+    let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
+    for pid in shutdown_pids {
         let player_row = game_state.query_player(pid, |ecs, entity| {
             crate::game::player::extract_player_row(ecs, entity)
         }).flatten();

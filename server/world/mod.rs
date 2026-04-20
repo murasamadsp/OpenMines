@@ -281,6 +281,9 @@ impl WorldProvider for World {
         let l_cells = self.layers.get("cells").unwrap().read();
         let l_road = self.layers.get("road").unwrap().read();
         let mut res = Vec::with_capacity(n);
+        // 1:1 ref wire order for HB 'M':
+        // `Chunk.cells => for y:0..32, for x:0..32, cell[x,y]`
+        // (см. `server_reference/GameShit/WorldSystem/Chunk.cs`, свойство `cells`).
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
                 let ux = base_x + x;

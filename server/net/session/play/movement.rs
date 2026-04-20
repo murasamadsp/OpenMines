@@ -1,48 +1,114 @@
 //! Движение робота по миру и рассылка HB соседям.
+//! Референс: `Session.MoveHandler` → `player.TryAct(() => player.Move(parent.X, parent.Y, dir), player.ServerPause)`
 use crate::net::session::prelude::*;
-use crate::game::player::{PlayerPosition, PlayerStats, PlayerCooldowns, PlayerFlags};
+use crate::game::player::{PlayerPosition, PlayerStats, PlayerFlags, PlayerUI};
+use crate::game::buildings::PackType;
 
 pub fn handle_move(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
+    client_time: u32,
+    target_x: i32,
+    target_y: i32,
     dir: i32,
 ) {
+    let tp_back = |reason: &str, txc: &mpsc::UnboundedSender<Vec<u8>>, from_x: i32, from_y: i32, to_x: i32, to_y: i32, extra: &str| {
+        tracing::debug!(
+            "[Move] TP back reason={reason} pid={pid} from=({from_x},{from_y}) to=({to_x},{to_y}) {extra}"
+        );
+        send_u_packet(txc, "@T", &tp(from_x, from_y).1);
+    };
+
     let result = state.modify_player(pid, |ecs, entity| {
         let (px, py, skin, clan) = {
             let pos = ecs.get::<PlayerPosition>(entity)?;
             let stats = ecs.get::<PlayerStats>(entity)?;
-            let cd = ecs.get::<PlayerCooldowns>(entity)?;
-            if cd.last_move.elapsed().as_millis() < 50 { return None; }
-            (pos.x, pos.y, stats.skin, stats.clan_id.unwrap_or(0))
+            let ui = ecs.get::<PlayerUI>(entity)?;
+
+            let pos_x = pos.x;
+            let pos_y = pos.y;
+            let skin = stats.skin;
+            let clan = stats.clan_id.unwrap_or(0);
+
+            // Клиент — истина по таймингу движения; серверный cooldown убран.
+            // Клиент сам пейсит Xmov по `SpeedPacket`, сервер только валидирует позицию.
+
+            // 1:1 ref: `(win != null && !prog) => tp back`. For normal `Xmov` we treat it as `!prog`.
+            if ui.current_window.is_some() {
+                tp_back("window", tx, pos_x, pos_y, target_x, target_y, "");
+                return None;
+            }
+
+            (pos_x, pos_y, skin, clan)
         };
 
-        let (nx, ny) = {
-            let (dx, dy) = dir_offset(dir);
-            (px + dx, py + dy)
+        // Референс: ValidCoord check
+        if !state.world.valid_coord(target_x, target_y) {
+            tp_back("invalid_coord", tx, px, py, target_x, target_y, "");
+            return None;
+        }
+
+        // Референс: dir computation — if position changed, compute from delta; otherwise use client dir
+        let actual_dir = if px != target_x || py != target_y {
+            if px > target_x { 1 } else if px < target_x { 3 } else if py > target_y { 2 } else { 0 }
+        } else {
+            let d = if dir > 9 { dir - 10 } else { dir };
+            d.clamp(0, 3)
         };
 
-        if !state.world.valid_coord(nx, ny) || !state.world.is_empty(nx, ny) {
-            send_u_packet(tx, "@T", &tp(px, py).1);
+        // Референс: `!GetProp(cell).isEmpty` → tp back
+        if !state.world.is_empty(target_x, target_y) {
+            let cell = state.world.get_cell(target_x, target_y);
+            tp_back("not_empty", tx, px, py, target_x, target_y, &format!("cell={cell}"));
+            return None;
+        }
+
+        // 1:1 ref: Gate blocks movement for other clans (`pack is Gate && pack.cid != cid`).
+        // Нельзя вызывать `state.get_pack_at()` — она берёт `ecs.read()`, а мы уже под `ecs.write()` (self-deadlock).
+        // Используем `building_index` + `ecs` напрямую из замыкания.
+        if let Some(bld_entity) = state.building_index.get(&(target_x, target_y)) {
+            let bld_entity = *bld_entity;
+            if let (Some(meta), Some(ownership)) = (
+                ecs.get::<crate::game::BuildingMetadata>(bld_entity),
+                ecs.get::<crate::game::BuildingOwnership>(bld_entity),
+            ) {
+                if meta.pack_type == PackType::Gate && ownership.clan_id != clan {
+                    tp_back(
+                        "gate",
+                        tx,
+                        px,
+                        py,
+                        target_x,
+                        target_y,
+                        &format!("pack_clan={} player_clan={clan}", ownership.clan_id),
+                    );
+                    return None;
+                }
+            }
+        }
+
+        // Референс: `Distance < 1.2` — accept; otherwise tp back
+        let dx = (target_x - px) as f32;
+        let dy = (target_y - py) as f32;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist >= 1.2 {
+            tp_back("dist", tx, px, py, target_x, target_y, &format!("dist={dist:.3}"));
             return None;
         }
 
         {
             let mut pos_mut = ecs.get_mut::<PlayerPosition>(entity)?;
-            pos_mut.x = nx;
-            pos_mut.y = ny;
-            pos_mut.dir = dir;
-        }
-        {
-            let mut cd_mut = ecs.get_mut::<PlayerCooldowns>(entity)?;
-            cd_mut.last_move = std::time::Instant::now();
+            pos_mut.x = target_x;
+            pos_mut.y = target_y;
+            pos_mut.dir = actual_dir;
         }
         {
             let mut flags_mut = ecs.get_mut::<PlayerFlags>(entity)?;
             flags_mut.dirty = true;
         }
 
-        Some((nx, ny, dir, skin, clan))
+        Some((target_x, target_y, actual_dir, skin, clan))
     }).flatten();
 
     if let Some((nx, ny, ndir, skin, clan)) = result {

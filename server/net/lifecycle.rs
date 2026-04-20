@@ -29,16 +29,22 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
 /// Сохранение «грязных» игроков в БД.
 pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        // 1:1 ref: `Player.Sync()` runs about every 10 seconds.
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
         loop {
             tokio::select! {
                 _ = interval.tick() => {}
                 _ = shutdown.recv() => break,
             }
             
+            // Сначала снимаем список pid без вложенного `modify_player` под guard'ом итератора:
+            // иначе держим ref `active_players` + `ecs.write()` — легко словить взаимную блокировку
+            // с сессией (`query_player` / `broadcast_to_nearby`) и «зависание» всего сервера ~10 с.
+            let pids: Vec<crate::game::PlayerId> =
+                state.active_players.iter().map(|e| *e.key()).collect();
+
             let mut dirty_rows = Vec::new();
-            for entry in &state.active_players {
-                let pid = *entry.key();
+            for pid in pids {
                 let row = state.modify_player(pid, |ecs, entity| {
                     let mut flags = ecs.get_mut::<crate::game::PlayerFlags>(entity)?;
                     if flags.dirty {
@@ -118,21 +124,51 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 _ = interval.tick() => {}
                 _ = shutdown.recv() => break,
             }
-            // Execute systems + смерть от пушки (`DeathQueue`, см. `game/combat.rs` — как `Hurt`→`Death` в референсе).
-            let pending = {
+            // ECS + очереди side-effects.
+            // Системы НЕ ре-лочат `ecs` — вместо этого пушат в BroadcastQueue/ProgrammatorQueue.
+            // Обрабатываем очереди ПОСЛЕ `schedule.run()`, когда `ecs.write()` уже отпущен.
+            let (pending, broadcasts, prog_actions) = {
                 let mut ecs = state.ecs.write();
                 let mut schedule = state.schedule.write();
                 schedule.run(&mut ecs);
                 let p = crate::net::session::social::misc::flush_player_death_queue_after_tick(&state, &mut ecs);
+                let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
+                let pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
                 drop(schedule);
-                p
+                (p, bc, pa)
             };
-            for (pid, rx, ry, mh) in pending {
+
+            // Отложенные broadcast'ы из ECS-систем (sand, combat).
+            for effect in broadcasts {
+                match effect {
+                    crate::game::BroadcastEffect::CellUpdate(x, y) => {
+                        crate::game::broadcast_cell_update(&state, x, y);
+                    }
+                    crate::game::BroadcastEffect::Nearby { cx, cy, data, exclude } => {
+                        state.broadcast_to_nearby(cx, cy, &data, exclude);
+                    }
+                }
+            }
+
+            // Отложенные команды программатора.
+            for action in prog_actions {
+                match action {
+                    crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
+                        crate::net::session::play::movement::handle_move(&state, &tx, pid, 0, x, y, dir);
+                    }
+                    crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
+                        crate::net::session::play::dig_build::handle_dig(&state, &tx, pid, dir);
+                    }
+                }
+            }
+
+            for (pid, rx, ry, mh, bcast) in pending {
+                crate::net::session::social::misc::run_death_broadcasts(&state, &bcast);
                 let tx = state.query_player(pid, |ecs, entity| {
                     ecs.get::<crate::game::player::PlayerConnection>(entity).map(|c| c.tx.clone())
                 }).flatten();
                 if let Some(tx) = tx {
-                    crate::net::session::social::misc::send_respawn_after_death(&tx, rx, ry, mh);
+                    crate::net::session::social::misc::send_respawn_after_death(&tx, pid, rx, ry, mh);
                     crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
                 }
             }

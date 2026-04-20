@@ -8,16 +8,6 @@ use crate::game::player::{PlayerPosition, PlayerStats, PlayerUI, PlayerConnectio
 
 // ─── Buildings ─────────────────────────────────────────────────────────
 
-fn pack_block_pos(state: &GameState, x: i32, y: i32) -> Option<i32> {
-    if x < 0 || y < 0 { return None; }
-    let chunk_x = x / 32;
-    let chunk_y = y / 32;
-    let width = i32::try_from(state.world.chunks_w()).ok()?;
-    let height = i32::try_from(state.world.chunks_h()).ok()?;
-    if chunk_x >= width || chunk_y >= height { return None; }
-    chunk_y.checked_mul(width)?.checked_add(chunk_x)
-}
-
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
 pub fn handle_programmator_pope_menu(_state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, _pid: PlayerId) {
     let gui = serde_json::json!({
@@ -219,9 +209,6 @@ pub fn handle_remove_building(state: &Arc<GameState>, tx: &mpsc::UnboundedSender
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1); return;
     }
 
-    state.building_index.remove(&(view.x, view.y));
-    // We should also despawn from ECS, but need the entity. 
-    // Let's modify get_pack_at or use building_index again.
     if let Some((_, entity)) = state.building_index.remove(&(view.x, view.y)) {
         state.ecs.write().despawn(entity);
     }
@@ -284,7 +271,7 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
 }
 
 pub fn broadcast_pack_update(state: &Arc<GameState>, view: &PackView) {
-    if let Some(block_pos) = pack_block_pos(state, view.x, view.y) {
+    if let Some(block_pos) = state.pack_block_pos(view.x, view.y) {
         let packs = gather_block_packs(state, block_pos);
         let sub = hb_packs(block_pos, &packs);
         let data = encode_hb_bundle(&hb_bundle(&[sub]).1);
@@ -322,7 +309,7 @@ fn place_pack_cells(state: &Arc<GameState>, view: &PackView) {
     }
 }
 
-fn pack_has_cell(state: &Arc<GameState>, bx: i32, by: i32, pack_type: PackType, cx: i32, cy: i32) -> bool {
+fn pack_has_cell(_state: &Arc<GameState>, bx: i32, by: i32, pack_type: PackType, cx: i32, cy: i32) -> bool {
     pack_type.building_cells().iter().any(|(dx, dy, _)| bx + dx == cx && by + dy == cy)
 }
 
