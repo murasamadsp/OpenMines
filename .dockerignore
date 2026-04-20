@@ -19,17 +19,12 @@ target/
 client/
 client_decompiled/
 client_extracted/
-Mines.app/
-MinesServer_DO_NOT_READ_ME/
 
 # Патчи/сборки клиента в корне репозитория
 Assembly-CSharp*.dll
 *.app
 
 # ─── Данные и логи хоста (не вшиваем в слой сборки) ───────────────────────
-mines3.db
-mines3.db-shm
-mines3.db-wal
 openmines.db
 openmines.db-shm
 openmines.db-wal

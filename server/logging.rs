@@ -81,10 +81,12 @@ fn install_panic_hook() {
         // stderr уже пишет цепочка из `install_early_panic_hook`; здесь — в subscriber.
         tracing::error!(target: "openmines_server::panic", %info, "panic (see stderr for message + RUST_BACKTRACE)");
         previous(info);
-        if std::env::var("M3R_ABORT_ON_PANIC")
-            .ok()
-            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        {
+        if std::env::var("M3R_ABORT_ON_PANIC").ok().is_some_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        }) {
             let _ = writeln!(
                 std::io::stderr(),
                 "[openmines-server] M3R_ABORT_ON_PANIC: exiting with status 101"

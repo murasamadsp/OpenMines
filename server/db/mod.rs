@@ -1,13 +1,13 @@
-pub mod buildings;
 pub mod boxes;
+pub mod buildings;
 pub mod chats;
 pub mod clans;
 pub mod players;
 pub mod programs;
 pub mod provider;
 
-pub use buildings::*;
 pub use boxes::*;
+pub use buildings::*;
 pub use clans::*;
 pub use players::*;
 pub use programs::ProgramRow;
@@ -259,44 +259,50 @@ impl Database {
             drop(conn);
 
             if !has_ze {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN ze INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN ze INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.ze");
             }
             if !has_cr {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN cr INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN cr INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.cr");
             }
             if !has_si {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN si INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN si INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.si");
             }
             if !has_be {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN be INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN be INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.be");
             }
             if !has_fi {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN fi INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN fi INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.fi");
             }
             if !has_go {
-                self.conn
-                    .lock()
-                    .execute("ALTER TABLE boxes ADD COLUMN go INTEGER NOT NULL DEFAULT 0", [])?;
+                self.conn.lock().execute(
+                    "ALTER TABLE boxes ADD COLUMN go INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
                 did_migrate = true;
                 tracing::info!("Migrated DB: added boxes.go");
             }
@@ -324,7 +330,9 @@ impl Database {
                 )?;
                 if updated > 0 {
                     did_migrate = true;
-                    tracing::info!("Migrated DB: backfilled boxes ze/cr/si/be/fi/go from legacy cry_* for {updated} rows");
+                    tracing::info!(
+                        "Migrated DB: backfilled boxes ze/cr/si/be/fi/go from legacy cry_* for {updated} rows"
+                    );
                 }
             }
         }

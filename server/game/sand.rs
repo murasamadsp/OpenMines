@@ -1,37 +1,38 @@
-use crate::game::{GameStateResource, BroadcastQueue, BroadcastEffect};
 use crate::game::player::PlayerPosition;
-use crate::world::cells::cell_type;
+use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
 use crate::world::WorldProvider;
+use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn sand_physics_system(state_res: Res<GameStateResource>, mut bcast_q: ResMut<BroadcastQueue>, query: Query<&PlayerPosition>) {
+pub fn sand_physics_system(
+    state_res: Res<GameStateResource>,
+    mut bcast_q: ResMut<BroadcastQueue>,
+    query: Query<&PlayerPosition>,
+) {
     let state = &state_res.0;
+    let cell_defs = state.world.cell_defs();
     let mut tasks = Vec::new();
 
-    // Scan around active players using ECS query
     for pos in &query {
-        let (px, py) = (pos.x, pos.y);
+        let (player_x, player_y) = (pos.x, pos.y);
 
-        // Radius of 16 cells for physics
-        for dy in (-16..=16).rev() {
-            for dx in -16..=16 {
-                let x = px + dx;
-                let y = py + dy;
+        // Радиус 16 клеток для физики песка
+        for dy in (-16..=16_i32).rev() {
+            for dx in -16..=16_i32 {
+                let sx = player_x + dx;
+                let sy = player_y + dy;
 
-                if !state.world.valid_coord(x, y) {
+                if !state.world.valid_coord(sx, sy) {
                     continue;
                 }
 
-                let cell = state.world.get_cell(x, y);
-                let cell_defs = state.world.cell_defs();
-                let prop = cell_defs.get(cell);
-
-                if prop.is_sand() {
-                    let down_y = y + 1;
-                    if state.world.valid_coord(x, down_y) && state.world.is_empty(x, down_y) {
-                        tasks.push((x, y, down_y, cell));
-                    }
+                let cell = state.world.get_cell(sx, sy);
+                if cell_defs.get(cell).is_sand()
+                    && state.world.valid_coord(sx, sy + 1)
+                    && state.world.is_empty(sx, sy + 1)
+                {
+                    tasks.push((sx, sy, sy + 1, cell));
                 }
             }
         }
@@ -40,13 +41,13 @@ pub fn sand_physics_system(state_res: Res<GameStateResource>, mut bcast_q: ResMu
     tasks.sort_unstable();
     tasks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
-    for (x, y, dy, cell) in tasks {
-        if state.world.is_empty(x, dy) {
-            state.world.set_cell(x, y, cell_type::EMPTY);
-            state.world.set_cell(x, dy, cell);
+    for (sx, sy, down_y, cell) in tasks {
+        if state.world.is_empty(sx, down_y) {
+            state.world.set_cell(sx, sy, cell_type::EMPTY);
+            state.world.set_cell(sx, down_y, cell);
 
-            bcast_q.0.push(BroadcastEffect::CellUpdate(x, y));
-            bcast_q.0.push(BroadcastEffect::CellUpdate(x, dy));
+            bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));
+            bcast_q.0.push(BroadcastEffect::CellUpdate(sx, down_y));
         }
     }
 }

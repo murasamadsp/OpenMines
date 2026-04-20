@@ -39,6 +39,7 @@ impl Packet {
 
     /// Try to decode one packet from the buffer. Returns None if not enough data.
     pub fn try_decode(buf: &mut BytesMut) -> Result<Option<Self>> {
+        const MAX_PACKET_LEN: usize = 65536;
         if buf.len() < 4 {
             return Ok(None);
         }
@@ -47,6 +48,9 @@ impl Packet {
             .map_err(|_| anyhow::anyhow!("invalid packet length: {length_raw}"))?;
         if length < 7 {
             bail!("packet too small: {length}");
+        }
+        if length > MAX_PACKET_LEN {
+            bail!("packet too large: {length}");
         }
         if buf.len() < length {
             return Ok(None);

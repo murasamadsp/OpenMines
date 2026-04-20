@@ -1,16 +1,16 @@
-use crate::game::{GameStateResource, BroadcastQueue, BroadcastEffect};
+use crate::db::BoxRow;
 use crate::game::buildings::{
     BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
 };
 use crate::game::player::{
-    PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition, PlayerStats,
-    PlayerSkills as PlayerSkillsCom,
+    PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition,
+    PlayerSkills as PlayerSkillsCom, PlayerStats,
 };
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
+use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
-use crate::db::BoxRow;
 
 /// Очередь смерти после `gun_firing_system`: нельзя вызывать `handle_death` изнутри `schedule.run` (вложенный `ecs.write()`).
 #[derive(Resource, Default)]
@@ -88,7 +88,12 @@ pub fn gun_firing_system(
     state_res: Res<GameStateResource>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    mut guns_query: Query<(&BuildingMetadata, &mut BuildingStats, &BuildingOwnership, &GridPosition)>,
+    mut guns_query: Query<(
+        &BuildingMetadata,
+        &mut BuildingStats,
+        &BuildingOwnership,
+        &GridPosition,
+    )>,
     mut players_query: Query<(
         Entity,
         &PlayerMetadata,
@@ -130,7 +135,9 @@ pub fn gun_firing_system(
 
         if let Some(entity) = target_entity {
             b_stats.charge -= 1.0;
-            if let Ok((_ent, p_meta, _pos, p_sk, mut stats, _cd, conn, mut flags)) = players_query.get_mut(entity) {
+            if let Ok((_ent, p_meta, _pos, p_sk, mut stats, _cd, conn, mut flags)) =
+                players_query.get_mut(entity)
+            {
                 let sk = SkillHurt {
                     skills: &p_sk.states,
                 };
@@ -155,7 +162,12 @@ pub fn gun_firing_system(
                     &crate::protocol::packets::hb_bundle(&[fx]).1,
                 );
                 let (cx, cy) = crate::world::World::chunk_pos(b_pos.x, b_pos.y);
-                bcast_q.0.push(BroadcastEffect::Nearby { cx, cy, data, exclude: None });
+                bcast_q.0.push(BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data,
+                    exclude: None,
+                });
             }
         }
     }

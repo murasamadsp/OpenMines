@@ -1,5 +1,5 @@
+use crate::game::player::{PlayerConnection, PlayerMetadata, PlayerPosition};
 use bevy_ecs::prelude::Component;
-use crate::game::player::{PlayerPosition, PlayerConnection, PlayerMetadata};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -135,7 +135,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-use crate::game::{GameStateResource, ProgrammatorQueue, ProgrammatorAction};
+use crate::game::{GameStateResource, ProgrammatorAction, ProgrammatorQueue};
 use bevy_ecs::prelude::{Query, Res, ResMut};
 
 #[allow(clippy::needless_pass_by_value)]

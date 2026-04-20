@@ -8,8 +8,8 @@ mod net;
 mod protocol;
 mod world;
 
-use crate::world::WorldProvider;
 use crate::game::buildings::load_buildings_config;
+use crate::world::WorldProvider;
 use anyhow::Result;
 use std::env;
 use std::io::ErrorKind;
@@ -90,15 +90,11 @@ async fn main() -> Result<()> {
         {
             // В Docker `ctrl_c()` иногда готовится сразу — сервер выходит до accept. В compose: `M3R_USE_CTRL_C=0`.
             let use_ctrl_c = env::var("M3R_USE_CTRL_C")
-                .map(|v| {
-                    !matches!(
-                        v.trim().to_ascii_lowercase().as_str(),
-                        "0" | "false" | "no"
-                    )
-                })
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
                 .unwrap_or(true);
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("SIGTERM handler");
+            let mut sigterm =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("SIGTERM handler");
             if use_ctrl_c {
                 let ctrl_c = tokio::signal::ctrl_c();
                 tokio::select! {
@@ -141,9 +137,11 @@ async fn main() -> Result<()> {
     tracing::info!("Shutdown: saving all players and flushing world...");
     let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
     for pid in shutdown_pids {
-        let player_row = game_state.query_player(pid, |ecs, entity| {
-            crate::game::player::extract_player_row(ecs, entity)
-        }).flatten();
+        let player_row = game_state
+            .query_player(pid, |ecs, entity| {
+                crate::game::player::extract_player_row(ecs, entity)
+            })
+            .flatten();
 
         if let Some(row) = player_row {
             if let Err(e) = game_state.db.save_player(&row) {

@@ -106,7 +106,10 @@ impl PlayerPosition {
     }
 }
 
-pub fn extract_player_row(ecs: &bevy_ecs::prelude::World, entity: bevy_ecs::entity::Entity) -> Option<PlayerRow> {
+pub fn extract_player_row(
+    ecs: &bevy_ecs::prelude::World,
+    entity: bevy_ecs::entity::Entity,
+) -> Option<PlayerRow> {
     let pos = ecs.get::<PlayerPosition>(entity)?;
     let stats = ecs.get::<PlayerStats>(entity)?;
     let meta = ecs.get::<PlayerMetadata>(entity)?;

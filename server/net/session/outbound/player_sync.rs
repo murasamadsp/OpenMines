@@ -24,18 +24,12 @@ pub fn send_player_health(tx: &mpsc::UnboundedSender<Vec<u8>>, stats: &PlayerSta
     send_u_packet(tx, "@L", &health(stats.health, stats.max_health).1);
 }
 
-pub fn send_player_level(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    skills: &PlayerSkillsComponent,
-) {
+pub fn send_player_level(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
     let total_lvl: i32 = skills.states.values().map(|s| s.level).sum();
     send_u_packet(tx, "LV", &level(total_lvl).1);
 }
 
-pub fn send_player_skills(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    skills: &PlayerSkillsComponent,
-) {
+pub fn send_player_skills(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
     let payload = skill_progress_payload(&skills.states);
     let sk = skills_packet(&payload);
     send_u_packet(tx, sk.0, &sk.1);

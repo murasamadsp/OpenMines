@@ -22,7 +22,12 @@ const OFFSETS: [(i32, i32); 9] = [
 ];
 
 /// Как `FindEmptyForBox`/смежный выбор в референсе: подобрать координату рядом.
-pub fn pick_box_coord<FValid, FEmpty>(x: i32, y: i32, valid: FValid, is_empty: FEmpty) -> Option<(i32, i32)>
+pub fn pick_box_coord<FValid, FEmpty>(
+    x: i32,
+    y: i32,
+    valid: FValid,
+    is_empty: FEmpty,
+) -> Option<(i32, i32)>
 where
     FValid: Fn(i32, i32) -> bool,
     FEmpty: Fn(i32, i32) -> bool,
@@ -41,9 +46,7 @@ impl Database {
     pub fn get_box_at(&self, x: i32, y: i32) -> Result<Option<BoxRow>> {
         let conn = self.conn.lock();
         let row = conn
-            .prepare(
-                "SELECT x, y, ze, cr, si, be, fi, go FROM boxes WHERE x=?1 AND y=?2",
-            )?
+            .prepare("SELECT x, y, ze, cr, si, be, fi, go FROM boxes WHERE x=?1 AND y=?2")?
             .query_row(params![x, y], |r| {
                 Ok(BoxRow {
                     x: r.get(0)?,
@@ -100,4 +103,3 @@ impl Database {
         Ok(())
     }
 }
-

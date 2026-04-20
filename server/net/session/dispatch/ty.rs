@@ -1,7 +1,7 @@
 //! Диспетчеризация TY-пакетов (игровые действия).
-use crate::net::session::prelude::*;
+use crate::net::session::play::dig_build::{handle_build, handle_dig};
 use crate::net::session::play::movement::handle_move;
-use crate::net::session::play::dig_build::{handle_dig, handle_build};
+use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     handle_dpbx_crystal_box, handle_my_buildings_list, handle_programmator_pope_menu,
 };
@@ -13,7 +13,7 @@ use crate::net::session::social::misc::{
 };
 use crate::net::session::ui::gui_buttons::handle_gui_button;
 use crate::net::session::ui::heal_inventory::{
-    handle_heal, handle_invn_toggle, handle_inventory_use, handle_inventory_choose,
+    handle_heal, handle_inventory_choose, handle_inventory_use, handle_invn_toggle,
 };
 
 pub fn dispatch_ty_packet(

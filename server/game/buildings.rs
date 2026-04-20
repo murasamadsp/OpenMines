@@ -1,10 +1,10 @@
+use crate::db::buildings::BuildingRow;
+use crate::game::player::PlayerId;
+use bevy_ecs::prelude::{Component, Entity};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
 use std::sync::OnceLock;
-use bevy_ecs::prelude::{Component, Entity};
-use crate::game::player::PlayerId;
-use crate::db::buildings::BuildingRow;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BuildingCellConfig {
@@ -51,7 +51,7 @@ pub fn get_building_config(pack_type: PackType) -> Option<&'static BuildingConfi
 /// Как `MinesServer.GameShit.Buildings.PackType` в server_reference (`PackType.cs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackType {
-    None, // ' ' — в т.ч. класс Gate в C# объявлен как `PackType.None`
+    None,     // ' ' — в т.ч. класс Gate в C# объявлен как `PackType.None`
     Teleport, // 'T'
     Resp,     // 'R'
     Gun,      // 'G'

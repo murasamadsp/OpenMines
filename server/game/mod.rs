@@ -11,19 +11,23 @@ pub mod skills;
 use crate::config::Config;
 use crate::db::Database;
 use crate::world::{World, WorldProvider};
-use bevy_ecs::prelude::{Resource, World as EcsWorld, Entity};
+use bevy_ecs::prelude::{Entity, Resource, World as EcsWorld};
 use bevy_ecs::schedule::Schedule;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
-use tracing::info;
 use std::time::{Duration, Instant};
+use tracing::info;
 
-pub use player::{
-    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerMetadata,
-    PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI, PlayerView,
+pub use buildings::{
+    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
+    BuildingStorage, GridPosition, PackType, PackView,
 };
-pub use buildings::{PackType, PackView, BuildingMetadata, BuildingStats, BuildingStorage, BuildingCrafting, BuildingOwnership, GridPosition, BuildingFlags};
+pub use player::{
+    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
+    PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI,
+    PlayerView,
+};
 
 #[derive(Resource)]
 pub struct GameStateResource(pub Arc<GameState>);
@@ -36,7 +40,12 @@ pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
 
 pub enum BroadcastEffect {
     CellUpdate(i32, i32),
-    Nearby { cx: u32, cy: u32, data: Vec<u8>, exclude: Option<PlayerId> },
+    Nearby {
+        cx: u32,
+        cy: u32,
+        data: Vec<u8>,
+        exclude: Option<PlayerId>,
+    },
 }
 
 /// Отложенные команды программатора (handle_move/handle_dig ре-лочат ecs).
@@ -44,8 +53,18 @@ pub enum BroadcastEffect {
 pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
 
 pub enum ProgrammatorAction {
-    Move { pid: PlayerId, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>, x: i32, y: i32, dir: i32 },
-    Dig { pid: PlayerId, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>, dir: i32 },
+    Move {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        x: i32,
+        y: i32,
+        dir: i32,
+    },
+    Dig {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        dir: i32,
+    },
 }
 
 pub struct GameState {
@@ -101,33 +120,39 @@ impl GameState {
             let count = all_rows.len();
             let mut ecs = state.ecs.write();
             for row in all_rows {
-                let pack_type = buildings::PackType::from_str(&row.type_code).unwrap_or(buildings::PackType::Resp);
-                let entity = ecs.spawn((
-                    BuildingMetadata { id: row.id, pack_type },
-                    GridPosition { x: row.x, y: row.y },
-                    BuildingStats {
-                        charge: row.charge,
-                        max_charge: row.max_charge,
-                        cost: row.cost,
-                        hp: row.hp,
-                        max_hp: row.max_hp,
-                    },
-                    BuildingStorage {
-                        money: row.money_inside,
-                        crystals: row.crystals_inside,
-                        items: row.items_inside.clone(),
-                    },
-                    BuildingOwnership {
-                        owner_id: row.owner_id,
-                        clan_id: row.clan_id,
-                    },
-                    BuildingCrafting {
-                        recipe_id: row.craft_recipe_id,
-                        num: row.craft_num,
-                        end_ts: row.craft_end_ts,
-                    },
-                    BuildingFlags { dirty: false },
-                )).id();
+                let pack_type = buildings::PackType::from_str(&row.type_code)
+                    .unwrap_or(buildings::PackType::Resp);
+                let entity = ecs
+                    .spawn((
+                        BuildingMetadata {
+                            id: row.id,
+                            pack_type,
+                        },
+                        GridPosition { x: row.x, y: row.y },
+                        BuildingStats {
+                            charge: row.charge,
+                            max_charge: row.max_charge,
+                            cost: row.cost,
+                            hp: row.hp,
+                            max_hp: row.max_hp,
+                        },
+                        BuildingStorage {
+                            money: row.money_inside,
+                            crystals: row.crystals_inside,
+                            items: row.items_inside.clone(),
+                        },
+                        BuildingOwnership {
+                            owner_id: row.owner_id,
+                            clan_id: row.clan_id,
+                        },
+                        BuildingCrafting {
+                            recipe_id: row.craft_recipe_id,
+                            num: row.craft_num,
+                            end_ts: row.craft_end_ts,
+                        },
+                        BuildingFlags { dirty: false },
+                    ))
+                    .id();
                 state.building_index.insert((row.x, row.y), entity);
             }
             info!("Loaded {count} buildings into ECS from DB");
@@ -140,7 +165,8 @@ impl GameState {
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
-    where F: FnOnce(&EcsWorld, Entity) -> R,
+    where
+        F: FnOnce(&EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
         let ecs = self.ecs.read();
@@ -148,7 +174,8 @@ impl GameState {
     }
 
     pub fn modify_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
-    where F: FnOnce(&mut EcsWorld, Entity) -> R,
+    where
+        F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
         let mut ecs = self.ecs.write();
@@ -156,7 +183,8 @@ impl GameState {
     }
 
     pub fn modify_building<F, R>(&self, entity: Entity, f: F) -> Option<R>
-    where F: FnOnce(&mut EcsWorld, Entity) -> R,
+    where
+        F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
         let mut ecs = self.ecs.write();
         Some(f(&mut ecs, entity))
@@ -166,23 +194,40 @@ impl GameState {
     pub const AUTH_FAILURE_WINDOW: Duration = Duration::from_secs(30);
     pub const AUTH_BLOCK_DURATION: Duration = Duration::from_secs(20);
 
-    pub fn auth_blocked_remaining_by_addr(&self, addr: &std::net::IpAddr, now: Instant) -> Option<Duration> {
+    pub fn auth_blocked_remaining_by_addr(
+        &self,
+        addr: &std::net::IpAddr,
+        now: Instant,
+    ) -> Option<Duration> {
         let entry = self.auth_failures.get(addr)?;
         let (fails, last) = *entry.value();
         if fails >= Self::AUTH_FAILURE_LIMIT {
             let elapsed = now.duration_since(last);
-            if elapsed < Self::AUTH_BLOCK_DURATION { return Some(Self::AUTH_BLOCK_DURATION - elapsed); }
+            if elapsed < Self::AUTH_BLOCK_DURATION {
+                return Some(Self::AUTH_BLOCK_DURATION - elapsed);
+            }
         }
         None
     }
 
-    pub fn record_auth_failure_by_addr(&self, addr: &std::net::IpAddr, now: Instant) -> Option<Duration> {
+    pub fn record_auth_failure_by_addr(
+        &self,
+        addr: &std::net::IpAddr,
+        now: Instant,
+    ) -> Option<Duration> {
         let mut entry = self.auth_failures.entry(*addr).or_insert((0, now));
         let (fails, last) = entry.value_mut();
-        if now.duration_since(*last) > Self::AUTH_FAILURE_WINDOW { *fails = 1; }
-        else { *fails += 1; }
+        if now.duration_since(*last) > Self::AUTH_FAILURE_WINDOW {
+            *fails = 1;
+        } else {
+            *fails += 1;
+        }
         *last = now;
-        if *fails >= Self::AUTH_FAILURE_LIMIT { Some(Self::AUTH_BLOCK_DURATION) } else { None }
+        if *fails >= Self::AUTH_FAILURE_LIMIT {
+            Some(Self::AUTH_BLOCK_DURATION)
+        } else {
+            None
+        }
     }
 
     pub fn clear_auth_failure_by_addr(&self, addr: &std::net::IpAddr) {
@@ -190,7 +235,8 @@ impl GameState {
     }
 
     pub fn prune_auth_failures_by_addr(&self, now: Instant) {
-        self.auth_failures.retain(|_, (_, last)| now.duration_since(*last) < Self::AUTH_FAILURE_WINDOW);
+        self.auth_failures
+            .retain(|_, (_, last)| now.duration_since(*last) < Self::AUTH_FAILURE_WINDOW);
     }
 
     pub fn get_pack_at(&self, x: i32, y: i32) -> Option<PackView> {
@@ -200,7 +246,7 @@ impl GameState {
         let pos = ecs.get::<GridPosition>(entity)?;
         let ownership = ecs.get::<BuildingOwnership>(entity)?;
         let stats = ecs.get::<BuildingStats>(entity)?;
-        
+
         Some(PackView {
             id: meta.id,
             pack_type: meta.pack_type,
@@ -307,17 +353,27 @@ impl GameState {
         let ecs = self.ecs.read();
         for entry in self.building_index.iter() {
             let entity = *entry.value();
-            let Some(pos) = ecs.get::<GridPosition>(entity) else { continue; };
-            let Some(meta) = ecs.get::<BuildingMetadata>(entity) else { continue; };
-            let Some(ownership) = ecs.get::<BuildingOwnership>(entity) else { continue; };
-            let Some(stats) = ecs.get::<BuildingStats>(entity) else { continue; };
+            let Some(pos) = ecs.get::<GridPosition>(entity) else {
+                continue;
+            };
+            let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
+                continue;
+            };
+            let Some(ownership) = ecs.get::<BuildingOwnership>(entity) else {
+                continue;
+            };
+            let Some(stats) = ecs.get::<BuildingStats>(entity) else {
+                continue;
+            };
             let (pcx, pcy) = crate::world::World::chunk_pos(pos.x, pos.y);
             if (pcx as i64 - cx as i64).abs() <= 1 && (pcy as i64 - cy as i64).abs() <= 1 {
                 if !meta.pack_type.included_in_hb_overlay() {
                     continue;
                 }
                 let cid = ownership.clan_id.clamp(0, 255) as u8;
-                if self.pack_block_pos(pos.x, pos.y).is_none() { continue; }
+                if self.pack_block_pos(pos.x, pos.y).is_none() {
+                    continue;
+                }
                 result.push((
                     meta.pack_type.code(),
                     pos.x as u16,
@@ -332,30 +388,46 @@ impl GameState {
 
     pub fn send_to_player(&self, id: PlayerId, data: Vec<u8>) {
         self.query_player(id, |ecs, entity| {
-            if let Some(conn) = ecs.get::<PlayerConnection>(entity) { let _ = conn.tx.send(data); }
+            if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
+                let _ = conn.tx.send(data);
+            }
         });
     }
 
     pub fn broadcast_to_nearby(&self, cx: u32, cy: u32, data: &[u8], exclude_id: Option<PlayerId>) {
         for (ncx, ncy) in self.visible_chunks_around(cx, cy) {
             if let Some(players) = self.chunk_players.get(&(ncx, ncy)) {
-                for &pid in players.value() { if Some(pid) == exclude_id { continue; } self.send_to_player(pid, data.to_vec()); }
+                for &pid in players.value() {
+                    if Some(pid) == exclude_id {
+                        continue;
+                    }
+                    self.send_to_player(pid, data.to_vec());
+                }
             }
         }
     }
 
     pub fn visible_chunks_around(&self, cx: u32, cy: u32) -> Vec<(u32, u32)> {
         let mut res = Vec::new();
-        for dx in -2..=2 { for dy in -2..=2 {
-            let ncx = cx as i64 + dx; let ncy = cy as i64 + dy;
-            if ncx >= 0 && ncy >= 0 && ncx < self.world.chunks_w() as i64 && ncy < self.world.chunks_h() as i64 {
-                res.push((ncx as u32, ncy as u32));
+        for dx in -2..=2 {
+            for dy in -2..=2 {
+                let ncx = cx as i64 + dx;
+                let ncy = cy as i64 + dy;
+                if ncx >= 0
+                    && ncy >= 0
+                    && ncx < self.world.chunks_w() as i64
+                    && ncy < self.world.chunks_h() as i64
+                {
+                    res.push((ncx as u32, ncy as u32));
+                }
             }
-        }}
+        }
         res
     }
 
-    pub fn online_count(&self) -> usize { self.active_players.len() }
+    pub fn online_count(&self) -> usize {
+        self.active_players.len()
+    }
 
     /// Как `Player.GenerateHash()` в `Player.cs`: 12 символов `A-Z0-9`.
     pub fn generate_hash() -> String {
@@ -375,9 +447,15 @@ impl GameState {
             .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
             .collect()
     }
-    pub fn encode_password_hash(p: &str, h: &str) -> String { format!("{p}:{h}") }
-    pub fn verify_password(p: &str, hp: &str, h: &str) -> bool { format!("{p}:{h}") == hp }
-    pub fn map_profile_name(n: &str) -> String { n.to_string() }
+    pub fn encode_password_hash(p: &str, h: &str) -> String {
+        format!("{p}:{h}")
+    }
+    pub fn verify_password(p: &str, hp: &str, h: &str) -> bool {
+        format!("{p}:{h}") == hp
+    }
+    pub fn map_profile_name(n: &str) -> String {
+        n.to_string()
+    }
 
     /// Как `Auth.CalculateMD5Hash` в `server_reference/Server/Auth.cs` (ASCII `hash+sid`, hex lowercase).
     pub fn auth_token_hash_md5(hash: &str, sid: &str) -> String {
@@ -396,7 +474,8 @@ impl GameState {
 
     #[must_use]
     pub fn token_matches_legacy_auth(token: &str, hash: &str, sid: &str) -> bool {
-        token == Self::auth_token_hash_md5(hash, sid) || token == Self::auth_token_hash_sha256(hash, sid)
+        token == Self::auth_token_hash_md5(hash, sid)
+            || token == Self::auth_token_hash_sha256(hash, sid)
     }
 
     pub fn tick(&self) {
@@ -407,8 +486,8 @@ impl GameState {
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    use crate::protocol::packets::{hb_cell, hb_bundle};
     use crate::net::session::wire::encode_hb_bundle;
+    use crate::protocol::packets::{hb_bundle, hb_cell};
     use crate::world::WorldProvider;
     let sub = hb_cell(x as u16, y as u16, state.world.get_cell(x, y));
     let data = encode_hb_bundle(&hb_bundle(&[sub]).1);

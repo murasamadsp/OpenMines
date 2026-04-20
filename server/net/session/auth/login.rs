@@ -5,7 +5,11 @@ use crate::net::session::prelude::*;
 use serde_json::json;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
-fn send_auth_failure(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, au: &AuClientPacket) {
+fn send_auth_failure(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    _au: &AuClientPacket,
+) {
     let w = state.world.cells_width();
     let h = state.world.cells_height();
     // 1:1 ref: WorldInfoPacket(World.W.name, ...)
@@ -21,7 +25,7 @@ fn send_auth_failure(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
     let sub = hb_map(0, 0, 32, 32, &cells);
     // 1:1 ref: SendU(new HBPacket(...)) — HB payload, но outer data_type = "U"
     let bundle = hb_bundle(&[sub]).1;
-    send_u_packet(tx, "HB", &bundle);
+    send_b_packet(tx, "HB", &bundle);
 
     // 1:1 ref: `authwin = def; initiator.SendWin(authwin.ToString());`
     // Window.ToString() builds `horb:{...}` with `buttons` as alternating label/action entries.
@@ -47,41 +51,31 @@ pub async fn handle_auth(
     sid: &str,
     auth_state: &mut crate::net::session::connection::AuthState,
 ) -> Result<Option<PlayerId>> {
-    println!("[Auth] Attempting auth for uniq={}", au.client_uniq());
-    
+    tracing::debug!("[Auth] Attempting auth for uniq={}", au.client_uniq());
+
     let result = match &au.auth_type {
         AuAuthType::Regular { user_id, token } => {
-            println!("[Auth] Regular auth: id={}, token={}", user_id, token);
+            tracing::debug!("[Auth] Regular auth: id={}", user_id);
             if let Ok(Some(player)) = state.db.get_player_by_id(*user_id) {
-                println!("[Auth] DB hash for id={}: '{}'", user_id, player.hash);
                 if GameState::token_matches_legacy_auth(token, &player.hash, sid) {
                     Some(player)
                 } else {
-                    println!(
-                        "[Auth] Token mismatch for id={}. md5={} sha256={}",
-                        user_id,
-                        GameState::auth_token_hash_md5(&player.hash, sid),
-                        GameState::auth_token_hash_sha256(&player.hash, sid)
-                    );
+                    tracing::debug!("[Auth] Token mismatch for id={}", user_id);
                     None
                 }
             } else {
-                println!("[Auth] Player not found: id={}", user_id);
+                tracing::debug!("[Auth] Player not found: id={}", user_id);
                 None
             }
         }
-        AuAuthType::ServerSide => {
-            println!("[Auth] ServerSide auth for name={}", au.client_uniq());
-            state.db.get_player_by_name(au.client_uniq()).ok().flatten()
-        }
         AuAuthType::NoAuth => {
-            println!("[Auth] NoAuth attempt denied");
+            tracing::debug!("[Auth] NoAuth attempt denied");
             None
         }
     };
 
     if let Some(player) = result {
-        println!("[Auth] Success! Player={} (id={})", player.name, player.id);
+        tracing::info!("[Auth] Success! Player={} (id={})", player.name, player.id);
 
         // 1. Сначала CF (world_info) — клиент в OnWorldConfig вызывает ServerController.Init(),
         //    который регистрирует ВСЕ остальные обработчики пакетов. Без CF клиент мёртв.
@@ -103,7 +97,7 @@ pub async fn handle_auth(
         return Ok(Some(pid));
     }
 
-    println!("[Auth] Sending auth-failure sequence (cf+BI+HB+GU)");
+    tracing::debug!("[Auth] Sending auth-failure sequence (cf+BI+HB+GU)");
     send_auth_failure(state, tx, au);
     Ok(None)
 }

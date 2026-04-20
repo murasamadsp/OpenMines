@@ -236,11 +236,7 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
 /// Format: {"ch":"TAG","h":["±COLOR±CLANID±TIME±NICKNAME±TEXT±USERID",...]}
 use crate::game::chat::ChatMessage;
 
-pub fn chat_messages(
-    tag: &str,
-    messages: &[ChatMessage],
-) -> (&'static str, Vec<u8>) {
-
+pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<u8>) {
     let msg_strs: Vec<String> = messages
         .iter()
         .map(|m| {
@@ -250,11 +246,7 @@ pub fn chat_messages(
             )
         })
         .collect();
-    let json = format!(
-        "{{\"ch\":\"{}\",\"h\":[{}]}}",
-        tag,
-        msg_strs.join(",")
-    );
+    let json = format!("{{\"ch\":\"{}\",\"h\":[{}]}}", tag, msg_strs.join(","));
     ("mU", json.into_bytes())
 }
 
@@ -474,7 +466,6 @@ pub struct AuClientPacket {
 }
 
 pub enum AuAuthType {
-    ServerSide,
     NoAuth,
     Regular { user_id: i32, token: String },
 }
@@ -492,14 +483,9 @@ impl AuClientPacket {
         }
         let parts: Vec<&str> = s.split('_').collect();
         match parts.as_slice() {
-            [uniq] => {
-                if uniq.is_empty() {
-                    return None;
-                }
-                Some(Self {
-                    uniq: uniq.to_string(),
-                    auth_type: AuAuthType::ServerSide,
-                })
+            [_uniq] => {
+                // Single-segment payload (no underscores) — no valid auth type; deny.
+                None
             }
             [uniq, kind, rest @ ..] => {
                 if uniq.is_empty() || kind.is_empty() {

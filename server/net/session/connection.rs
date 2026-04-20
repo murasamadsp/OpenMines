@@ -1,21 +1,17 @@
 //! Обработка TCP-подключений и жизненного цикла сессии.
-use crate::net::session::prelude::*;
 use crate::net::session::auth::login::handle_auth;
 use crate::net::session::dispatch::dispatch_ty_packet;
 use crate::net::session::player::init::on_disconnect;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::net::session::prelude::*;
 use bytes::BytesMut;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
-pub async fn handle(
-    state: Arc<GameState>,
-    mut stream: TcpStream,
-    addr: SocketAddr,
-) -> Result<()> {
-    println!("[Net] New session from {}", addr);
+pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAddr) -> Result<()> {
+    tracing::info!("New session from {addr}");
     // Важно для маленьких handshake-пакетов: не ждём Nagle на первых байтах.
     if let Err(err) = stream.set_nodelay(true) {
-        println!("[Net] WARN: set_nodelay failed for {}: {}", addr, err);
+        tracing::warn!("set_nodelay failed for {addr}: {err}");
     }
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let client_ip = addr.ip();
@@ -43,18 +39,11 @@ pub async fn handle(
     stream.write_all(&au_pkt).await?;
     stream.write_all(&pi_pkt).await?;
     stream.flush().await?;
-    println!(
-        "[Net] Sent ST+AU+PI handshake (sid={}) to {} (st={} au={} pi={} bytes)",
-        sid,
-        addr,
-        st_pkt.len(),
-        au_pkt.len(),
-        pi_pkt.len()
-    );
+    tracing::debug!("Sent ST+AU+PI handshake (sid={sid}) to {addr}");
 
     loop {
         let blocked_remaining = state.auth_blocked_remaining_by_addr(&client_ip, Instant::now());
-        
+
         tokio::select! {
             _ = heartbeat.tick() => {
                 // 1:1 ref: Session.CheckDisconnected()
@@ -62,7 +51,7 @@ pub async fn handle(
                 // - else if now-lastpong > 10s => Ping(new PongPacket(52, nextexpected))
                 let idle = Instant::now().saturating_duration_since(last_pong);
                 if idle > Duration::from_secs(30) {
-                    println!("[Net] Pong timeout (>30s). Closing {}", addr);
+                    tracing::warn!("Pong timeout (>30s). Closing {addr}");
                     break;
                 }
                 if idle > Duration::from_secs(10) && next_expected != 0 {
@@ -76,11 +65,10 @@ pub async fn handle(
             }
             result = stream.read_buf(&mut buf) => {
                 let n = result?;
-                if n == 0 { 
-                    println!("[Net] Connection closed by remote: {}", addr);
-                    break; 
+                if n == 0 {
+                    tracing::debug!("Connection closed by remote: {addr}");
+                    break;
                 }
-                println!("[Net] Read {} bytes from {}", n, addr);
                 loop {
                     if buf.len() < 4 {
                         break;
@@ -88,7 +76,6 @@ pub async fn handle(
                     match Packet::try_decode(&mut buf) {
                         Ok(Some(packet)) => {
                     let ev = packet.event_str();
-                    println!("[Net] Received packet {} from {}", ev, addr);
                     // PO (Pong) обрабатывается в любом состоянии — как в референсе Session.Ping()
                     if ev == "PO" {
                         if let Some(pong) = PongClient::decode(&packet.payload) {
@@ -99,9 +86,9 @@ pub async fn handle(
                             let ct = pong.current_time;
                             let ne = next_expected;
                             let text = format!("{} ", ct - (ne - 201));
+                            next_expected = ct + 201;
                             let pi = ping(52, ct + 1, &text);
                             send_u_packet(&tx, pi.0, &pi.1);
-                            next_expected = ct + 201;
                         }
                         continue;
                     }
@@ -116,9 +103,9 @@ pub async fn handle(
                                     if let Some(id) = res {
                                         pid = Some(id);
                                         auth_state = new_auth;
-                                        println!("[Net] Player {} authenticated (id={:?})", addr, pid);
+                                        tracing::info!("Player {addr} authenticated (id={:?})", pid);
                                     } else {
-                                        println!("[Net] Auth failed for {}", addr);
+                                        tracing::warn!("Auth failed for {addr}");
                                         let wait = state.record_auth_failure_by_addr(&client_ip, now);
                                         if wait.is_some() { break; }
                                     }
@@ -147,12 +134,9 @@ pub async fn handle(
                             } else {
                                 format!("{:02x?}", &buf[..preview_len])
                             };
-                            println!(
-                                "[Net] Wire decode error from {}: {} (buf_len={} preview={})",
-                                addr,
-                                err,
+                            tracing::warn!(
+                                "Wire decode error from {addr}: {err} (buf_len={} preview={preview})",
                                 buf.len(),
-                                preview
                             );
                             break;
                         }
@@ -161,12 +145,16 @@ pub async fn handle(
             }
             Some(out_packet) = rx.recv() => {
                 stream.write_all(&out_packet).await?;
+                while let Ok(more) = rx.try_recv() {
+                    stream.write_all(&more).await?;
+                }
+                stream.flush().await?;
             }
         }
         if let Some(rem) = blocked_remaining {
-            if rem > Duration::from_secs(0) { 
-                println!("[Net] IP {} is blocked. Closing.", client_ip);
-                break; 
+            if rem > Duration::from_secs(0) {
+                tracing::warn!("IP {client_ip} is blocked. Closing.");
+                break;
             }
         }
     }

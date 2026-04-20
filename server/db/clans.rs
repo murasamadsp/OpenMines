@@ -33,17 +33,22 @@ pub struct ClanRow {
 }
 
 impl Database {
+    #[allow(clippy::significant_drop_tightening)]
     pub fn create_clan(&self, id: i32, name: &str, abr: &str, owner_id: i32) -> Result<()> {
         {
-            let conn = self.conn.lock();
-            conn.execute(
+            let mut conn = self.conn.lock();
+            let tx = conn.transaction()?;
+            tx.execute(
                 "INSERT INTO clans (id, name, abr, owner_id) VALUES (?1, ?2, ?3, ?4)",
                 params![id, name, abr, owner_id],
             )?;
-            conn.execute(
+            // TODO: если игрок онлайн, обновить ECS PlayerStats.clan_id/clan_rank
+            // иначе periodic flush перезапишет значение из стейл ECS snapshot
+            tx.execute(
                 "UPDATE players SET clan_id = ?1, clan_rank = ?2 WHERE id = ?3",
                 params![id, ClanRank::Leader as i32, owner_id],
             )?;
+            tx.commit()?;
         }
         Ok(())
     }
@@ -92,16 +97,21 @@ impl Database {
         Ok(rows)
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     pub fn delete_clan(&self, id: i32) -> Result<()> {
         {
-            let conn = self.conn.lock();
-            conn.execute(
+            let mut conn = self.conn.lock();
+            let tx = conn.transaction()?;
+            // TODO: если игрок онлайн, обновить ECS PlayerStats.clan_id/clan_rank
+            // иначе periodic flush перезапишет значение из стейл ECS snapshot
+            tx.execute(
                 "UPDATE players SET clan_id = NULL, clan_rank = 0 WHERE clan_id = ?1",
                 params![id],
             )?;
-            conn.execute("DELETE FROM clan_requests WHERE clan_id = ?1", params![id])?;
-            conn.execute("DELETE FROM clan_invites WHERE clan_id = ?1", params![id])?;
-            conn.execute("DELETE FROM clans WHERE id = ?1", params![id])?;
+            tx.execute("DELETE FROM clan_requests WHERE clan_id = ?1", params![id])?;
+            tx.execute("DELETE FROM clan_invites WHERE clan_id = ?1", params![id])?;
+            tx.execute("DELETE FROM clans WHERE id = ?1", params![id])?;
+            tx.commit()?;
         }
         Ok(())
     }
@@ -128,21 +138,26 @@ impl Database {
         Ok(rows)
     }
 
+    #[allow(clippy::significant_drop_tightening)]
     pub fn accept_clan_request(&self, clan_id: i32, player_id: i32) -> Result<()> {
         {
-            let conn = self.conn.lock();
-            conn.execute(
+            let mut conn = self.conn.lock();
+            let tx = conn.transaction()?;
+            // TODO: если игрок онлайн, обновить ECS PlayerStats.clan_id/clan_rank
+            // иначе periodic flush перезапишет значение из стейл ECS snapshot
+            tx.execute(
                 "UPDATE players SET clan_id = ?1, clan_rank = ?2 WHERE id = ?3",
                 params![clan_id, ClanRank::Member as i32, player_id],
             )?;
-            conn.execute(
+            tx.execute(
                 "DELETE FROM clan_requests WHERE clan_id = ?1 AND player_id = ?2",
                 params![clan_id, player_id],
             )?;
-            conn.execute(
+            tx.execute(
                 "DELETE FROM clan_invites WHERE player_id = ?1",
                 params![player_id],
             )?;
+            tx.commit()?;
         }
         Ok(())
     }
@@ -191,6 +206,8 @@ impl Database {
     }
 
     pub fn set_clan_rank(&self, player_id: i32, rank: ClanRank) -> Result<()> {
+        // TODO: если игрок онлайн, обновить ECS PlayerStats.clan_id/clan_rank
+        // иначе periodic flush перезапишет значение из стейл ECS snapshot
         self.conn.lock().execute(
             "UPDATE players SET clan_rank = ?1 WHERE id = ?2",
             params![rank as i32, player_id],
@@ -199,6 +216,8 @@ impl Database {
     }
 
     pub fn leave_clan(&self, player_id: i32) -> Result<()> {
+        // TODO: если игрок онлайн, обновить ECS PlayerStats.clan_id/clan_rank
+        // иначе periodic flush перезапишет значение из стейл ECS snapshot
         self.conn.lock().execute(
             "UPDATE players SET clan_id = NULL, clan_rank = 0 WHERE id = ?1",
             params![player_id],

@@ -4,10 +4,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// Как `Player.SendChat()` в `server_reference/.../Player.cs` после логина: `mO`, затем `mU` только если есть сообщения.
-pub fn send_chat_login_per_reference(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+pub fn send_chat_login_per_reference(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) {
     let channels = state.chat_channels.read();
     let tag = state
-        .query_player(pid, |ecs, e| ecs.get::<crate::game::player::PlayerUI>(e).map(|u| u.current_chat.clone()))
+        .query_player(pid, |ecs, e| {
+            ecs.get::<crate::game::player::PlayerUI>(e)
+                .map(|u| u.current_chat.clone())
+        })
         .flatten()
         .unwrap_or_else(|| "FED".to_string());
     let target = channels.iter().find(|c| c.tag == tag);
@@ -18,7 +25,9 @@ pub fn send_chat_login_per_reference(state: &Arc<GameState>, tx: &mpsc::Unbounde
         )
     } else if tag == "CLAN" {
         let clan_id = state
-            .query_player(pid, |world, entity| world.get::<PlayerStats>(entity).and_then(|s| s.clan_id))
+            .query_player(pid, |world, entity| {
+                world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
+            })
             .flatten();
         if let Some(cid) = clan_id {
             let clan_name = state
@@ -29,7 +38,10 @@ pub fn send_chat_login_per_reference(state: &Arc<GameState>, tx: &mpsc::Unbounde
                 .map(|c| c.name)
                 .unwrap_or_else(|| "Клан".to_string());
             let mut history = VecDeque::new();
-            if let Ok(msgs) = state.db.get_recent_chat_messages(&format!("CLAN_{cid}"), 50) {
+            if let Ok(msgs) = state
+                .db
+                .get_recent_chat_messages(&format!("CLAN_{cid}"), 50)
+            {
                 for (name, text, ts) in msgs {
                     history.push_back(ChatMessage {
                         time: ts / 60,
@@ -75,9 +87,11 @@ pub fn send_chat_init(
         )
     } else if channel_tag == "CLAN" {
         // Special case for dynamic clan channel
-        let clan_id = state.query_player(pid, |world, entity| {
-            world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
-        }).flatten();
+        let clan_id = state
+            .query_player(pid, |world, entity| {
+                world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
+            })
+            .flatten();
 
         if let Some(cid) = clan_id {
             let clan_name = state
@@ -116,9 +130,11 @@ pub fn send_chat_init(
 
     send_u_packet(tx, "mO", &chat_current(channel_tag, &name).1);
 
-    let player_clan_id = state.query_player(pid, |world, entity| {
-        world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
-    }).flatten();
+    let player_clan_id = state
+        .query_player(pid, |world, entity| {
+            world.get::<PlayerStats>(entity).and_then(|s| s.clan_id)
+        })
+        .flatten();
 
     let mut entries: Vec<(String, bool, String, String)> = channels
         .iter()

@@ -1,7 +1,8 @@
 use crate::db::players::PlayerRow;
 use crate::game::player::{
-    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerInventory,
-    PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI, PlayerView,
+    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
+    PlayerInventory, PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats,
+    PlayerUI, PlayerView,
 };
 use crate::game::programmator::ProgrammatorState;
 use crate::net::session::outbound::chat_sync::send_chat_login_per_reference;
@@ -12,71 +13,127 @@ use crate::net::session::outbound::player_sync::{
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 
-pub fn init_player(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, player: &PlayerRow) -> PlayerId {
+#[allow(clippy::similar_names)]
+pub fn init_player(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    player: &PlayerRow,
+) -> PlayerId {
     let pid = player.id;
+
+    // BUG 1: Reconnect entity leak — clean up any existing session for this pid before spawning a new one.
+    if let Some((_, old_player)) = state.active_players.remove(&pid) {
+        let old_entity = old_player.ecs_entity;
+        let (old_cx, old_cy) = {
+            let ecs = state.ecs.read();
+            ecs.get::<PlayerPosition>(old_entity)
+                .map(|pos| (pos.chunk_x(), pos.chunk_y()))
+                .unwrap_or((0, 0))
+        };
+        // Remove from chunk_players — iterate all entries to handle stale registrations.
+        state
+            .chunk_players
+            .iter_mut()
+            .for_each(|mut e| e.value_mut().retain(|&id| id != pid));
+        // Broadcast removal to nearby players.
+        let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
+        let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
+        state.broadcast_to_nearby(old_cx, old_cy, &hb_data, None);
+        // Despawn old ECS entity.
+        state.ecs.write().despawn(old_entity);
+        tracing::warn!("Player {pid} reconnected — old ECS entity cleaned up");
+    }
+
     let now = std::time::Instant::now();
     // 1:1-ish ref behavior: immediately allow first actions after login.
     // If we initialize cooldown timestamps to `now`, the first few client `Xmov` packets can be ignored,
     // causing the next accepted move to be "too far" and trigger a server correction (@T).
     let ready = now - std::time::Duration::from_secs(1);
 
-    let entity = state.ecs.write().spawn((
-        PlayerMetadata {
-            id: pid,
-            name: player.name.clone(),
-            passwd: player.passwd.clone(),
-            hash: player.hash.clone(),
-            resp_x: player.resp_x,
-            resp_y: player.resp_y,
-        },
-        PlayerPosition {
-            x: player.x,
-            y: player.y,
-            dir: player.dir,
-        },
-        PlayerConnection { tx: tx.clone() },
-        PlayerStats {
-            health: player.health,
-            max_health: player.max_health,
-            money: player.money,
-            creds: player.creds,
-            crystals: player.crystals,
-            role: player.role,
-            skin: player.skin,
-            clan_id: player.clan_id,
-            clan_rank: player.clan_rank,
-        },
-        PlayerInventory {
-            items: player.inventory.clone(),
-            selected: -1,
-            minv: true,
-            miniq: Vec::new(),
-        },
-        PlayerSkills { states: player.skills.clone() },
-        PlayerView {
-            last_chunk: None,
-            visible_chunks: Vec::new(),
-        },
-        PlayerUI {
-            current_window: None,
-            current_chat: "FED".to_string(),
-        },
-        PlayerCooldowns {
-            last_move: ready,
-            last_dig: ready,
-            last_geo: ready,
-            protection_until: None,
-            last_shot: None,
-        },
-        PlayerGeoStack::default(),
-        ProgrammatorState::new(),
-        PlayerSettings {
-            auto_dig: player.auto_dig,
-        },
-        PlayerFlags { dirty: false },
-    )).id();
+    let entity = state
+        .ecs
+        .write()
+        .spawn((
+            PlayerMetadata {
+                id: pid,
+                name: player.name.clone(),
+                passwd: player.passwd.clone(),
+                hash: player.hash.clone(),
+                resp_x: player.resp_x,
+                resp_y: player.resp_y,
+            },
+            PlayerPosition {
+                x: player.x,
+                y: player.y,
+                dir: player.dir,
+            },
+            PlayerConnection { tx: tx.clone() },
+            PlayerStats {
+                health: player.health,
+                max_health: player.max_health,
+                money: player.money,
+                creds: player.creds,
+                crystals: player.crystals,
+                role: player.role,
+                skin: player.skin,
+                clan_id: player.clan_id,
+                clan_rank: player.clan_rank,
+            },
+            PlayerInventory {
+                items: player.inventory.clone(),
+                selected: -1,
+                minv: true,
+                miniq: Vec::new(),
+            },
+            PlayerSkills {
+                states: player.skills.clone(),
+            },
+            PlayerView {
+                last_chunk: None,
+                visible_chunks: Vec::new(),
+            },
+            PlayerUI {
+                current_window: None,
+                current_chat: "FED".to_string(),
+            },
+            PlayerCooldowns {
+                last_move: ready,
+                last_dig: ready,
+                last_geo: ready,
+                protection_until: None,
+                last_shot: None,
+            },
+            PlayerGeoStack::default(),
+            ProgrammatorState::new(),
+            PlayerSettings {
+                auto_dig: player.auto_dig,
+            },
+            PlayerFlags { dirty: false },
+        ))
+        .id();
 
-    state.active_players.insert(pid, ActivePlayer { ecs_entity: entity });
+    state
+        .active_players
+        .insert(pid, ActivePlayer { ecs_entity: entity });
+
+    // BUG 3: Recalculate max_health from Health skill at login (C# ref: MaxHealth = 100 + skill.Effect).
+    state.modify_player(pid, |ecs, entity| {
+        let max_health = {
+            let skills = ecs.get::<PlayerSkills>(entity)?;
+            let effect = get_player_skill_effect(&skills.states, SkillType::Health);
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                effect as i32
+            }
+        };
+        let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
+        stats.max_health = max_health;
+        if stats.health <= 0 {
+            stats.health = stats.max_health;
+        }
+        Some(())
+    });
+
     send_initial_sync(state, tx, player);
     pid
 }
@@ -102,7 +159,10 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
         chunk
     };
 
-    state.chunk_players.get_mut(&(cx, cy)).map(|mut e| e.retain(|&id| id != pid));
+    state
+        .chunk_players
+        .get_mut(&(cx, cy))
+        .map(|mut e| e.retain(|&id| id != pid));
 
     let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
     let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
@@ -113,8 +173,15 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
-fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, player: &PlayerRow) {
+#[allow(clippy::similar_names)]
+fn send_initial_sync(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    player: &PlayerRow,
+) {
     let pid = player.id;
+    // BUG 2: C# ref calls MoveToChunk(ChunkX, ChunkY) BEFORE sync packets (BD, GE, @L, BI, etc.).
+    check_chunk_changed(state, tx, pid);
     state.modify_player(pid, |ecs, entity| {
         let stats = ecs.get::<PlayerStats>(entity)?;
         let skills = ecs.get::<PlayerSkills>(entity)?;
@@ -146,36 +213,62 @@ fn send_initial_sync(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>
         send_inventory(tx, &mut inv);
         Some(())
     });
-    // 10. CheckChunkChanged(true)
-    check_chunk_changed(state, tx, pid);
-    state.query_player(pid, |ecs, entity| {
-        let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-            tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
-            return;
-        };
+    let spawn_broadcast = state
+        .query_player(pid, |ecs, entity| {
+            let Some(stats) = ecs.get::<PlayerStats>(entity) else {
+                tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
+                return None;
+            };
 
-        // 11. tp(x, y)
-        tracing::info!(
-            "[Init] @T pid={pid} to=({},{}) (db/player row position)",
-            player.x,
-            player.y
-        );
-        send_u_packet(tx, "@T", &tp(player.x, player.y).1);
-        // 12 консоль — пропускаем
-        // 13. SendSettings (#S)
-        let stg = settings_default_wire();
-        send_u_packet(tx, stg.0, &stg.1);
-        // 14. SendClan
-        if let Some(cid) = stats.clan_id {
-            if cid != 0 {
-                send_u_packet(tx, "cS", &clan_show(cid).1);
+            // 11. tp(x, y)
+            tracing::info!(
+                "[Init] @T pid={pid} to=({},{}) (db/player row position)",
+                player.x,
+                player.y
+            );
+            send_u_packet(tx, "@T", &tp(player.x, player.y).1);
+            // 12 консоль — пропускаем
+            // 13. SendSettings (#S)
+            let stg = settings_default_wire();
+            send_u_packet(tx, stg.0, &stg.1);
+            // 14. SendClan
+            if let Some(cid) = stats.clan_id {
+                if cid != 0 {
+                    send_u_packet(tx, "cS", &clan_show(cid).1);
+                } else {
+                    send_u_packet(tx, "cH", &clan_hide().1);
+                }
             } else {
                 send_u_packet(tx, "cH", &clan_hide().1);
             }
-        } else {
-            send_u_packet(tx, "cH", &clan_hide().1);
-        }
-    });
+
+            // BUG 4: Collect data needed to broadcast hb_bot to nearby players.
+            let pos = ecs.get::<PlayerPosition>(entity)?;
+            let clan_id_raw = stats.clan_id.unwrap_or(0).clamp(0, 65535) as u16;
+            Some((
+                pos.chunk_x(),
+                pos.chunk_y(),
+                pos.dir as u8,
+                stats.skin as u8,
+                clan_id_raw,
+            ))
+        })
+        .flatten();
+
+    // BUG 4: Broadcast @T appearance to nearby players so they see the newly logged-in player.
+    if let Some((cx, cy, dir, skin, clan_id_u16)) = spawn_broadcast {
+        let sub = hb_bot(
+            net_u16_nonneg(pid),
+            player.x.max(0) as u16,
+            player.y.max(0) as u16,
+            dir,
+            skin,
+            clan_id_u16,
+            0,
+        );
+        let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
+        state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
+    }
     // 15. SendChat — как `Player.SendChat()` в server_reference: только `mO` и при наличии — `mU`.
     send_chat_login_per_reference(state, tx, pid);
     // 16–17. ConfigPacket + ProgStatus

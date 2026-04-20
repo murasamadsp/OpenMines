@@ -164,12 +164,16 @@ pub fn handle_clan_create(
         return;
     }
 
-    let stats = state.query_player(pid, |ecs, entity| {
-        let s = ecs.get::<crate::game::PlayerStats>(entity)?;
-        Some((s.creds, s.money))
-    }).flatten();
+    let stats = state
+        .query_player(pid, |ecs, entity| {
+            let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+            Some((s.creds, s.money))
+        })
+        .flatten();
 
-    let Some((p_creds, p_money)) = stats else { return; };
+    let Some((p_creds, p_money)) = stats else {
+        return;
+    };
 
     if p_creds < 1000 {
         send_clan_ok(tx, "Ошибка", "Недостаточно кредитов (нужно 1000)");
@@ -361,21 +365,30 @@ pub fn handle_clan_invite_list(
         if target_pid == pid {
             continue;
         }
-        
-        let target_data = state.query_player(target_pid, |ecs, entity| {
-            let s = ecs.get::<crate::game::PlayerStats>(entity)?;
-            let m = ecs.get::<crate::game::PlayerMetadata>(entity)?;
-            if s.clan_id.is_none() {
-                Some(m.name.clone())
-            } else { None }
-        }).flatten();
+
+        let target_data = state
+            .query_player(target_pid, |ecs, entity| {
+                let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+                let m = ecs.get::<crate::game::PlayerMetadata>(entity)?;
+                if s.clan_id.is_none() {
+                    Some(m.name.clone())
+                } else {
+                    None
+                }
+            })
+            .flatten();
 
         if let Some(name) = target_data {
             buttons.push(serde_json::json!(format!("Пригласить {}", name)));
-            buttons.push(serde_json::json!(format!("clan_invite_send:{}", target_pid)));
+            buttons.push(serde_json::json!(format!(
+                "clan_invite_send:{}",
+                target_pid
+            )));
             count += 1;
         }
-        if count >= 20 { break; }
+        if count >= 20 {
+            break;
+        }
     }
 
     if count == 0 {
@@ -423,7 +436,10 @@ pub fn handle_clan_invite_send(
             send_clan_ok(tx, "Клан", "Приглашение отправлено");
             state.query_player(target_pid, |ecs, entity| {
                 if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let _ = conn.tx.send(make_u_packet_bytes("OK", &ok_message("Клан", "Вас пригласили в клан!").1));
+                    let _ = conn.tx.send(make_u_packet_bytes(
+                        "OK",
+                        &ok_message("Клан", "Вас пригласили в клан!").1,
+                    ));
                 }
             });
         }
@@ -712,9 +728,12 @@ pub fn handle_clan_kick_by_name(
 }
 
 fn player_clan_id(state: &Arc<GameState>, pid: PlayerId) -> Option<i32> {
-    state.query_player(pid, |ecs, entity| {
-        ecs.get::<crate::game::PlayerStats>(entity).and_then(|s| s.clan_id)
-    }).flatten()
+    state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::PlayerStats>(entity)
+                .and_then(|s| s.clan_id)
+        })
+        .flatten()
 }
 
 fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> bool {
