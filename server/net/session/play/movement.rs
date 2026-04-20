@@ -167,11 +167,27 @@ pub fn handle_move(
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
         crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
-        // TODO: ref Player.cs:462-467 — after a successful move, if the player lands on a pack
-        // cell and `pack.cid == player.cid || pack.cid == 0`, and programmator is NOT running,
-        // auto-open the pack's GUI window. Check `state.building_index` for a building at
-        // `(nx, ny)`. If found with matching clan access, call `open_pack_gui` (or
-        // `handle_pack_action`) with the player's pid and tx. Requires making `open_pack_gui`
-        // in `gui_buttons.rs` `pub`, or routing through `packs::handle_pack_action`.
+        // Feature 1: ref Player.cs:462-467 — auto-open pack GUI when landing on a building cell.
+        // Note: `get_pack_at` finds buildings whose origin is exactly at (nx, ny). Multi-cell
+        // footprint coverage requires a reverse index (separate concern, same limitation as the
+        // gate check above). Programmator check mirrors C#: `!programsData.ProgRunning`.
+        if let Some(view) = state.get_pack_at(nx, ny) {
+            if view.clan_id == 0 || view.clan_id == clan {
+                let prog_running = state
+                    .query_player(pid, |ecs, entity| {
+                        ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                            .map_or(false, |p| p.running)
+                    })
+                    .unwrap_or(false);
+                if !prog_running {
+                    crate::net::session::ui::gui_buttons::open_pack_gui(state, tx, pid, &view);
+                }
+            }
+        }
+
+        // Feature 2: ref Player.cs:428-436 (dir == -1 autoDig branch) — N/A for the Xmov path.
+        // In the Rust architecture, `handle_dig` never calls `handle_move`; it reads player
+        // position independently and digs the adjacent cell directly. The `dir == -1` case in C#
+        // is an internal Move() call from the dig handler, which does not exist here.
     }
 }

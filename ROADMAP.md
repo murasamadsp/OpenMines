@@ -16,12 +16,12 @@
 - [x] Токен авторизации 1:1 с референсом: **MD5**(`player.hash + sid`), hex lowercase; дополнительно допустим приём SHA256 для других сборок клиента
 - [x] Ping/Pong 1:1:
   - [x] `PI` шлётся при подключении и в ответ на `PO` (таймерного `PI` нет)
-  - [x] Клиент шлёт `PO` `"response:current_time"`, сервер через ~200ms отвечает `PI` (формат как в референсе)
+  - [x] Клиент шлёт `PO` `"response:current_time"`, сервер отвечает `PI` немедленно (референс делает 200ms delay, убран — пинг 50ms вместо 250ms)
   - [x] Клиентский таймаут: ~40.5s без `PI` ⇒ разрыв (сервер должен выдерживать этот контракт)
 - [x] World state 1:1: mmap слои `cells/road/durability`, чанки **32x32**, чтение чанка отдаёт 32*32 байт (как в HB `M`)
-- [ ] TY wrapper 1:1 (client→server): `[4B event][u32 time LE][u32 x LE][u32 y LE][sub_payload...]`
-  - [ ] `Xmov`: координаты берутся из wrapper `x/y`, `sub_payload` содержит `direction` (текстовое int)
-  - [ ] Серверная валидация движения: ограничение дистанции (по референсу), поведение при нарушении (игнор/корректировка) — 1:1
+- [x] TY wrapper 1:1 (client→server): `[4B event][u32 time LE][u32 x LE][u32 y LE][sub_payload...]`
+  - [x] `Xmov`: координаты берутся из wrapper `x/y`, `sub_payload` содержит `direction` (текстовое int)
+  - [x] Серверная валидация движения: дистанция 1.2, coord validity, cell emptiness, gate blocking, prog guard, direction compute, pack auto-open — 1:1. Отклонение: server-side cooldown убран намеренно (клиент пейсит через SpeedPacket). `dir==-1` ветка в Move() — мёртвый код в C# DigHandler (передаёт свою позицию + реальный dir, не -1)
 - [x] HB (server→client, тип `B`, event `HB`) 1:1: подпакеты как в `docs/PROTOCOL.md` (минимум для MVP: `M` карта + `X/L` боты); отправка только клиентам в зоне видимости 1:1
 - [x] SQLite минимум для MVP (схема/поля 1:1 с референсом): `players`, `chats`, `buildings`, `boxes` (без этого нельзя считать “регистрацию/авторизацию/инициализацию” завершёнными)
 - [x] Сохранение 1:1: periodic flush “грязных” изменений + сохранение при disconnect (включая корректный обработчик закрытия TCP/таймаута ping)
@@ -103,15 +103,6 @@
 - [ ] Market buy/sell
 - [ ] Storage
 - [ ] Бомба, Защита, Разрушитель, C190, Полимер
-
-## 10. Деплой
-
-- [ ] Docker cross-compile + deploy скрипт
-- [ ] VPS docker-compose
-- [ ] Бэкапы
-- [ ] Мониторинг
-- [ ] DLL IP-патч
-- [ ] Нагрузка 200 игроков
 
 ---
 

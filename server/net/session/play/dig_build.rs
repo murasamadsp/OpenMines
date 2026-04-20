@@ -16,14 +16,15 @@ pub fn handle_dig(
     pid: PlayerId,
     dir: i32,
 ) {
-    let (px, py, actual_dir, dig_power, mine_mult) = {
+    let (px, py, actual_dir, dig_power, mine_mult, skin, clan_id) = {
         let player_data = state
             .modify_player(pid, |ecs, entity| {
-                let (px, py, dig_p, m_mult) = {
+                let (px, py, dig_p, m_mult, skin, clan_id) = {
                     let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
                     let cd = ecs.get::<crate::game::player::PlayerCooldowns>(entity)?;
                     let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                     let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
+                    let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                     if cd.last_dig.elapsed().as_millis() < 120 {
                         return None;
                     }
@@ -38,9 +39,10 @@ pub fn handle_dig(
                         &skills.states,
                         SkillType::MineGeneral,
                     );
-                    (pos.x, pos.y, dp, mm)
+                    (pos.x, pos.y, dp, mm, stats.skin, stats.clan_id.unwrap_or(0))
                 };
-                // Референс: `player.Move(x, y, direction)` сначала, потом `player.Bz()` в текущем направлении.
+                // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
+                // Move с target == own position просто обновляет направление, не перемещает игрока.
                 {
                     let mut pos_mut = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
                     if (0..=3).contains(&dir) {
@@ -51,7 +53,7 @@ pub fn handle_dig(
                     let mut cd_mut = ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)?;
                     cd_mut.last_dig = std::time::Instant::now();
                 }
-                Some((px, py, dir, dig_p, m_mult))
+                Some((px, py, dir, dig_p, m_mult, skin, clan_id))
             })
             .flatten();
         let Some(data) = player_data else {
@@ -130,6 +132,7 @@ pub fn handle_dig(
         }
     }
     let (cx, cy) = World::chunk_pos(px, py);
+    // Референс: `player.Bz()` → `SendDFToBots(...)` — рассылает FX копания соседям.
     let fx = hb_directed_fx(
         net_u16_nonneg(pid),
         net_u16_nonneg(px),
@@ -139,6 +142,18 @@ pub fn handle_dig(
         0,
     );
     state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
+    // Референс: `player.Move(player.x, player.y, dir)` → `SendMyMove()` — рассылает hb_bot
+    // с обновлённым направлением соседям (position не изменилась, только dir).
+    let bot = hb_bot(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(px),
+        net_u16_nonneg(py),
+        net_u8_clamped(actual_dir, 3),
+        net_u8_clamped(skin, 255),
+        net_u16_nonneg(clan_id),
+        0,
+    );
+    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
 }
 
 pub fn handle_build(

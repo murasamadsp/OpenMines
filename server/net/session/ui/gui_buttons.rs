@@ -148,7 +148,7 @@ fn handle_pack_operation(
     }
 }
 
-fn open_pack_gui(
+pub fn open_pack_gui(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
