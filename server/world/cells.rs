@@ -70,18 +70,23 @@ pub mod cell_type {
     // 115 — gap
     pub const ALIVE_BLUE: u8 = 116;
     pub const RED_ROCK: u8 = 117;
-    // 118 — gap
+    // Note: ACID_ROCK = 118 is defined below with other acid constants.
     pub const HYPNO_ROCK: u8 = 119;
     pub const GOLDEN_ROCK: u8 = 120;
     pub const DEEP_ROCK: u8 = 121;
     /// Как в `cells.json` (в C# enum `GRock` ошибочно = 112).
     pub const G_ROCK: u8 = 122;
     pub const GRAY_ACID: u8 = 66;
+    pub const PURPLE_ACID: u8 = 67;
     pub const PEARL: u8 = 68;
     pub const PASSIVE_ACID: u8 = 86;
+    pub const SKULL: u8 = 88;
+    pub const LIVING_ACTIVE_ACID: u8 = 95;
+    pub const CORROSIVE_ACTIVE_ACID: u8 = 96;
     pub const DARK_WHITE_SAND: u8 = 61;
     pub const RUSTY_SAND: u8 = 62;
     pub const DARK_RUSTY_SAND: u8 = 63;
+    pub const ACID_ROCK: u8 = 118;
 }
 
 /// Check if a cell type is a crystal (matches C# World.isCry)

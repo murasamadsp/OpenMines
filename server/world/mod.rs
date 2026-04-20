@@ -127,7 +127,6 @@ pub trait WorldProvider: Send + Sync {
     #[allow(dead_code)]
     fn get_road_cell(&self, x: i32, y: i32) -> u8;
     fn set_cell(&self, x: i32, y: i32, cell: u8);
-    #[allow(dead_code)]
     fn get_durability(&self, x: i32, y: i32) -> f32;
     fn set_durability(&self, x: i32, y: i32, d: f32);
     fn destroy(&self, x: i32, y: i32);

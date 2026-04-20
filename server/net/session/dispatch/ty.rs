@@ -102,6 +102,39 @@ pub fn dispatch_ty_packet(
             handle_sett_ty(state, tx, pid, &packet.sub_payload);
         }
         "ADMN" => {
+            // C# ref: ADMN triggers AdminButton() on current window (gear icon).
+            // Check if player has a building window open with admin support.
+            let handled = state
+                .query_player(pid, |ecs, entity| {
+                    let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+                    ui.current_window.clone()
+                })
+                .flatten();
+            if let Some(ref window) = handled {
+                if let Some(coords) = window.strip_prefix("resp:") {
+                    let parts: Vec<&str> = coords.split(':').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                            crate::net::session::play::packs::open_resp_admin_gui(
+                                state, tx, pid, x, y,
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                // Market admin: gear icon opens admin panel (RichList with hp + profit)
+                if let Some(rest) = window.strip_prefix("market:") {
+                    let parts: Vec<&str> = rest.split(':').collect();
+                    if parts.len() >= 2 {
+                        if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                            crate::net::session::ui::gui_buttons::open_market_admin_gui(
+                                state, tx, pid, x, y,
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+            }
             if is_admin_command(state, pid) {
                 send_admin_help(tx);
             } else {
@@ -112,7 +145,7 @@ pub fn dispatch_ty_packet(
             handle_dpbx_crystal_box(state, tx, pid);
         }
         "PROG" | "PDEL" | "pRST" | "PREN" => {
-            handle_prog_ty(tx, packet.event_str(), &packet.sub_payload);
+            handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload);
         }
         // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
         // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.

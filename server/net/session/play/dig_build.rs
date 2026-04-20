@@ -25,8 +25,8 @@ pub fn handle_dig(
                     let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                     let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
                     let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    // Fix 1: cooldown 120 → 200ms
-                    if cd.last_dig.elapsed().as_millis() < 200 {
+                    // 1:1 ref: 3 digs per second = 333ms cooldown
+                    if cd.last_dig.elapsed().as_millis() < 333 {
                         return None;
                     }
                     if ui.current_window.is_some() {
@@ -40,7 +40,15 @@ pub fn handle_dig(
                         &skills.states,
                         SkillType::MineGeneral,
                     );
-                    (pos.x, pos.y, dp, mm, stats.skin, stats.clan_id.unwrap_or(0), stats.crystal_carry)
+                    (
+                        pos.x,
+                        pos.y,
+                        dp,
+                        mm,
+                        stats.skin,
+                        stats.clan_id.unwrap_or(0),
+                        stats.crystal_carry,
+                    )
                 };
                 // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
                 // Move с target == own position просто обновляет направление, не перемещает игрока.
@@ -80,6 +88,13 @@ pub fn handle_dig(
         hurt_player_pure(state, pid, touch_damage);
     }
 
+    let tail = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                .map_or(0, |ps| u8::from(ps.running))
+        })
+        .unwrap_or(0);
+
     let (cx, cy) = World::chunk_pos(px, py);
 
     // Fix 4: FX broadcast BEFORE the !diggable check — C# sends it unconditionally at top of Bz().
@@ -118,7 +133,7 @@ pub fn handle_dig(
             net_u8_clamped(actual_dir, 3),
             net_u8_clamped(skin, 255),
             net_u16_nonneg(clan_id),
-            0,
+            tail,
         );
         state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
         return;
@@ -141,7 +156,7 @@ pub fn handle_dig(
             net_u8_clamped(actual_dir, 3),
             net_u8_clamped(skin, 255),
             net_u16_nonneg(clan_id),
-            0,
+            tail,
         );
         state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
         return;
@@ -257,7 +272,12 @@ pub fn handle_dig(
                 (amount.min(255)) as u8,
                 color_remapped,
             );
-            state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[mine_fx]).1), Some(pid));
+            state.broadcast_to_nearby(
+                cx,
+                cy,
+                &encode_hb_bundle(&hb_bundle(&[mine_fx]).1),
+                Some(pid),
+            );
         }
 
         broadcast_cell_update(state, tx_c, ty_c);
@@ -279,7 +299,7 @@ pub fn handle_dig(
         net_u8_clamped(actual_dir, 3),
         net_u8_clamped(skin, 255),
         net_u16_nonneg(clan_id),
-        0,
+        tail,
     );
     state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
 }
@@ -302,8 +322,8 @@ pub fn handle_build(
                 if ui.current_window.is_some() {
                     return None;
                 }
-                // Fix 11: build cooldown 200ms.
-                if cd.last_build.elapsed().as_millis() < 200 {
+                // 1:1 ref: 3 builds per second = 333ms cooldown
+                if cd.last_build.elapsed().as_millis() < 333 {
                     return None;
                 }
                 let (px, py, pdir) = (pos.x, pos.y, pos.dir);
@@ -320,9 +340,14 @@ pub fn handle_build(
                 };
                 let effect = get_player_skill_effect(&skills.states, skill_type);
                 // on_bld_hp: for BuildGreen/BuildYellow/BuildRed/BuildWar return level as f32.
-                let hp_effect = hp_skill_type.map(|hst| {
-                    skills.states.get(hst.code()).map_or(1.0_f32, |s| s.level as f32)
-                }).unwrap_or(1.0);
+                let hp_effect = hp_skill_type
+                    .map(|hst| {
+                        skills
+                            .states
+                            .get(hst.code())
+                            .map_or(1.0_f32, |s| s.level as f32)
+                    })
+                    .unwrap_or(1.0);
 
                 {
                     let mut pos_mut = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
@@ -381,13 +406,19 @@ pub fn handle_build(
             } else if cur == cell_type::GREEN_BLOCK {
                 // Upgrading green → yellow uses BuildYellow skill effect/cost.
                 let yellow_effect = {
-                    state.query_player(pid, |ecs, entity| {
-                        let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
-                        let eff = get_player_skill_effect(&skills.states, SkillType::BuildYellow);
-                        let hp = skills.states.get(SkillType::BuildYellow.code())
-                            .map_or(1.0_f32, |s| s.level as f32);
-                        Some((eff, hp))
-                    }).flatten().unwrap_or((1.0, 1.0))
+                    state
+                        .query_player(pid, |ecs, entity| {
+                            let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
+                            let eff =
+                                get_player_skill_effect(&skills.states, SkillType::BuildYellow);
+                            let hp = skills
+                                .states
+                                .get(SkillType::BuildYellow.code())
+                                .map_or(1.0_f32, |s| s.level as f32);
+                            Some((eff, hp))
+                        })
+                        .flatten()
+                        .unwrap_or((1.0, 1.0))
                 };
                 let y_cost = yellow_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 4, y_cost) {
@@ -398,13 +429,18 @@ pub fn handle_build(
             } else if cur == cell_type::YELLOW_BLOCK {
                 // Upgrading yellow → red uses BuildRed skill effect/cost.
                 let red_effect = {
-                    state.query_player(pid, |ecs, entity| {
-                        let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
-                        let eff = get_player_skill_effect(&skills.states, SkillType::BuildRed);
-                        let hp = skills.states.get(SkillType::BuildRed.code())
-                            .map_or(1.0_f32, |s| s.level as f32);
-                        Some((eff, hp))
-                    }).flatten().unwrap_or((1.0, 1.0))
+                    state
+                        .query_player(pid, |ecs, entity| {
+                            let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
+                            let eff = get_player_skill_effect(&skills.states, SkillType::BuildRed);
+                            let hp = skills
+                                .states
+                                .get(SkillType::BuildRed.code())
+                                .map_or(1.0_f32, |s| s.level as f32);
+                            Some((eff, hp))
+                        })
+                        .flatten()
+                        .unwrap_or((1.0, 1.0))
                 };
                 let r_cost = red_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 2, r_cost) {
@@ -422,7 +458,9 @@ pub fn handle_build(
             }
         }
         "O" => {
-            if (prop.cell_is_empty() || prop.is_sand()) && try_spend_crystal(state, tx, pid, 0, cost) {
+            if (prop.cell_is_empty() || prop.is_sand())
+                && try_spend_crystal(state, tx, pid, 0, cost)
+            {
                 place_block(state, tx_c, ty_c, cell_type::SUPPORT);
                 state.world.set_durability(tx_c, ty_c, durability);
                 placed_skill = Some(SkillType::BuildStructure);

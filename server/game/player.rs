@@ -41,6 +41,10 @@ pub struct PlayerInventory {
 #[derive(Component, Clone)]
 pub struct PlayerSkills {
     pub states: HashMap<String, SkillState>,
+    /// Number of skill slots the player has (C# `PlayerSkills.slots`).
+    /// Default is 20, max is 34. Purchased via creds in Up building.
+    #[allow(dead_code)]
+    pub total_slots: i32,
 }
 
 #[derive(Component)]
@@ -144,7 +148,20 @@ pub fn extract_player_row(
         resp_x: meta.resp_x,
         resp_y: meta.resp_y,
         inventory: inv.items.clone(),
-        skills: skills.states.clone(),
+        skills: {
+            let mut s = skills.states.clone();
+            // Persist total_slots in JSON under special key for DB storage
+            if skills.total_slots != 20 {
+                s.insert(
+                    "__slots".to_string(),
+                    crate::db::SkillState {
+                        level: skills.total_slots,
+                        exp: 0.0,
+                    },
+                );
+            }
+            s
+        },
         role: stats.role,
         clan_rank: stats.clan_rank,
     })

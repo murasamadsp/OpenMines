@@ -1,4 +1,5 @@
 //! Обработка TCP-подключений и жизненного цикла сессии.
+use crate::net::session::auth::gui_flow::handle_gui_auth_flow;
 use crate::net::session::auth::login::handle_auth;
 use crate::net::session::dispatch::dispatch_ty_packet;
 use crate::net::session::player::init::on_disconnect;
@@ -98,16 +99,35 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                             if ev == "AU" {
                                 if let Some(au) = AuClientPacket::decode(&packet.payload) {
                                     let now = Instant::now();
-                                    let mut new_auth = auth_state;
+                                    let mut new_auth = auth_state.clone();
                                     let res = handle_auth(&state, &tx, &au, &sid, &mut new_auth).await?;
                                     if let Some(id) = res {
                                         pid = Some(id);
                                         auth_state = new_auth;
                                         tracing::info!("Player {addr} authenticated (id={:?})", pid);
                                     } else {
+                                        // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
+                                        auth_state = new_auth;
                                         tracing::warn!("Auth failed for {addr}");
                                         let wait = state.record_auth_failure_by_addr(&client_ip, now);
                                         if wait.is_some() { break; }
+                                    }
+                                }
+                            }
+                        }
+                        AuthState::GuiAuth(ref mut step) => {
+                            // C# ref: Session.GUI routes to auth.CallAction(button) when auth is active.
+                            if ev == "TY" {
+                                if let Some(ty) = TyPacket::decode(&packet.payload) {
+                                    if ty.event_str() == "GUI_" {
+                                        if let Some(button) = decode_gui_button(&ty.sub_payload) {
+                                            let res = handle_gui_auth_flow(&state, &tx, &button, step).await?;
+                                            if let Some(id) = res {
+                                                pid = Some(id);
+                                                auth_state = AuthState::Authenticated;
+                                                tracing::info!("Player {addr} registered/logged via GUI (id={:?})", pid);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -165,8 +185,23 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     Ok(())
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum AuthState {
     PreAuth,
+    GuiAuth(GuiAuthStep),
     Authenticated,
+}
+
+/// Sub-state of the GUI auth flow (registration / login through client GUI).
+/// 1:1 with C# `Auth` class state machine.
+#[derive(PartialEq, Clone, Debug)]
+pub enum GuiAuthStep {
+    /// Default window: "Новый акк" / "ok" (nick input).
+    MainMenu,
+    /// Player found by nick, waiting for password input.
+    LoginPassword { nick: String },
+    /// Creating new account — waiting for nick input.
+    RegisterNick,
+    /// Creating new account — nick accepted, waiting for password.
+    RegisterPassword { nick: String },
 }

@@ -6,8 +6,6 @@ use bytes::BytesMut;
 use tokio::sync::mpsc;
 
 pub const OUTGOING_PACKET_PREVIEW: usize = 256;
-// TODO: will be used when incoming packet trace logging is enabled
-#[allow(dead_code)]
 pub const INCOMING_PACKET_PREVIEW: usize = 160;
 
 pub fn make_u_packet_bytes(event: &str, payload: &[u8]) -> Vec<u8> {

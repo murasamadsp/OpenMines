@@ -1,9 +1,11 @@
 //! Меню построек и установка здания на карте.
+use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
     BuildingStorage, GridPosition, PackType, PackView, get_building_config,
 };
 use crate::game::player::{PlayerConnection, PlayerPosition, PlayerStats, PlayerUI};
+use crate::game::programmator::ProgrammatorState;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
@@ -155,10 +157,10 @@ pub fn handle_place_building(
     let result = state
         .modify_player(pid, |ecs, entity| {
             let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-            if s.money < i64::from(cost) {
+            if s.money < cost {
                 return None;
             }
-            s.money -= i64::from(cost);
+            s.money -= cost;
             let m = s.money;
             let c = s.creds;
             send_u_packet(tx, "P$", &money(m, c).1);
@@ -184,7 +186,7 @@ pub fn handle_place_building(
         Err(_) => {
             state.modify_player(pid, |ecs, entity| {
                 if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
-                    s.money += i64::from(cost);
+                    s.money += cost;
                 }
                 Some(())
             });
@@ -228,6 +230,11 @@ pub fn handle_place_building(
         .id();
 
     state.building_index.insert((bx, by), entity);
+
+    // Spawn BotSpot entity for Spot buildings (1:1 with C# Spot.Build → new BotSpot).
+    if pack_type == PackType::Spot {
+        spawn_botspot(state, pid, bx, by, owner_clan, entity);
+    }
 
     let view = PackView {
         id: db_id,
@@ -310,6 +317,11 @@ pub fn handle_remove_building(
 
     if let Some((_, entity)) = state.building_index.remove(&(view.x, view.y)) {
         state.ecs.write().despawn(entity);
+    }
+
+    // Despawn BotSpot when Spot building is removed (1:1 with C# `Spot.Destroy`).
+    if view.pack_type == PackType::Spot {
+        despawn_botspot(state, view.owner_id);
     }
 
     clear_pack_cells(state, &view);
@@ -525,5 +537,48 @@ pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
             .world
             .set_cell(view.x + cdx, view.y + cdy, cell_type::EMPTY);
         broadcast_cell_update(state, view.x + cdx, view.y + cdy);
+    }
+}
+
+// ─── BotSpot spawning/despawning ────────────────────────────────────────────
+
+/// Spawn a BotSpot entity associated with a Spot building.
+/// 1:1 with C# `new BotSpot(x, y, owner)` called when Spot is placed.
+pub fn spawn_botspot(
+    state: &Arc<GameState>,
+    owner_id: PlayerId,
+    x: i32,
+    y: i32,
+    clan_id: i32,
+    building_entity: Entity,
+) {
+    let botspot_entity = state
+        .ecs
+        .write()
+        .spawn((
+            BotSpotMarker,
+            BotSpotData {
+                bot_id: -owner_id,
+                owner_id,
+                clan_id,
+                x,
+                y,
+                dir: 0,
+                building_entity,
+            },
+            BotSpotBasket::default(),
+            ProgrammatorState::new(),
+        ))
+        .id();
+
+    state.botspot_index.insert(owner_id, botspot_entity);
+    tracing::info!(owner_id, x, y, "Spawned BotSpot entity for Spot building");
+}
+
+/// Despawn a BotSpot entity when its Spot building is removed.
+pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
+    if let Some((_, entity)) = state.botspot_index.remove(&owner_id) {
+        state.ecs.write().despawn(entity);
+        tracing::info!(owner_id, "Despawned BotSpot entity");
     }
 }

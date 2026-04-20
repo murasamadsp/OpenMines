@@ -43,12 +43,12 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
             if h >= mh || cry2 < 1 {
                 return None;
             }
-            let mut stats_mut = ecs.get_mut::<PlayerStats>(entity)?;
-            stats_mut.crystals[2] -= 1;
-            stats_mut.health = (h + heal_amount).min(mh);
-            let new_health = stats_mut.health;
-            let new_crys = stats_mut.crystals;
-            drop(stats_mut);
+            let (new_health, new_crys) = {
+                let mut stats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                stats_mut.crystals[2] -= 1;
+                stats_mut.health = (h + heal_amount).min(mh);
+                (stats_mut.health, stats_mut.crystals)
+            };
             // Fix 2: award Repair skill XP after successful heal.
             if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
                 add_skill_exp(&mut skills_mut.states, "e", 1.0);
@@ -247,12 +247,7 @@ pub fn use_geopack(
     }
 
     // Normal placement: target cell must be placeable-over.
-    if !state
-        .world
-        .cell_defs()
-        .get(facing_cell)
-        .can_place_over()
-    {
+    if !state.world.cell_defs().get(facing_cell).can_place_over() {
         return false;
     }
     state.world.set_cell(fx, fy, alive_cell);

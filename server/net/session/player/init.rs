@@ -88,7 +88,12 @@ pub fn init_player(
                 miniq: Vec::new(),
             },
             PlayerSkills {
-                states: player.skills.clone(),
+                total_slots: player.skills.get("__slots").map_or(20, |s| s.level),
+                states: {
+                    let mut s = player.skills.clone();
+                    s.remove("__slots");
+                    s
+                },
             },
             PlayerView {
                 last_chunk: None,
@@ -162,10 +167,9 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
         chunk
     };
 
-    state
-        .chunk_players
-        .get_mut(&(cx, cy))
-        .map(|mut e| e.retain(|&id| id != pid));
+    if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy)) {
+        e.retain(|&id| id != pid);
+    }
 
     let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
     let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
@@ -278,5 +282,12 @@ fn send_initial_sync(
     send_chat_login_per_reference(state, tx, pid);
     // 16–17. ConfigPacket + ProgStatus
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    send_u_packet(tx, "@P", &programmator_status(false).1);
+    // @P reflects real ECS programmator state
+    let prog_running = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                .is_some_and(|ps| ps.running)
+        })
+        .unwrap_or(false);
+    send_u_packet(tx, "@P", &programmator_status(prog_running).1);
 }

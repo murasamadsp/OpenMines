@@ -159,6 +159,33 @@ pub fn handle_auto_dig_toggle(
     }
 }
 
+/// Set auto-dig to a specific value (used by programmator `EnableAutoDig`/`DisableAutoDig`).
+pub fn handle_auto_dig_set(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    enabled: bool,
+) {
+    let changed = state
+        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            let mut settings = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
+            if settings.auto_dig != enabled {
+                settings.auto_dig = enabled;
+                if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+                    flags.dirty = true;
+                }
+                Some(enabled)
+            } else {
+                None
+            }
+        })
+        .flatten();
+
+    if let Some(val) = changed {
+        send_u_packet(tx, "BD", &auto_digg(val).1);
+    }
+}
+
 pub fn handle_local_chat(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -406,18 +433,117 @@ pub fn handle_chat_init_ty(
     send_chat_init(state, tx, pid, &current_tag);
 }
 
-/// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в server_reference (без `#p` с сервера).
-pub fn handle_prog_ty(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: &[u8]) {
+/// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в server_reference.
+///
+/// `PROG`: parse binary payload → decode id + source → parse_normal → store in ECS → running=true → send @P "1".
+/// `pRST`: toggle run/stop → send @P status.
+/// `PDEL`: delete program from DB → stop running → send @P "0".
+/// `PREN`: rename only → send @P current status.
+pub fn handle_prog_ty(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    event: &str,
+    payload: &[u8],
+) {
     match event {
         "PROG" => {
-            let running = !payload.is_empty();
-            send_u_packet(tx, "@P", &programmator_status(running).1);
-        }
-        "PDEL" | "PREN" => {
-            send_u_packet(tx, "@P", &programmator_status(false).1);
+            // Decode PROG payload: [4B len][4B id][len bytes ...][UTF-8 source]
+            let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
+            if let Some((prog_id, source)) = decoded {
+                // Save to DB
+                if let Err(e) = state.db.save_program(pid, prog_id, &source) {
+                    tracing::warn!("[PROG] DB save failed pid={pid} prog_id={prog_id}: {e:#}");
+                }
+
+                // Parse and store in ECS
+                let running = state
+                    .modify_player(pid, |ecs, entity| {
+                        if let Some(mut ps) =
+                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                        {
+                            ps.selected_id = Some(prog_id);
+                            ps.selected_data = Some(source.clone());
+                            ps.run_program(&source);
+                            Some(ps.running)
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten()
+                    .unwrap_or(false);
+
+                // Close any open window + send @P
+                send_u_packet(tx, "Gu", &gu_close().1);
+                send_u_packet(tx, "@P", &programmator_status(running).1);
+            } else {
+                tracing::warn!(
+                    "[PROG] Failed to decode payload pid={pid} len={}",
+                    payload.len()
+                );
+                send_u_packet(tx, "@P", &programmator_status(false).1);
+            }
         }
         "pRST" => {
-            send_u_packet(tx, "@P", &programmator_status(true).1);
+            // Toggle: if running → stop; if stopped and has selected → rerun
+            let running = state
+                .modify_player(pid, |ecs, entity| {
+                    if let Some(mut ps) =
+                        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                    {
+                        if ps.running {
+                            // Currently running → stop
+                            ps.running = false;
+                            Some(false)
+                        } else if ps.selected_data.is_some() {
+                            // Stopped, has program → open prog editor (not restart)
+                            // C# reference: if not running and selected != null → OpenProg (editor)
+                            // If running → RunProgramm() (toggle off)
+                            Some(false)
+                        } else {
+                            Some(false)
+                        }
+                    } else {
+                        Some(false)
+                    }
+                })
+                .flatten()
+                .unwrap_or(false);
+            send_u_packet(tx, "@P", &programmator_status(running).1);
+        }
+        "PDEL" => {
+            // Delete program
+            if let Ok(id_str) = std::str::from_utf8(payload) {
+                if let Ok(prog_id) = id_str.trim().parse::<i32>() {
+                    if let Err(e) = state.db.delete_program_owned(pid, prog_id) {
+                        tracing::warn!("[PDEL] DB delete failed pid={pid} id={prog_id}: {e:#}");
+                    }
+                    // Stop if this was the selected program
+                    state.modify_player(pid, |ecs, entity| {
+                        if let Some(mut ps) =
+                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                        {
+                            if ps.selected_id == Some(prog_id) {
+                                ps.running = false;
+                                ps.selected_id = None;
+                                ps.selected_data = None;
+                            }
+                        }
+                        Some(())
+                    });
+                }
+            }
+            send_u_packet(tx, "@P", &programmator_status(false).1);
+        }
+        "PREN" => {
+            // Rename — doesn't affect running state
+            let running = state
+                .query_player(pid, |ecs, entity| {
+                    ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                        .is_some_and(|ps| ps.running)
+                })
+                .unwrap_or(false);
+            send_u_packet(tx, "@P", &programmator_status(running).1);
         }
         _ => {}
     }
@@ -739,14 +865,12 @@ fn handle_pack_owner_command(
     };
     let owner = parts.get(2).and_then(|s| s.parse().ok());
     if let Some(oid) = owner {
-        if let Ok(_) =
-            modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                if let Some(mut o) =
-                    ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity)
-                {
-                    o.owner_id = oid;
-                }
-            })
+        if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut o) = ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity) {
+                o.owner_id = oid;
+            }
+        })
+        .is_ok()
         {
             send_ok(tx, "Пак", "Владелец обновлен");
         } else {
@@ -766,14 +890,12 @@ fn handle_pack_clan_command(
     };
     let clan = parts.get(2).and_then(|s| s.parse().ok());
     if let Some(cid) = clan {
-        if let Ok(_) =
-            modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                if let Some(mut o) =
-                    ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity)
-                {
-                    o.clan_id = cid;
-                }
-            })
+        if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut o) = ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity) {
+                o.clan_id = cid;
+            }
+        })
+        .is_ok()
         {
             send_ok(tx, "Пак", "Клан обновлен");
         } else {
@@ -796,13 +918,13 @@ fn handle_pack_move_command(
     if let (Some(nx), Some(ny)) = (nx, ny) {
         // NOTE: Move requires updating building_index, but modify_pack_with_db doesn't handle it yet.
         // For now let's just update GridPosition and hope for the best or implement full move logic.
-        if let Ok(_) =
-            modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                if let Some(mut p) = ecs.get_mut::<crate::game::buildings::GridPosition>(entity) {
-                    p.x = nx;
-                    p.y = ny;
-                }
-            })
+        if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut p) = ecs.get_mut::<crate::game::buildings::GridPosition>(entity) {
+                p.x = nx;
+                p.y = ny;
+            }
+        })
+        .is_ok()
         {
             if let Some((_, entity)) = state.building_index.remove(&(x, y)) {
                 state.building_index.insert((nx, ny), entity);
@@ -828,19 +950,18 @@ fn handle_pack_type_command(
         .and_then(|&s| crate::game::buildings::PackType::from_str(s));
     if let Some(nt) = t {
         let ex = building_extra_for_pack_type(nt);
-        if let Ok(_) =
-            modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                if let Some(mut m) = ecs.get_mut::<crate::game::buildings::BuildingMetadata>(entity)
-                {
-                    m.pack_type = nt;
-                }
-                if let Some(mut s) = ecs.get_mut::<crate::game::buildings::BuildingStats>(entity) {
-                    s.max_charge = ex.max_charge;
-                    s.charge = s.charge.min(ex.max_charge);
-                    s.max_hp = ex.max_hp;
-                    s.hp = s.hp.min(ex.max_hp);
-                }
-            })
+        if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if let Some(mut m) = ecs.get_mut::<crate::game::buildings::BuildingMetadata>(entity) {
+                m.pack_type = nt;
+            }
+            if let Some(mut s) = ecs.get_mut::<crate::game::buildings::BuildingStats>(entity) {
+                s.max_charge = ex.max_charge;
+                s.charge = s.charge.min(ex.max_charge);
+                s.max_hp = ex.max_hp;
+                s.hp = s.hp.min(ex.max_hp);
+            }
+        })
+        .is_ok()
         {
             send_ok(tx, "Пак", "Тип обновлен");
         } else {
@@ -962,32 +1083,39 @@ pub(crate) fn apply_player_death_core(
     // Респаун: проверяем pack через уже имеющийся &mut ecs (без отдельного лока)
     let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
         // Collect resp building data immutably first, then mutate.
-        let resp_data = state
-            .building_index
-            .get(&(x, y))
-            .and_then(|ent| {
-                let bld_ent = *ent;
-                let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent)?;
-                let stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
-                if meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0 {
-                    Some((bld_ent, stats.cost))
-                } else {
-                    None
-                }
-            });
+        let resp_data = state.building_index.get(&(x, y)).and_then(|ent| {
+            let bld_ent = *ent;
+            let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent)?;
+            let stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
+            if meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0 {
+                Some((bld_ent, stats.cost))
+            } else {
+                None
+            }
+        });
         if let Some((bld_ent, resp_cost)) = resp_data {
             // Deduct resp cost from player money, add to building storage.
-            let cost = if resp_cost > 0 { resp_cost as i64 } else { 10i64 };
+            let cost = if resp_cost > 0 {
+                resp_cost as i64
+            } else {
+                10i64
+            };
             if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
                 s.money -= cost;
             }
-            if let Some(mut bld_stats) = ecs.get_mut::<crate::game::buildings::BuildingStats>(bld_ent) {
+            if let Some(mut bld_stats) =
+                ecs.get_mut::<crate::game::buildings::BuildingStats>(bld_ent)
+            {
                 bld_stats.charge -= 1.0;
             }
-            if let Some(mut bld_storage) = ecs.get_mut::<crate::game::buildings::BuildingStorage>(bld_ent) {
+            if let Some(mut bld_storage) =
+                ecs.get_mut::<crate::game::buildings::BuildingStorage>(bld_ent)
+            {
                 bld_storage.money += cost;
             }
-            if let Some(mut bld_flags) = ecs.get_mut::<crate::game::buildings::BuildingFlags>(bld_ent) {
+            if let Some(mut bld_flags) =
+                ecs.get_mut::<crate::game::buildings::BuildingFlags>(bld_ent)
+            {
                 bld_flags.dirty = true;
             }
 
@@ -1026,9 +1154,7 @@ pub(crate) fn apply_player_death_core(
     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
         f.dirty = true;
     }
-    if let Some(mut prog) =
-        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
-    {
+    if let Some(mut prog) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
         if prog.running {
             prog.running = false;
         }
@@ -1038,11 +1164,7 @@ pub(crate) fn apply_player_death_core(
 }
 
 /// Выполнить отложенные broadcast'ы после отпускания `ecs.write()`.
-pub(crate) fn run_death_broadcasts(
-    state: &Arc<GameState>,
-    bcast: &DeathBroadcasts,
-    pid: PlayerId,
-) {
+pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid: PlayerId) {
     // Сообщить всем соседям, что бот исчез
     let (dx, dy) = bcast.death_pos;
     let del = hb_bot_del(net_u16_nonneg(pid));

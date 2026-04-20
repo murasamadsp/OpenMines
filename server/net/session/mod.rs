@@ -31,6 +31,6 @@ mod connection;
 pub mod play;
 mod player;
 pub mod social;
-mod ui;
+pub(crate) mod ui;
 
 pub use connection::handle;

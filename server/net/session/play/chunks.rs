@@ -66,6 +66,10 @@ pub fn check_chunk_changed(
                     let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
                     let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                     if p.chunk_x() == ncx && p.chunk_y() == ncy {
+                        // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
+                        let tail = ecs
+                            .get::<crate::game::programmator::ProgrammatorState>(entity)
+                            .map_or(0, |ps| u8::from(ps.running));
                         Some(hb_bot(
                             net_u16_nonneg(opid),
                             net_u16_nonneg(p.x),
@@ -73,7 +77,7 @@ pub fn check_chunk_changed(
                             net_u8_clamped(p.dir, 3),
                             net_u8_clamped(s.skin, 255),
                             net_u16_nonneg(s.clan_id.unwrap_or(0)),
-                            0,
+                            tail,
                         ))
                     } else {
                         None
@@ -83,6 +87,32 @@ pub fn check_chunk_changed(
             if let Some(bot) = bot_data {
                 sub_packets.push(bot);
                 sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+            }
+        }
+
+        // BotSpot entities (C# BotSpot: skin=3, tail=1, id=-owner_id)
+        {
+            let ecs = state.ecs.read();
+            for entry in state.botspot_index.iter() {
+                let botspot_entity = *entry.value();
+                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
+                    let (bcx, bcy) = crate::world::World::chunk_pos(data.x, data.y);
+                    if bcx == ncx && bcy == ncy {
+                        // C# `BotSpot.tail => 1` (always 1, unlike Player which checks running).
+                        // C# casts negative bot_id to u16 (wraps around).
+                        let wire_id = data.bot_id as u16;
+                        sub_packets.push(hb_bot(
+                            wire_id,
+                            net_u16_nonneg(data.x),
+                            net_u16_nonneg(data.y),
+                            net_u8_clamped(data.dir, 3),
+                            crate::game::botspot::BotSpotData::SKIN,
+                            net_u16_nonneg(data.clan_id),
+                            crate::game::botspot::BotSpotData::TAIL,
+                        ));
+                        sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+                    }
+                }
             }
         }
 
@@ -157,10 +187,9 @@ pub fn check_chunk_changed(
         .flatten();
     // ecs.write() отпущен — безопасно обновляем chunk_players.
     if let Some((ocx, ocy, ncx, ncy)) = chunk_update {
-        state
-            .chunk_players
-            .get_mut(&(ocx, ocy))
-            .map(|mut e| e.retain(|&id| id != pid));
+        if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy)) {
+            e.retain(|&id| id != pid);
+        }
         state.chunk_players.entry((ncx, ncy)).or_default().push(pid);
     }
 }

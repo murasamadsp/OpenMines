@@ -1,8 +1,12 @@
+pub mod acid;
+pub mod alive;
+pub mod botspot;
 pub mod buildings;
 pub mod chat;
 pub mod combat;
 pub mod crafting;
 pub mod direction;
+pub mod market;
 pub mod player;
 pub mod programmator;
 pub mod sand;
@@ -24,8 +28,7 @@ pub use buildings::{
     BuildingStorage, GridPosition, PackType, PackView,
 };
 pub use player::{
-    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId,
-    PlayerMetadata, PlayerStats,
+    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
 };
 
 #[derive(Resource)]
@@ -64,6 +67,25 @@ pub enum ProgrammatorAction {
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
         dir: i32,
     },
+    Build {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        dir: i32,
+        block_type: String,
+    },
+    Geo {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    },
+    Heal {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    },
+    SetAutoDig {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        enabled: bool,
+    },
 }
 
 pub struct GameState {
@@ -73,6 +95,9 @@ pub struct GameState {
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub chunk_players: DashMap<(u32, u32), Vec<PlayerId>>,
     pub building_index: DashMap<(i32, i32), Entity>,
+    /// BotSpot entities indexed by owner player ID.
+    /// Each Spot building spawns one BotSpot entity.
+    pub botspot_index: DashMap<PlayerId, Entity>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     pub ecs: RwLock<EcsWorld>,
     pub schedule: RwLock<Schedule>,
@@ -90,6 +115,8 @@ impl GameState {
         schedule.add_systems(combat::standing_cell_hazard_system);
         schedule.add_systems(combat::gun_firing_system);
         schedule.add_systems(programmator::programmator_system);
+        schedule.add_systems(alive::alive_physics_system);
+        schedule.add_systems(acid::acid_physics_system);
 
         let default_channels = vec![
             chat::ChatChannel::new("FED", "Федеральный чат", true),
@@ -104,6 +131,7 @@ impl GameState {
             active_players: DashMap::new(),
             chunk_players: DashMap::new(),
             building_index: DashMap::new(),
+            botspot_index: DashMap::new(),
             chat_channels: RwLock::new(default_channels),
             ecs: RwLock::new(EcsWorld::new()),
             schedule: RwLock::new(schedule),
@@ -115,11 +143,14 @@ impl GameState {
             ecs.insert_resource(combat::DeathQueue::default());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
+            ecs.insert_resource(alive::AliveTickTimer::default());
+            ecs.insert_resource(acid::AcidTickTimer::default());
         }
 
         if let Ok(all_rows) = state.db.load_all_buildings() {
             let count = all_rows.len();
             let mut ecs = state.ecs.write();
+            let mut spot_count = 0u32;
             for row in all_rows {
                 let pack_type = buildings::PackType::from_str(&row.type_code)
                     .unwrap_or(buildings::PackType::Resp);
@@ -155,8 +186,30 @@ impl GameState {
                     ))
                     .id();
                 state.building_index.insert((row.x, row.y), entity);
+
+                // Spawn BotSpot entity for Spot buildings loaded from DB.
+                if pack_type == PackType::Spot {
+                    let botspot_entity = ecs
+                        .spawn((
+                            botspot::BotSpotMarker,
+                            botspot::BotSpotData {
+                                bot_id: -row.owner_id,
+                                owner_id: row.owner_id,
+                                clan_id: row.clan_id,
+                                x: row.x,
+                                y: row.y,
+                                dir: 0,
+                                building_entity: entity,
+                            },
+                            botspot::BotSpotBasket::default(),
+                            programmator::ProgrammatorState::new(),
+                        ))
+                        .id();
+                    state.botspot_index.insert(row.owner_id, botspot_entity);
+                    spot_count += 1;
+                }
             }
-            info!("Loaded {count} buildings into ECS from DB");
+            info!("Loaded {count} buildings into ECS from DB ({spot_count} Spot BotSpots spawned)");
         }
         state
     }
@@ -435,8 +488,6 @@ impl GameState {
     }
 
     /// Как `Player.GenerateHash()` в `Player.cs`: 12 символов `A-Z0-9`.
-    // TODO: will be used when player hash generation is wired into registration
-    #[allow(dead_code)]
     pub fn generate_hash() -> String {
         use rand::Rng;
         const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";

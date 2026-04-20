@@ -65,6 +65,7 @@ pub enum PackType {
     Jobs,     // 'J'
     Zalupa,   // 'Y'
     /// В референсе отдельное enum-значение; в Rust для ворот используем `Gate` (логика), на wire — пробел как у `None`.
+    #[allow(clippy::upper_case_acronyms)]
     FLAGBLYAT, // 'D'
     /// Клановые ворота: в C# `Gate : Pack` с `type => PackType.None` — тот же символ, что у `None`.
     Gate,

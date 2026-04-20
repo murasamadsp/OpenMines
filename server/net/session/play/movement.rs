@@ -153,6 +153,12 @@ pub fn handle_move(
         .flatten();
 
     if let Some((nx, ny, ndir, skin, clan)) = result {
+        let tail = state
+            .query_player(pid, |ecs, entity| {
+                ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .map_or(0, |ps| u8::from(ps.running))
+            })
+            .unwrap_or(0);
         let (cx, cy) = World::chunk_pos(nx, ny);
         let bot = hb_bot(
             net_u16_nonneg(pid),
@@ -161,7 +167,7 @@ pub fn handle_move(
             net_u8_clamped(ndir, 3),
             net_u8_clamped(skin, 255),
             net_u16_nonneg(clan),
-            0,
+            tail,
         );
         let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
@@ -177,7 +183,7 @@ pub fn handle_move(
                 let prog_running = state
                     .query_player(pid, |ecs, entity| {
                         ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                            .map_or(false, |p| p.running)
+                            .is_some_and(|p| p.running)
                     })
                     .unwrap_or(false);
                 if !prog_running {

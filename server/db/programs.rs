@@ -2,8 +2,8 @@ use super::Database;
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-#[derive(Debug, Clone)]
 #[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct ProgramRow {
     pub id: i32,
     pub player_id: i32,
@@ -77,6 +77,32 @@ impl Database {
         self.conn
             .lock()
             .execute("DELETE FROM programs WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Save (upsert) program: update code if program exists, otherwise insert.
+    pub fn save_program(&self, player_id: i32, prog_id: i32, code: &str) -> Result<()> {
+        let conn = self.conn.lock();
+        let updated = conn.execute(
+            "UPDATE programs SET code = ?1 WHERE id = ?2 AND player_id = ?3",
+            params![code, prog_id, player_id],
+        )?;
+        if updated == 0 {
+            // Program doesn't exist yet (new) — insert with given id
+            conn.execute(
+                "INSERT OR IGNORE INTO programs (id, player_id, name, code) VALUES (?1, ?2, ?3, ?4)",
+                params![prog_id, player_id, "program", code],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Delete program owned by player.
+    pub fn delete_program_owned(&self, player_id: i32, prog_id: i32) -> Result<()> {
+        self.conn.lock().execute(
+            "DELETE FROM programs WHERE id = ?1 AND player_id = ?2",
+            params![prog_id, player_id],
+        )?;
         Ok(())
     }
 }

@@ -63,8 +63,8 @@ pub fn standing_cell_hazard_system(
         if cell == cell_type::BOX {
             if let Ok(Some(BoxRow { crystals: crys, .. })) = state.db.get_box_at(px, py) {
                 // ref `PEntity.GetBox`: всегда удаляет запись; кристаллы могут быть нулём.
-                for i in 0..6 {
-                    stats.crystals[i] = stats.crystals[i].saturating_add(crys[i]);
+                for (i, &c) in crys.iter().enumerate() {
+                    stats.crystals[i] = stats.crystals[i].saturating_add(c);
                 }
                 let _ = state.db.delete_box_at(px, py);
                 flags.dirty = true;
@@ -83,7 +83,7 @@ pub fn standing_cell_hazard_system(
 }
 
 /// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → AntiGun.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
     state_res: Res<GameStateResource>,
     mut death_q: ResMut<DeathQueue>,

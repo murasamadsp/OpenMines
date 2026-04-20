@@ -35,8 +35,6 @@ pub fn world_info(
 }
 
 /// Encode an AH packet: "`user_id_hash`" or "BAD"
-// TODO: will be used when legacy AH auth flow is fully wired
-#[allow(dead_code)]
 pub fn auth_hash(user_id: i32, hash: &str) -> (&'static str, Vec<u8>) {
     let s = format!("{user_id}_{hash}");
     ("AH", s.into_bytes())

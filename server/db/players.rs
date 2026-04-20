@@ -7,18 +7,14 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
 pub enum Role {
-    // TODO: Player/Moderator variants represent DB values (role=0/1); not yet constructed in code
-    #[allow(dead_code)]
     Player = 0,
-    #[allow(dead_code)]
     Moderator = 1,
     Admin = 2,
 }
 
+#[allow(dead_code)]
 impl Role {
-    // TODO: from_db/is_admin will be used when role-based authorization is fully wired
     #[must_use]
-    #[allow(dead_code)]
     pub const fn from_db(v: i32) -> Self {
         match v {
             2 => Self::Admin,
@@ -28,14 +24,12 @@ impl Role {
     }
 
     #[must_use]
-    #[allow(dead_code)]
     pub const fn is_admin(self) -> bool {
         matches!(self, Self::Admin)
     }
 
     /// Модератор или админ (задел под отдельные команды).
     #[must_use]
-    #[allow(dead_code)]
     pub const fn is_moderator_effective(self) -> bool {
         matches!(self, Self::Moderator | Self::Admin)
     }
@@ -94,18 +88,16 @@ pub struct PlayerRow {
     pub clan_rank: i32,
 }
 
+#[allow(dead_code)]
 impl PlayerRow {
-    // TODO: as_role will be used when role-based authorization checks are implemented
     #[inline]
     #[must_use]
-    #[allow(dead_code)]
     pub const fn as_role(&self) -> Role {
         Role::from_db(self.role)
     }
 
     #[inline]
     #[must_use]
-    #[allow(dead_code)]
     pub const fn as_clan_rank(&self) -> ClanRank {
         ClanRank::from_db(self.clan_rank)
     }
@@ -147,8 +139,6 @@ fn row_to_player(r: &rusqlite::Row) -> PlayerRow {
 }
 
 impl Database {
-    // TODO: create_player/player_name_exists/update_player_resp will be used when registration flow is fully connected
-    #[allow(dead_code)]
     pub fn create_player(&self, name: &str, passwd: &str, hash: &str) -> Result<PlayerRow> {
         let name = name.trim();
         if name.is_empty() {
@@ -264,7 +254,6 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn player_name_exists(&self, name: &str) -> Result<bool> {
         let name = name.trim();
         if name.is_empty() {

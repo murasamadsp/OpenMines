@@ -142,10 +142,10 @@ async fn main() -> Result<()> {
             })
             .flatten();
 
-        if let Some(row) = player_row {
-            if let Err(e) = game_state.db.save_player(&row) {
-                tracing::error!("Shutdown save failed for player {}: {e}", pid);
-            }
+        if let Some(row) = player_row
+            && let Err(e) = game_state.db.save_player(&row)
+        {
+            tracing::error!("Shutdown save failed for player {}: {e}", pid);
         }
     }
     if let Err(e) = game_state.world.flush() {

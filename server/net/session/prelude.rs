@@ -18,13 +18,11 @@ pub use crate::game::{GameState, PlayerId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
     AuAuthType, AuClientPacket, LoclClient, PongClient, TyPacket, XbldClient, au_session,
-    auto_digg, basket, bot_info, chat_current, chat_list, chat_messages,
-    chat_notification, clan_hide, clan_show, config_packet, decode_gui_button, decode_whoi,
-    decode_xdig, decode_xmov, geo, gu_close, hb_bot, hb_bundle, hb_cell, hb_chat, hb_directed_fx,
-    hb_bot_del, hb_fx, hb_map, hb_packs, health, inventory_close, inventory_show, level, money,
-    ok_message,
-    ping, programmator_status, settings_default_wire, skills_packet, speed, status, tp,
-    world_info,
+    auto_digg, basket, bot_info, chat_current, chat_list, chat_messages, chat_notification,
+    clan_hide, clan_show, config_packet, decode_gui_button, decode_whoi, decode_xdig, decode_xmov,
+    geo, gu_close, hb_bot, hb_bot_del, hb_bundle, hb_cell, hb_chat, hb_directed_fx, hb_fx, hb_map,
+    hb_packs, health, inventory_close, inventory_show, level, money, ok_message, ping,
+    programmator_status, settings_default_wire, skills_packet, speed, status, tp, world_info,
 };
 pub use crate::world::cells::{
     cell_type, crystal_multiplier, crystal_type, is_boulder, is_crystal,
@@ -84,7 +82,4 @@ pub fn validate_pack_access(
 
 pub use super::constants::*;
 pub use super::util::{net_u8_clamped, net_u16_nonneg};
-pub use super::wire::{
-    encode_hb_bundle, make_u_packet_bytes,
-    send_b_packet, send_u_packet,
-};
+pub use super::wire::{encode_hb_bundle, make_u_packet_bytes, send_b_packet, send_u_packet};

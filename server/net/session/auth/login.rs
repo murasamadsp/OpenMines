@@ -99,5 +99,9 @@ pub async fn handle_auth(
 
     tracing::debug!("[Auth] Sending auth-failure sequence (cf+BI+HB+GU)");
     send_auth_failure(state, tx, au);
+    // Transition to GUI auth state — client now sees the auth window and can interact via GUI_ buttons.
+    *auth_state = crate::net::session::connection::AuthState::GuiAuth(
+        crate::net::session::connection::GuiAuthStep::MainMenu,
+    );
     Ok(None)
 }

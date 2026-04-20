@@ -41,8 +41,8 @@ pub fn sand_physics_system(
                 } else if state.world.valid_coord(sx, below_y) {
                     // Below is occupied — try diagonal slide (C# Physics.Sand diagonal fallback).
                     let below_cell = state.world.get_cell(sx, below_y);
-                    let below_is_solid = cell_defs.get(below_cell).is_sand()
-                        || is_boulder(below_cell);
+                    let below_is_solid =
+                        cell_defs.get(below_cell).is_sand() || is_boulder(below_cell);
                     if below_is_solid {
                         // Try left diagonal (x-1, y+1) then right diagonal (x+1, y+1).
                         let left_x = sx - 1;
@@ -100,8 +100,8 @@ pub fn sand_physics_system(
                     boulder_tasks.push((sx, sy, sx, below_y, cell));
                 } else if state.world.valid_coord(sx, below_y) {
                     let below_cell = state.world.get_cell(sx, below_y);
-                    let below_is_solid = cell_defs.get(below_cell).is_sand()
-                        || is_boulder(below_cell);
+                    let below_is_solid =
+                        cell_defs.get(below_cell).is_sand() || is_boulder(below_cell);
                     if below_is_solid {
                         let left_x = sx - 1;
                         let right_x = sx + 1;

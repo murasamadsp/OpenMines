@@ -201,6 +201,29 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                     crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
                         crate::net::session::play::dig_build::handle_dig(&state, &tx, pid, dir);
                     }
+                    crate::game::ProgrammatorAction::Build {
+                        pid,
+                        tx,
+                        dir,
+                        block_type,
+                    } => {
+                        let bld = crate::protocol::packets::XbldClient {
+                            direction: dir,
+                            block_type,
+                        };
+                        crate::net::session::play::dig_build::handle_build(&state, &tx, pid, &bld);
+                    }
+                    crate::game::ProgrammatorAction::Geo { pid, tx } => {
+                        crate::net::session::social::misc::handle_geo(&state, &tx, pid);
+                    }
+                    crate::game::ProgrammatorAction::Heal { pid, tx } => {
+                        crate::net::session::ui::heal_inventory::handle_heal(&state, &tx, pid);
+                    }
+                    crate::game::ProgrammatorAction::SetAutoDig { pid, tx, enabled } => {
+                        crate::net::session::social::misc::handle_auto_dig_set(
+                            &state, &tx, pid, enabled,
+                        );
+                    }
                 }
             }
 
