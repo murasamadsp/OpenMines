@@ -283,9 +283,10 @@ pub fn handle_channel_chat(
     let Some((nickname, user_id, clan_id, channel_tag)) = p_data else {
         return;
     };
-    let time = Instant::now()
-        .duration_since(std::time::Instant::now())
-        .as_secs() as i64; // dummy
+    let time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
     let msg = ChatMessage {
         time,
         clan_id,
@@ -957,16 +958,36 @@ pub(crate) fn apply_player_death_core(
 
     // Респаун: проверяем pack через уже имеющийся &mut ecs (без отдельного лока)
     let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
-        let has_resp = state
+        // Collect resp building data immutably first, then mutate.
+        let resp_data = state
             .building_index
             .get(&(x, y))
             .and_then(|ent| {
-                let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(*ent)?;
-                let stats = ecs.get::<crate::game::buildings::BuildingStats>(*ent)?;
-                Some(meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0)
-            })
-            .unwrap_or(false);
-        if has_resp {
+                let bld_ent = *ent;
+                let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent)?;
+                let stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
+                if meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0 {
+                    Some((bld_ent, stats.cost))
+                } else {
+                    None
+                }
+            });
+        if let Some((bld_ent, resp_cost)) = resp_data {
+            // Deduct resp cost from player money, add to building storage.
+            let cost = if resp_cost > 0 { resp_cost as i64 } else { 10i64 };
+            if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
+                s.money -= cost;
+            }
+            if let Some(mut bld_stats) = ecs.get_mut::<crate::game::buildings::BuildingStats>(bld_ent) {
+                bld_stats.charge -= 1.0;
+            }
+            if let Some(mut bld_storage) = ecs.get_mut::<crate::game::buildings::BuildingStorage>(bld_ent) {
+                bld_storage.money += cost;
+            }
+            if let Some(mut bld_flags) = ecs.get_mut::<crate::game::buildings::BuildingFlags>(bld_ent) {
+                bld_flags.dirty = true;
+            }
+
             use rand::Rng;
             let mut rng = rand::rng();
             let ox = rng.random_range(2..5i32);

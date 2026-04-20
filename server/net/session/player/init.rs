@@ -8,7 +8,8 @@ use crate::game::programmator::ProgrammatorState;
 use crate::net::session::outbound::chat_sync::send_chat_login_per_reference;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
-    send_player_basket, send_player_health, send_player_level, send_player_speed,
+    send_player_basket, send_player_health, send_player_level, send_player_skills,
+    send_player_speed,
 };
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
@@ -210,6 +211,8 @@ fn send_initial_sync(
         send_u_packet(tx, "P$", &money(player.money, player.creds).1);
         // 8. SendLvl
         send_player_level(tx, skills);
+        // 8a. SendSkills (@S) — C# ref: `Player.Init()` sends @S immediately after LV.
+        send_player_skills(tx, skills);
         // 9. SendInventory (`Inventory.InvToSend` — нужен `&mut` для `miniq` префилла)
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
         send_inventory(tx, &mut inv);

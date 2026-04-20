@@ -473,7 +473,7 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
                 0.08 + x.log10() * x.sqrt() / 4.0
             }
         }
-        SkillType::Health => x.mul_add(10.0, 100.0),
+        SkillType::Health => x.mul_add(3.0, 100.0),
         SkillType::BuildRoad => x.mul_add(-0.2_f32, 5.0).max(1.0),
         SkillType::Induction => x.mul_add(0.2, 100.0),
         SkillType::Packing => x.mul_add(20.0, 100.0),
@@ -499,9 +499,11 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
 
 /// Experience needed to level up from the current level.
 #[allow(clippy::cast_precision_loss)]
-#[allow(clippy::missing_const_for_fn)]
-pub fn exp_needed(_skill: SkillType, level: i32) -> f32 {
-    100.0 * (level as f32)
+pub fn exp_needed(skill: SkillType, _level: i32) -> f32 {
+    match skill {
+        SkillType::AntiGun => 0.0,
+        _ => 1.0,
+    }
 }
 
 /// Get the effect value for a player's skill, defaulting to level 0 if not present.

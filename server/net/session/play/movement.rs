@@ -172,7 +172,8 @@ pub fn handle_move(
         // footprint coverage requires a reverse index (separate concern, same limitation as the
         // gate check above). Programmator check mirrors C#: `!programsData.ProgRunning`.
         if let Some(view) = state.get_pack_at(nx, ny) {
-            if view.clan_id == 0 || view.clan_id == clan {
+            // C# ref: `Gate.GUIWin()` returns null — stepping on a gate never opens a window.
+            if view.pack_type != PackType::Gate && (view.clan_id == 0 || view.clan_id == clan) {
                 let prog_running = state
                     .query_player(pid, |ecs, entity| {
                         ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
