@@ -1,10 +1,11 @@
 //! Лечение и инвентарь.
+#![allow(clippy::cast_possible_truncation)]
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
     BuildingStorage, GridPosition,
 };
 use crate::game::player::{
-    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerStats,
+    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkills, PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
 use crate::net::session::play::dig_build::broadcast_cell_update;
@@ -30,19 +31,35 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
                     pos.y,
                 )
             };
+            // Fix 1: read heal amount from Repair skill; refuse if skill absent (level 0 → effect 0).
+            let heal_amount = {
+                let skills = ecs.get::<PlayerSkills>(entity)?;
+                let v = get_player_skill_effect(&skills.states, SkillType::Repair);
+                v as i32
+            };
+            if heal_amount <= 0 {
+                return None;
+            }
             if h >= mh || cry2 < 1 {
                 return None;
             }
             let mut stats_mut = ecs.get_mut::<PlayerStats>(entity)?;
             stats_mut.crystals[2] -= 1;
-            stats_mut.health = (h + 10).min(mh);
-            Some((stats_mut.health, mh, stats_mut.crystals, px, py))
+            stats_mut.health = (h + heal_amount).min(mh);
+            let new_health = stats_mut.health;
+            let new_crys = stats_mut.crystals;
+            drop(stats_mut);
+            // Fix 2: award Repair skill XP after successful heal.
+            if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
+                add_skill_exp(&mut skills_mut.states, "e", 1.0);
+            }
+            Some((new_health, mh, new_crys, px, py))
         })
         .flatten();
 
     if let Some((h, mh, crys, px, py)) = result {
         send_u_packet(tx, "@L", &health(h, mh).1);
-        send_u_packet(tx, "@B", &basket(&crys, 1000).1);
+        send_u_packet(tx, "@B", &basket(&crys, 1).1);
         let fx = hb_directed_fx(
             net_u16_nonneg(pid),
             net_u16_nonneg(px),
@@ -94,18 +111,24 @@ pub fn handle_inventory_use(
     }
 
     let used = match sel {
-        10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, u8::try_from(sel).unwrap_or(0)),
+        // Fix 7–9: geopack items now pass item_id (i32) instead of a pre-mapped cell byte.
+        10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, sel),
         0 => place_building_from_item(state, tx, pid, "T"),
         1 => place_building_from_item(state, tx, pid, "R"),
         2 => place_building_from_item(state, tx, pid, "U"),
         3 => place_building_from_item(state, tx, pid, "M"),
+        // Fix 3: item 4 is consumed with no further effect.
+        4 => true,
         24 => place_building_from_item(state, tx, pid, "F"),
         26 => place_building_from_item(state, tx, pid, "G"),
+        // Fix 4: item 27 places a Gate building ("N" resolves to PackType::Gate).
+        27 => place_building_from_item(state, tx, pid, "N"),
         29 => place_building_from_item(state, tx, pid, "L"),
         5 => use_boom(state, pid),
         6 => use_protector(state, pid),
         7 => use_razryadka(state, pid),
-        35 => use_geopack(state, tx, pid, 39),
+        // Fix 5: item 35 (Poli/PolymerRoad) uses its own function with AccessGun check.
+        35 => use_poli(state, pid),
         40 => use_c190(state, pid),
         _ => false,
     };
@@ -144,6 +167,8 @@ pub fn handle_inventory_choose(
         }
         inv.selected = id;
         if id == -1 {
+            // Fix 6: C# Inventory.Choose calls InvToSend() then Close() — send inventory first.
+            send_inventory(tx, &mut inv);
             send_u_packet(tx, "IN", &inventory_close().1);
         } else {
             send_inventory(tx, &mut inv);
@@ -152,12 +177,41 @@ pub fn handle_inventory_choose(
     });
 }
 
+/// Fix 7: item-to-alive-cell mapping for geopack items.
+/// Returns `None` for item 10 (no placement), `Some(cell_type)` for all others.
+fn geopack_item_to_cell(item: i32) -> Option<u8> {
+    match item {
+        10 => None, // Fix 8: item 10 never places anything
+        11 => Some(cell_type::ALIVE_CYAN),
+        12 => Some(cell_type::ALIVE_RED),
+        13 => Some(cell_type::ALIVE_VIOL),
+        14 => Some(cell_type::ALIVE_BLACK),
+        15 => Some(cell_type::ALIVE_WHITE),
+        16 => Some(cell_type::ALIVE_BLUE),
+        34 => Some(cell_type::HYPNO_ROCK),
+        42 => Some(cell_type::BLACK_ROCK),
+        43 => Some(cell_type::RED_ROCK),
+        46 => Some(cell_type::ALIVE_RAINBOW),
+        _ => None,
+    }
+}
+
+/// Fix 7–9: geopack now takes item_id (i32) and maps it to the alive cell type.
+/// Fix 8: item 10 is consumed (returns false so caller doesn't decrement, but we
+///        still return false — item 10 should not place anything).
+/// Fix 9: if the facing cell already IS the alive cell for this item, pick it back
+///        up (+1 count) and destroy the cell; item is NOT consumed (return false).
 pub fn use_geopack(
     state: &Arc<GameState>,
     _tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
-    cell: u8,
+    item_id: i32,
 ) -> bool {
+    // Fix 8: item 10 has no placement.
+    let Some(alive_cell) = geopack_item_to_cell(item_id) else {
+        return false;
+    };
+
     let pos = state
         .query_player(pid, |ecs, entity| {
             let p = ecs.get::<PlayerPosition>(entity)?;
@@ -168,18 +222,76 @@ pub fn use_geopack(
         return false;
     };
     let (dx, dy) = dir_offset(pdir);
-    let (tx, ty) = (px + dx, py + dy);
-    if !state.world.valid_coord(tx, ty)
-        || !state
-            .world
-            .cell_defs()
-            .get(state.world.get_cell(tx, ty))
-            .can_place_over()
+    let (fx, fy) = (px + dx, py + dy);
+    if !state.world.valid_coord(fx, fy) {
+        return false;
+    }
+
+    let facing_cell = state.world.get_cell(fx, fy);
+
+    // Fix 9: pickup-back — if facing cell IS the alive cell for this item, destroy
+    // and return it to inventory without consuming one from inventory.
+    if facing_cell == alive_cell {
+        state.world.set_cell(fx, fy, cell_type::EMPTY);
+        broadcast_cell_update(state, fx, fy);
+        // Return item to player (+1) without consuming one (net effect: 0 change from
+        // the caller's perspective, so we return false to prevent the -1 decrement,
+        // then manually add +1 here).
+        state.modify_player(pid, |ecs, entity| {
+            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+            let c = inv.items.entry(item_id).or_insert(0);
+            *c += 1;
+            Some(())
+        });
+        return false; // caller will NOT do -1 decrement
+    }
+
+    // Normal placement: target cell must be placeable-over.
+    if !state
+        .world
+        .cell_defs()
+        .get(facing_cell)
+        .can_place_over()
     {
         return false;
     }
-    state.world.set_cell(tx, ty, cell);
-    broadcast_cell_update(state, tx, ty);
+    state.world.set_cell(fx, fy, alive_cell);
+    broadcast_cell_update(state, fx, fy);
+    true
+}
+
+/// Fix 5: C# `ShitClass.Poli()` — place `POLYMER_ROAD` at the facing cell
+/// after passing `World.AccessGun` check (player must be in a friendly-gun zone).
+pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
+    let pos = state
+        .query_player(pid, |ecs, entity| {
+            let p = ecs.get::<PlayerPosition>(entity)?;
+            let s = ecs.get::<PlayerStats>(entity)?;
+            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+        })
+        .flatten();
+    let Some((px, py, pdir, cid)) = pos else {
+        return false;
+    };
+    let (dx, dy) = dir_offset(pdir);
+    let (fx, fy) = (px + dx, py + dy);
+    if !state.world.valid_coord(fx, fy) {
+        return false;
+    }
+    // AccessGun check: must be in a zone covered by a friendly (or no) charged gun.
+    if !state.access_gun(fx, fy, cid) {
+        return false;
+    }
+    if !state
+        .world
+        .cell_defs()
+        .get(state.world.get_cell(fx, fy))
+        .can_place_over()
+    {
+        return false;
+    }
+    state.world.set_cell(fx, fy, cell_type::POLYMER_ROAD);
+    broadcast_cell_update(state, fx, fy);
     true
 }
 

@@ -237,7 +237,7 @@ fn handle_pack_take_crystals(
                 for i in 0..6 {
                     s.crystals[i] += amount[i];
                 }
-                send_u_packet(tx, "@B", &basket(&s.crystals, 1000).1);
+                send_u_packet(tx, "@B", &basket(&s.crystals, 1).1);
                 Some(())
             });
         }

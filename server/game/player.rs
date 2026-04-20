@@ -24,6 +24,8 @@ pub struct PlayerStats {
     pub skin: i32,
     pub clan_id: Option<i32>,
     pub clan_rank: i32,
+    /// Дробный аккумулятор кристаллов (как `cb` в C# `Player.Mine()`).
+    pub crystal_carry: f32,
 }
 
 #[derive(Component, Clone)]
@@ -57,6 +59,8 @@ pub struct PlayerUI {
 pub struct PlayerCooldowns {
     pub last_move: Instant,
     pub last_dig: Instant,
+    /// Как `Player.TryAct(..., 200)` для `Xbld` в референсе.
+    pub last_build: Instant,
     /// Как `Player.TryAct(..., 200)` для `Xgeo` в референсе.
     pub last_geo: Instant,
     pub protection_until: Option<Instant>,

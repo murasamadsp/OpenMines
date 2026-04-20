@@ -78,6 +78,7 @@ pub fn init_player(
                 skin: player.skin,
                 clan_id: player.clan_id,
                 clan_rank: player.clan_rank,
+                crystal_carry: 0.0,
             },
             PlayerInventory {
                 items: player.inventory.clone(),
@@ -99,6 +100,7 @@ pub fn init_player(
             PlayerCooldowns {
                 last_move: ready,
                 last_dig: ready,
+                last_build: ready,
                 last_geo: ready,
                 protection_until: None,
                 last_shot: None,

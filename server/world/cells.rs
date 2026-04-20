@@ -29,6 +29,12 @@ pub mod cell_type {
     pub const METAL_BOULDER3: u8 = 45;
     pub const QUAD_BLOCK: u8 = 48;
     pub const SUPPORT: u8 = 49;
+    pub const ALIVE_CYAN: u8 = 50;
+    pub const ALIVE_RED: u8 = 51;
+    pub const ALIVE_VIOL: u8 = 52;
+    pub const ALIVE_BLACK: u8 = 53;
+    pub const ALIVE_WHITE: u8 = 54;
+    pub const ALIVE_RAINBOW: u8 = 55;
     pub const WHITE_SAND: u8 = 60;
     pub const X_GREEN: u8 = 71;
     pub const X_BLUE: u8 = 72;
@@ -60,6 +66,12 @@ pub mod cell_type {
     pub const WHITE: u8 = 111;
     pub const CYAN: u8 = 112;
     pub const HEAVY_ROCK: u8 = 113;
+    pub const BLACK_ROCK: u8 = 114;
+    // 115 — gap
+    pub const ALIVE_BLUE: u8 = 116;
+    pub const RED_ROCK: u8 = 117;
+    // 118 — gap
+    pub const HYPNO_ROCK: u8 = 119;
     pub const GOLDEN_ROCK: u8 = 120;
     pub const DEEP_ROCK: u8 = 121;
     /// Как в `cells.json` (в C# enum `GRock` ошибочно = 112).

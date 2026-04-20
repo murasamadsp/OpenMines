@@ -894,6 +894,7 @@ pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 pub(crate) struct DeathBroadcasts {
     pub box_cell: Option<(i32, i32)>,
     pub fx_death: Option<(i32, i32)>,
+    pub death_pos: (i32, i32),
 }
 
 /// Мутации ECS как в `Player.Death()` (`Player.cs`).
@@ -915,6 +916,7 @@ pub(crate) fn apply_player_death_core(
     let mut bcast = DeathBroadcasts {
         box_cell: None,
         fx_death: None,
+        death_pos: (dx, dy),
     };
 
     if cry.iter().sum::<i64>() > 0 {
@@ -953,7 +955,7 @@ pub(crate) fn apply_player_death_core(
         bcast.fx_death = Some((dx, dy));
     }
 
-    // Респаун: проверяем pack через уже имеющийся &mut ecs (б��з отдельного лока)
+    // Респаун: проверяем pack через уже имеющийся &mut ecs (без отдельного лока)
     let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
         let has_resp = state
             .building_index
@@ -964,7 +966,20 @@ pub(crate) fn apply_player_death_core(
                 Some(meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0)
             })
             .unwrap_or(false);
-        if has_resp { (x + 2, y) } else { (10, 10) }
+        if has_resp {
+            use rand::Rng;
+            let mut rng = rand::rng();
+            let ox = rng.random_range(2..5i32);
+            let oy = rng.random_range(-1..3i32);
+            let (cx, cy) = (x + ox, y + oy);
+            if state.world.valid_coord(cx, cy) && state.world.is_empty(cx, cy) {
+                (cx, cy)
+            } else {
+                (x + 2, y)
+            }
+        } else {
+            (10, 10)
+        }
     } else {
         (10, 10)
     };
@@ -987,12 +1002,33 @@ pub(crate) fn apply_player_death_core(
     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
         f.dirty = true;
     }
+    if let Some(mut prog) =
+        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+    {
+        if prog.running {
+            prog.running = false;
+        }
+    }
 
     Some((rx, ry, mh, bcast))
 }
 
 /// Выполнить отложенные broadcast'ы после отпускания `ecs.write()`.
-pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts) {
+pub(crate) fn run_death_broadcasts(
+    state: &Arc<GameState>,
+    bcast: &DeathBroadcasts,
+    pid: PlayerId,
+) {
+    // Сообщить всем соседям, что бот исчез
+    let (dx, dy) = bcast.death_pos;
+    let del = hb_bot_del(net_u16_nonneg(pid));
+    state.broadcast_to_nearby(
+        World::chunk_pos(dx, dy).0,
+        World::chunk_pos(dx, dy).1,
+        &encode_hb_bundle(&hb_bundle(&[del]).1),
+        Some(pid),
+    );
+
     if let Some((bx, by)) = bcast.box_cell {
         broadcast_cell_update(state, bx, by);
     }
@@ -1015,9 +1051,11 @@ pub fn send_respawn_after_death(
     mh: i32,
 ) {
     tracing::warn!("[Respawn] @T pid={pid} to=({rx},{ry}) mh={mh}");
+    send_u_packet(tx, "Gu", &gu_close().1);
     send_u_packet(tx, "@T", &tp(rx, ry).1);
     send_u_packet(tx, "@L", &health(mh, mh).1);
-    send_u_packet(tx, "@B", &basket(&[0; 6], 1000).1);
+    send_u_packet(tx, "@B", &basket(&[0; 6], 1).1);
+    send_u_packet(tx, "@P", &programmator_status(false).1);
 }
 
 /// `RESP` / очередь после пушки: `ecs.write()` для мутаций, broadcast'ы снаружи.
@@ -1027,7 +1065,7 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
         apply_player_death_core(state, &mut ecs, pid)
     };
     if let Some((rx, ry, mh, bcast)) = result {
-        run_death_broadcasts(state, &bcast);
+        run_death_broadcasts(state, &bcast, pid);
         send_respawn_after_death(tx, pid, rx, ry, mh);
         check_chunk_changed(state, tx, pid);
     }

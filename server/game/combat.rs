@@ -70,7 +70,7 @@ pub fn standing_cell_hazard_system(
                 flags.dirty = true;
                 let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
                     "@B",
-                    &crate::protocol::packets::basket(&stats.crystals, 1000).1,
+                    &crate::protocol::packets::basket(&stats.crystals, 1).1,
                 ));
             }
             let _ = state.world.damage_cell(px, py, 1.0);

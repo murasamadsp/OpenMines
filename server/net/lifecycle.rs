@@ -205,7 +205,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             }
 
             for (pid, rx, ry, mh, bcast) in pending {
-                crate::net::session::social::misc::run_death_broadcasts(&state, &bcast);
+                crate::net::session::social::misc::run_death_broadcasts(&state, &bcast, pid);
                 let tx = state
                     .query_player(pid, |ecs, entity| {
                         ecs.get::<crate::game::player::PlayerConnection>(entity)
