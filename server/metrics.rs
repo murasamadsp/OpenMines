@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 
 pub static REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 
+// TODO: TCP/packet metrics will be used when metrics HTTP endpoint is fully wired
+#[allow(dead_code)]
 pub static TCP_CONNECTIONS_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     let c = IntCounter::with_opts(Opts::new(
         "openmines_tcp_connections_total",
@@ -16,6 +18,7 @@ pub static TCP_CONNECTIONS_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     c
 });
 
+#[allow(dead_code)]
 pub static TCP_CONNECTIONS_CURRENT: LazyLock<IntGauge> = LazyLock::new(|| {
     let g = IntGauge::with_opts(Opts::new(
         "openmines_tcp_connections_current",
@@ -26,6 +29,7 @@ pub static TCP_CONNECTIONS_CURRENT: LazyLock<IntGauge> = LazyLock::new(|| {
     g
 });
 
+#[allow(dead_code)]
 pub static PACKETS_IN_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let v = IntCounterVec::new(
         Opts::new(
@@ -52,6 +56,7 @@ pub static PACKETS_OUT_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     v
 });
 
+#[allow(dead_code)]
 pub static TY_EVENTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
     let v = IntCounterVec::new(
         Opts::new("openmines_ty_events_total", "Total TY events by name"),
@@ -92,6 +97,8 @@ pub static PLAYER_SAVE_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     c
 });
 
+// TODO: gather_text will be used when /metrics HTTP endpoint is wired
+#[allow(dead_code)]
 pub fn gather_text() -> Vec<u8> {
     let metric_families = REGISTRY.gather();
     let encoder = TextEncoder::new();

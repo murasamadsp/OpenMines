@@ -1,7 +1,9 @@
 //! Логика взаимодействия с объектами (паками) на карте.
-use crate::game::player::{PlayerConnection, PlayerPosition, PlayerStats, PlayerUI};
+use crate::game::player::{PlayerPosition, PlayerStats};
 use crate::net::session::prelude::*;
 
+// TODO: will be used when pack interaction is fully wired to session dispatch
+#[allow(dead_code)]
 pub fn handle_pack_action(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,

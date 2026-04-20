@@ -26,6 +26,8 @@ pub struct ProgrammatorState {
     pub current_script: Option<String>,
     pub pc: usize,
     pub running: bool,
+    // TODO: last_tick will be used when programmator tick-rate limiting is implemented
+    #[allow(dead_code)]
     pub last_tick: Instant,
 }
 
@@ -52,11 +54,14 @@ impl ProgrammatorState {
     }
 }
 
+// TODO: Parser will be used when programmator script compilation is fully connected
+#[allow(dead_code)]
 pub struct Parser<'a> {
     tokens: Vec<&'a str>,
     pos: usize,
 }
 
+#[allow(dead_code)]
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let tokens = input.split_whitespace().collect();

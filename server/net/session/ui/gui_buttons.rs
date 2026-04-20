@@ -2,7 +2,7 @@
 use crate::game::buildings::{BuildingStats, BuildingStorage, PackView};
 use crate::game::player::{PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
-use crate::net::session::social::buildings::{building_extra_for_pack_type, modify_pack_with_db};
+use crate::net::session::social::buildings::modify_pack_with_db;
 
 pub fn handle_gui_button(
     state: &Arc<GameState>,

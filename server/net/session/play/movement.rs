@@ -9,7 +9,7 @@ pub fn handle_move(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
-    client_time: u32,
+    _client_time: u32,
     target_x: i32,
     target_y: i32,
     dir: i32,

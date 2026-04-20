@@ -4,6 +4,8 @@ use crate::net::session::prelude::*;
 use std::sync::Arc;
 
 /// Временный ящик рядом с точкой смерти.
+// TODO: will be used when death/respawn loot-drop is fully wired
+#[allow(dead_code)]
 pub fn spawn_crystal_box(state: &Arc<GameState>, x: i32, y: i32) -> Option<(i32, i32)> {
     const OFFSETS: [(i32, i32); 9] = [
         (0, 0),

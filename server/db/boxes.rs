@@ -4,7 +4,10 @@ use rusqlite::{OptionalExtension, params};
 
 #[derive(Debug, Clone)]
 pub struct BoxRow {
+    // TODO: x/y are part of the DB row structure, will be used when box-position lookups are exposed
+    #[allow(dead_code)]
     pub x: i32,
+    #[allow(dead_code)]
     pub y: i32,
     pub crystals: [i64; 6],
 }

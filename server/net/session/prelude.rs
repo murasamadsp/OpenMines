@@ -1,33 +1,29 @@
 //! Shared imports for `session` submodules.
 pub use std::collections::HashSet;
 pub use std::net::SocketAddr;
-pub use std::ops::ControlFlow;
 pub use std::sync::Arc;
 pub use std::time::{Duration, Instant};
 
 pub use anyhow::Result;
-pub use bytes::BytesMut;
 pub use tokio::io::{AsyncReadExt, AsyncWriteExt};
-pub use tokio::net::TcpStream;
 pub use tokio::sync::mpsc;
 
 pub use crate::db::BuildingExtra;
 pub use crate::game::buildings::{PackType, PackView};
 pub use crate::game::chat::ChatMessage;
-pub use crate::game::crafting::{Recipe, recipe_by_id, recipes};
 pub use crate::game::direction::dir_offset;
 pub use crate::game::skills::skill_progress_payload;
 pub use crate::game::skills::{SkillType, add_skill_exp, get_player_skill_effect};
-pub use crate::game::{ActivePlayer, GameState, PlayerId};
+pub use crate::game::{GameState, PlayerId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
     AuAuthType, AuClientPacket, LoclClient, PongClient, TyPacket, XbldClient, au_session,
-    auth_hash, auto_digg, basket, bot_info, chat_current, chat_list, chat_messages,
+    auto_digg, basket, bot_info, chat_current, chat_list, chat_messages,
     chat_notification, clan_hide, clan_show, config_packet, decode_gui_button, decode_whoi,
     decode_xdig, decode_xmov, geo, gu_close, hb_bot, hb_bundle, hb_cell, hb_chat, hb_directed_fx,
     hb_bot_del, hb_fx, hb_map, hb_packs, health, inventory_close, inventory_show, level, money,
     ok_message,
-    online, ping, programmator_status, settings_default_wire, skills_packet, speed, status, tp,
+    ping, programmator_status, settings_default_wire, skills_packet, speed, status, tp,
     world_info,
 };
 pub use crate::world::cells::{
@@ -43,6 +39,8 @@ pub enum PackAccessError {
     NoRights,
 }
 
+// TODO: will be used when pack ownership checks are needed in additional handlers
+#[allow(dead_code)]
 #[inline]
 pub fn is_pack_owner_or_clan_member(
     state: &Arc<GameState>,
@@ -87,6 +85,6 @@ pub fn validate_pack_access(
 pub use super::constants::*;
 pub use super::util::{net_u8_clamped, net_u16_nonneg};
 pub use super::wire::{
-    INCOMING_PACKET_PREVIEW, describe_wire_packet, encode_hb_bundle, make_u_packet_bytes,
+    encode_hb_bundle, make_u_packet_bytes,
     send_b_packet, send_u_packet,
 };

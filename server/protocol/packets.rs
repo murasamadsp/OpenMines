@@ -35,6 +35,8 @@ pub fn world_info(
 }
 
 /// Encode an AH packet: "`user_id_hash`" or "BAD"
+// TODO: will be used when legacy AH auth flow is fully wired
+#[allow(dead_code)]
 pub fn auth_hash(user_id: i32, hash: &str) -> (&'static str, Vec<u8>) {
     let s = format!("{user_id}_{hash}");
     ("AH", s.into_bytes())
@@ -75,6 +77,8 @@ pub fn speed(xy_pause: i32, road_pause: i32, depth: i32) -> (&'static str, Vec<u
 }
 
 /// Encode an Online packet (ON): "online:max"
+// TODO: will be used when online count broadcast is fully wired
+#[allow(dead_code)]
 pub fn online(count: i32, max: i32) -> (&'static str, Vec<u8>) {
     let s = format!("{count}:{max}");
     ("ON", s.into_bytes())
@@ -341,6 +345,8 @@ pub fn hb_bot_del(id: u16) -> Vec<u8> {
 
 /// HB sub-packet: Bot leave block (type "S")
 /// [1B tag 'S'] [u16 LE id] [i32 LE block_pos]
+// TODO: will be used when bot block-leave events are fully wired
+#[allow(dead_code)]
 pub fn hb_bot_leave_block(id: u16, block_pos: i32) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(7);
     buf.put_u8(b'S');
@@ -382,6 +388,8 @@ pub fn hb_chat(bot_id: u16, x: u16, y: u16, text: &str) -> Vec<u8> {
 
 /// HB sub-packet: Bot list (type "B")
 /// Layout: `[1B tag 'B'][u16 LE count][u16 LE bot_id]*count`
+// TODO: will be used when bot-list HB sync is fully wired
+#[allow(dead_code)]
 pub fn hb_bots_list(bot_ids: &[u16]) -> Vec<u8> {
     let Ok(n) = u16::try_from(bot_ids.len()) else {
         return vec![];
@@ -397,6 +405,8 @@ pub fn hb_bots_list(bot_ids: &[u16]) -> Vec<u8> {
 
 /// HB sub-packet: Gun/shot (type "Z")
 /// Layout: `[1B tag 'Z'][1B amount][1B color][u16 LE x][u16 LE y][u16 LE bot_id]*amount`
+// TODO: will be used when gun-shot HB broadcast is fully wired
+#[allow(dead_code)]
 pub fn hb_gun(x: u16, y: u16, color: u8, bot_ids: &[u16]) -> Vec<u8> {
     let Ok(n) = u8::try_from(bot_ids.len()) else {
         return vec![];
@@ -453,7 +463,9 @@ impl TyPacket {
         std::str::from_utf8(&self.event_name).unwrap_or("????")
     }
 
+    // TODO: will be used when client-side timestamp handling is fully wired
     #[must_use]
+    #[allow(dead_code)]
     pub const fn client_timestamp(&self) -> u32 {
         self.time
     }
@@ -509,6 +521,8 @@ impl AuClientPacket {
 
 /// Decode Pong (client→server, inside TY or standalone): "resp:time"
 pub struct PongClient {
+    // TODO: response field will be used when ping/pong roundtrip validation is wired
+    #[allow(dead_code)]
     pub response: i32,
     pub current_time: i32,
 }
@@ -574,6 +588,8 @@ pub fn decode_gui_button(data: &[u8]) -> Option<String> {
 
 /// Decode local chat (inside TY `sub_payload`): legacy `length:message` or plain UTF-8 text
 pub struct LoclClient {
+    // TODO: length field is decoded from legacy wire format, will be used for validation
+    #[allow(dead_code)]
     pub length: i32,
     pub message: String,
 }

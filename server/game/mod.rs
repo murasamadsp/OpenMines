@@ -24,9 +24,8 @@ pub use buildings::{
     BuildingStorage, GridPosition, PackType, PackView,
 };
 pub use player::{
-    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
-    PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats, PlayerUI,
-    PlayerView,
+    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId,
+    PlayerMetadata, PlayerStats,
 };
 
 #[derive(Resource)]
@@ -81,6 +80,8 @@ pub struct GameState {
 }
 
 impl GameState {
+    // TODO: will be used when chunk-visibility logic is refactored
+    #[allow(dead_code)]
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
 
     pub fn new(world: Arc<World>, database: Arc<Database>, config: Config) -> Arc<Self> {
@@ -230,6 +231,8 @@ impl GameState {
         }
     }
 
+    // TODO: will be used when auth-failure clearing on successful login is wired up
+    #[allow(dead_code)]
     pub fn clear_auth_failure_by_addr(&self, addr: &std::net::IpAddr) {
         self.auth_failures.remove(addr);
     }
@@ -425,11 +428,15 @@ impl GameState {
         res
     }
 
+    // TODO: will be used when online/status endpoint is wired
+    #[allow(dead_code)]
     pub fn online_count(&self) -> usize {
         self.active_players.len()
     }
 
     /// Как `Player.GenerateHash()` в `Player.cs`: 12 символов `A-Z0-9`.
+    // TODO: will be used when player hash generation is wired into registration
+    #[allow(dead_code)]
     pub fn generate_hash() -> String {
         use rand::Rng;
         const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -447,12 +454,18 @@ impl GameState {
             .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
             .collect()
     }
+    // TODO: will be used when password hashing is fully wired into auth
+    #[allow(dead_code)]
     pub fn encode_password_hash(p: &str, h: &str) -> String {
         format!("{p}:{h}")
     }
+    // TODO: will be used when password verification is fully wired into auth
+    #[allow(dead_code)]
     pub fn verify_password(p: &str, hp: &str, h: &str) -> bool {
         format!("{p}:{h}") == hp
     }
+    // TODO: will be used when profile name mapping is wired
+    #[allow(dead_code)]
     pub fn map_profile_name(n: &str) -> String {
         n.to_string()
     }
@@ -478,6 +491,8 @@ impl GameState {
             || token == Self::auth_token_hash_sha256(hash, sid)
     }
 
+    // TODO: will be used when tick-based game loop is fully connected
+    #[allow(dead_code)]
     pub fn tick(&self) {
         let mut ecs = self.ecs.write();
         let mut schedule = self.schedule.write();

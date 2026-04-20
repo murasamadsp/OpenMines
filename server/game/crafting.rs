@@ -2,6 +2,8 @@
 //!
 //! Рецепты захардкожены для простоты (в референсе — JSON-файлы в `recipies/`).
 //! Стоимость хранится в кристаллах (id 0..5) и предметах инвентаря (id 0..46).
+// TODO: crafting module will be used when crafter building UI is fully connected
+#![allow(dead_code)]
 
 /// Стоимость ингредиента: `(id, count)`.
 #[derive(Debug, Clone, Copy)]

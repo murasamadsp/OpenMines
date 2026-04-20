@@ -430,6 +430,8 @@ where
     Ok(res)
 }
 
+// TODO: will be used when building placement is fully connected
+#[allow(dead_code)]
 fn place_pack_cells(state: &Arc<GameState>, view: &PackView) {
     for (dx, dy, cell) in view.pack_type.building_cells() {
         state.world.set_cell(view.x + dx, view.y + dy, cell);
@@ -437,6 +439,8 @@ fn place_pack_cells(state: &Arc<GameState>, view: &PackView) {
     }
 }
 
+// TODO: will be used when pack footprint validation is fully connected
+#[allow(dead_code)]
 fn pack_has_cell(
     _state: &Arc<GameState>,
     bx: i32,
@@ -451,6 +455,8 @@ fn pack_has_cell(
         .any(|(dx, dy, _)| bx + dx == cx && by + dy == cy)
 }
 
+// TODO: will be used when building move/type change admin commands are fully wired
+#[allow(dead_code)]
 fn validate_pack_footprint(
     state: &Arc<GameState>,
     old_view: &PackView,

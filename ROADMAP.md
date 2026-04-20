@@ -44,65 +44,65 @@
 
 ## 3. Здания
 
-- [ ] Pack-система: load, HB 'O', GU-пакет при входе
-- [ ] Resp (1)
-- [ ] Teleport (0)
-- [ ] Up (2)
-- [ ] Market (3)
-- [ ] Gun (26) -- ECS система есть, не верифицирована
-- [ ] Gate (27)
-- [ ] Storage (29)
-- [ ] Crafter (24)
-- [ ] Spot (32)
+- [x] Pack-система: load из DB, HB 'O' subpacket, auto-open на origin cell. Не реализовано: multi-cell footprint auto-open
+- [ ] Resp (1): bind работает, charge decrement + cost deduction при респавне работают. Не реализовано: fill GUI (слайдеры +100/+1000/max), ClanZone radius, правильный Resp GUI (сейчас generic)
+- [ ] Teleport (0): **не реализован** — нет TP списка, нет TP action, нет GUI
+- [ ] Up (2): **не реализован** — нет skill management GUI
+- [ ] Market (3): **не реализован** — нет buy/sell/auction
+- [x] Gun (26): ECS firing 1:1 (радиус 20, 60HP, clan immunity). Не реализовано: fill GUI, charge-depleted HB resend, building damage
+- [x] Gate (27): clan blocking работает, GUI=null (не открывается) — 1:1
+- [ ] Storage (29): только withdrawal, нет deposit/slider transfer
+- [ ] Crafter (24): рецепты определены, нет execution/timer/GUI
+- [ ] Spot (32): placeholder only, нет BotSpot/programmator интеграции
 
 ## 4. Скиллы
 
-- [ ] Дерево зависимостей (код есть, не верифицирован)
-- [ ] Формулы effect/cost/exp (код есть, не верифицирован)
-- [ ] Up GUI: прокачка за деньги
-- [ ] SK пакет
-- [ ] LV пакет
+- [x] Дерево зависимостей — 1:1 с C# PlayerSkills.skillz (структура совпадает)
+- [x] Формулы effect — 1:1 (Health: 100+x*3, Movement, Digging, Packing, MineGeneral, AntiGun, Repair). Exp threshold: flat 1.0
+- [ ] Up GUI: прокачка за деньги — **не реализован** (нет UpPage, нет install/delete/slot management)
+- [x] @S пакет — отправляется при логине и при level-up
+- [x] LV пакет — отправляется при логине и при level-up, sum of levels
 
 ## 5. Кланы
 
-- [ ] Создание, ранги, приглашения
-- [ ] Gun/Gate клановые
-- [ ] CS/CH отображение
-- [ ] AccessGun территория
+- [x] Создание (1000 creds), ранги (Member/Officer/Leader), invite/request — всё работает
+- [x] Gun/Gate клановые — clan immunity в gun_firing_system, gate blocking в movement
+- [x] cS/cH отображение — все transitions (login, create, leave, kick, accept)
+- [x] AccessGun территория — формула 1:1, применяется к build/place/bot
 
 ## 6. Чат
 
-- [ ] FED чат CC/CM
-- [ ] Каналы: FED, DNO, клан
-- [ ] Переключение Chat/Chin
-- [ ] Локальный чат HB bubble
-- [ ] Консоль команды
-- [ ] История при входе
+- [x] FED/DNO каналы — глобальные, работают
+- [x] Каналы: FED, DNO, клан (динамический pseudo-channel)
+- [x] Переключение Chat/Chin — dispatch + send_chat_init
+- [x] Локальный чат HB bubble — Locl → hb_chat broadcast
+- [x] Консоль команды — /give, /money, /moneyall, /tp, /heal, /clan, /pack
+- [x] История при входе — mO + mU пакеты
 
 ## 7. Программатор
 
-- [ ] PROG/PDEL/PREN
-- [ ] Парсер: move/dig/if/loop/fn
-- [ ] Пошаговое выполнение
-- [ ] @P статус
-- [ ] tail в HB bot
+- [ ] PROG/PDEL/PREN: dispatch есть, но **не мутирует ECS** — @P отправляется но running никогда не ставится true
+- [ ] Парсер: move/dig/if/loop/fn — **реализован но не подключён к сети** (parse_script существует, никогда не вызывается)
+- [ ] Пошаговое выполнение — ECS system зарегистрирован, но If/Loop не исполняются (`_ => {}`)
+- [ ] @P статус: формат ok, врёт (не отражает реальное ECS состояние)
+- [ ] tail в HB bot: **всегда 0** — нигде не проверяется ProgrammatorState.running
 
 ## 8. Физика мира
 
-- [ ] Песок: падение вниз
-- [ ] Бокс (90): SQLite + подбор
-- [ ] Кислота
-- [ ] Alive-клетки
-- [ ] Лава
-- [ ] Генератор мира
+- [x] Песок: падение вниз + diagonal slide + boulder fall system
+- [x] Бокс (90): SQLite upsert/get/delete + подбор при стоянии (combat.rs)
+- [ ] Кислота: fall_damage есть, нет active acid physics
+- [ ] Alive-клетки: constants + geopack placement есть, **нет physics system** (7 типов поведения из C# отсутствуют)
+- [x] Лава: fall_damage based — нет специальной физики нужно, 1:1
+- [x] Генератор мира: noise skeleton + BFS sectors + palettes 1:1. Не реализовано: spawn area buildings (Market/Resp/Up)
 
 ## 9. Предметы
 
-- [ ] Инвентарь полный
-- [ ] Crafter рецепты
-- [ ] Market buy/sell
-- [ ] Storage
-- [ ] Бомба, Защита, Разрушитель, C190, Полимер
+- [x] Инвентарь полный: HashMap items + selected + minv + miniq, INVN/INUS/INCL handlers
+- [ ] Crafter рецепты: 8 рецептов определены, **нет execution system/timer**
+- [ ] Market buy/sell: **не реализован**
+- [ ] Storage: только withdrawal, **нет deposit**
+- [x] Бомба, Защита, Разрушитель, C190, Полимер — все 5 работают
 
 ---
 

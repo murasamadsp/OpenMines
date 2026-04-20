@@ -8,7 +8,6 @@ mod net;
 mod protocol;
 mod world;
 
-use crate::game::buildings::load_buildings_config;
 use crate::world::WorldProvider;
 use anyhow::Result;
 use std::env;

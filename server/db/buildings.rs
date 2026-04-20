@@ -132,6 +132,8 @@ impl Database {
         Ok(u64::try_from(n).unwrap_or(u64::MAX))
     }
 
+    // TODO: will be used when building patch/update feature is fully connected
+    #[allow(dead_code)]
     pub fn update_building_extra(&self, id: i32, extra: &BuildingExtra) -> Result<()> {
         let data_json = serde_json::to_string(extra)?;
         self.conn.lock().execute(

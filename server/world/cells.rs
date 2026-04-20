@@ -127,6 +127,8 @@ pub const fn crystal_multiplier(cell: u8) -> i64 {
 }
 
 /// Референс `World.isRoad`
+// TODO: will be used when road-type cell detection is needed for movement/building logic
+#[allow(dead_code)]
 pub const fn is_road(cell: u8) -> bool {
     matches!(
         cell,

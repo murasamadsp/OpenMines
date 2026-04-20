@@ -57,6 +57,8 @@ pub struct PlayerUI {
 
 #[derive(Component)]
 pub struct PlayerCooldowns {
+    // TODO: last_move will be used when movement rate-limiting is fully wired
+    #[allow(dead_code)]
     pub last_move: Instant,
     pub last_dig: Instant,
     /// Как `Player.TryAct(..., 200)` для `Xbld` в референсе.
@@ -64,6 +66,8 @@ pub struct PlayerCooldowns {
     /// Как `Player.TryAct(..., 200)` для `Xgeo` в референсе.
     pub last_geo: Instant,
     pub protection_until: Option<Instant>,
+    // TODO: last_shot will be used when gun cooldown tracking is fully wired
+    #[allow(dead_code)]
     pub last_shot: Option<Instant>,
 }
 

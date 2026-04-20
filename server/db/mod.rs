@@ -11,7 +11,6 @@ pub use buildings::*;
 pub use clans::*;
 pub use players::*;
 pub use programs::ProgramRow;
-pub use provider::*;
 
 use anyhow::Result;
 use parking_lot::Mutex;

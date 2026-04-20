@@ -10,7 +10,6 @@ use crate::net::session::social::buildings::{building_extra_for_pack_type, modif
 use crate::net::session::social::clans::{
     handle_clan_create, handle_clan_kick_by_name, handle_clan_leave,
 };
-use serde_json::json;
 
 const ADMIN_COMMAND_HELP: &str = concat!(
     "Админские команды:\n",
@@ -169,6 +168,8 @@ pub fn handle_local_chat(
     handle_chat_text(state, tx, pid, msg);
 }
 
+// TODO: will be used when chat message dispatch is fully wired to session
+#[allow(dead_code)]
 pub fn handle_chat_message(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -337,6 +338,8 @@ pub fn extract_channel_message_text(payload: &[u8]) -> String {
     }
 }
 
+// TODO: will be used when chat channel switching is fully wired to session dispatch
+#[allow(dead_code)]
 pub fn handle_chat_switch(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,

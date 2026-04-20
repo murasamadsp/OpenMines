@@ -3,6 +3,8 @@ use crate::db::{
 };
 use anyhow::Result;
 
+// TODO: DatabaseProvider trait methods will be used when the abstraction layer is fully wired for dependency injection
+#[allow(dead_code)]
 pub trait DatabaseProvider: Send + Sync {
     // buildings
     fn load_all_buildings(&self) -> Result<Vec<BuildingRow>>;

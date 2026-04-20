@@ -105,7 +105,7 @@ pub fn gun_firing_system(
         &mut PlayerFlags,
     )>,
 ) {
-    let state = &state_res.0;
+    let _state = &state_res.0;
     let now = std::time::Instant::now();
 
     for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {

@@ -121,7 +121,10 @@ pub trait WorldProvider: Send + Sync {
     fn cells_height(&self) -> u32;
     fn valid_coord(&self, x: i32, y: i32) -> bool;
     fn get_cell(&self, x: i32, y: i32) -> u8;
+    // TODO: get_solid_cell/get_road_cell will be used when layer-specific cell queries are needed
+    #[allow(dead_code)]
     fn get_solid_cell(&self, x: i32, y: i32) -> u8;
+    #[allow(dead_code)]
     fn get_road_cell(&self, x: i32, y: i32) -> u8;
     fn set_cell(&self, x: i32, y: i32, cell: u8);
     #[allow(dead_code)]

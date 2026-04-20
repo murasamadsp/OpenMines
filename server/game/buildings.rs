@@ -252,12 +252,18 @@ pub struct PackView {
     pub owner_id: PlayerId,
     pub clan_id: i32,
     pub charge: f32,
+    // TODO: max_charge/hp/max_hp will be used when building UI/status packets are fully wired
+    #[allow(dead_code)]
     pub max_charge: f32,
+    #[allow(dead_code)]
     pub hp: i32,
+    #[allow(dead_code)]
     pub max_hp: i32,
 }
 
 impl PackView {
+    // TODO: will be used when pack on/off state is needed for network overlay
+    #[allow(dead_code)]
     pub fn off(&self) -> u8 {
         u8::from(self.charge > 0.0)
     }
