@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server
@@ -19,7 +19,13 @@ Rust-сервер: протокол, мир и БД.
 | `world/cells.rs` | Загрузка `cells.json` |
 | `protocol/mod.rs` | Протоколы взаимодействия |
 | `net/mod.rs` | TCP listener, сессии клиентов (`tokio`) |
-| `game/mod.rs` | Состояние игры |
+| `game/mod.rs` | `GameState`, ECS-системы, broadcast/programmator очереди |
+| `game/player.rs` | ECS-компоненты игрока (12+: Position, Stats, Inventory, Skills, Cooldowns и др.) |
+| `game/skills.rs` | 58 типов навыков, формулы эффектов 1:1 с C# ref |
+| `game/combat.rs` | `standing_cell_hazard_system`, `gun_firing_system` |
+| `game/sand.rs` | `sand_physics_system` (песок + валуны + Gate pass-through) |
+| `game/buildings.rs` | ECS-компоненты зданий, `PackType` enum |
+| `game/programmator.rs` | `ProgrammatorState`, парсер программ |
 | `game/direction.rs` | Смещение по сетке для направления (0–3) |
 
 ## Subdirectories
@@ -30,7 +36,7 @@ Rust-сервер: протокол, мир и БД.
 | `world/` | Карта, ячейки, логика мира |
 | `protocol/` | Сетевые пакеты и сериализация |
 | `net/` | Сетевой слой: приём соединений и сессии |
-| `game/` | Игровое состояние |
+| `game/` | Игровое состояние, Bevy ECS компоненты и системы |
 
 ## For AI Agents
 

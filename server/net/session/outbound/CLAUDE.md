@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/net/session/outbound
@@ -13,6 +13,7 @@
 |------|-------------|
 | `chat_sync.rs` | Инициализация и синхронизация чат-каналов |
 | `inventory_sync.rs` | Синхронизация инвентаря и выбранного слота |
+| `player_sync.rs` | `send_player_speed` (формула 1:1 с C#), `send_player_health`, `send_player_level`, `send_player_skills`, `send_player_basket` |
 
 ## Subdirectories
 

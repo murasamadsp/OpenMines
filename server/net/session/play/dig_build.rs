@@ -2,14 +2,6 @@
 use crate::net::session::prelude::*;
 use crate::net::session::social::misc::hurt_player_pure;
 
-fn dig_mult() -> f32 {
-    std::env::var("M3R_DIG_MULT")
-        .ok()
-        .and_then(|v| v.trim().parse::<f32>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(1.0)
-}
-
 pub fn handle_dig(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -165,10 +157,76 @@ pub fn handle_dig(
     let hit = if is_crystal(cell) {
         1.0
     } else {
-        ((dig_power / 500.0) * dig_mult()).max(1.0e-6)
+        (dig_power / 500.0).max(1.0e-6)
     };
     let destroyed = state.world.damage_cell(tx_c, ty_c, hit);
     let cry_idx = crystal_type(cell);
+
+    // D8+D9: Crystal mining happens on EVERY hit (1:1 with C# Player.Bz → Mine(cell,x,y)).
+    // Dig exp happens only on destroy. MineGeneral exp happens every hit with crystals.
+    let mined_amount = if let Some(idx) = cry_idx {
+        // cb fractional crystal accumulator.
+        let mut carry = crystal_carry_init;
+        let pre_mult_dob = 1.0_f32 + carry.trunc() + mine_mult;
+        let mine_exp = pre_mult_dob.trunc();
+        let dob = pre_mult_dob * crystal_multiplier(cell) as f32;
+        carry -= carry.trunc();
+        let odob = dob.trunc() as i64;
+        carry += dob - odob as f32;
+        let amount = odob.max(1);
+
+        // Update crystal_carry + add crystals + MineGeneral exp on every hit.
+        state.modify_player(pid, |ecs, entity| {
+            {
+                let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                stats.crystal_carry = carry;
+                stats.crystals[idx] += amount;
+                let c_data = stats.crystals;
+                send_u_packet(tx, "@B", &basket(&c_data, 1).1);
+            }
+            {
+                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
+                let leveled_mine = add_skill_exp(&mut skills.states, "m", mine_exp);
+                if leveled_mine {
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    send_u_packet(tx, sk.0, &sk.1);
+                }
+            }
+            {
+                let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+                flags.dirty = true;
+            }
+            Some(())
+        });
+
+        // Crystal mine FX (fx=2) on every hit.
+        // Color remapping: type 1→3, 2→1, 3→2, other→same.
+        let color_remapped = match idx {
+            1 => 3_u8,
+            2 => 1_u8,
+            3 => 2_u8,
+            other => other as u8,
+        };
+        let mine_fx = hb_directed_fx(
+            net_u16_nonneg(pid),
+            net_u16_nonneg(tx_c),
+            net_u16_nonneg(ty_c),
+            2,
+            (amount.min(255)) as u8,
+            color_remapped,
+        );
+        state.broadcast_to_nearby(
+            cx,
+            cy,
+            &encode_hb_bundle(&hb_bundle(&[mine_fx]).1),
+            Some(pid),
+        );
+
+        amount
+    } else {
+        0_i64
+    };
+    let _ = mined_amount;
 
     // Fix 9: Boulder push on EVERY hit, not just on destroy.
     let pushed_boulder = if is_boulder(cell) {
@@ -198,43 +256,12 @@ pub fn handle_dig(
     }
 
     if destroyed {
-        // Fix 6: Dig exp only on destroy, not every hit.
-        // Fix 7: Mine exp = mined amount, not flat 1.0 (computed below with crystal_carry).
-        // Compute mined amount first so we can pass it to add_skill_exp.
-        let (mined_amount, new_crystal_carry) = if let Some(_idx) = cry_idx {
-            // Fix 8: cb fractional crystal accumulator.
-            let mut carry = crystal_carry_init;
-            let mut dob = 1.0_f32 + carry.trunc() + mine_mult;
-            dob *= crystal_multiplier(cell) as f32;
-            carry -= carry.trunc();
-            let odob = dob.trunc() as i64;
-            carry += dob - odob as f32;
-            (odob.max(1), carry)
-        } else {
-            (0_i64, crystal_carry_init)
-        };
-
-        // Update crystal_carry in player state.
-        if cry_idx.is_some() {
-            state.modify_player(pid, |ecs, entity| {
-                let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                stats.crystal_carry = new_crystal_carry;
-                Some(())
-            });
-        }
-
+        // Dig exp only on destroy (1:1 with C# OnDestroy → AddExp("d")).
         state.modify_player(pid, |ecs, entity| {
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                // Fix 6: dig exp on destroy only.
                 let leveled_dig = add_skill_exp(&mut skills.states, "d", 1.0);
-                // Fix 7: mine exp = mined amount.
-                let leveled_mine = if cry_idx.is_some() {
-                    add_skill_exp(&mut skills.states, "m", mined_amount as f32)
-                } else {
-                    false
-                };
-                if leveled_dig || leveled_mine {
+                if leveled_dig {
                     let sk = skills_packet(&skill_progress_payload(&skills.states));
                     send_u_packet(tx, sk.0, &sk.1);
                 }
@@ -246,43 +273,9 @@ pub fn handle_dig(
             Some(())
         });
 
-        if let Some(idx) = cry_idx {
-            let amount = mined_amount;
-            state.modify_player(pid, |ecs, entity| {
-                let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                stats.crystals[idx] += amount;
-                let c_data = stats.crystals;
-                send_u_packet(tx, "@B", &basket(&c_data, 1).1);
-                Some(())
-            });
-
-            // Fix 5: Crystal mine FX (fx=2).
-            // Color remapping: type 1→3, 2→1, 3→2, other→same.
-            let color_remapped = match idx {
-                1 => 3_u8,
-                2 => 1_u8,
-                3 => 2_u8,
-                other => other as u8,
-            };
-            let mine_fx = hb_directed_fx(
-                net_u16_nonneg(pid),
-                net_u16_nonneg(tx_c),
-                net_u16_nonneg(ty_c),
-                2,
-                (amount.min(255)) as u8,
-                color_remapped,
-            );
-            state.broadcast_to_nearby(
-                cx,
-                cy,
-                &encode_hb_bundle(&hb_bundle(&[mine_fx]).1),
-                Some(pid),
-            );
-        }
-
         broadcast_cell_update(state, tx_c, ty_c);
-    } else {
-        // Mark dirty on non-destroying hits too (for save consistency).
+    } else if cry_idx.is_none() {
+        // Mark dirty on non-destroying, non-crystal hits too (for save consistency).
         state.modify_player(pid, |ecs, entity| {
             let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
             flags.dirty = true;
@@ -422,8 +415,10 @@ pub fn handle_build(
                 };
                 let y_cost = yellow_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 4, y_cost) {
+                    // D7: Yellow upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
+                    let existing_dur = state.world.get_durability(tx_c, ty_c);
                     place_block(state, tx_c, ty_c, cell_type::YELLOW_BLOCK);
-                    state.world.set_durability(tx_c, ty_c, yellow_effect.1);
+                    state.world.set_durability(tx_c, ty_c, existing_dur + yellow_effect.1);
                     placed_skill = Some(SkillType::BuildYellow);
                 }
             } else if cur == cell_type::YELLOW_BLOCK {
@@ -444,8 +439,10 @@ pub fn handle_build(
                 };
                 let r_cost = red_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 2, r_cost) {
+                    // D7: Red upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
+                    let existing_dur = state.world.get_durability(tx_c, ty_c);
                     place_block(state, tx_c, ty_c, cell_type::RED_BLOCK);
-                    state.world.set_durability(tx_c, ty_c, red_effect.1);
+                    state.world.set_durability(tx_c, ty_c, existing_dur + red_effect.1);
                     placed_skill = Some(SkillType::BuildRed);
                 }
             }
@@ -467,6 +464,9 @@ pub fn handle_build(
             }
         }
         "V" => {
+            // TODO(D6): C# places MilitaryBlockFrame (80) first, then converts to MilitaryBlock
+            // after 10 ticks via StupidAction. We lack a StupidAction mechanism, so we place
+            // MilitaryBlock directly. Implement delayed conversion when tick actions are added.
             if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 5, cost) {
                 place_block(state, tx_c, ty_c, cell_type::MILITARY_BLOCK);
                 state.world.set_durability(tx_c, ty_c, durability);

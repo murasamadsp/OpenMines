@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/net/session/play
@@ -11,8 +11,8 @@
 
 | File | Description |
 |------|-------------|
-| `movement.rs` | Валидация и обработка перемещения робота |
-| `dig_build.rs` | Логика Xdig/Xbld и обновление мира |
+| `movement.rs` | Валидация и обработка перемещения робота, Movement skill exp |
+| `dig_build.rs` | Логика Xdig/Xbld: кристаллы на каждый удар, dig exp на destroy, build chain G→Y→R, durability |
 | `chunks.rs` | Управление видимостью чанков и отправкой HB-пакетов |
 | `packs.rs` | Показ GUI пака и управление доступом |
 | `spawn.rs` | Спавн временных сущностей в мире |
@@ -28,6 +28,11 @@
 ### Working In This Directory
 
 - Не менять физику/координаты без проверки `movement/chunks`.
+- `dig_build.rs`: кристаллы + MineGeneral exp на каждый удар (не только при destroy). Dig exp ("d") только при destroy.
+- MineGeneral exp = pre-multiplier value (до `dob *= crystal_multiplier`).
+- Build Yellow/Red: durability СКЛАДЫВАЕТСЯ с существующей (`get_durability + effect`).
+- Build cost для Green/Yellow/Red = всегда 1 (C# `effectfunc = (x) => 1`).
+- Movement: skill exp на каждый успешный ход.
 - Перед `Xdig/Xbld` прогонять сценарии.
 
 ### Testing Requirements
@@ -56,7 +61,7 @@
 
 ## Movement: специфика применения методологии
 
-Общие правила server-authoritative см. в `server/AGENTS.md` → «Методология сервера».
+Общие правила server-authoritative см. в `server/CLAUDE.md` → «Методология сервера».
 Здесь — только уточнения для movement/dig/chunks.
 
 ### Порядок валидации в `handle_move`

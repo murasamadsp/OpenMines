@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # .github
@@ -40,8 +40,8 @@ CI и workflow-манифесты проекта.
 
 ### Internal
 
-- `AGENTS.md` root
-- `.github/workflows/AGENTS.md` for workflow-level rules
+- `CLAUDE.md` root
+- `.github/workflows/CLAUDE.md` for workflow-level rules
 
 ### External
 

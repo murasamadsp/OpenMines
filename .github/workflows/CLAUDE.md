@@ -3,7 +3,7 @@
 
 
 
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # .github/workflows
@@ -48,8 +48,8 @@
 
 ### Internal
 
-- `AGENTS.md`
-- `.github/AGENTS.md`
+- `CLAUDE.md`
+- `.github/CLAUDE.md`
 
 ### External
 

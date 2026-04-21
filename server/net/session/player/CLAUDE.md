@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/net/session/player
@@ -11,7 +11,7 @@
 
 | File | Description |
 |------|-------------|
-| `init.rs` | Вход в мир (`init_player`) и удаление сессии (`on_disconnect`) |
+| `init.rs` | Вход в мир (`init_player`): ECS spawn, MaxHealth recalc, `send_initial_sync` (порядок 1:1 с C# `Player.Init`), reconnect cleanup, `on_disconnect` |
 
 ## Subdirectories
 
@@ -23,8 +23,10 @@
 
 ### Working In This Directory
 
-- Сохранять пакетный порядок в `init_player`.
+- Порядок пакетов в `send_initial_sync` — 1:1 с C# `Player.Init()`. Не менять без сверки.
+- `init_player` спавнит ECS entity с 12+ компонентами, включая `ProgrammatorState` и `PlayerCooldowns` (c190_stacks).
 - При disconnect — persist state до cleanup.
+- Reconnect: старая сессия чистится (ECS despawn, chunk_players, broadcast hb_bot_del).
 
 ### Testing Requirements
 

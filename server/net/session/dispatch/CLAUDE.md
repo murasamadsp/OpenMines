@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/net/session/dispatch
@@ -11,8 +11,8 @@
 
 | File | Description |
 |------|-------------|
-| `mod.rs` | `handle_ty` и маршруты событий |
-| `ty.rs` | (внутренний файл) разбор payload и вызов `handle_x*` |
+| `mod.rs` | Экспорт `dispatch_ty_packet` |
+| `ty.rs` | `dispatch_ty_packet` — switch по 25+ TY-событиям (Xmov, Xdig, Xbld, GUI_, Locl, Chat, RESP, Pope, PROG, PDEL, pRST, PREN, Clan, Sett, ADMN, DPBX, Blds, TADG, Whoi, Xgeo, Xhea, INVN, INUS, INCL, Chin) |
 
 ## Subdirectories
 

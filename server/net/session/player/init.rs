@@ -110,6 +110,8 @@ pub fn init_player(
                 last_geo: ready,
                 protection_until: None,
                 last_shot: None,
+                c190_stacks: 0,
+                last_c190_hit: None,
             },
             PlayerGeoStack::default(),
             ProgrammatorState::new(),

@@ -98,7 +98,7 @@ pub fn gun_firing_system(
         Entity,
         &PlayerMetadata,
         &PlayerPosition,
-        &PlayerSkillsCom,
+        &mut PlayerSkillsCom,
         &mut PlayerStats,
         &PlayerCooldowns,
         &PlayerConnection,
@@ -109,16 +109,13 @@ pub fn gun_firing_system(
     let now = std::time::Instant::now();
 
     for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {
-        if meta.pack_type != PackType::Gun || b_stats.charge < 1.0 {
+        if meta.pack_type != PackType::Gun || b_stats.charge <= 0.0 {
             continue;
         }
 
         let mut target_entity = None;
-        for (p_entity, p_meta, p_pos, _p_sk, p_stats, p_cd, _, _) in &players_query {
-            if p_meta.id == b_ownership.owner_id {
-                continue;
-            }
-            if b_ownership.clan_id != 0 && p_stats.clan_id == Some(b_ownership.clan_id) {
+        for (p_entity, _p_meta, p_pos, _p_sk, p_stats, p_cd, _, _) in players_query.iter() {
+            if p_stats.clan_id == Some(b_ownership.clan_id) {
                 continue;
             }
             if p_cd.protection_until.is_some_and(|u| now < u) {
@@ -133,11 +130,15 @@ pub fn gun_firing_system(
             }
         }
 
-        if let Some(entity) = target_entity {
-            b_stats.charge -= 1.0;
-            if let Ok((_ent, p_meta, _pos, p_sk, mut stats, _cd, conn, mut flags)) =
+        if let Some(entity) = target_entity
+            && let Ok((_ent, p_meta, _pos, mut p_sk, mut stats, _cd, conn, mut flags)) =
                 players_query.get_mut(entity)
-            {
+        {
+                // C# Player.Hurt(60, DamageType.Gun): skill exp before damage
+                crate::game::skills::add_skill_exp(&mut p_sk.states, "l", 1.0);  // Health
+                crate::game::skills::add_skill_exp(&mut p_sk.states, "*I", 1.0); // Induction
+                crate::game::skills::add_skill_exp(&mut p_sk.states, "u", 1.0);  // AntiGun
+                // C# Gun.Update order: damage first, then deduct charge
                 let sk = SkillHurt {
                     skills: &p_sk.states,
                 };
@@ -157,6 +158,18 @@ pub fn gun_firing_system(
                     &crate::protocol::packets::health(stats.health, stats.max_health).1,
                 ));
 
+                // Charge cost: 0.5 * (Induction_Effect / 100)
+                let induction_effect = crate::game::skills::get_player_skill_effect(
+                    &p_sk.states,
+                    crate::game::skills::SkillType::Induction,
+                );
+                let charge_cost = 0.5 * (induction_effect / 100.0);
+                if b_stats.charge - charge_cost > 0.0 {
+                    b_stats.charge -= charge_cost;
+                } else {
+                    b_stats.charge = 0.0;
+                }
+
                 let fx = crate::protocol::packets::hb_fx(b_pos.x as u16, b_pos.y as u16, 1);
                 let data = crate::net::session::wire::encode_hb_bundle(
                     &crate::protocol::packets::hb_bundle(&[fx]).1,
@@ -168,7 +181,6 @@ pub fn gun_firing_system(
                     data,
                     exclude: None,
                 });
-            }
         }
     }
 }

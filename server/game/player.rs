@@ -73,6 +73,9 @@ pub struct PlayerCooldowns {
     // TODO: last_shot will be used when gun cooldown tracking is fully wired
     #[allow(dead_code)]
     pub last_shot: Option<Instant>,
+    /// C190 stacking damage: each hit within a short window increments stacks.
+    pub c190_stacks: i32,
+    pub last_c190_hit: Option<Instant>,
 }
 
 /// Клетки, поднятые гео-киркой (`PEntity.geo` в C#). Верх стека — последний элемент.

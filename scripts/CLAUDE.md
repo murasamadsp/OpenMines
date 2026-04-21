@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # scripts
@@ -49,7 +49,7 @@
 
 ### Internal
 
-- `AGENTS.md` root
+- `CLAUDE.md` root
 
 ### External
 

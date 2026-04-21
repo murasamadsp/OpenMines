@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 ## Логи и отладка
@@ -42,12 +42,12 @@
 
 | Directory | Purpose |
 | - | - |
-| `session/outbound/` | Тонкая отправка: `chat_sync`, `inventory_sync` |
+| `session/outbound/` | Тонкая отправка: `chat_sync`, `inventory_sync`, `player_sync` |
 | `session/dispatch/` | `ty` — разбор `TY` и вызов обработчиков |
 | `session/auth/` | `login` (AU, `AuthState`), `gui_flow` (регистрация до входа) |
 | `session/play/` | `movement`, `dig_build`, `chunks`, `packs`, `spawn` |
 | `session/player/` | `init` — вход в мир, disconnect |
-| `session/ui/` | `gui_buttons`, `heal_inventory` |
+| `session/ui/` | `gui_buttons`, `heal_inventory`, `up_building` |
 | `session/social/` | `misc` (чат, `/`, смерть), `clans`, `buildings` |
 
 ## For AI Agents
@@ -69,7 +69,7 @@
 
 ### Internal
 
-- `server/AGENTS.md`
+- `server/CLAUDE.md`
 - `server/protocol`, `server/game`
 
 ### External

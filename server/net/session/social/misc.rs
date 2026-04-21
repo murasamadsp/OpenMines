@@ -1222,12 +1222,18 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;
     }
-    let dead_tx = state
+    let result = state
         .modify_player(pid, |ecs, entity| {
-            let (h, mh, conn_tx) = {
+            // S3-1: Health skill exp on every hurt (C# Player.Hurt → Health.AddExp)
+            if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkills>(entity) {
+                crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
+            }
+
+            let (h, mh, conn_tx, px, py) = {
                 let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                 let c = ecs.get::<crate::game::player::PlayerConnection>(entity)?;
-                (s.health, s.max_health, c.tx.clone())
+                let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                (s.health, s.max_health, c.tx.clone(), p.x, p.y)
             };
             let lethal = h <= damage;
             let new_h = if lethal { 0 } else { h - damage };
@@ -1243,11 +1249,25 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
                 "@L",
                 &health(new_h, mh).1,
             ));
-            lethal.then_some(conn_tx)
+            Some(if lethal {
+                (Some(conn_tx), px, py)
+            } else {
+                (None, px, py)
+            })
         })
         .flatten();
-    if let Some(conn_tx) = dead_tx {
-        handle_death(state, &conn_tx, pid);
+    if let Some((dead_tx, px, py)) = result {
+        if let Some(conn_tx) = dead_tx {
+            handle_death(state, &conn_tx, pid);
+        } else {
+            // S3-1: Hurt FX broadcast to nearby (C# SendDFToBots(6, 0, 0, id, 0))
+            use crate::protocol::packets::{hb_bundle, hb_directed_fx};
+            use crate::net::session::wire::encode_hb_bundle;
+            use crate::world::World;
+            let fx = hb_directed_fx(crate::net::session::util::net_u16_nonneg(pid), 0, 0, 6, 0, 0);
+            let (cx, cy) = World::chunk_pos(px, py);
+            state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
+        }
     }
 }
 

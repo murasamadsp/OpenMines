@@ -485,14 +485,17 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
                 val.min(92.0)
             }
         }
-        SkillType::Fridge
-        | SkillType::RoadMovement
-        | SkillType::BuildGreen
+        // D23: C# effectfunc = (x) => 1 for BuildGreen/Yellow/Red (cost is always 1 crystal).
+        // D23: C# effectfunc = (x) => 1 for all Build* types, Fridge, RoadMovement.
+        SkillType::BuildGreen
         | SkillType::BuildYellow
         | SkillType::BuildRed
         | SkillType::BuildStructure
         | SkillType::BuildWar
-        | SkillType::Repair => x,
+        | SkillType::Fridge
+        | SkillType::RoadMovement => 1.0,
+        // C# Repair: effectfunc = (x) => x * 1f
+        SkillType::Repair => x,
         _ => x,
     }
 }

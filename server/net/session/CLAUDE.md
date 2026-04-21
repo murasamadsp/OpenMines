@@ -1,4 +1,4 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/net/session
@@ -14,9 +14,11 @@
 | `mod.rs` | Точка экспорта сессионных модулей |
 | `connection.rs` | Принятие соединения, handshake, циклы чтения/записи |
 | `dispatch/mod.rs` | Маршрутизация TY-событий в игровые обработчики |
-| `play/movement.rs` | Обработка движения и обновления видимости чанков |
-| `play/dig_build.rs` | Логика копания и постройки |
-| `social/buildings.rs` | Пакеты, кланы, постройки |
+| `play/movement.rs` | Обработка движения, Movement skill exp, gate/distance validation |
+| `play/dig_build.rs` | Копание (кристаллы каждый удар, dig exp на destroy), строительство (G→Y→R chain, durability) |
+| `social/buildings.rs` | Размещение/удаление строений, GUI |
+| `social/misc.rs` | Чат, команды, `hurt_player_pure`, смерть/респавн, программатор TY |
+| `ui/heal_inventory.rs` | Лечение, предметы (boom/protector/raz/C190/geopack), инвентарь |
 | `auth/login.rs` | Обработка AU и перевод на auth-GUI |
 
 ## Subdirectories

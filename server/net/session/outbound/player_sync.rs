@@ -14,7 +14,9 @@ pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSki
     //                 100000)`
     // where `p.pause = (int)(Movement.Effect * 100)`.
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
-    let pause = move_effect * 100.0;
+    // D24: C# does `int pause = (int)(Movement.Effect * 100)` — truncate to int first.
+    #[allow(clippy::cast_possible_truncation)]
+    let pause = f64::from((move_effect * 100.0) as i32);
     let xy_pause = (pause * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
     let road_pause = (pause * 0.80 * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
     send_u_packet(tx, "sp", &speed(xy_pause, road_pause, 100000).1);

@@ -1,18 +1,20 @@
-<!-- Parent: ../AGENTS.md -->
+<!-- Parent: ../CLAUDE.md -->
 <!-- Generated: 2026-04-16 | Updated: 2026-04-16 -->
 
 # server/world
 
 ## Purpose
 
-Мир: размеры карты, клетки и стартовая инициализация.
+Мир на mmap-слоях (`.mapb`): cells, road, durability. Чанки 32×32. Dirty-tracking + atomic backup.
 
 ## Key Files
 
 | File | Description |
 |------|-------------|
-| `mod.rs` | API мира и фабрики |
-| `cells.rs` | Загрузка и парсинг `cells.json` |
+| `mod.rs` | `World` struct, mmap-слои, `valid_coord`, `get_cell/set_cell`, `damage_cell`, `destroy`, `get_durability/set_durability`, `is_empty`, chunk API |
+| `cells.rs` | Загрузка `cells.json`, `CellDefs`, `CellProp`, `cell_type` constants, `is_crystal`, `is_boulder`, `crystal_type`, `crystal_multiplier` |
+| `generator.rs` | Генератор мира (секторы) |
+| `sector_palette.rs` | Палитра секторов для генератора |
 
 ## Subdirectories
 
@@ -25,25 +27,27 @@
 ### Working In This Directory
 
 - Менять формат мира только с `config.json`.
-- Проверять метрики чанков и координат.
+- `cell_type` constants — добавлять при необходимости, сверять с `cells.json`.
+- `damage_cell` возвращает `bool` (destroyed).
 
 ### Testing Requirements
 
 - Проверить размеры `world` и `chunks`.
+- `cargo build` после изменения cell constants.
 
 ### Common Patterns
 
-- World state держать через явный конструктор.
+- mmap zero-copy доступ, изменения через dirty chunk marking.
+- `WorldProvider` trait для тестируемости.
 
 ## Dependencies
 
 ### Internal
 
-- `server/AGENTS.md`
 - `server/config.rs`
 
 ### External
 
-- `serde`, `serde_json`
+- `memmap2`, `serde`, `serde_json`
 
 <!-- MANUAL: -->
