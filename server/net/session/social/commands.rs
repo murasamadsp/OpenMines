@@ -133,9 +133,11 @@ fn handle_chat_giveall_command(
         for &(id, amount) in items {
             *inv.items.entry(id).or_insert(0) += amount;
         }
-        // Force full inventory view and open it
+        // Send full inventory list (not mini) so player sees everything
+        inv.minv = false;
+        send_inventory(tx, &mut inv);
+        // Then switch back to mini and send again so hotbar appears
         inv.minv = true;
-        // Refill miniq with first 4 items so mini-view has something
         inv.miniq.clear();
         let mut keys: Vec<i32> = inv.items.keys().copied().collect();
         keys.sort_unstable();
