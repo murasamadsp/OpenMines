@@ -1,0 +1,2 @@
+- [ROADMAP audit approach](feedback_roadmap_audit.md) — each item must be deep-audited individually, never batched
+- [Architecture rewrite plan](project_architecture_plan.md) — post-parity rewrite: single game thread, ECS owns all, sessions are stateless actors
