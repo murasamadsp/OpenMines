@@ -133,9 +133,15 @@ fn handle_chat_giveall_command(
         for &(id, amount) in items {
             *inv.items.entry(id).or_insert(0) += amount;
         }
-        inv.minv = false;
-        let count: i32 = inv.items.values().filter(|v| **v > 0).sum();
-        tracing::info!("[GIVEALL] pid={pid} items_count={} total_qty={count}", inv.items.len());
+        // Force full inventory view and open it
+        inv.minv = true;
+        // Refill miniq with first 4 items so mini-view has something
+        inv.miniq.clear();
+        let mut keys: Vec<i32> = inv.items.keys().copied().collect();
+        keys.sort_unstable();
+        for k in keys.iter().take(4) {
+            inv.miniq.push(*k);
+        }
         send_inventory(tx, &mut inv);
         if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
             flags.dirty = true;
