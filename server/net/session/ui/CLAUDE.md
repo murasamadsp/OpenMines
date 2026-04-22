@@ -10,7 +10,7 @@
 ## Key Files
 
 | File | Description |
-|------|-------------|
+| - | - |
 | `gui_buttons.rs` | Разбор и обработка кнопок интерфейса, pack GUI (Gun/Resp/Market/Teleport) |
 | `heal_inventory.rs` | Лечение (Xhea), инвентарь (INVN/INUS/INCL), все предметы: boom, protector(AoE), razryadka, C190, geopack, poli, building placement |
 | `up_building.rs` | Up building GUI (скиллы) |
@@ -18,7 +18,7 @@
 ## Subdirectories
 
 | Directory | Purpose |
-|-----------|---------|
+| - | - |
 | `-` | Нет вложенных рабочих директорий |
 
 ## For AI Agents

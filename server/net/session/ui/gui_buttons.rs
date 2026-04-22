@@ -32,6 +32,20 @@ pub fn handle_gui_button(
         return;
     }
 
+    // C# ref: CallWinAction — if win is null, send Gu close and return.
+    let has_window = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<PlayerUI>(entity)
+                .map(|ui| ui.current_window.is_some())
+        })
+        .flatten()
+        .unwrap_or(false);
+    if !has_window {
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
+        return;
+    }
+
     if let Some(rest) = button.strip_prefix("clan_view:") {
         if let Ok(id) = rest.parse::<i32>() {
             crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id);
@@ -44,7 +58,7 @@ pub fn handle_gui_button(
             crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
         }
         "createprog_stub" => {
-            crate::net::session::social::misc::send_ok(
+            crate::net::session::social::commands::send_ok(
                 tx,
                 "Программатор",
                 "Создание программы из GUI пока не подключено к БД.",
@@ -73,6 +87,20 @@ pub fn handle_gui_button(
         "sellall" => handle_market_sellall(state, tx, pid),
         "getprofit" => handle_market_getprofit(state, tx, pid),
         _ => handle_complex_button(state, tx, pid, button),
+    }
+
+    // C# ref: after CallWinAction, SendWindow() re-sends the window or closes if null.
+    // Safety net: if no handler sent a response and window was cleared, send Gu close.
+    let still_has_window = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<PlayerUI>(entity)
+                .map(|ui| ui.current_window.is_some())
+        })
+        .flatten()
+        .unwrap_or(false);
+    if !still_has_window {
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
     }
 }
 

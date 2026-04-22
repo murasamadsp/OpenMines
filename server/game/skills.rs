@@ -516,9 +516,10 @@ pub fn get_player_skill_effect(skills: &HashMap<String, SkillState>, skill: Skil
         .map_or_else(|| skill_effect(skill, 0), |s| skill_effect(skill, s.level))
 }
 
-/// Add exp to a skill. Returns true if the skill leveled up.
+/// Add exp to a skill. C# `Skill.AddExp`: does NOT auto-level-up.
+/// Level-up happens only through `Up()` in the skill UI (Up building).
+/// Returns `false` always (kept for API compat — callers should always send @S).
 pub fn add_skill_exp(skills: &mut HashMap<String, SkillState>, code: &str, amount: f32) -> bool {
-    let skill_type = SkillType::from_code(code);
     // Сначала читаем модификаторы из `skills` иммутабельно, чтобы дальше спокойно взять entry mut.
     let upgrade_mult = skills
         .get(SkillType::Upgrade.code())
@@ -529,16 +530,8 @@ pub fn add_skill_exp(skills: &mut HashMap<String, SkillState>, code: &str, amoun
         .or_insert(SkillState { level: 1, exp: 0.0 });
 
     let total_amount = amount * upgrade_mult;
-
     entry.exp += total_amount;
-    if let Some(st) = skill_type {
-        let needed = exp_needed(st, entry.level);
-        if needed > 0.0 && entry.exp >= needed {
-            entry.exp -= needed;
-            entry.level += 1;
-            return true;
-        }
-    }
+    // C# AddExp does NOT call Up(). Level-up is manual via Up building GUI.
     false
 }
 

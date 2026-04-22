@@ -11,8 +11,10 @@
 
 | File | Description |
 |------|-------------|
-| `movement.rs` | Валидация и обработка перемещения робота, Movement skill exp |
+| `death.rs` | Смерть/респавн (`handle_death`, `hurt_player_pure`, `flush_player_death_queue_after_tick`), двухфазная модель (ECS → broadcast) |
 | `dig_build.rs` | Логика Xdig/Xbld: кристаллы на каждый удар, dig exp на destroy, build chain G→Y→R, durability |
+| `geo.rs` | Геология (Xgeo): pickup/place блоков, cooldown 200ms |
+| `movement.rs` | Валидация и обработка перемещения робота, Movement skill exp |
 | `chunks.rs` | Управление видимостью чанков и отправкой HB-пакетов |
 | `packs.rs` | Показ GUI пака и управление доступом |
 | `spawn.rs` | Спавн временных сущностей в мире |

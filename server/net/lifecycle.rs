@@ -162,7 +162,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 let mut ecs = state.ecs.write();
                 let mut schedule = state.schedule.write();
                 schedule.run(&mut ecs);
-                let p = crate::net::session::social::misc::flush_player_death_queue_after_tick(
+                let p = crate::net::session::play::death::flush_player_death_queue_after_tick(
                     &state, &mut ecs,
                 );
                 let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
@@ -214,7 +214,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                         crate::net::session::play::dig_build::handle_build(&state, &tx, pid, &bld);
                     }
                     crate::game::ProgrammatorAction::Geo { pid, tx } => {
-                        crate::net::session::social::misc::handle_geo(&state, &tx, pid);
+                        crate::net::session::play::geo::handle_geo(&state, &tx, pid);
                     }
                     crate::game::ProgrammatorAction::Heal { pid, tx } => {
                         crate::net::session::ui::heal_inventory::handle_heal(&state, &tx, pid);
@@ -228,7 +228,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             }
 
             for (pid, rx, ry, mh, bcast) in pending {
-                crate::net::session::social::misc::run_death_broadcasts(&state, &bcast, pid);
+                crate::net::session::play::death::run_death_broadcasts(&state, &bcast, pid);
                 let tx = state
                     .query_player(pid, |ecs, entity| {
                         ecs.get::<crate::game::player::PlayerConnection>(entity)
@@ -236,8 +236,8 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                     })
                     .flatten();
                 if let Some(tx) = tx {
-                    crate::net::session::social::misc::send_respawn_after_death(
-                        &tx, pid, rx, ry, mh,
+                    crate::net::session::play::death::send_respawn_after_death(
+                        &tx, pid, rx, ry, mh, &bcast,
                     );
                     crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
                 }

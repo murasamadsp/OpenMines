@@ -6,6 +6,19 @@ use crate::world::cells::is_boulder;
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
+/// Quick check: is this cell type a building background?
+/// These cells have `isEmpty=true` in cells.json but are placed by Pack.Build()
+/// as part of building footprints. Sand/boulders must not land on them.
+/// C# ref: `World.PackPart` / `World.TrueEmpty` checks prevent physics overwrites.
+fn is_building_background_cell(cell: u8) -> bool {
+    matches!(cell, 30 | 32 | 35 | 37)
+}
+
+/// Combined empty check for physics: cell must be empty AND not a building background.
+fn is_physics_empty(state: &crate::game::GameState, x: i32, y: i32) -> bool {
+    state.world.is_empty(x, y) && !is_building_background_cell(state.world.get_cell(x, y))
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub fn sand_physics_system(
     state_res: Res<GameStateResource>,
@@ -41,10 +54,11 @@ pub fn sand_physics_system(
                 if state.world.valid_coord(sx, below_y)
                     && state.world.get_cell(sx, below_y) == cell_type::GATE
                     && state.world.valid_coord(sx, below2_y)
-                    && state.world.is_empty(sx, below2_y)
+                    && is_physics_empty(state, sx, below2_y)
                 {
                     tasks.push((sx, sy, sx, below2_y, cell));
-                } else if state.world.valid_coord(sx, below_y) && state.world.is_empty(sx, below_y)
+                } else if state.world.valid_coord(sx, below_y)
+                    && is_physics_empty(state, sx, below_y)
                 {
                     // Straight down.
                     tasks.push((sx, sy, sx, below_y, cell));
@@ -57,9 +71,9 @@ pub fn sand_physics_system(
                         let left_x = sx - 1;
                         let right_x = sx + 1;
                         let left_ok = state.world.valid_coord(left_x, below_y)
-                            && state.world.is_empty(left_x, below_y);
+                            && is_physics_empty(state, left_x, below_y);
                         let right_ok = state.world.valid_coord(right_x, below_y)
-                            && state.world.is_empty(right_x, below_y);
+                            && is_physics_empty(state, right_x, below_y);
                         // D12: When both diagonals empty, randomly pick one.
                         if left_ok && right_ok {
                             let mut rng = rand::rng();
@@ -83,7 +97,7 @@ pub fn sand_physics_system(
     tasks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     for (sx, sy, dest_x, dest_y, cell) in tasks {
-        if state.world.is_empty(dest_x, dest_y) {
+        if is_physics_empty(state, dest_x, dest_y) {
             state.world.set_cell(sx, sy, cell_type::EMPTY);
             state.world.set_cell(dest_x, dest_y, cell);
 
@@ -118,11 +132,11 @@ pub fn sand_physics_system(
                 if state.world.valid_coord(sx, below_y)
                     && state.world.get_cell(sx, below_y) == cell_type::GATE
                     && state.world.valid_coord(sx, below2_y)
-                    && state.world.is_empty(sx, below2_y)
+                    && is_physics_empty(state, sx, below2_y)
                 {
                     boulder_tasks.push((sx, sy, sx, below2_y, cell));
                 } else if state.world.valid_coord(sx, below_y)
-                    && state.world.is_empty(sx, below_y)
+                    && is_physics_empty(state, sx, below_y)
                 {
                     boulder_tasks.push((sx, sy, sx, below_y, cell));
                 } else if state.world.valid_coord(sx, below_y) {
@@ -134,13 +148,13 @@ pub fn sand_physics_system(
                         let right_x = sx + 1;
                         // D13: Boulder diagonal — check side cell empty too, random > 50 for right first.
                         let right_ok = state.world.valid_coord(right_x, below_y)
-                            && state.world.is_empty(right_x, below_y)
+                            && is_physics_empty(state, right_x, below_y)
                             && state.world.valid_coord(right_x, sy)
-                            && state.world.is_empty(right_x, sy);
+                            && is_physics_empty(state, right_x, sy);
                         let left_ok = state.world.valid_coord(left_x, below_y)
-                            && state.world.is_empty(left_x, below_y)
+                            && is_physics_empty(state, left_x, below_y)
                             && state.world.valid_coord(left_x, sy)
-                            && state.world.is_empty(left_x, sy);
+                            && is_physics_empty(state, left_x, sy);
                         let mut rng = rand::rng();
                         if rng.random_range(1..=100) > 50 && right_ok {
                             boulder_tasks.push((sx, sy, right_x, below_y, cell));
@@ -157,7 +171,7 @@ pub fn sand_physics_system(
     boulder_tasks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     for (sx, sy, dest_x, dest_y, cell) in boulder_tasks {
-        if state.world.is_empty(dest_x, dest_y) {
+        if is_physics_empty(state, dest_x, dest_y) {
             state.world.set_cell(sx, sy, cell_type::EMPTY);
             state.world.set_cell(dest_x, dest_y, cell);
 

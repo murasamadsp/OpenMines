@@ -13,7 +13,7 @@ use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, place_building_in_world, validate_building_area,
 };
-use crate::net::session::social::misc::handle_death;
+use crate::net::session::play::death::handle_death;
 
 // ─── Healing ────────────────────────────────────────────────────────────────
 
@@ -48,16 +48,24 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
                 stats_mut.health = (h + heal_amount).min(mh);
                 (stats_mut.health, stats_mut.crystals, _px)
             };
-            if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
+            let skill_payload = if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
                 add_skill_exp(&mut skills_mut.states, "e", 1.0);
-            }
-            Some((new_health, mh, new_crys, pid_val, _py))
+                Some(skill_progress_payload(&skills_mut.states))
+            } else {
+                None
+            };
+            Some((new_health, mh, new_crys, pid_val, _py, skill_payload))
         })
         .flatten();
 
-    if let Some((h, mh, crys, _px, _py)) = result {
+    if let Some((h, mh, crys, _px, _py, skill_payload)) = result {
         send_u_packet(tx, "@L", &health(h, mh).1);
         send_u_packet(tx, "@B", &basket(&crys, 1).1);
+        // Always send @S after skill exp (C# Skill.AddExp always sends)
+        if let Some(sp) = skill_payload {
+            let sk = skills_packet(&sp);
+            send_u_packet(tx, sk.0, &sk.1);
+        }
         // D20: C# sends coordinates (0, 0) for heal FX
         let fx = hb_directed_fx(net_u16_nonneg(pid), 0, 0, 5, 0, 0);
         state.broadcast_to_nearby(
@@ -187,10 +195,8 @@ pub fn handle_inventory_choose(
             add_choose_miniq(&mut inv.miniq, id);
         }
         inv.selected = id;
-        if id == -1 {
-            send_inventory(tx, &mut inv);
-            send_u_packet(tx, "IN", &inventory_close().1);
-        } else {
+        // C# ref: selection == -1 → Choose(-1) without SendInventory()
+        if id != -1 {
             send_inventory(tx, &mut inv);
         }
         Some(())
@@ -273,8 +279,7 @@ pub fn use_geopack(
     }
 
     // D25: placement — target cell must be truly empty (NOTHING or EMPTY), not can_place_over.
-    let is_truly_empty =
-        facing_cell == cell_type::NOTHING || facing_cell == cell_type::EMPTY;
+    let is_truly_empty = facing_cell == cell_type::NOTHING || facing_cell == cell_type::EMPTY;
     if !is_truly_empty {
         return false;
     }
@@ -441,42 +446,48 @@ fn aoe_damage_players(
     for entry in &state.active_players {
         let opid = *entry.key();
         // Returns Some((survived, px, py)) if player was in range and damaged
-        let hit_result = state.modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            let (px_o, py_o, h, mh, conn_tx) = {
-                let p = ecs.get::<PlayerPosition>(entity)?;
-                let s = ecs.get::<PlayerStats>(entity)?;
-                let c = ecs.get::<PlayerConnection>(entity)?;
-                (p.x, p.y, s.health, s.max_health, c.tx.clone())
-            };
-            if (px_o - cx).abs() > scan_range || (py_o - cy).abs() > scan_range {
-                return Some(None);
-            }
-            let dist = (((px_o - cx) as f32).powi(2) + ((py_o - cy) as f32).powi(2)).sqrt();
-            if dist > radius {
-                return Some(None);
-            }
-            if let Some(cd) = ecs.get::<PlayerCooldowns>(entity) {
-                if cd.protection_until.is_some_and(|u| now < u) {
+        let hit_result = state
+            .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+                let (px_o, py_o, h, mh, conn_tx) = {
+                    let p = ecs.get::<PlayerPosition>(entity)?;
+                    let s = ecs.get::<PlayerStats>(entity)?;
+                    let c = ecs.get::<PlayerConnection>(entity)?;
+                    (p.x, p.y, s.health, s.max_health, c.tx.clone())
+                };
+                if (px_o - cx).abs() > scan_range || (py_o - cy).abs() > scan_range {
                     return Some(None);
                 }
-            }
-            // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
-            if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
-                crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
-            }
-            let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
-            if h > damage {
-                s_mut.health = h - damage;
-            } else {
-                s_mut.health = 0;
-            }
-            let survived = s_mut.health > 0;
-            let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes(
-                "@L",
-                &health(s_mut.health, mh).1,
-            ));
-            Some(Some((survived, px_o, py_o)))
-        }).flatten();
+                let dist = (((px_o - cx) as f32).powi(2) + ((py_o - cy) as f32).powi(2)).sqrt();
+                if dist > radius {
+                    return Some(None);
+                }
+                if let Some(cd) = ecs.get::<PlayerCooldowns>(entity) {
+                    if cd.protection_until.is_some_and(|u| now < u) {
+                        return Some(None);
+                    }
+                }
+                // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
+                if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
+                    crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
+                    // Always send @S after skill exp (C# Skill.AddExp always sends)
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    let _ =
+                        conn_tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                }
+                let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                if h > damage {
+                    s_mut.health = h - damage;
+                } else {
+                    s_mut.health = 0;
+                }
+                let survived = s_mut.health > 0;
+                let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes(
+                    "@L",
+                    &health(s_mut.health, mh).1,
+                ));
+                Some(Some((survived, px_o, py_o)))
+            })
+            .flatten();
         // Broadcast hurt FX for surviving players (C# SendDFToBots(6,0,0,id,0))
         if let Some(Some((true, px_o, py_o))) = hit_result {
             let fx = hb_directed_fx(net_u16_nonneg(opid), 0, 0, 6, 0, 0);
@@ -562,7 +573,14 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
         handle_death(state, &tx, opid);
     }
 
-    let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(cx), net_u16_nonneg(cy), 1, 3, 0);
+    let fx = hb_directed_fx(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(cx),
+        net_u16_nonneg(cy),
+        1,
+        3,
+        0,
+    );
     state.broadcast_to_nearby(
         World::chunk_pos(cx, cy).0,
         World::chunk_pos(cx, cy).1,
@@ -606,7 +624,10 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
             // Destroy gates in range
             // (Gate buildings are in building_index; check and remove if it's a Gate)
             if let Some(bld_entity) = state.building_index.get(&(tx_c, ty_c)) {
-                let is_gate = state.ecs.read().get::<BuildingMetadata>(*bld_entity)
+                let is_gate = state
+                    .ecs
+                    .read()
+                    .get::<BuildingMetadata>(*bld_entity)
                     .is_some_and(|m| m.pack_type == PackType::Gate);
                 if is_gate {
                     // Remove gate
@@ -636,7 +657,14 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
         handle_death(state, &tx, opid);
     }
 
-    let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(cx), net_u16_nonneg(cy), 1, 0, 1);
+    let fx = hb_directed_fx(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(cx),
+        net_u16_nonneg(cy),
+        1,
+        0,
+        1,
+    );
     state.broadcast_to_nearby(
         World::chunk_pos(cx, cy).0,
         World::chunk_pos(cx, cy).1,
@@ -683,7 +711,14 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
         handle_death(state, &tx, opid);
     }
 
-    let fx = hb_directed_fx(net_u16_nonneg(pid), net_u16_nonneg(cx), net_u16_nonneg(cy), 1, 0, 2);
+    let fx = hb_directed_fx(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(cx),
+        net_u16_nonneg(cy),
+        1,
+        0,
+        2,
+    );
     state.broadcast_to_nearby(
         World::chunk_pos(cx, cy).0,
         World::chunk_pos(cx, cy).1,
@@ -750,8 +785,17 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         }
                     }
                     // Health skill exp (C# Player.Hurt → AddExp("l"))
-                    if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
+                    let skill_pkt = if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
                         crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
+                        let sk = skills_packet(&skill_progress_payload(&skills.states));
+                        Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
+                    } else {
+                        None
+                    };
+                    if let Some(pkt) = skill_pkt {
+                        if let Some(c) = ecs.get::<PlayerConnection>(entity) {
+                            let _ = c.tx.send(pkt);
+                        }
                     }
                     // Get stacks and compute damage
                     let stacks = ecs
@@ -799,12 +843,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         0,
                     );
                     let (cx, cy) = World::chunk_pos(tx_c, ty_c);
-                    state.broadcast_to_nearby(
-                        cx,
-                        cy,
-                        &encode_hb_bundle(&hb_bundle(&[fx]).1),
-                        None,
-                    );
+                    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
                 }
             }
         }

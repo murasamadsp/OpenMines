@@ -1,6 +1,6 @@
 //! Копание клеток и установка блоков (Xdig, Xbld).
 use crate::net::session::prelude::*;
-use crate::net::session::social::misc::hurt_player_pure;
+use crate::net::session::play::death::hurt_player_pure;
 
 pub fn handle_dig(
     state: &Arc<GameState>,
@@ -186,11 +186,9 @@ pub fn handle_dig(
             }
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                let leveled_mine = add_skill_exp(&mut skills.states, "m", mine_exp);
-                if leveled_mine {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
-                    send_u_packet(tx, sk.0, &sk.1);
-                }
+                add_skill_exp(&mut skills.states, "m", mine_exp);
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
             }
             {
                 let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
@@ -246,11 +244,9 @@ pub fn handle_dig(
     if pushed_boulder {
         state.modify_player(pid, |ecs, entity| {
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-            let leveled = add_skill_exp(&mut skills.states, "d", 1.0);
-            if leveled {
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
-                send_u_packet(tx, sk.0, &sk.1);
-            }
+            add_skill_exp(&mut skills.states, "d", 1.0);
+            let sk = skills_packet(&skill_progress_payload(&skills.states));
+            send_u_packet(tx, sk.0, &sk.1);
             Some(())
         });
     }
@@ -260,11 +256,9 @@ pub fn handle_dig(
         state.modify_player(pid, |ecs, entity| {
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                let leveled_dig = add_skill_exp(&mut skills.states, "d", 1.0);
-                if leveled_dig {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
-                    send_u_packet(tx, sk.0, &sk.1);
-                }
+                add_skill_exp(&mut skills.states, "d", 1.0);
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
             }
             {
                 let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
@@ -418,7 +412,9 @@ pub fn handle_build(
                     // D7: Yellow upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
                     let existing_dur = state.world.get_durability(tx_c, ty_c);
                     place_block(state, tx_c, ty_c, cell_type::YELLOW_BLOCK);
-                    state.world.set_durability(tx_c, ty_c, existing_dur + yellow_effect.1);
+                    state
+                        .world
+                        .set_durability(tx_c, ty_c, existing_dur + yellow_effect.1);
                     placed_skill = Some(SkillType::BuildYellow);
                 }
             } else if cur == cell_type::YELLOW_BLOCK {
@@ -442,7 +438,9 @@ pub fn handle_build(
                     // D7: Red upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
                     let existing_dur = state.world.get_durability(tx_c, ty_c);
                     place_block(state, tx_c, ty_c, cell_type::RED_BLOCK);
-                    state.world.set_durability(tx_c, ty_c, existing_dur + red_effect.1);
+                    state
+                        .world
+                        .set_durability(tx_c, ty_c, existing_dur + red_effect.1);
                     placed_skill = Some(SkillType::BuildRed);
                 }
             }
@@ -480,11 +478,9 @@ pub fn handle_build(
     if let Some(skill) = placed_skill {
         state.modify_player(pid, |ecs, entity| {
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-            let leveled = add_skill_exp(&mut skills.states, skill.code(), 1.0);
-            if leveled {
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
-                send_u_packet(tx, sk.0, &sk.1);
-            }
+            add_skill_exp(&mut skills.states, skill.code(), 1.0);
+            let sk = skills_packet(&skill_progress_payload(&skills.states));
+            send_u_packet(tx, sk.0, &sk.1);
             Some(())
         });
     }

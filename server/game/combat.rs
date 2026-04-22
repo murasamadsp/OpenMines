@@ -28,11 +28,18 @@ pub fn standing_cell_hazard_system(
         &mut PlayerStats,
         &PlayerConnection,
         &mut PlayerFlags,
+        &mut PlayerSkillsCom,
+        &mut PlayerCooldowns,
     )>,
 ) {
     let state = &state_res.0;
 
-    for (p_meta, pos, mut stats, conn, mut flags) in &mut q {
+    for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
+        // C# ref Player.Update: reset c190stacks to 1 after 1 minute
+        if cooldowns.last_c190_hit.is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(60)) {
+            cooldowns.c190_stacks = 1;
+            cooldowns.last_c190_hit = Some(std::time::Instant::now());
+        }
         let (px, py) = (pos.x, pos.y);
         if !state.world.valid_coord(px, py) {
             continue;
@@ -47,6 +54,13 @@ pub fn standing_cell_hazard_system(
         }
         if pdef.fall_damage > 0 {
             let fd = pdef.fall_damage;
+            // C# ref: Player.Hurt → Health.AddExp (on every hurt)
+            crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
+            let sk = crate::protocol::packets::skills_packet(
+                &crate::game::skills::skill_progress_payload(&skills.states),
+            );
+            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+
             if stats.health > fd {
                 stats.health -= fd;
             } else {
@@ -58,6 +72,22 @@ pub fn standing_cell_hazard_system(
                 "@L",
                 &crate::protocol::packets::health(stats.health, stats.max_health).1,
             ));
+            // C# ref: Player.Hurt → SendDFToBots(6, 0, 0, id, 0) when not lethal
+            if stats.health > 0 {
+                let fx = crate::protocol::packets::hb_directed_fx(
+                    crate::net::session::util::net_u16_nonneg(p_meta.id),
+                    0, 0, 6, 0, 0,
+                );
+                let (cx, cy) = crate::world::World::chunk_pos(px, py);
+                bcast_q.0.push(BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data: crate::net::session::wire::encode_hb_bundle(
+                        &crate::protocol::packets::hb_bundle(&[fx]).1,
+                    ),
+                    exclude: Some(p_meta.id),
+                });
+            }
         }
 
         if cell == cell_type::BOX {
@@ -134,53 +164,60 @@ pub fn gun_firing_system(
             && let Ok((_ent, p_meta, _pos, mut p_sk, mut stats, _cd, conn, mut flags)) =
                 players_query.get_mut(entity)
         {
-                // C# Player.Hurt(60, DamageType.Gun): skill exp before damage
-                crate::game::skills::add_skill_exp(&mut p_sk.states, "l", 1.0);  // Health
-                crate::game::skills::add_skill_exp(&mut p_sk.states, "*I", 1.0); // Induction
-                crate::game::skills::add_skill_exp(&mut p_sk.states, "u", 1.0);  // AntiGun
-                // C# Gun.Update order: damage first, then deduct charge
-                let sk = SkillHurt {
-                    skills: &p_sk.states,
-                };
-                let dmg = (sk.on_hurt(60.0).round() as i32).max(0);
-                if dmg > 0 {
-                    if stats.health > dmg {
-                        stats.health -= dmg;
-                        flags.dirty = true;
-                    } else {
-                        stats.health = 0;
-                        flags.dirty = true;
-                        death_q.0.push(p_meta.id);
-                    }
-                }
-                let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    "@L",
-                    &crate::protocol::packets::health(stats.health, stats.max_health).1,
-                ));
-
-                // Charge cost: 0.5 * (Induction_Effect / 100)
-                let induction_effect = crate::game::skills::get_player_skill_effect(
-                    &p_sk.states,
-                    crate::game::skills::SkillType::Induction,
-                );
-                let charge_cost = 0.5 * (induction_effect / 100.0);
-                if b_stats.charge - charge_cost > 0.0 {
-                    b_stats.charge -= charge_cost;
+            // C# Player.Hurt(60, DamageType.Gun): skill exp before damage
+            crate::game::skills::add_skill_exp(&mut p_sk.states, "l", 1.0); // Health
+            crate::game::skills::add_skill_exp(&mut p_sk.states, "*I", 1.0); // Induction
+            crate::game::skills::add_skill_exp(&mut p_sk.states, "u", 1.0); // AntiGun
+            // Always send @S after skill exp (C# Skill.AddExp always sends)
+            let sk_pkt = crate::protocol::packets::skills_packet(
+                &crate::game::skills::skill_progress_payload(&p_sk.states),
+            );
+            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+                sk_pkt.0, &sk_pkt.1,
+            ));
+            // C# Gun.Update order: damage first, then deduct charge
+            let sk = SkillHurt {
+                skills: &p_sk.states,
+            };
+            let dmg = (sk.on_hurt(60.0).round() as i32).max(0);
+            if dmg > 0 {
+                if stats.health > dmg {
+                    stats.health -= dmg;
+                    flags.dirty = true;
                 } else {
-                    b_stats.charge = 0.0;
+                    stats.health = 0;
+                    flags.dirty = true;
+                    death_q.0.push(p_meta.id);
                 }
+            }
+            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+                "@L",
+                &crate::protocol::packets::health(stats.health, stats.max_health).1,
+            ));
 
-                let fx = crate::protocol::packets::hb_fx(b_pos.x as u16, b_pos.y as u16, 1);
-                let data = crate::net::session::wire::encode_hb_bundle(
-                    &crate::protocol::packets::hb_bundle(&[fx]).1,
-                );
-                let (cx, cy) = crate::world::World::chunk_pos(b_pos.x, b_pos.y);
-                bcast_q.0.push(BroadcastEffect::Nearby {
-                    cx,
-                    cy,
-                    data,
-                    exclude: None,
-                });
+            // Charge cost: 0.5 * (Induction_Effect / 100)
+            let induction_effect = crate::game::skills::get_player_skill_effect(
+                &p_sk.states,
+                crate::game::skills::SkillType::Induction,
+            );
+            let charge_cost = 0.5 * (induction_effect / 100.0);
+            if b_stats.charge - charge_cost > 0.0 {
+                b_stats.charge -= charge_cost;
+            } else {
+                b_stats.charge = 0.0;
+            }
+
+            let fx = crate::protocol::packets::hb_fx(b_pos.x as u16, b_pos.y as u16, 1);
+            let data = crate::net::session::wire::encode_hb_bundle(
+                &crate::protocol::packets::hb_bundle(&[fx]).1,
+            );
+            let (cx, cy) = crate::world::World::chunk_pos(b_pos.x, b_pos.y);
+            bcast_q.0.push(BroadcastEffect::Nearby {
+                cx,
+                cy,
+                data,
+                exclude: None,
+            });
         }
     }
 }

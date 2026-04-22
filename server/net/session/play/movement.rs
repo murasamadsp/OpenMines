@@ -151,11 +151,9 @@ pub fn handle_move(
             // D5 fix: award Movement skill exp on every successful move (1:1 ref Player.cs:443-452)
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                let leveled = add_skill_exp(&mut skills.states, "M", 1.0);
-                if leveled {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
-                    send_u_packet(tx, sk.0, &sk.1);
-                }
+                add_skill_exp(&mut skills.states, "M", 1.0);
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
             }
 
             Some((target_x, target_y, actual_dir, skin, clan))

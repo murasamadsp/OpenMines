@@ -12,8 +12,10 @@
 | File | Description |
 |------|-------------|
 | `buildings.rs` | Развёртывание/удаление строений, проверки прав |
+| `chat.rs` | Локальный чат (HB bubble), канальный чат (FED/DNO/CLAN), `Chin` init, channel switch |
 | `clans.rs` | CRUD кланов, заявки, join/leave, админские действия |
-| `misc.rs` | Чат, каналы, авто-диг, команды (`/give`, `/tp`, `/clan` и др.), `hurt_player_pure` (Health exp + hurt FX), смерть/респавн, программатор TY |
+| `commands.rs` | Слэш-команды (`/give`, `/money`, `/tp`, `/heal`, `/clan`, `/pack`, `/admin`), `send_ok`, `is_admin_command` |
+| `misc.rs` | Auto-dig toggle/set, Whoi, программатор TY (PROG/PDEL/pRST/PREN), настройки TY |
 
 ## Subdirectories
 
@@ -25,10 +27,10 @@
 
 ### Working In This Directory
 
-- `hurt_player_pure` — DamageType.Pure: Health exp, hurt FX, death. Сверять с C# `Player.Hurt`.
-- `apply_player_death_core` + `run_death_broadcasts` — двухфазная смерть (ECS мутации → broadcast) для избежания deadlock.
-- Проверять кластеры/постройки по правам и позиции.
-- Новые чат-команды: валидация + анти-абьюз.
+- `commands.rs` экспортирует `send_ok`, `send_admin_help`, `is_admin_command` — используются из dispatch и ui.
+- `chat.rs` зависит от `commands.rs` (handle_chat_command для слэш-команд в чате).
+- Смерть/урон перенесены в `play/death.rs`, гео в `play/geo.rs`.
+- Новые чат-команды добавлять в `commands.rs`.
 
 ### Testing Requirements
 

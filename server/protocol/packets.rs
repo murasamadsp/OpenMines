@@ -184,6 +184,7 @@ pub fn inventory_show(items: &[(i32, i32)], selected: i32, total: i32) -> (&'sta
 }
 
 /// Encode an Inventory Close packet (IN): "close:"
+#[allow(dead_code)]
 pub fn inventory_close() -> (&'static str, Vec<u8>) {
     ("IN", b"close:".to_vec())
 }
@@ -580,8 +581,21 @@ fn parse_i32_text(data: &[u8]) -> Option<i32> {
 /// Референс `GUI_Packet.Decode`: `JSON.Parse(UTF8.GetString(data))["b"]`
 pub fn decode_gui_button(data: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(data).ok()?;
-    let v: serde_json::Value = serde_json::from_str(s).ok()?;
-    v.get("b")?.as_str().map(std::string::ToString::to_string)
+    // Client sends GUI_ buttons in two formats:
+    // 1. JSON: {"b":"button_name"} — standard HORB buttons
+    // 2. Raw string: "exit" — close/X button, some legacy actions
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
+        && let Some(b) = v.get("b").and_then(|b| b.as_str())
+    {
+        return Some(b.to_string());
+    }
+    // Fallback: treat entire payload as button name (raw string)
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Decode local chat (inside TY `sub_payload`): legacy `length:message` or plain UTF-8 text
@@ -613,6 +627,12 @@ impl LoclClient {
             message: s.to_string(),
         })
     }
+}
+
+/// `#P` — open programmator editor: `{"id":N,"title":"name","source":"code"}`.
+pub fn open_programmator(id: i32, title: &str, source: &str) -> (&'static str, Vec<u8>) {
+    let json = serde_json::json!({"id": id, "title": title, "source": source});
+    ("#P", json.to_string().into_bytes())
 }
 
 /// Decode Whoi (bot ID request): list of u16 IDs

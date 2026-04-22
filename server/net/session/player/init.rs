@@ -110,7 +110,7 @@ pub fn init_player(
                 last_geo: ready,
                 protection_until: None,
                 last_shot: None,
-                c190_stacks: 0,
+                c190_stacks: 1,
                 last_c190_hit: None,
             },
             PlayerGeoStack::default(),
@@ -282,14 +282,25 @@ fn send_initial_sync(
     }
     // 15. SendChat — как `Player.SendChat()` в server_reference: только `mO` и при наличии — `mU`.
     send_chat_login_per_reference(state, tx, pid);
-    // 16–17. ConfigPacket + ProgStatus
+    // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    // @P reflects real ECS programmator state
-    let prog_running = state
+    // 17. UpdateProg (#p) — C# ref: if programsData.selected != null → UpdateProg()
+    let prog_data = state
         .query_player(pid, |ecs, entity| {
-            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                .is_some_and(|ps| ps.running)
+            let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.selected_id.map(|id| (id, ps.running))
         })
-        .unwrap_or(false);
-    send_u_packet(tx, "@P", &programmator_status(prog_running).1);
+        .flatten();
+    if let Some((prog_id, prog_running)) = prog_data {
+        if let Ok(Some(prog)) = state.db.get_program(prog_id) {
+            send_u_packet(
+                tx,
+                "#p",
+                &crate::protocol::packets::open_programmator(prog_id, &prog.name, &prog.code).1,
+            );
+        }
+        send_u_packet(tx, "@P", &programmator_status(prog_running).1);
+    } else {
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+    }
 }
