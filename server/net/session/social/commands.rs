@@ -129,20 +129,18 @@ fn handle_chat_giveall_command(
         (42, 5), (43, 5), (46, 5),                      // special geopacks
     ];
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        {
-            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-            for &(id, amount) in items {
-                *inv.items.entry(id).or_insert(0) += amount;
-            }
+        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+        for &(id, amount) in items {
+            *inv.items.entry(id).or_insert(0) += amount;
         }
+        // Show full inventory (not mini) so all new items are visible
+        inv.minv = false;
+        send_inventory(tx, &mut inv);
         if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
             flags.dirty = true;
         }
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        send_inventory(tx, &mut inv);
         Some(())
     });
-    send_ok(tx, "Инвентарь", "Все предметы выданы");
 }
 
 // ─── /give ──────────────────────────────────────────────────────────────────
