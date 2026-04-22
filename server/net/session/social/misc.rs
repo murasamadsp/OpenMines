@@ -160,20 +160,89 @@ pub fn handle_prog_ty(
     }
 }
 
-/// TY `Sett` → `Settings.SendSettingsGUI` в server_reference (упрощённое окно настроек).
+/// TY `Sett` → `Settings.SendSettingsGUI` в server_reference — 1:1 с C# RichList.
 pub fn handle_sett_ty(
-    _state: &Arc<GameState>,
+    state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _pid: PlayerId,
+    pid: PlayerId,
     _payload: &[u8],
 ) {
+    let settings = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerSettings>(entity)
+                .copied()
+        })
+        .flatten();
+    let Some(s) = settings else { return };
+
+    let has_clan = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerStats>(entity)
+                .map(|st| st.clan_id.unwrap_or(0) != 0)
+        })
+        .flatten()
+        .unwrap_or(false);
+
+    // C# ref: RichList entries — each entry = [label, type, values, action, value]
+    // DropDown: values = "0:label0#1:label1#", action = key, value = index
+    // Bool: values = "0", action = key, value = "0"/"1"
+    let rich: Vec<serde_json::Value> = vec![
+        // DropDown: "Масштаб интерфейса"
+        serde_json::json!("Масштаб интерфейса"), serde_json::json!("drop"),
+        serde_json::json!("0:мелко#1:КРУПНО#"), serde_json::json!("isca"),
+        serde_json::json!(s.isca.to_string()),
+        // DropDown: "Масштаб территории"
+        serde_json::json!("Масштаб территории"), serde_json::json!("drop"),
+        serde_json::json!("0:мелко#1:КРУПНО#"), serde_json::json!("tsca"),
+        serde_json::json!(s.tsca.to_string()),
+        // Bool: "Включить управление мышкой"
+        serde_json::json!("Включить управление мышкой"), serde_json::json!("bool"),
+        serde_json::json!("0"), serde_json::json!("mous"),
+        serde_json::json!(if s.mous { "1" } else { "0" }),
+        // Bool: "Упрощенный режим графики"
+        serde_json::json!("Упрощенный режим графики"), serde_json::json!("bool"),
+        serde_json::json!("0"), serde_json::json!("pot"),
+        serde_json::json!(if s.pot { "1" } else { "0" }),
+        // Bool: "ринудительно обновлять породы"
+        serde_json::json!("ринудительно обновлять породы (увеличит потр. CPU)"), serde_json::json!("bool"),
+        serde_json::json!("0"), serde_json::json!("frc"),
+        serde_json::json!(if s.frc { "1" } else { "0" }),
+        // Bool: "CTRL переключает скорость"
+        serde_json::json!("CTRL переключает скорость робота (вместо удерживания)"), serde_json::json!("bool"),
+        serde_json::json!("0"), serde_json::json!("ctrl"),
+        serde_json::json!(if s.ctrl { "1" } else { "0" }),
+        // Bool: "Отключить ближайшие звуки"
+        serde_json::json!("Отключить ближайшие звуки"), serde_json::json!("bool"),
+        serde_json::json!("0"), serde_json::json!("mof"),
+        serde_json::json!(if s.mof { "1" } else { "0" }),
+    ];
+
+    let mut buttons = vec![
+        serde_json::json!("Сохранить"),
+        serde_json::json!("save:%R%"),
+    ];
+    if !has_clan {
+        buttons.push(serde_json::json!("Создать клан"));
+        buttons.push(serde_json::json!("clancreate"));
+    }
+    buttons.push(serde_json::json!("ВЫЙТИ"));
+    buttons.push(serde_json::json!("exit"));
+
     let gui = serde_json::json!({
         "title": "НА СТРОЙКЕ",
-        "text": "Упрощённое окно (ref Settings.SendSettingsGUI). Полный RichList в Rust пока не портирован.",
-        "buttons": ["ВЫЙТИ", "exit"],
+        "tabs": ["Настройки", ""],
+        "richList": rich,
+        "buttons": buttons,
         "back": false
     });
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+            ui.current_window = Some("settings".to_string());
+        }
+        Some(())
+    });
 }
 
 pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {

@@ -11,7 +11,7 @@ use rand::Rng;
 /// as part of building footprints. Sand/boulders must not land on them.
 /// C# ref: `World.PackPart` / `World.TrueEmpty` checks prevent physics overwrites.
 fn is_building_background_cell(cell: u8) -> bool {
-    matches!(cell, 30 | 32 | 35 | 37)
+    matches!(cell, 30 | 32 | 35 | 37 | 38 | 106)
 }
 
 /// Combined empty check for physics: cell must be empty AND not a building background.

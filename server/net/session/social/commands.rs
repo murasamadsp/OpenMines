@@ -11,6 +11,7 @@ use crate::net::session::social::clans::{
 const ADMIN_COMMAND_HELP: &str = concat!(
     "Админские команды:\n",
     "/give ITEM_ID AMOUNT — выдать предмет\n",
+    "/giveall — выдать все предметы (по 10 шт.)\n",
     "/money AMOUNT — добавить денег игроку\n",
     "/moneyall AMOUNT — добавить денег всем игрокам\n",
     "/tp X Y — телепортироваться\n",
@@ -86,6 +87,7 @@ pub fn handle_chat_command(
     let args = &parts[1..];
     match cmd {
         "/give" => handle_chat_give_command(state, tx, pid, args),
+        "/giveall" => handle_chat_giveall_command(state, tx, pid),
         "/money" => handle_chat_money_command(state, tx, pid, args),
         "/moneyall" => handle_chat_money_all_command(state, tx, pid, args),
         "/tp" => handle_chat_teleport_command(state, tx, pid, args),
@@ -105,6 +107,42 @@ pub fn handle_chat_command(
             }
         }
     }
+}
+
+// ─── /giveall ───────────────────────────────────────────────────────────────
+
+fn handle_chat_giveall_command(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) {
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
+    // All known item IDs: buildings (0-4,24,26,27,29), consumables (5-7,35,40), geopacks (10-16,34,42,43,46)
+    let items: &[(i32, i32)] = &[
+        (0, 10), (1, 10), (2, 10), (3, 10), (4, 10),  // T,R,U,M,?
+        (5, 10), (6, 10), (7, 10),                      // boom, protector, razryadka
+        (10, 5), (11, 5), (12, 5), (13, 5), (14, 5), (15, 5), (16, 5), // geopacks
+        (24, 10), (26, 10), (27, 10), (29, 10),        // F,G,N,L buildings
+        (34, 5), (35, 10), (40, 10),                    // hypno, poli, C190
+        (42, 5), (43, 5), (46, 5),                      // special geopacks
+    ];
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+        {
+            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+            for &(id, amount) in items {
+                *inv.items.entry(id).or_insert(0) += amount;
+            }
+        }
+        if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            flags.dirty = true;
+        }
+        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+        send_inventory(tx, &mut inv);
+        Some(())
+    });
+    send_ok(tx, "Инвентарь", "Все предметы выданы");
 }
 
 // ─── /give ──────────────────────────────────────────────────────────────────

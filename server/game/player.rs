@@ -95,6 +95,35 @@ pub struct PlayerMetadata {
 #[derive(Component)]
 pub struct PlayerSettings {
     pub auto_dig: bool,
+    // C# ref Settings.cs fields:
+    pub cc: i32,
+    pub snd: bool,
+    pub mus: bool,
+    pub isca: i32,
+    pub tsca: i32,
+    pub mous: bool,
+    pub pot: bool,
+    pub frc: bool,
+    pub ctrl: bool,
+    pub mof: bool,
+}
+
+impl Clone for PlayerSettings {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl Copy for PlayerSettings {}
+
+impl Default for PlayerSettings {
+    fn default() -> Self {
+        Self {
+            auto_dig: false,
+            cc: 10, snd: false, mus: false, isca: 0, tsca: 0,
+            mous: true, pot: false, frc: true, ctrl: true, mof: true,
+        }
+    }
 }
 
 #[derive(Component)]

@@ -86,6 +86,9 @@ pub fn handle_gui_button(
         "auc" => handle_market_tab_switch(state, tx, pid, "auc"),
         "sellall" => handle_market_sellall(state, tx, pid),
         "getprofit" => handle_market_getprofit(state, tx, pid),
+        "clancreate" => {
+            handle_clan_create_view(tx);
+        }
         _ => handle_complex_button(state, tx, pid, button),
     }
 
@@ -178,6 +181,8 @@ fn handle_complex_button(
         handle_market_sell(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("buy:") {
         handle_market_buy(state, tx, pid, rest);
+    } else if let Some(rest) = button.strip_prefix("save:") {
+        handle_settings_save(state, tx, pid, rest);
     } else {
         // Up building buttons (skill:N, upgrade, delete:N, install:code#N, buyslot)
         super::up_building::handle_up_button(state, tx, pid, button);
@@ -247,6 +252,10 @@ pub fn open_pack_gui(
     pid: PlayerId,
     view: &PackView,
 ) {
+    // C# ref: Gate.GUIWin() returns null — no window opens
+    if view.pack_type == PackType::Gate {
+        return;
+    }
     if view.pack_type == PackType::Storage {
         open_storage_gui(state, tx, pid, view);
         return;
@@ -1617,4 +1626,66 @@ pub fn open_market_admin_gui(
         }
         Some(())
     });
+}
+
+// ─── Settings save ──────────────────────────────────────────────────────
+
+/// Handle `save:{RichList data}` from Settings GUI.
+/// C# ref: `Settings.Save(p, list)` → updates settings dict → `SendSettings` + `SendSettingsGUI`.
+fn handle_settings_save(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    data: &str,
+) {
+    // RichList macro %R% substitutes to "key=val,key=val,..."
+    let pairs: std::collections::HashMap<&str, &str> = data
+        .split(',')
+        .filter_map(|kv| kv.split_once('='))
+        .collect();
+
+    state.modify_player(pid, |ecs, entity| {
+        let mut s = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
+        if let Some(&v) = pairs.get("isca") { s.isca = v.parse().unwrap_or(s.isca); }
+        if let Some(&v) = pairs.get("tsca") { s.tsca = v.parse().unwrap_or(s.tsca); }
+        if let Some(&v) = pairs.get("mous") { s.mous = v == "1"; }
+        if let Some(&v) = pairs.get("pot") { s.pot = v == "1"; }
+        if let Some(&v) = pairs.get("frc") { s.frc = v == "1"; }
+        if let Some(&v) = pairs.get("ctrl") { s.ctrl = v == "1"; }
+        if let Some(&v) = pairs.get("mof") { s.mof = v == "1"; }
+        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            f.dirty = true;
+        }
+        Some(())
+    });
+
+    // C# ref: SendSettings → send #S with updated values, then re-show GUI
+    // For now we send #S with the values and re-open the settings GUI
+    let sett_wire = build_settings_wire(state, pid);
+    send_u_packet(tx, "#S", &sett_wire);
+    crate::net::session::social::misc::handle_sett_ty(state, tx, pid, &[]);
+}
+
+/// Build #S packet payload from player's current settings.
+fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
+    let s = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerSettings>(entity)
+                .copied()
+        })
+        .flatten()
+        .unwrap_or_default();
+    let json = serde_json::json!({
+        "cc": s.cc.to_string(),
+        "snd": if s.snd { "1" } else { "0" },
+        "mus": if s.mus { "1" } else { "0" },
+        "isca": s.isca.to_string(),
+        "tsca": s.tsca.to_string(),
+        "mous": if s.mous { "1" } else { "0" },
+        "pot": if s.pot { "1" } else { "0" },
+        "frc": if s.frc { "1" } else { "0" },
+        "ctrl": if s.ctrl { "1" } else { "0" },
+        "mof": if s.mof { "1" } else { "0" },
+    });
+    json.to_string().into_bytes()
 }

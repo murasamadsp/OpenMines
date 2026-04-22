@@ -117,6 +117,7 @@ pub fn init_player(
             ProgrammatorState::new(),
             PlayerSettings {
                 auto_dig: player.auto_dig,
+                ..PlayerSettings::default()
             },
             PlayerFlags { dirty: false },
         ))
