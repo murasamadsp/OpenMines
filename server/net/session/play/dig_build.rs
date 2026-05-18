@@ -1,6 +1,6 @@
 //! Копание клеток и установка блоков (Xdig, Xbld).
-use crate::net::session::prelude::*;
 use crate::net::session::play::death::hurt_player_pure;
+use crate::net::session::prelude::*;
 
 pub fn handle_dig(
     state: &Arc<GameState>,
@@ -16,9 +16,9 @@ pub fn handle_dig(
                     let cd = ecs.get::<crate::game::player::PlayerCooldowns>(entity)?;
                     let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                     let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
-                    let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    // 1:1 ref: 3 digs per second = 333ms cooldown
-                    if cd.last_dig.elapsed().as_millis() < 333 {
+                    let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    // 1:1 ref `Session.cs:230` `DigHandler => TryAct(..., 200)`
+                    if cd.last_dig.elapsed().as_millis() < 200 {
                         return None;
                     }
                     if ui.current_window.is_some() {
@@ -37,9 +37,9 @@ pub fn handle_dig(
                         pos.y,
                         dp,
                         mm,
-                        stats.skin,
-                        stats.clan_id.unwrap_or(0),
-                        stats.crystal_carry,
+                        p_stats.skin,
+                        p_stats.clan_id.unwrap_or(0),
+                        p_stats.crystal_carry,
                     )
                 };
                 // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
@@ -64,12 +64,12 @@ pub fn handle_dig(
     };
 
     let (dx, dy) = dir_offset(actual_dir);
-    let (tx_c, ty_c) = (px + dx, py + dy);
-    if !state.world.valid_coord(tx_c, ty_c) {
+    let (tgt_x, tgt_y) = (px + dx, py + dy);
+    if !state.world.valid_coord(tgt_x, tgt_y) {
         return;
     }
 
-    let cell = state.world.get_cell(tx_c, ty_c);
+    let cell = state.world.get_cell(tgt_x, tgt_y);
     let (touch_damage, diggable) = {
         let defs = state.world.cell_defs();
         let p = defs.get(cell);
@@ -102,21 +102,21 @@ pub fn handle_dig(
     state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
 
     // Fix 2: BOX (90) special case — pick up crystals and destroy.
+    // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
     if cell == cell_type::BOX {
-        if let Ok(Some(box_row)) = state.db.get_box_at(tx_c, ty_c) {
+        if let Some(bc) = state.box_take(tgt_x, tgt_y) {
             state.modify_player(pid, |ecs, entity| {
-                let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                let mut p_stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
                 for i in 0..6 {
-                    stats.crystals[i] += box_row.crystals[i];
+                    p_stats.crystals[i] += bc[i];
                 }
-                let c_data = stats.crystals;
+                let c_data = p_stats.crystals;
                 send_u_packet(tx, "@B", &basket(&c_data, 1).1);
                 Some(())
             });
         }
-        let _ = state.db.delete_box_at(tx_c, ty_c);
-        state.world.damage_cell(tx_c, ty_c, 1.0);
-        broadcast_cell_update(state, tx_c, ty_c);
+        state.world.damage_cell(tgt_x, tgt_y, 1.0);
+        broadcast_cell_update(state, tgt_x, tgt_y);
         // Референс: `player.Move(player.x, player.y, dir)` → `SendMyMove()`.
         let bot = hb_bot(
             net_u16_nonneg(pid),
@@ -137,9 +137,9 @@ pub fn handle_dig(
 
     // Fix 3: MilitaryBlock (81) special case — fixed 1.0 damage, no multiplier, no crystal/exp/FX2.
     if cell == cell_type::MILITARY_BLOCK {
-        let destroyed = state.world.damage_cell(tx_c, ty_c, 1.0);
+        let destroyed = state.world.damage_cell(tgt_x, tgt_y, 1.0);
         if destroyed {
-            broadcast_cell_update(state, tx_c, ty_c);
+            broadcast_cell_update(state, tgt_x, tgt_y);
         }
         let bot = hb_bot(
             net_u16_nonneg(pid),
@@ -159,12 +159,12 @@ pub fn handle_dig(
     } else {
         (dig_power / 500.0).max(1.0e-6)
     };
-    let destroyed = state.world.damage_cell(tx_c, ty_c, hit);
+    let destroyed = state.world.damage_cell(tgt_x, tgt_y, hit);
     let cry_idx = crystal_type(cell);
 
     // D8+D9: Crystal mining happens on EVERY hit (1:1 with C# Player.Bz → Mine(cell,x,y)).
     // Dig exp happens only on destroy. MineGeneral exp happens every hit with crystals.
-    let mined_amount = if let Some(idx) = cry_idx {
+    let mined_amount = cry_idx.map_or(0_i64, |idx| {
         // cb fractional crystal accumulator.
         let mut carry = crystal_carry_init;
         let pre_mult_dob = 1.0_f32 + carry.trunc() + mine_mult;
@@ -178,17 +178,18 @@ pub fn handle_dig(
         // Update crystal_carry + add crystals + MineGeneral exp on every hit.
         state.modify_player(pid, |ecs, entity| {
             {
-                let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                stats.crystal_carry = carry;
-                stats.crystals[idx] += amount;
-                let c_data = stats.crystals;
+                let mut p_stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                p_stats.crystal_carry = carry;
+                p_stats.crystals[idx] += amount;
+                let c_data = p_stats.crystals;
                 send_u_packet(tx, "@B", &basket(&c_data, 1).1);
             }
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                add_skill_exp(&mut skills.states, "m", mine_exp);
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
-                send_u_packet(tx, sk.0, &sk.1);
+                if add_skill_exp(&mut skills.states, "m", mine_exp) {
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    send_u_packet(tx, sk.0, &sk.1);
+                }
             }
             {
                 let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
@@ -207,8 +208,8 @@ pub fn handle_dig(
         };
         let mine_fx = hb_directed_fx(
             net_u16_nonneg(pid),
-            net_u16_nonneg(tx_c),
-            net_u16_nonneg(ty_c),
+            net_u16_nonneg(tgt_x),
+            net_u16_nonneg(tgt_y),
             2,
             (amount.min(255)) as u8,
             color_remapped,
@@ -221,14 +222,12 @@ pub fn handle_dig(
         );
 
         amount
-    } else {
-        0_i64
-    };
+    });
     let _ = mined_amount;
 
     // Fix 9: Boulder push on EVERY hit, not just on destroy.
     let pushed_boulder = if is_boulder(cell) {
-        let (bx, by) = (tx_c + dx, ty_c + dy);
+        let (bx, by) = (tgt_x + dx, tgt_y + dy);
         if state.world.valid_coord(bx, by) && state.world.is_empty(bx, by) {
             state.world.set_cell(bx, by, cell);
             broadcast_cell_update(state, bx, by);
@@ -244,9 +243,10 @@ pub fn handle_dig(
     if pushed_boulder {
         state.modify_player(pid, |ecs, entity| {
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-            add_skill_exp(&mut skills.states, "d", 1.0);
-            let sk = skills_packet(&skill_progress_payload(&skills.states));
-            send_u_packet(tx, sk.0, &sk.1);
+            if add_skill_exp(&mut skills.states, "d", 1.0) {
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
+            }
             Some(())
         });
     }
@@ -257,8 +257,6 @@ pub fn handle_dig(
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
                 add_skill_exp(&mut skills.states, "d", 1.0);
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
-                send_u_packet(tx, sk.0, &sk.1);
             }
             {
                 let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
@@ -267,7 +265,7 @@ pub fn handle_dig(
             Some(())
         });
 
-        broadcast_cell_update(state, tx_c, ty_c);
+        broadcast_cell_update(state, tgt_x, tgt_y);
     } else if cry_idx.is_none() {
         // Mark dirty on non-destroying, non-crystal hits too (for save consistency).
         state.modify_player(pid, |ecs, entity| {
@@ -305,16 +303,16 @@ pub fn handle_build(
                 let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                 let cd = ecs.get::<crate::game::player::PlayerCooldowns>(entity)?;
                 let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
-                let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                 if ui.current_window.is_some() {
                     return None;
                 }
-                // 1:1 ref: 3 builds per second = 333ms cooldown
-                if cd.last_build.elapsed().as_millis() < 333 {
+                // 1:1 ref `Session.cs:233` `BuildHandler => TryAct(..., 200)`
+                if cd.last_build.elapsed().as_millis() < 200 {
                     return None;
                 }
                 let (px, py, pdir) = (pos.x, pos.y, pos.dir);
-                let clan_id = stats.clan_id.unwrap_or(0);
+                let clan_id = p_stats.clan_id.unwrap_or(0);
 
                 // Fix 12: Crystal cost from skill.Effect.
                 // Fix 16: Durability from skill AdditionalEffect (on_bld_hp).
@@ -356,22 +354,22 @@ pub fn handle_build(
     };
 
     let (dx, dy) = dir_offset(pdir);
-    let (tx_c, ty_c) = (px + dx, py + dy);
-    if !state.world.valid_coord(tx_c, ty_c) {
+    let (tgt_x, tgt_y) = (px + dx, py + dy);
+    if !state.world.valid_coord(tgt_x, tgt_y) {
         return;
     }
 
     // Fix 13: AccessGun check — block build in enemy gun zone.
-    if !state.access_gun(tx_c, ty_c, clan_id) {
+    if !state.access_gun(tgt_x, tgt_y, clan_id) {
         return;
     }
 
     // Fix 14: PackPart check — can't build on a building cell.
-    if state.building_index.contains_key(&(tx_c, ty_c)) {
+    if state.building_index.contains_key(&(tgt_x, tgt_y)) {
         return;
     }
 
-    let cur = state.world.get_cell(tx_c, ty_c);
+    let cur = state.world.get_cell(tgt_x, tgt_y);
     let binding = state.world.cell_defs();
     let prop = binding.get(cur);
 
@@ -386,8 +384,8 @@ pub fn handle_build(
         "G" => {
             if prop.cell_is_empty() || prop.is_sand() {
                 if try_spend_crystal(state, tx, pid, 0, cost) {
-                    place_block(state, tx_c, ty_c, cell_type::GREEN_BLOCK);
-                    state.world.set_durability(tx_c, ty_c, durability);
+                    place_block(state, tgt_x, tgt_y, cell_type::GREEN_BLOCK);
+                    state.world.set_durability(tgt_x, tgt_y, durability);
                     placed_skill = Some(SkillType::BuildGreen);
                 }
             } else if cur == cell_type::GREEN_BLOCK {
@@ -410,11 +408,11 @@ pub fn handle_build(
                 let y_cost = yellow_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 4, y_cost) {
                     // D7: Yellow upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
-                    let existing_dur = state.world.get_durability(tx_c, ty_c);
-                    place_block(state, tx_c, ty_c, cell_type::YELLOW_BLOCK);
+                    let existing_dur = state.world.get_durability(tgt_x, tgt_y);
+                    place_block(state, tgt_x, tgt_y, cell_type::YELLOW_BLOCK);
                     state
                         .world
-                        .set_durability(tx_c, ty_c, existing_dur + yellow_effect.1);
+                        .set_durability(tgt_x, tgt_y, existing_dur + yellow_effect.1);
                     placed_skill = Some(SkillType::BuildYellow);
                 }
             } else if cur == cell_type::YELLOW_BLOCK {
@@ -436,19 +434,19 @@ pub fn handle_build(
                 let r_cost = red_effect.0.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 2, r_cost) {
                     // D7: Red upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
-                    let existing_dur = state.world.get_durability(tx_c, ty_c);
-                    place_block(state, tx_c, ty_c, cell_type::RED_BLOCK);
+                    let existing_dur = state.world.get_durability(tgt_x, tgt_y);
+                    place_block(state, tgt_x, tgt_y, cell_type::RED_BLOCK);
                     state
                         .world
-                        .set_durability(tx_c, ty_c, existing_dur + red_effect.1);
+                        .set_durability(tgt_x, tgt_y, existing_dur + red_effect.1);
                     placed_skill = Some(SkillType::BuildRed);
                 }
             }
         }
         "R" => {
             if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 0, cost) {
-                place_block(state, tx_c, ty_c, cell_type::ROAD);
-                state.world.set_durability(tx_c, ty_c, durability);
+                place_block(state, tgt_x, tgt_y, cell_type::ROAD);
+                state.world.set_durability(tgt_x, tgt_y, durability);
                 placed_skill = Some(SkillType::BuildRoad);
             }
         }
@@ -456,18 +454,28 @@ pub fn handle_build(
             if (prop.cell_is_empty() || prop.is_sand())
                 && try_spend_crystal(state, tx, pid, 0, cost)
             {
-                place_block(state, tx_c, ty_c, cell_type::SUPPORT);
-                state.world.set_durability(tx_c, ty_c, durability);
+                place_block(state, tgt_x, tgt_y, cell_type::SUPPORT);
+                state.world.set_durability(tgt_x, tgt_y, durability);
                 placed_skill = Some(SkillType::BuildStructure);
             }
         }
         "V" => {
-            // TODO(D6): C# places MilitaryBlockFrame (80) first, then converts to MilitaryBlock
-            // after 10 ticks via StupidAction. We lack a StupidAction mechanism, so we place
-            // MilitaryBlock directly. Implement delayed conversion when tick actions are added.
+            // 1:1 ref C# Player.Build("V"): place MilitaryBlockFrame (80) first, then
+            // World.W.StupidAction(10, x, y, () => convert to MilitaryBlock (81)) after 10 ticks.
             if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 5, cost) {
-                place_block(state, tx_c, ty_c, cell_type::MILITARY_BLOCK);
-                state.world.set_durability(tx_c, ty_c, durability);
+                place_block(state, tgt_x, tgt_y, cell_type::MILITARY_BLOCK_FRAME);
+                // Schedule conversion: frame→block after 10 ticks (1:1 C# StupidAction).
+                let mut ecs = state.ecs.write();
+                ecs.resource_mut::<crate::game::PendingCellConversions>()
+                    .0
+                    .push(crate::game::PendingConversion {
+                        x: tgt_x,
+                        y: tgt_y,
+                        ticks_left: 10,
+                        required_cell: cell_type::MILITARY_BLOCK_FRAME,
+                        target_cell: cell_type::MILITARY_BLOCK,
+                        durability,
+                    });
                 placed_skill = Some(SkillType::BuildWar);
             }
         }
@@ -479,8 +487,6 @@ pub fn handle_build(
         state.modify_player(pid, |ecs, entity| {
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
             add_skill_exp(&mut skills.states, skill.code(), 1.0);
-            let sk = skills_packet(&skill_progress_payload(&skills.states));
-            send_u_packet(tx, sk.0, &sk.1);
             Some(())
         });
     }

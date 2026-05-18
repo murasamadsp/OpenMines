@@ -46,7 +46,7 @@ pub fn tp(x: i32, y: i32) -> (&'static str, Vec<u8>) {
     ("@T", s.into_bytes())
 }
 
-/// Encode a BotInfo packet (`BotInfoPacket.packetName` = `"BI"`).
+/// Encode a `BotInfo` packet (`BotInfoPacket.packetName` = `"BI"`).
 pub fn bot_info(name: &str, x: i32, y: i32, id: i32) -> (&'static str, Vec<u8>) {
     let json = serde_json::json!({
         "x": x,
@@ -235,8 +235,16 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
     ("mL", parts.join("#").into_bytes())
 }
 
-/// mU — chat messages for a channel
-/// Format: {"ch":"TAG","h":["±COLOR±CLANID±TIME±NICKNAME±TEXT±USERID",...]}
+/// mU — chat messages for a channel.
+///
+/// Wire-формат каждого сообщения 1:1 с `client/.../ChatManager.cs` `muHandler`:
+/// `ID±COLOR±CLANID±TIME±NICKNAME±TEXT±USERID` — ровно 7 полей, разделитель `±`,
+/// БЕЗ ведущего `±`. Клиент делает `array = h[i].Split('±')`, требует
+/// `array.Length == 7` и `int.Parse(array[0])` (= `GCMessage.id`). Ведущий `±`
+/// (как в `server_reference` `GCMessage.Encode`) даёт `array[0] == ""` →
+/// `FormatException` в Unity → сообщение не отображается. Клиент — источник
+/// правды по wire (он неизменяем); референс здесь неверен.
+/// Полный пакет: `{"ch":"TAG","h":["ID±...","..."]}`.
 use crate::game::chat::ChatMessage;
 
 pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<u8>) {
@@ -244,8 +252,8 @@ pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<
         .iter()
         .map(|m| {
             format!(
-                "\"±{}±{}±{}±{}±{}±{}\"",
-                m.color, m.clan_id, m.time, m.nickname, m.text, m.user_id
+                "\"{}±{}±{}±{}±{}±{}±{}\"",
+                m.id, m.color, m.clan_id, m.time, m.nickname, m.text, m.user_id
             )
         })
         .collect();
@@ -256,6 +264,15 @@ pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<
 /// mN — unread notification count as string
 pub fn chat_notification(count: i32) -> (&'static str, Vec<u8>) {
     ("mN", count.to_string().into_bytes())
+}
+
+/// mC — код цвета поля ввода чата (short `0..=19`). Клиент
+/// `ChatManager.cs muHandler`→`mcHandler`: `short.Parse(msg)` →
+/// `Color.HSVToRGB(num/20, ...)`. Реф: `Chat/ChatColorPacket.cs`
+/// (валидный диапазон `[0,20)`). Нет в `server_reference` логики — см.
+/// `docs/CLIENT_PROTOCOL_GAPS.md` §5.
+pub fn chat_color(code: i32) -> (&'static str, Vec<u8>) {
+    ("mC", code.to_string().into_bytes())
 }
 
 // ─── HB (Hub Bundle) sub-packets ────────────────────────────────────────────
@@ -343,7 +360,7 @@ pub fn hb_bot_del(id: u16) -> Vec<u8> {
 }
 
 /// HB sub-packet: Bot leave block (type "S")
-/// [1B tag 'S'] [u16 LE id] [i32 LE block_pos]
+/// [1B tag 'S'] [u16 LE id] [i32 LE `block_pos`]
 // TODO: will be used when bot block-leave events are fully wired
 #[allow(dead_code)]
 pub fn hb_bot_leave_block(id: u16, block_pos: i32) -> Vec<u8> {
@@ -641,4 +658,83 @@ pub fn decode_whoi(data: &[u8]) -> Vec<i32> {
         return vec![];
     };
     s.split(',').filter_map(|p| p.parse().ok()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::chat::ChatMessage;
+
+    /// Контракт `client/Assets/Scripts/ChatManager.cs` `muHandler` (источник
+    /// правды по wire, клиент неизменяем):
+    /// ```text
+    /// string[] array = MuPacket.h[i].Split('±');
+    /// if (array.Length == 7) {
+    ///     GCMessage.id    = int.Parse(array[0]);
+    ///     GCMessage.color = int.Parse(array[1]);
+    ///     GCMessage.cid   = int.Parse(array[2]);
+    ///     GCMessage.time  = int.Parse(array[3]);
+    ///     GCMessage.nick  =           array[4];
+    ///     GCMessage.text  =           array[5];
+    ///     GCMessage.gid   = int.Parse(array[6]);
+    /// }
+    /// ```
+    /// Ведущий `±` (как в неверном `server_reference` `GCMessage.Encode`) даёт
+    /// `array[0] == ""` → `int.Parse` бросает `FormatException` в Unity →
+    /// сообщение не отображается (FED-чат «не работает»). Тест ловит регресс.
+    #[test]
+    fn chat_messages_matches_client_gcmessage_parse_contract() {
+        let msgs = [
+            ChatMessage {
+                id: 42,
+                time: 12_345,
+                clan_id: 7,
+                user_id: 99,
+                nickname: "Игрок".to_string(),
+                text: "привет всем".to_string(),
+                color: 10,
+            },
+            ChatMessage {
+                id: 43,
+                time: 12_346,
+                clan_id: 0,
+                user_id: 100,
+                nickname: "bob".to_string(),
+                text: "hi".to_string(),
+                color: 1,
+            },
+        ];
+
+        let (name, payload) = chat_messages("FED", &msgs);
+        assert_eq!(name, "mU");
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&payload).expect("mU payload must be valid JSON");
+        assert_eq!(json["ch"], "FED");
+        let h = json["h"].as_array().expect("`h` must be a JSON array");
+        assert_eq!(h.len(), msgs.len());
+
+        for (entry, src) in h.iter().zip(msgs.iter()) {
+            let s = entry.as_str().expect("each `h` element is a JSON string");
+            let parts: Vec<&str> = s.split('±').collect();
+            // Клиент: `if (array.Length == 7)` — иначе сообщение игнорируется.
+            assert_eq!(
+                parts.len(),
+                7,
+                "expected exactly 7 ±-separated parts, got {}: {s:?}",
+                parts.len()
+            );
+            // Клиент: `int.Parse(array[0])` — НЕ должно бросать (это и есть баг).
+            let id: i32 = parts[0]
+                .parse()
+                .unwrap_or_else(|_| panic!("array[0] must parse as i32, got {:?}", parts[0]));
+            assert_eq!(i64::from(id), src.id);
+            assert_eq!(parts[1].parse::<i32>().unwrap(), src.color);
+            assert_eq!(parts[2].parse::<i32>().unwrap(), src.clan_id);
+            assert_eq!(parts[3].parse::<i64>().unwrap(), src.time);
+            assert_eq!(parts[4], src.nickname);
+            assert_eq!(parts[5], src.text);
+            assert_eq!(parts[6].parse::<i32>().unwrap(), src.user_id);
+        }
+    }
 }

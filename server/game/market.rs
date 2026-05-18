@@ -14,7 +14,7 @@ const CRYS_COST_MOD: [i64; 6] = [10, 10, 15, 10, 15, 15];
 /// Get sell price for crystal type `i` (0-5).
 /// C# `World.GetCrysCost(i)` = base + mod.
 #[inline]
-pub fn get_crystal_cost(i: usize) -> i64 {
+pub const fn get_crystal_cost(i: usize) -> i64 {
     if i >= 6 {
         return 0;
     }
@@ -23,6 +23,6 @@ pub fn get_crystal_cost(i: usize) -> i64 {
 
 /// Buy price is 10x sell price (1:1 with C# Market.BuildBuytab).
 #[inline]
-pub fn get_crystal_buy_price(i: usize) -> i64 {
+pub const fn get_crystal_buy_price(i: usize) -> i64 {
     get_crystal_cost(i) * 10
 }

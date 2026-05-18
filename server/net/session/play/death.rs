@@ -5,7 +5,7 @@ use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 
 /// Broadcast-данные, собранные внутри `ecs.write()`, выполняются снаружи.
-pub(crate) struct DeathBroadcasts {
+pub struct DeathBroadcasts {
     pub box_cell: Option<(i32, i32)>,
     pub fx_death: Option<(i32, i32)>,
     pub death_pos: (i32, i32),
@@ -15,15 +15,15 @@ pub(crate) struct DeathBroadcasts {
 }
 
 /// Мутации ECS как в `Player.Death()` (`Player.cs`).
-/// **НЕ** вызывает ничего, что лочит `state.ecs` (broadcast/get_pack_at) —
+/// **НЕ** вызывает ничего, что лочит `state.ecs` (`broadcast/get_pack_at`) —
 /// вместо этого возвращает `DeathBroadcasts` для вызывающего.
-pub(crate) fn apply_player_death_core(
+pub fn apply_player_death_core(
     state: &Arc<GameState>,
     ecs: &mut bevy_ecs::prelude::World,
     pid: PlayerId,
 ) -> Option<(i32, i32, i32, DeathBroadcasts)> {
     let entity = state.get_player_entity(pid)?;
-    let (dx, dy, cry, rx_p, ry_p, mh) = {
+    let (pos_x, pos_y, cry, rebind_x, rebind_y, mh) = {
         let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
         let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
         let m = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
@@ -32,8 +32,10 @@ pub(crate) fn apply_player_death_core(
 
     let mut bcast = DeathBroadcasts {
         box_cell: None,
-        fx_death: None,
-        death_pos: (dx, dy),
+        // 1:1 C# `Player.Death` (Player.cs:912) — `SendFXoBots(2,x,y)`
+        // БЕЗУСЛОВНО (даже с пустой корзиной соседи видят анимацию смерти).
+        fx_death: Some((pos_x, pos_y)),
+        death_pos: (pos_x, pos_y),
         money: 0,
         creds: 0,
         resp_used: false,
@@ -42,8 +44,8 @@ pub(crate) fn apply_player_death_core(
     if cry.iter().sum::<i64>() > 0 {
         let c = cry;
         let box_placed = pick_box_coord(
-            dx,
-            dy,
+            pos_x,
+            pos_y,
             |x, y| state.world.valid_coord(x, y),
             |x, y| {
                 if !state.world.is_empty(x, y) {
@@ -54,11 +56,14 @@ pub(crate) fn apply_player_death_core(
             },
         )
         .and_then(|(bx, by)| {
-            if GameState::find_pack_covering_with(ecs, &state.building_index, bx, by).is_none() {
+            if GameState::find_pack_covering_with(ecs, &state.chunk_buildings, bx, by).is_none() {
                 state
                     .world
                     .set_cell(bx, by, crate::world::cells::cell_type::BOX);
-                let _ = state.db.upsert_box(bx, by, &c);
+                // C-2 фикс: in-memory put + отложенная персистенция вместо
+                // sync `db.upsert_box` под удерживаемым `ecs.write()` (death
+                // flush в tick-цикле) — фризило при каждой смерти.
+                state.box_put(bx, by, c);
                 if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
                     s.crystals = [0; 6];
                 }
@@ -72,26 +77,30 @@ pub(crate) fn apply_player_death_core(
             }
         });
         bcast.box_cell = box_placed;
-        bcast.fx_death = Some((dx, dy));
+        // fx_death уже выставлен безусловно при создании bcast (см. выше).
     }
 
+    let mut is_free_resp = false;
     // Респаун: проверяем pack через уже имеющийся &mut ecs (без отдельного лока)
-    let (rx, ry) = if let (Some(x), Some(y)) = (rx_p, ry_p) {
+    let (rx, ry) = if let (Some(x), Some(y)) = (rebind_x, rebind_y) {
         // Collect resp building data immutably first, then mutate.
         let resp_data = state.building_index.get(&(x, y)).and_then(|ent| {
             let bld_ent = *ent;
             let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent)?;
-            let stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
-            if meta.pack_type == crate::game::buildings::PackType::Resp && stats.charge > 0.0 {
-                Some((bld_ent, stats.cost))
+            let b_stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
+            if meta.pack_type == crate::game::buildings::PackType::Resp && b_stats.charge > 0.0 {
+                Some((bld_ent, b_stats.cost))
             } else {
                 None
             }
         });
         if let Some((bld_ent, resp_cost)) = resp_data {
+            if resp_cost == 0 {
+                is_free_resp = true;
+            }
             // Deduct resp cost from player money, add to building storage.
             let cost = if resp_cost > 0 {
-                resp_cost as i64
+                i64::from(resp_cost)
             } else {
                 10i64
             };
@@ -157,7 +166,19 @@ pub(crate) fn apply_player_death_core(
     }
     if let Some(mut prog) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
         if prog.running {
-            prog.running = false;
+            if is_free_resp && prog.goto_death.is_some() {
+                let label = prog.goto_death.clone().unwrap();
+                if prog.current_prog.contains_key(&label) {
+                    prog.current_function = label.clone();
+                    if let Some(f) = prog.current_prog.get_mut(&label) {
+                        f.reset();
+                    }
+                } else {
+                    prog.running = false;
+                }
+            } else {
+                prog.running = false;
+            }
         }
     }
 
@@ -165,10 +186,7 @@ pub(crate) fn apply_player_death_core(
 }
 
 /// C# ref: Player.resp getter — when null, pick random public resp (ownerid==0).
-fn find_random_public_resp(
-    state: &Arc<GameState>,
-    ecs: &bevy_ecs::prelude::World,
-) -> (i32, i32) {
+fn find_random_public_resp(state: &Arc<GameState>, ecs: &bevy_ecs::prelude::World) -> (i32, i32) {
     use rand::Rng;
     let public_resps: Vec<(i32, i32)> = state
         .building_index
@@ -198,13 +216,13 @@ fn find_random_public_resp(
 }
 
 /// Выполнить отложенные broadcast'ы после отпускания `ecs.write()`.
-pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid: PlayerId) {
+pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid: PlayerId) {
     // Сообщить всем соседям, что бот исчез
-    let (dx, dy) = bcast.death_pos;
+    let (pos_x, pos_y) = bcast.death_pos;
     let del = hb_bot_del(net_u16_nonneg(pid));
     state.broadcast_to_nearby(
-        World::chunk_pos(dx, dy).0,
-        World::chunk_pos(dx, dy).1,
+        World::chunk_pos(pos_x, pos_y).0,
+        World::chunk_pos(pos_x, pos_y).1,
         &encode_hb_bundle(&hb_bundle(&[del]).1),
         Some(pid),
     );
@@ -212,11 +230,11 @@ pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcas
     if let Some((bx, by)) = bcast.box_cell {
         broadcast_cell_update(state, bx, by);
     }
-    if let Some((dx, dy)) = bcast.fx_death {
-        let fx = hb_fx(dx as u16, dy as u16, 2);
+    if let Some((pos_x, pos_y)) = bcast.fx_death {
+        let fx = hb_fx(pos_x as u16, pos_y as u16, 2);
         state.broadcast_to_nearby(
-            World::chunk_pos(dx, dy).0,
-            World::chunk_pos(dx, dy).1,
+            World::chunk_pos(pos_x, pos_y).0,
+            World::chunk_pos(pos_x, pos_y).1,
             &encode_hb_bundle(&hb_bundle(&[fx]).1),
             None,
         );
@@ -257,7 +275,7 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
     }
 }
 
-/// `Player.Hurt(num, Pure)` — без AntiGun; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
+/// `Player.Hurt(num, Pure)` — без `AntiGun`; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
 pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;

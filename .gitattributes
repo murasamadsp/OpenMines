@@ -1,50 +1,69 @@
+# Глобальные настройки
 * text=auto
 
+# Документация и текстовые файлы
 *.md text
 *.txt text
-*.yml text
-*.yaml text
-*.toml text
-*.sln text
-*.csproj text
+
+# Конфигурационные файлы и разметка
+*.cfg text
 *.json text
 *.jsonc text
-*.rs text
-*.cs text
-*.cfg text
+*.toml text
 *.xml text
-*.lock text
+*.yaml text
+*.yml text
+
+# Исходный код
+*.cs text
 *.gradle text
+*.rs text
 *.sh text eol=lf
-*.unity text eol=lf
+
+# Проекты и сборка
+*.csproj text
+*.lock text
+*.sln text
+
+# Ресурсы и сцены Unity
+*.anim text eol=lf
 *.asset text eol=lf
+*.controller text eol=lf
+*.mat text eol=lf
 *.meta text eol=lf
 *.prefab text eol=lf
-*.anim text eol=lf
-*.mat text eol=lf
-*.controller text eol=lf
+*.unity text eol=lf
 
-*.png binary
-*.jpg binary
-*.jpeg binary
-*.gif binary
-*.webp binary
+# Изображения
 *.bmp binary
-*.wav binary
-*.ogg binary
-*.mp3 binary
+*.gif binary
+*.jpeg binary
+*.jpg binary
+*.png binary
+*.webp binary
+
+# Аудио
 *.flac binary
-*.zip binary
+*.mp3 binary
+*.ogg binary
+*.wav binary
+
+# Архивы и пакеты
 *.7z binary
-*.mapb binary
+*.unitypackage binary
+*.zip binary
+
+# Базы данных и карты
 *.db binary
 *.db-shm binary
 *.db-wal binary
-*.exe binary
+*.mapb binary
+
+# Библиотеки и исполняемые файлы
+*.a binary
 *.dll binary
+*.dylib binary
+*.exe binary
 *.pdb binary
 *.so binary
-*.dylib binary
-*.unitypackage binary
-*.a binary
 *.wasm binary

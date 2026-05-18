@@ -94,6 +94,7 @@ impl Database {
                 params![prog_id, player_id, "program", code],
             )?;
         }
+        drop(conn);
         Ok(())
     }
 

@@ -28,32 +28,37 @@ pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
             };
             let cid = ecs.get::<PlayerStats>(entity)?.clan_id.unwrap_or(0);
             let (dx, dy) = dir_offset(dir);
-            let (tx_c, ty_c) = (px + dx, py + dy);
+            let (tgt_x, tgt_y) = (px + dx, py + dy);
 
             let mut broadcast: Vec<(i32, i32)> = Vec::new();
 
-            if state.world.valid_coord(tx_c, ty_c)
-                && GameState::access_gun_with(ecs, &state.building_index, tx_c, ty_c, cid)
+            if state.world.valid_coord(tgt_x, tgt_y)
+                && GameState::access_gun_with(ecs, &state.chunk_buildings, tgt_x, tgt_y, cid)
             {
-                let cell = state.world.get_cell(tx_c, ty_c);
+                let cell = state.world.get_cell(tgt_x, tgt_y);
                 let defs = state.world.cell_defs();
                 let prop = defs.get(cell);
                 let pickable = prop.nature.is_pickable && !prop.cell_is_empty();
                 let place_here = prop.cell_is_empty()
                     && prop.can_place_over()
-                    && GameState::find_pack_covering_with(ecs, &state.building_index, tx_c, ty_c)
-                        .is_none();
+                    && GameState::find_pack_covering_with(
+                        ecs,
+                        &state.chunk_buildings,
+                        tgt_x,
+                        tgt_y,
+                    )
+                    .is_none();
 
                 if pickable {
                     {
                         let mut stack = ecs.get_mut::<PlayerGeoStack>(entity)?;
                         stack.0.push(cell);
                     }
-                    state.world.destroy(tx_c, ty_c);
-                    broadcast.push((tx_c, ty_c));
+                    state.world.destroy(tgt_x, tgt_y);
+                    broadcast.push((tgt_x, tgt_y));
                 } else if place_here {
                     if let Some(cplaceable) = ecs.get_mut::<PlayerGeoStack>(entity)?.0.pop() {
-                        state.world.set_cell(tx_c, ty_c, cplaceable);
+                        state.world.set_cell(tgt_x, tgt_y, cplaceable);
                         let d = if is_crystal(cplaceable) {
                             0.0
                         } else {
@@ -64,8 +69,8 @@ pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
                                 defs.get(cplaceable).durability
                             }
                         };
-                        state.world.set_durability(tx_c, ty_c, d);
-                        broadcast.push((tx_c, ty_c));
+                        state.world.set_durability(tgt_x, tgt_y, d);
+                        broadcast.push((tgt_x, tgt_y));
                     }
                 }
             }

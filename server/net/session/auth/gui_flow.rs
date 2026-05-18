@@ -101,9 +101,7 @@ fn handle_find_by_nick(
     let player = state.db.get_player_by_name(name)?;
     if let Some(player) = player {
         // Player found — ask for password.
-        *step = GuiAuthStep::LoginPassword {
-            nick: player.name.clone(),
-        };
+        *step = GuiAuthStep::LoginPassword { nick: player.name };
         let gui = json!({
             "title": "ВХОД",
             "text": "Пароль",
@@ -232,7 +230,7 @@ fn handle_register_password(
     finalize_auth(state, tx, &player, step)
 }
 
-/// Shared finalization: send AH, cf, Gu, init_player.
+/// Shared finalization: send AH, cf, Gu, `init_player`.
 /// C# ref: `SendU(new AHPacket(temp.id, temp.hash))` then `player.Init()`.
 fn finalize_auth(
     state: &Arc<GameState>,

@@ -164,14 +164,14 @@ pub fn handle_clan_create(
         return;
     }
 
-    let stats = state
+    let pstats = state
         .query_player(pid, |ecs, entity| {
             let s = ecs.get::<crate::game::PlayerStats>(entity)?;
             Some((s.creds, s.money))
         })
         .flatten();
 
-    let Some((p_creds, p_money)) = stats else {
+    let Some((p_creds, p_money)) = pstats else {
         return;
     };
 

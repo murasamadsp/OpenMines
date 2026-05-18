@@ -213,7 +213,7 @@ fn alive_cyan(
                 x: nx,
                 y: ny,
                 cell: cell_type::CYAN,
-                durability: Some((2 * modif) as f32),
+                durability: Some(f32::from(i16::try_from(2 * modif).unwrap_or(i16::MAX))),
             });
         }
     }
@@ -254,7 +254,7 @@ fn alive_red(
                 x: nx,
                 y: ny,
                 cell: cell_type::RED,
-                durability: Some((3 * modif) as f32),
+                durability: Some(f32::from(i16::try_from(3 * modif).unwrap_or(i16::MAX))),
             });
         }
     }
@@ -294,14 +294,14 @@ fn alive_viol(
                 x: nx,
                 y: ny,
                 cell: cell_type::VIOLET,
-                durability: Some((2 * modif) as f32),
+                durability: Some(f32::from(i16::try_from(2 * modif).unwrap_or(i16::MAX))),
             });
         }
     }
 }
 
-/// `AliveBlack`: colony behavior. If >=6 neighbors are AliveBlack, converts self to BlackRock.
-/// Otherwise, if an adjacent AliveBlack exists and opposite side is empty, spawns Red/Cyan.
+/// `AliveBlack`: colony behavior. If >=6 neighbors are `AliveBlack`, converts self to `BlackRock`.
+/// Otherwise, if an adjacent `AliveBlack` exists and opposite side is empty, spawns Red/Cyan.
 #[allow(clippy::too_many_arguments)]
 fn alive_black(
     x: i32,
@@ -357,14 +357,18 @@ fn alive_black(
                             x: ox,
                             y: oy,
                             cell: cell_type::RED,
-                            durability: Some((3 * modif) as f32),
+                            durability: Some(f32::from(
+                                i16::try_from(3 * modif).unwrap_or(i16::MAX),
+                            )),
                         });
                     } else {
                         actions.push(AliveAction {
                             x: ox,
                             y: oy,
                             cell: cell_type::CYAN,
-                            durability: Some((2 * modif) as f32),
+                            durability: Some(f32::from(
+                                i16::try_from(2 * modif).unwrap_or(i16::MAX),
+                            )),
                         });
                     }
                     return;
@@ -408,7 +412,7 @@ fn alive_white(
                     x: nx,
                     y: ny,
                     cell: cell_type::WHITE,
-                    durability: Some((9 * modif) as f32),
+                    durability: Some(f32::from(i16::try_from(9 * modif).unwrap_or(i16::MAX))),
                 });
             }
         }
@@ -463,7 +467,7 @@ fn alive_blue(
                 x,
                 y,
                 cell: cell_type::BLUE,
-                durability: Some((20 * modif) as f32),
+                durability: Some(f32::from(i16::try_from(20 * modif).unwrap_or(i16::MAX))),
             });
             return;
         }
@@ -512,7 +516,9 @@ fn alive_rainbow(
             x: nx,
             y: ny,
             cell: opposite_cell,
-            durability: Some(target_def.durability * modif as f32),
+            durability: Some(
+                target_def.durability * f32::from(i16::try_from(modif).unwrap_or(i16::MAX)),
+            ),
         });
     }
 }

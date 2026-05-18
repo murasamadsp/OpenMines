@@ -49,7 +49,7 @@ pub fn init_player(
     // 1:1-ish ref behavior: immediately allow first actions after login.
     // If we initialize cooldown timestamps to `now`, the first few client `Xmov` packets can be ignored,
     // causing the next accepted move to be "too far" and trigger a server correction (@T).
-    let ready = now - std::time::Duration::from_secs(1);
+    let ready = now.checked_sub(std::time::Duration::from_secs(1)).unwrap();
 
     let entity = state
         .ecs
@@ -104,7 +104,6 @@ pub fn init_player(
                 current_chat: "FED".to_string(),
             },
             PlayerCooldowns {
-                last_move: ready,
                 last_dig: ready,
                 last_build: ready,
                 last_geo: ready,
@@ -126,6 +125,8 @@ pub fn init_player(
     state
         .active_players
         .insert(pid, ActivePlayer { ecs_entity: entity });
+
+    state.player_sessions.insert(pid, tx.clone());
 
     // BUG 3: Recalculate max_health from Health skill at login (C# ref: MaxHealth = 100 + skill.Effect).
     state.modify_player(pid, |ecs, entity| {
@@ -153,22 +154,27 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
     let Some((_, p)) = state.active_players.remove(&pid) else {
         return;
     };
+    state.player_sessions.remove(&pid);
     let entity = p.ecs_entity;
 
-    // После `remove` `modify_player(pid, …)` уже не найдёт сущность в `active_players` — сохраняем и чанк из ECS напрямую.
-    let (cx, cy) = {
+    // После `remove` `modify_player(pid, …)` уже не найдёт сущность — берём
+    // чанк и row из ECS, ОТПУСКАЕМ `ecs.read()`, и только потом sync
+    // `save_player` (C-4 фикс: readers блокировали writer-тик → фриз на
+    // каждый disconnect, объясняло «реконнект→снова фриз»).
+    let (cx, cy, row) = {
         let ecs = state.ecs.read();
         let chunk = ecs
             .get::<PlayerPosition>(entity)
             .map(|pos| (pos.chunk_x(), pos.chunk_y()))
             .unwrap_or((0, 0));
-        if let Some(row) = crate::game::player::extract_player_row(&ecs, entity) {
-            if let Err(e) = state.db.save_player(&row) {
-                tracing::error!("Failed to save player {pid} on disconnect: {e}");
-            }
+        let row = crate::game::player::extract_player_row(&ecs, entity);
+        (chunk.0, chunk.1, row)
+    }; // ecs.read() освобождён здесь.
+    if let Some(row) = row {
+        if let Err(e) = state.db.save_player(&row) {
+            tracing::error!("Failed to save player {pid} on disconnect: {e}");
         }
-        chunk
-    };
+    }
 
     if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy)) {
         e.retain(|&id| id != pid);

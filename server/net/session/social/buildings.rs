@@ -130,9 +130,9 @@ pub fn handle_place_building(
 
     let p_data = state
         .query_player(pid, |ecs, entity| {
-            let stats = ecs.get::<PlayerStats>(entity)?;
+            let pstats = ecs.get::<PlayerStats>(entity)?;
             let pos = ecs.get::<PlayerPosition>(entity)?;
-            Some((stats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
+            Some((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
         })
         .flatten();
 
@@ -230,6 +230,12 @@ pub fn handle_place_building(
         .id();
 
     state.building_index.insert((bx, by), entity);
+    let (cx, cy) = crate::world::World::chunk_pos(bx, by);
+    state
+        .chunk_buildings
+        .entry((cx, cy))
+        .or_default()
+        .push(entity);
 
     // Spawn BotSpot entity for Spot buildings (1:1 with C# Spot.Build → new BotSpot).
     if pack_type == PackType::Spot {
@@ -316,6 +322,10 @@ pub fn handle_remove_building(
     }
 
     if let Some((_, entity)) = state.building_index.remove(&(view.x, view.y)) {
+        let (cx, cy) = crate::world::World::chunk_pos(view.x, view.y);
+        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy)) {
+            e.retain(|&ent| ent != entity);
+        }
         state.ecs.write().despawn(entity);
     }
 
@@ -542,7 +552,7 @@ pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
 
 // ─── BotSpot spawning/despawning ────────────────────────────────────────────
 
-/// Spawn a BotSpot entity associated with a Spot building.
+/// Spawn a `BotSpot` entity associated with a Spot building.
 /// 1:1 with C# `new BotSpot(x, y, owner)` called when Spot is placed.
 pub fn spawn_botspot(
     state: &Arc<GameState>,
@@ -572,12 +582,25 @@ pub fn spawn_botspot(
         .id();
 
     state.botspot_index.insert(owner_id, botspot_entity);
+    let (cx, cy) = crate::world::World::chunk_pos(x, y);
+    state
+        .chunk_botspots
+        .entry((cx, cy))
+        .or_default()
+        .push(botspot_entity);
+
     tracing::info!(owner_id, x, y, "Spawned BotSpot entity for Spot building");
 }
 
-/// Despawn a BotSpot entity when its Spot building is removed.
+/// Despawn a `BotSpot` entity when its Spot building is removed.
 pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
     if let Some((_, entity)) = state.botspot_index.remove(&owner_id) {
+        // Remove from spatial index.
+        state
+            .chunk_botspots
+            .iter_mut()
+            .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
+
         state.ecs.write().despawn(entity);
         tracing::info!(owner_id, "Despawned BotSpot entity");
     }

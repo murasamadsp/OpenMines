@@ -1,12 +1,13 @@
 pub mod cells;
 pub mod generator;
+pub mod map_format;
 mod sector_palette;
 
 use anyhow::{Context, Result};
 use cells::{CellDefs, cell_type};
+use map_format::MapStore;
 use memmap2::MmapMut;
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,18 +17,15 @@ const CHUNK_SIZE: u32 = 32;
 /// Поддерживаемые типы данных в слоях карты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerType {
-    U8,
+    /// Единственный mmap-слой — durability (f32 на клетку). Клетки теперь
+    /// хранятся в клиентском `.map` (см. [`map_format`]), не в `.mapb`.
     F32,
-    #[allow(dead_code)]
-    U16,
 }
 
 impl LayerType {
     const fn size(self) -> usize {
         match self {
-            Self::U8 => 1,
             Self::F32 => 4,
-            Self::U16 => 2,
         }
     }
 }
@@ -54,7 +52,7 @@ impl Layer {
             .create(true)
             .truncate(false)
             .open(&path)
-            .with_context(|| format!("Failed to open layer file: {path:?}"))?;
+            .with_context(|| format!("Failed to open layer file: {}", path.display()))?;
 
         if file.metadata()?.len() < total_bytes {
             file.set_len(total_bytes)?;
@@ -73,7 +71,7 @@ impl Layer {
     }
 
     #[inline]
-    pub fn cell_offset(&self, x: u32, y: u32) -> usize {
+    pub const fn cell_offset(&self, x: u32, y: u32) -> usize {
         let cx = x / CHUNK_SIZE;
         let cy = y / CHUNK_SIZE;
         let lx = x % CHUNK_SIZE;
@@ -94,20 +92,28 @@ impl Layer {
         }
     }
 
-    pub fn flush(&mut self) -> Result<()> {
-        // Пункт 5: Надежное сохранение.
+    /// Под write-локом слоя: только msync (быстро, µs) + сброс dirty.
+    /// Дорогой full-file `.bak` копируется ВНЕ лока (см. `World::flush`),
+    /// иначе `fs::copy` ~ГБ держит write-лок секунды и фризит весь сервер.
+    pub fn msync_and_clear(&mut self) -> Result<()> {
+        let m0 = std::time::Instant::now();
         self.mmap.flush()?;
-
-        let bak_path = self.path.with_extension("mapb.bak");
-        let tmp_path = self.path.with_extension("mapb.tmp");
-
-        if self.path.exists() {
-            let _ = fs::copy(&self.path, &tmp_path);
-            let _ = fs::rename(tmp_path, bak_path);
+        let el = m0.elapsed();
+        if el > std::time::Duration::from_millis(50) {
+            tracing::warn!(
+                target: "tickprof",
+                "LAYER msync {:?} = {:?} (UNDER write lock)",
+                self.path.file_name().unwrap_or_default(),
+                el
+            );
         }
-
         self.dirty_mask.fill(false);
         Ok(())
+    }
+
+    /// Путь файла слоя (для бэкапа вне лока).
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
     }
 }
 
@@ -140,10 +146,25 @@ pub struct World {
     pub name: String,
     pub chunks_w: u32,
     pub chunks_h: u32,
-    /// Пункт 4: Все слои теперь хранятся в одной мапе.
-    layers: HashMap<String, RwLock<Layer>>,
+    /// Клетки в клиент-совместимом формате `.map` (см. [`map_format`] /
+    /// `client/Assets/Scripts/MapModel.cs`). Один разреженный файл.
+    cells: RwLock<MapStore>,
+    /// Серверная прочность клеток (`damage_cell`). У клиента понятия
+    /// durability нет — это серверное состояние, отдельный mmap f32-слой.
+    durability: RwLock<Layer>,
+    /// Путь `{name}_v2.map` для инкрементального сохранения (как `MapModel`).
+    map_path: PathBuf,
     pub cell_defs: Arc<CellDefs>,
+    /// Счётчик вызовов flush: дорогой `.bak` делаем не каждый flush,
+    /// а раз в `BACKUP_EVERY_N_FLUSHES` (msync/save — каждый flush).
+    flush_count: std::sync::atomic::AtomicU64,
 }
+
+/// Значение пустой/выкопанной клетки (как видит клиент по проводу).
+const EMPTY_CELL: u8 = cell_type::EMPTY;
+
+/// При 60s-цикле flush: бэкап ≈ раз в 30 мин (msync остаётся каждые 60s).
+const BACKUP_EVERY_N_FLUSHES: u64 = 30;
 
 impl WorldProvider for World {
     #[inline]
@@ -183,34 +204,26 @@ impl WorldProvider for World {
         if !self.valid_coord(x, y) {
             return 0;
         }
-        let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
-        let c = {
-            let layer = self.layers.get("cells").unwrap().read();
-            layer.mmap[layer.cell_offset(ux, uy)]
-        };
-        if c == 0 {
-            let layer = self.layers.get("road").unwrap().read();
-            let r = layer.mmap[layer.cell_offset(ux, uy)];
-            if r == 0 { 32 } else { r }
+        let b = self.cells.read().get_cell(x, y);
+        if b == 0 { EMPTY_CELL } else { b }
+    }
+
+    fn get_solid_cell(&self, x: i32, y: i32) -> u8 {
+        let c = self.get_cell(x, y);
+        if self.cell_defs.get(c).cell_is_empty() {
+            0
         } else {
             c
         }
     }
 
-    fn get_solid_cell(&self, x: i32, y: i32) -> u8 {
-        if !self.valid_coord(x, y) {
-            return 0;
-        }
-        let layer = self.layers.get("cells").unwrap().read();
-        layer.mmap[layer.cell_offset(x.cast_unsigned(), y.cast_unsigned())]
-    }
-
     fn get_road_cell(&self, x: i32, y: i32) -> u8 {
-        if !self.valid_coord(x, y) {
-            return 0;
+        let c = self.get_cell(x, y);
+        if self.cell_defs.get(c).cell_is_empty() {
+            c
+        } else {
+            0
         }
-        let layer = self.layers.get("road").unwrap().read();
-        layer.mmap[layer.cell_offset(x.cast_unsigned(), y.cast_unsigned())]
     }
 
     fn set_cell(&self, x: i32, y: i32, cell: u8) {
@@ -219,44 +232,33 @@ impl WorldProvider for World {
         }
         let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
         let prop = self.cell_defs.get(cell);
-        if prop.cell_is_empty() {
-            {
-                let mut layer = self.layers.get("cells").unwrap().write();
-                let off = layer.cell_offset(ux, uy);
-                layer.mmap[off] = 0;
-                layer.mark_dirty(ux, uy);
-            }
-            {
-                let mut layer = self.layers.get("road").unwrap().write();
-                let off = layer.cell_offset(ux, uy);
-                layer.mmap[off] = cell;
-                layer.mark_dirty(ux, uy);
-            }
+        // Один байт на клетку — как клиентский `.map` (road/cells объединены).
+        self.cells.write().set_cell(x, y, cell);
+        // durability — серверное состояние (у клиента его нет): пусто → 0,
+        // иначе значение по типу клетки из cell_defs.
+        let d = if prop.cell_is_empty() {
+            0.0f32
         } else {
-            {
-                let mut layer = self.layers.get("cells").unwrap().write();
-                let off = layer.cell_offset(ux, uy);
-                layer.mmap[off] = cell;
-                layer.mark_dirty(ux, uy);
-            }
-            {
-                let mut layer = self.layers.get("durability").unwrap().write();
-                let off = layer.cell_offset(ux, uy);
-                let bytes = prop.durability.to_le_bytes();
-                layer.mmap[off..off + 4].copy_from_slice(&bytes);
-                layer.mark_dirty(ux, uy);
-            }
-        }
+            prop.durability
+        };
+        let mut layer = self.durability.write();
+        let off = layer.cell_offset(ux, uy);
+        layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
+        layer.mark_dirty(ux, uy);
     }
 
     fn get_durability(&self, x: i32, y: i32) -> f32 {
         if !self.valid_coord(x, y) {
             return 0.0;
         }
-        let layer = self.layers.get("durability").unwrap().read();
+        let layer = self.durability.read();
         let off = layer.cell_offset(x.cast_unsigned(), y.cast_unsigned());
-        let b = &layer.mmap[off..off + 4];
-        let val = f32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let val = f32::from_le_bytes([
+            layer.mmap[off],
+            layer.mmap[off + 1],
+            layer.mmap[off + 2],
+            layer.mmap[off + 3],
+        ]);
         drop(layer);
         val
     }
@@ -265,36 +267,18 @@ impl WorldProvider for World {
         if !self.valid_coord(x, y) {
             return;
         }
-        let mut layer = self.layers.get("durability").unwrap().write();
+        let mut layer = self.durability.write();
         let off = layer.cell_offset(x.cast_unsigned(), y.cast_unsigned());
         layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
         layer.mark_dirty(x.cast_unsigned(), y.cast_unsigned());
     }
 
     fn destroy(&self, x: i32, y: i32) {
-        if !self.valid_coord(x, y) {
+        if !self.valid_coord(x, y) || self.is_empty(x, y) {
             return;
         }
-        let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
-        let was_solid = {
-            let mut layer = self.layers.get("cells").unwrap().write();
-            let off = layer.cell_offset(ux, uy);
-            if layer.mmap[off] != 0 {
-                layer.mmap[off] = 0;
-                layer.mark_dirty(ux, uy);
-                true
-            } else {
-                false
-            }
-        };
-        if was_solid {
-            let mut layer = self.layers.get("road").unwrap().write();
-            let off = layer.cell_offset(ux, uy);
-            if layer.mmap[off] == 0 {
-                layer.mmap[off] = 32;
-                layer.mark_dirty(ux, uy);
-            }
-        }
+        // Выкопанная клетка = EMPTY (как видит клиент по проводу); dur → 0.
+        self.set_cell(x, y, EMPTY_CELL);
     }
 
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool {
@@ -303,7 +287,7 @@ impl WorldProvider for World {
         }
         let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
         let destroyed = {
-            let mut layer = self.layers.get("durability").unwrap().write();
+            let mut layer = self.durability.write();
             let off = layer.cell_offset(ux, uy);
             let d = f32::from_le_bytes([
                 layer.mmap[off],
@@ -334,34 +318,54 @@ impl WorldProvider for World {
         }
         let base_x = chunk_x * CHUNK_SIZE;
         let base_y = chunk_y * CHUNK_SIZE;
-        let l_cells = self.layers.get("cells").unwrap().read();
-        let l_road = self.layers.get("road").unwrap().read();
+        let store = self.cells.read();
         let mut res = Vec::with_capacity(n);
-        // 1:1 ref wire order for HB 'M':
-        // `Chunk.cells => for y:0..32, for x:0..32, cell[x,y]`
-        // (см. `server_reference/GameShit/WorldSystem/Chunk.cs`, свойство `cells`).
+        // Порядок байт HB 'M' = как кэширует клиент (`MapBlock.data`,
+        // индекс `x + 32*y`): for y:0..32 { for x:0..32 }.
         for y in 0..CHUNK_SIZE {
             for x in 0..CHUNK_SIZE {
-                let ux = base_x + x;
-                let uy = base_y + y;
-                let c = l_cells.mmap[l_cells.cell_offset(ux, uy)];
-                let v = if c == 0 {
-                    let r = l_road.mmap[l_road.cell_offset(ux, uy)];
-                    if r == 0 { 32 } else { r }
-                } else {
-                    c
-                };
-                res.push(v);
+                let b = store.get_cell((base_x + x).cast_signed(), (base_y + y).cast_signed());
+                res.push(if b == 0 { EMPTY_CELL } else { b });
             }
         }
-        drop(l_cells);
-        drop(l_road);
+        drop(store);
         res
     }
 
     fn flush(&self) -> Result<()> {
-        for layer in self.layers.values() {
-            layer.write().flush()?;
+        let do_backup = {
+            let n = self
+                .flush_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            n != 0 && n.is_multiple_of(BACKUP_EVERY_N_FLUSHES)
+        };
+
+        // Клетки: инкрементальная запись `.map` (как `MapModel.SaveMapV2` —
+        // только заголовок/индекс/грязные блоки, без перезаписи всего файла).
+        {
+            let mut store = self.cells.write();
+            if store.is_dirty() {
+                store.save(&self.map_path)?;
+            }
+        }
+        if do_backup && self.map_path.exists() {
+            let bak = self.map_path.with_extension("map.bak");
+            let tmp = self.map_path.with_extension("map.tmp");
+            let _ = fs::copy(&self.map_path, &tmp);
+            let _ = fs::rename(&tmp, &bak);
+        }
+
+        // Durability: msync mmap-слоя под локом, бэкап вне лока.
+        let dpath = {
+            let mut l = self.durability.write();
+            l.msync_and_clear()?;
+            l.path()
+        };
+        if do_backup && dpath.exists() {
+            let bak = dpath.with_extension("mapb.bak");
+            let tmp = dpath.with_extension("mapb.tmp");
+            let _ = fs::copy(&dpath, &tmp);
+            let _ = fs::rename(&tmp, &bak);
         }
         Ok(())
     }
@@ -379,50 +383,42 @@ impl World {
         cell_defs: CellDefs,
         state_dir: &Path,
     ) -> Result<Self> {
-        let mut layers = HashMap::new();
-        let cells_path = state_dir.join(format!("{name}.mapb"));
-        let is_new = !cells_path.exists();
+        let width = i32::try_from(chunks_w * CHUNK_SIZE)
+            .map_err(|_| anyhow::anyhow!("world width overflows i32"))?;
+        let height = i32::try_from(chunks_h * CHUNK_SIZE)
+            .map_err(|_| anyhow::anyhow!("world height overflows i32"))?;
 
-        layers.insert(
-            "cells".to_string(),
-            RwLock::new(Layer::open(cells_path, chunks_w, chunks_h, LayerType::U8)?),
+        let map_path = state_dir.join(format!("{name}_v2.map"));
+        let is_new = !map_path.exists();
+
+        let cells = MapStore::open(&map_path, width, height)?;
+        tracing::info!(
+            "Map store {}: {}x{}, {} blocks allocated",
+            map_path.display(),
+            cells.width(),
+            cells.height(),
+            cells.allocated_blocks()
         );
-        layers.insert(
-            "road".to_string(),
-            RwLock::new(Layer::open(
-                state_dir.join(format!("{name}_road.mapb")),
-                chunks_w,
-                chunks_h,
-                LayerType::U8,
-            )?),
-        );
-        layers.insert(
-            "durability".to_string(),
-            RwLock::new(Layer::open(
-                state_dir.join(format!("{name}_durability.mapb")),
-                chunks_w,
-                chunks_h,
-                LayerType::F32,
-            )?),
-        );
+        let durability = Layer::open(
+            state_dir.join(format!("{name}_durability.mapb")),
+            chunks_w,
+            chunks_h,
+            LayerType::F32,
+        )?;
 
         let world = Self {
             name: name.to_string(),
             chunks_w,
             chunks_h,
-            layers,
+            cells: RwLock::new(cells),
+            durability: RwLock::new(durability),
+            map_path,
             cell_defs: Arc::new(cell_defs),
+            flush_count: std::sync::atomic::AtomicU64::new(0),
         };
 
         if is_new {
             tracing::info!("Initializing new world...");
-            world
-                .layers
-                .get("road")
-                .unwrap()
-                .write()
-                .mmap
-                .fill(cell_type::EMPTY);
             generator::generate(&world, 42);
             world.flush()?;
         }
@@ -430,10 +426,33 @@ impl World {
         Ok(world)
     }
 
-    pub(crate) fn with_generation_layers<R>(&self, f: impl FnOnce(&mut [u8], &mut [u8]) -> R) -> R {
-        let mut l_cells = self.layers.get("cells").unwrap().write();
-        let mut l_dur = self.layers.get("durability").unwrap().write();
-        f(&mut l_cells.mmap[..], &mut l_dur.mmap[..])
+    /// Дать генератору mmap durability-слоя (u8-вид f32) под write-локом.
+    pub(crate) fn with_durability_mmap<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
+        let mut l = self.durability.write();
+        f(&mut l.mmap[..])
+    }
+
+    /// Залить сгенерированные клетки в `.map` за один write-лок. Плоский
+    /// буфер индексируется как прежняя `.mapb`-раскладка
+    /// (`chunk = cy + chunks_h*cx`, `cell = ly + 32*lx`); `0` → `EMPTY`.
+    pub(crate) fn ingest_generated_cells(&self, flat: &[u8]) {
+        let cs = CHUNK_SIZE;
+        let w = self.chunks_w * cs;
+        let h = self.chunks_h * cs;
+        let mut store = self.cells.write();
+        for y in 0..h {
+            for x in 0..w {
+                let chunk_idx = ((y / cs) + self.chunks_h * (x / cs)) as usize;
+                let cell_in_chunk = ((y % cs) + cs * (x % cs)) as usize;
+                let idx = chunk_idx * (cs * cs) as usize + cell_in_chunk;
+                let cell = flat[idx];
+                store.set_cell(
+                    x.cast_signed(),
+                    y.cast_signed(),
+                    if cell == 0 { EMPTY_CELL } else { cell },
+                );
+            }
+        }
     }
 
     pub(crate) const fn chunks_layout(&self) -> (u32, u32, u32) {

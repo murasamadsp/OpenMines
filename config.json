@@ -3,9 +3,9 @@
   "port": 8090,
   "world_chunks_w": 157,
   "world_chunks_h": 3125,
-  "data_dir": "data",
+  "data_dir": ".",
   "logging": {
-    "filter": "openmines_server=info,openmines_server::net::session=debug,tokio=warn",
+    "filter": "info,openmines_server=debug,tokio=warn",
     "format": "pretty",
     "file": null
   }

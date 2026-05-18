@@ -1,30 +1,10 @@
 use super::Database;
 use anyhow::Result;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
-#[derive(Debug, Clone)]
-pub struct BoxRow {
-    // TODO: x/y are part of the DB row structure, will be used when box-position lookups are exposed
-    #[allow(dead_code)]
-    pub x: i32,
-    #[allow(dead_code)]
-    pub y: i32,
-    pub crystals: [i64; 6],
-}
+use std::collections::{HashSet, VecDeque};
 
-const OFFSETS: [(i32, i32); 9] = [
-    (0, 0),
-    (1, 0),
-    (-1, 0),
-    (0, 1),
-    (0, -1),
-    (1, 1),
-    (1, -1),
-    (-1, 1),
-    (-1, -1),
-];
-
-/// Как `FindEmptyForBox`/смежный выбор в референсе: подобрать координату рядом.
+/// Как `FindEmptyForBox`/смежный выбор в референсе: подобрать координату рядом (BFS).
 pub fn pick_box_coord<FValid, FEmpty>(
     x: i32,
     y: i32,
@@ -35,26 +15,60 @@ where
     FValid: Fn(i32, i32) -> bool,
     FEmpty: Fn(i32, i32) -> bool,
 {
-    for (dx, dy) in OFFSETS {
-        let bx = x + dx;
-        let by = y + dy;
-        if valid(bx, by) && is_empty(bx, by) {
-            return Some((bx, by));
+    if valid(x, y) && is_empty(x, y) {
+        return Some((x, y));
+    }
+
+    let dirs = [(0, 1), (1, 0), (-1, 0), (0, -1)];
+    let mut q = VecDeque::new();
+    let mut visited = HashSet::new();
+
+    q.push_back((x, y));
+    visited.insert((x, y));
+
+    // C# FindEmptyForBox searches until it finds an empty spot.
+    // We add a safety limit of 100 iterations just to prevent infinite loops in weird world edge cases.
+    let mut iterations = 0;
+    while let Some((cx, cy)) = q.pop_front() {
+        iterations += 1;
+        if iterations > 100 {
+            break;
+        }
+
+        for (dx, dy) in dirs {
+            let nx = cx + dx;
+            let ny = cy + dy;
+
+            if !valid(nx, ny) {
+                continue;
+            }
+
+            if is_empty(nx, ny) {
+                return Some((nx, ny));
+            }
+
+            if visited.insert((nx, ny)) {
+                q.push_back((nx, ny));
+            }
         }
     }
+
     valid(x, y).then_some((x, y))
 }
 
 impl Database {
-    pub fn get_box_at(&self, x: i32, y: i32) -> Result<Option<BoxRow>> {
+    /// Загрузить ВСЕ боксы (один раз на старте → in-memory `box_index`).
+    /// На hot-path `SQLite` по боксам больше не дёргаем (был фриз: sync `SQLite`
+    /// под `ecs.write()` в `standing_cell_hazard_system` каждые 10ms).
+    pub fn load_all_boxes(&self) -> Result<Vec<(i32, i32, [i64; 6])>> {
         let conn = self.conn.lock();
-        let row = conn
-            .prepare("SELECT x, y, ze, cr, si, be, fi, go FROM boxes WHERE x=?1 AND y=?2")?
-            .query_row(params![x, y], |r| {
-                Ok(BoxRow {
-                    x: r.get(0)?,
-                    y: r.get(1)?,
-                    crystals: [
+        let mut stmt = conn.prepare("SELECT x, y, ze, cr, si, be, fi, go FROM boxes")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i32>(0)?,
+                    r.get::<_, i32>(1)?,
+                    [
                         r.get(2)?,
                         r.get(3)?,
                         r.get(4)?,
@@ -62,10 +76,12 @@ impl Database {
                         r.get(6)?,
                         r.get(7)?,
                     ],
-                })
-            })
-            .optional()?;
-        Ok(row)
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
+        Ok(rows)
     }
 
     pub fn upsert_box(&self, x: i32, y: i32, crystals: &[i64; 6]) -> Result<()> {
@@ -97,12 +113,14 @@ impl Database {
                 crystals[5],
             ],
         )?;
+        drop(conn);
         Ok(())
     }
 
     pub fn delete_box_at(&self, x: i32, y: i32) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute("DELETE FROM boxes WHERE x=?1 AND y=?2", params![x, y])?;
+        drop(conn);
         Ok(())
     }
 }

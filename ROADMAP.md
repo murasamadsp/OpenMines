@@ -5,6 +5,147 @@
 
 ---
 
+## STATUS 2026-05-17 — аудит фриза + 1:1 (автономная сессия)
+
+Прежние сплошные `[x]` ниже были ПЕРЕОЦЕНЕНЫ: аудит (3 субагента +
+инструментирование + детерминированные repro/sim тулзы `tools/`) нашёл
+реальные расхождения и КОРЕНЬ МНОГОМЕСЯЧНОГО ФРИЗА. Этот раздел —
+авторитетная истина; пункты ниже правятся по мере подтверждения.
+
+### Корень фриза (НЕ был в роадмапе) — НАЙДЕН, ИСПРАВЛЕН, ВЕРИФИЦИРОВАН
+Класс «медленная операция под локом / на tick-пути»:
+- `Layer::flush` делал `fs::copy` ~3ГБ (durability 2ГБ) ПОД write-локом
+  слоя каждые 60с → весь сервер вис секундами. **Fix:** msync(µs) под
+  локом, `.bak` копия вне лока + раз в ~30мин. **Verified:** соло 95с/8
+  чанков, froze=None (было: фриз на T+2.7с).
+- C-1 `combat.rs` `standing_cell_hazard_system`: `db.get_box_at/
+  delete_box_at` (SQLite) ПОД `ecs.write()` каждые 10ms при игроке на
+  BOX. C-2 `death.rs` `upsert_box` под удержанным `ecs.write()`. H-1
+  `dig_build.rs` то же на dig. **Fix:** in-mem `box_index` +
+  отложенная персистенция (`box_persist_q`). **Verified:** 12 ботов,
+  1295 смертей/боксов за 120с — сервер-тик 0 OVER-BUDGET (до фикса было
+  бы тысячи стопоров).
+- C-4 `on_disconnect`: `save_player` под `ecs.read()` (readers блокируют
+  writer-тик) → фриз на каждый disconnect (объясняло «реконнект→снова
+  фриз»). **Fix:** save вне лока.
+
+### Исправлено в этой сессии + верифицировано
+- [x] **PO→PI**: рефактор УДАЛИЛ ответ PI на PO (стр.19 ниже была ЛОЖНА)
+  → клиент в HUD показывал «фриз». Восстановлено 1:1 `Session.Ping`.
+  Verified: pi_replies=32/95с.
+- [x] **Xdig/Xbld cooldown 333→200ms** (стр.33-34 были ЛОЖНЫ: код 333).
+  1:1 `Session.cs:230,233 TryAct(...,200)`.
+- [x] **@S при move/dig**: `add_skill_exp` всегда возвращал `false` →
+  @S НИКОГДА не слался при exp за движение/копание (стр.63 ниже —
+  формулировка неверна; C# `Skill.AddExp` шлёт @S всегда). Fix: 1:1.
+- [x] **mU тег "FED"** жёстко 1:1 `Player.cs:665` (был фактический tag).
+- [x] **Death FX2** безусловно 1:1 `Player.cs:912` (был под `if crys>0`).
+- [x] **mU wire-формат — КОРЕНЬ «FED-чат не работает»** (репорт юзера).
+  `protocol/packets.rs chat_messages` слал `±COLOR±…` (6 полей, ведущий
+  `±`). Клиент `ChatManager.cs muHandler` (источник правды, неизменяем):
+  `array=h[i].Split('±'); if(array.Length==7) GCMessage.id=int.Parse(array[0])`
+  → `array[0]==""` → `FormatException` в Unity → НИ ОДНО сообщение чата
+  (FED/DNO/CLAN/история) не отображалось. `server_reference GCMessage.Encode`
+  ТОЖЕ неверен (ведущий `±`, нет `id`) — клиент важнее референса (CLAUDE.md).
+  Fix: формат `ID±COLOR±CID±TIME±NICK±TEXT±GID`; `ChatMessage.id` = rowid
+  `chat_messages` (дедуп клиента `LastIDs`); color 10 live / 1 история
+  (1:1 `Chat.cs:44`/`Chat.GetMessages`); FED/DNO история грузится из БД при
+  старте (переживает рестарт). Verified: unit-тест + probe на live VPS.
+- [x] **`Chin` = РЕСИНК чата (НЕ no-op) + login=mO-only — корень «меню
+  открывается / дубли на реконнекте»**. Эволюция (честно): (1) прежний
+  `handle_chat_init_ty`→`send_chat_init` слал `mL` → клиент в «СПИСОК
+  ЧАТОВ» поверх FED → «нельзя зайти». (2) Промежуточно: `Chin`=no-op
+  (убрало `mL`-поломку, но login слал полную историю `mU` → на
+  реконнекте клиент `muHandler` `AddLine`'ил всё повторно → ДУБЛИ,
+  репорт юзера). (3) ИТОГ: login шлёт только `mO`; история — через
+  `Chin`-resync по `getLasts()` клиента (`WorldInitScript.cs:109`):
+  `"_"`→полная, `"1:cur:lasts"`→инкремент `id>lastid` (доступ
+  гейтится). Реф `Session.Chin` ПУСТ — реф неполон, контракт по
+  клиенту. Probe-verified: login=mO-only, `Chin "_"`→полный mU,
+  реконнект с актуальным lastid→`mU h=[]` (без дублей). Спец:
+  `docs/CLIENT_PROTOCOL_GAPS.md` §2.
+- [x] **DNO routing — «в дно не показываются»** (репорт юзера). C#
+  `Chat.cs:44` хардкодит wire-`ch="FED"` для ЛЮБОГО global (DNO —
+  реальный канал) → DNO-зритель не видел DNO, оно текло в FED.
+  Fix: wire-`ch` = реальный `channel_tag`. Probe-verified
+  (FED→ch=FED, DNO→ch=DNO). Реф-баг; клиент важнее. GAPS §1.
+- [x] **pass-2 РЕШЕНО + probe-verified на live VPS (2026-05-17)**:
+  миграция `chat_messages` +`player_id`+`color`; `add_chat_message`
+  резолвит/хранит снимок `chat_color` автора (sys=50), возвращает
+  `(id,color)`; `get_recent_chat_messages` `LEFT JOIN players`→clan;
+  единый `game::chat::dotnet_epoch_minutes` (1:1 `GLine.time`) в live
+  И истории (startup+`load_db_history`); 3 места конструкции
+  `ChatMessage` сведены. Легаси-строки (`player_id=0` до миграции →
+  мелкий шрифт) — миграция-бэкфилл `player_id` по `player_name`→
+  `players.name`; прод-лог `backfilled … 23 rows`; probe после:
+  26/26 `gid>0`, 0 мелких. `tools/chat_probe_pass2.py` (send/verify/
+  diag/watch). Спец — `docs/CLIENT_PROTOCOL_GAPS.md` §1.
+
+### Известные открытые (НЕ серверный фикс — честно, 2026-05-17)
+- [ ] **Мигание ползунка чата — КЛИЕНТСКИЙ Unity-баг, НЕ сервер,
+  deferred.** Доказано: интернет ВЫКЛ → мигание есть. Корень —
+  `m1client.unity` чат-`ScrollRect` `AutoHideAndExpandViewport`
+  (петля layout). Клиент неизменяем → серверного рычага нет. Решение
+  юзера: забить (косметика). `docs/CLIENT_PROTOCOL_GAPS.md` §1.
+- [x] **PI-флуд ИСПРАВЛЕН умно (2026-05-17, deployed + user-verified
+  в реальном клиенте под нагрузкой).** Был ~17/с (673/40с): клиент
+  шлёт 1 PO/PI на след. кадре, сервер отвечал PI мгновенно →
+  tight-loop PO↔PI на RTT. Реф-костыль `Thread.Sleep(200)` пейсил,
+  но клиент показывает `text` как пинг (= период петли) → 200мс
+  UX-регресс (откачено). **Финальный фикс (`connection.rs`):** PI
+  шлёт heartbeat **раз в 400мс** (НЕ на каждый PO) → частота PI =
+  частота тика, шторм невозможен; PO лишь меряет РЕАЛЬНЫЙ RTT
+  (`now − момент отправки PI`) → в `text` (HUD = настоящие ~50-80мс);
+  `num2` = **экстраполированные часы клиента** (`last_pong_ct + мс с
+  того PO`) — иначе клиент пишет `FREEZE` при `NowTime−lastPITime
+  >1500мс` (`ServerTime.cs:155`); 400мс держит запас под 1500мс при
+  джиттере тика; `next_expected` удалён. Деваиация от рефа (клиент
+  неизменяем, реф тут говнокод). Эмпирика: **PI 673→54/40с**, payload
+  `52:<t>:<54-80> `. Промежуточные версии (800мс / stale num2) давали
+  FREEZE — НЕ воспроизводить. `@S` упал 142→55 (НЕ атрибутирую — код
+  не трогал; отдельно при необходимости). Память:
+  [[ping-tick-refactor-open]].
+
+### Открытые верифицированные 1:1 расхождения (НЕ закрыто — честно)
+- [ ] **Gun single-target** (`combat.rs:169` `break`) vs C# `Gun.cs:122-167`
+  бьёт ВСЕХ в радиусе 20, charge списывается per-hit. Стр.52 ниже ЛОЖНА.
+- [ ] **Move dist** `>1.5` (`movement.rs:128`) vs C# `<1.2` accept
+  (`Player.cs:441`). Стр.24 ниже ЛОЖНА (там «1.2 ... cooldown убран» —
+  оба неверны: 1.5, и cooldown РЕ-добавлен → rubber-band).
+- [ ] **Move dir** держит старый `pd` vs C# из дельты (`Player.cs:416-418`).
+- [ ] **Rubber-band** («назад отбрасывает», репорт юзера): server move
+  cooldown vs client pace + очередь TY; вероятно частично снят PO→PI
+  фиксом — требует замера (`tools/repro_freeze.py tp_rollback`).
+- [ ] **Auto-dig `dir==-1`** ветка отсутствует (`Player.cs:432-436`).
+- [ ] **Единый `Delay`**: C# один cooldown на move/dig/build/geo;
+  Rust раздельные (`player.rs`). Поведенческое (после dig нельзя move
+  200ms) — менять с пометкой «меняет ощущение».
+- [ ] **HB init-order**: Rust шлёт HB первым; C# `CheckChunkChanged`
+  ПОСЛЕ `SendInventory` (`Player.cs:618-629`). Стр.14 порядок неточен.
+- [ ] **BotSpot programmator** не реализован (стр.56 верно).
+- [x] **Chat-навигация `Cmen`/`Choo`/`Cset`/`Cpri` РЕАЛИЗОВАНА** по
+  контракту клиента (референс их не обрабатывает — `Session.cs` только
+  пустой `Chin`; полная спека — `docs/CLIENT_PROTOCOL_GAPS.md` §3–6).
+  `Cmen`→`mL`+`mN` (список каналов: глобал+клан+приваты); `Choo tag`→
+  `mO`+`mU` (вход, с валидацией прав); `Cset`→цикл `chat_color` (новая
+  колонка+миграция)→`mC`; `Cpri uid`→ЛС `_min_max` (валидация: цель
+  есть, не сам с собой; рассылка только участникам). Security-гейт в
+  `handle_channel_chat` (клан/приват по актуальному состоянию). Мёртвые
+  `handle_chat_init_ty`/`handle_chat_switch`/`send_chat_init` (ловушка
+  бага §2) УДАЛЕНЫ. Verified: `tools/chat_probe.py` на live VPS — все 4
+  по контракту. Открытая UX-заметка: онлайн-получатель ЛС без открытого
+  `Cmen` не получает уведомление (`mN`=0) — не «сломано», отдельный UX.
+
+### Ограничения/безопасность сессии
+Без commit/push (Уроки 3/5). Деплой изолирован: проект `openmines`,
+volume `openmines_server_data`; `mines3_server_data` НЕ тронут; только
+`up -d`/`restart`. `client/` не коммитить. Незакоммиченный рефактор не
+откатывался. Замечание масштабируемости: при 12 ботах через 1 ssh-туннель
+~5с тишина (broadcast O(N²)/сатурация туннеля, сервер-тик здоров) — НЕ
+lock-freeze, юзер играет соло; отдельная заметка.
+
+---
+
 ## 1. MVP (сеть и мир)
 
 - [x] TCP tokio 8090, wire-формат 1:1: `[4B length i32 LE (включая эти 4B)][1B data_type ('U'/'B'/'J')][2B event (case-sensitive)][payload...]`
@@ -72,12 +213,26 @@
 
 ## 6. Чат
 
-- [x] FED/DNO каналы — глобальные, работают
-- [x] Каналы: FED, DNO, клан (динамический pseudo-channel)
-- [x] Переключение Chat/Chin — dispatch + send_chat_init
+> Авторитетный источник по чату — `docs/CLIENT_PROTOCOL_GAPS.md`
+> (реф неполон: `/////FIX THIS SH`; контракт по клиенту). Прежние `[x]`
+> здесь были ЛОЖЬЮ (сверка с неполным референсом, без проверки клиента).
+
+- [x] `mU` wire-формат (`ID±COLOR±CID±TIME±NICK±TEXT±GID`) — probe-verified
+- [x] FED/DNO routing (wire-`ch`=реальный канал, не хардкод "FED") —
+  probe-verified (FED→ch=FED, DNO→ch=DNO)
+- [x] Каналы FED/DNO/CLAN (+ приватные `_min_max`) — probe-verified
+- [x] Навигация `Cmen`/`Choo`/`Cset`/`Cpri` (реф НЕ реализует;
+  по клиенту, с гейтом прав) — probe-verified
+- [x] `Chin`-ресинк (реф `Chin` ПУСТ/неполон — клиент шлёт `getLasts()`):
+  login=`mO`-only; `Chin "_"`→полная, `"1:cur:lasts"`→инкремент.
+  Снят баг дублей на реконнекте — probe-verified
 - [x] Локальный чат HB bubble — Locl → hb_chat broadcast
 - [x] Консоль команды — /give, /money, /moneyall, /tp, /heal, /clan, /pack
-- [x] История при входе — mO + mU пакеты
+- [x] История FED/DNO переживает рестарт (грузится из БД в `GameState::new`)
+- [ ] **pass-2 ОТКРЫТО** (репорт юзера «мелкие/цвета/кэш плывёт»):
+  представление сообщения live≠история (`user_id=0`→`gid=0`→fontSize 10
+  + без времени/иконки; `color` 1≠10; `time` сек≠мин). Корень: схема
+  `chat_messages` не хранит `player_id`/`color`. Спец — GAPS §1.
 
 ## 7. Программатор
 

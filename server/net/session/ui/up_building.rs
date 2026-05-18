@@ -1,4 +1,4 @@
-//! Up building (PackType::Up) — skill management GUI.
+//! Up building (`PackType::Up`) — skill management GUI.
 //!
 //! 1:1 with C# `Buildings/Up.cs` + `GUI/UP/UpPage.cs` + `PlayerSkills.cs`.
 //!
@@ -174,12 +174,12 @@ fn handle_skill_upgrade(
 
             // If health skill, update max health (separate mutable borrow)
             if let Some(new_max) = new_max_health {
-                let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
-                stats.max_health = new_max;
-                if stats.health > stats.max_health {
-                    stats.health = stats.max_health;
+                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+                pstats.max_health = new_max;
+                if pstats.health > pstats.max_health {
+                    pstats.health = pstats.max_health;
                 }
-                send_u_packet(tx, "@L", &health(stats.health, stats.max_health).1);
+                send_u_packet(tx, "@L", &health(pstats.health, pstats.max_health).1);
             }
 
             Some(true)
@@ -306,20 +306,20 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         .modify_player(pid, |ecs, entity| {
             // Validate (immutable borrows)
             {
-                let stats = ecs.get::<PlayerStats>(entity)?;
+                let pstats = ecs.get::<PlayerStats>(entity)?;
                 let skills = ecs.get::<PlayerSkillsComp>(entity)?;
                 let current_slots = get_player_slot_count(skills);
 
-                if stats.creds <= SLOT_COST || current_slots >= MAX_SLOTS {
+                if pstats.creds <= SLOT_COST || current_slots >= MAX_SLOTS {
                     return Some(false);
                 }
             }
 
-            // Deduct creds (mutable borrow on stats)
+            // Deduct creds (mutable borrow on pstats)
             {
-                let mut stats_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                stats_mut.creds -= SLOT_COST;
-                send_u_packet(tx, "P$", &money(stats_mut.money, stats_mut.creds).1);
+                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                pstats_mut.creds -= SLOT_COST;
+                send_u_packet(tx, "P$", &money(pstats_mut.money, pstats_mut.creds).1);
             }
 
             // Increment slot count (mutable borrow on skills)
@@ -340,7 +340,7 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 
 // ─── GUI rendering ──────────���────────────────────────────────────────────────
 
-/// Build and send the UpPage JSON to the client.
+/// Build and send the `UpPage` JSON to the client.
 /// Format: `"up:{json}"` sent via GU event.
 fn send_up_page(
     state: &Arc<GameState>,
@@ -530,8 +530,8 @@ fn build_up_page_json(
 
 // ─── Helpers ───────────────────────────────────────────────���─────────────────
 
-/// Get the selected slot from the player's current_window state.
-/// Window format: "up:{x}:{y}:{selected_slot}"
+/// Get the selected slot from the player's `current_window` state.
+/// Window format: "`up:{x}:{y}:{selected_slot`}"
 fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
     state
         .query_player(pid, |ecs, entity| {
@@ -550,7 +550,7 @@ fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
 }
 
 /// Get the total number of skill slots for a player from the component.
-fn get_player_slot_count(comp: &PlayerSkillsComp) -> i32 {
+const fn get_player_slot_count(comp: &PlayerSkillsComp) -> i32 {
     comp.total_slots
 }
 
@@ -598,7 +598,7 @@ fn is_skill_visible_and_meets_reqs(skills: &HashMap<String, SkillState>, skill: 
 }
 
 /// Check if a skill is visible (requirement skills installed), regardless of level.
-/// Returns (visible, meets_reqs).
+/// Returns (visible, `meets_reqs`).
 fn skill_visibility(skills: &HashMap<String, SkillState>, skill: SkillType) -> (bool, bool) {
     if let Some(reqs) = get_skill_requirements(skill) {
         for (req_skill, req_lvl) in &reqs {
@@ -616,10 +616,14 @@ fn skill_visibility(skills: &HashMap<String, SkillState>, skill: SkillType) -> (
 }
 
 /// Get the list of skills available for installation.
-/// C# ref: `PlayerSkills.SkillToInstall(Player p)` → Dict<SkillType, bool>.
-/// Returns Vec<(SkillType, meets_requirements)>.
+/// C# ref: `PlayerSkills.SkillToInstall(Player p)` → Dict<`SkillType`, bool>.
+/// Returns Vec<(`SkillType`, `meets_requirements`)>.
 fn get_installable_skills(skills: &HashMap<String, SkillState>) -> Vec<(SkillType, bool)> {
-    use SkillType::*;
+    use SkillType::{
+        AntiGun, BuildGreen, BuildRed, BuildRoad, BuildStructure, BuildWar, BuildYellow, Digging,
+        Fridge, Health, Induction, MineGeneral, Movement, Packing, PackingBlue, PackingCyan,
+        PackingGreen, PackingRed, PackingViolet, PackingWhite, Repair, RoadMovement,
+    };
     // All known skill types (same order as C# `skillz` list)
     let all_skills = [
         Digging,

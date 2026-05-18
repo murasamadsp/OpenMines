@@ -53,19 +53,21 @@ pub fn check_chunk_changed(
         }
 
         let cells = state.world.read_chunk_cells(ncx, ncy);
-        let ox = u16::try_from((ncx * 32).min(u16::MAX as u32)).unwrap_or(u16::MAX);
-        let oy = u16::try_from((ncy * 32).min(u16::MAX as u32)).unwrap_or(u16::MAX);
+        let ox = u16::try_from((ncx * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
+        let oy = u16::try_from((ncy * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
         sub_packets.push(hb_map(ox, oy, 32, 32, &cells));
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
 
         // Сначала отправляем ботов (игроков), чтобы клиент знал о них до обработки построек
-        for entry in &state.active_players {
-            let opid = *entry.key();
-            let bot_data = state
-                .query_player(opid, |ecs, entity| {
-                    let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-                    let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    if p.chunk_x() == ncx && p.chunk_y() == ncy {
+        if let Some(pids) = state.chunk_players.get(&(ncx, ncy)) {
+            for &opid in pids.iter() {
+                if opid == pid {
+                    continue;
+                }
+                let bot_data = state
+                    .query_player(opid, |ecs, entity| {
+                        let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                        let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                         // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
                         let tail = ecs
                             .get::<crate::game::programmator::ProgrammatorState>(entity)
@@ -79,25 +81,22 @@ pub fn check_chunk_changed(
                             net_u16_nonneg(s.clan_id.unwrap_or(0)),
                             tail,
                         ))
-                    } else {
-                        None
-                    }
-                })
-                .flatten();
-            if let Some(bot) = bot_data {
-                sub_packets.push(bot);
-                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+                    })
+                    .flatten();
+                if let Some(bot) = bot_data {
+                    sub_packets.push(bot);
+                    sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+                }
             }
         }
 
         // BotSpot entities (C# BotSpot: skin=3, tail=1, id=-owner_id)
         {
-            let ecs = state.ecs.read();
-            for entry in state.botspot_index.iter() {
-                let botspot_entity = *entry.value();
-                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
-                    let (bcx, bcy) = crate::world::World::chunk_pos(data.x, data.y);
-                    if bcx == ncx && bcy == ncy {
+            if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy)) {
+                let ecs = state.ecs.read();
+                for &botspot_entity in botspot_entities.iter() {
+                    if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity)
+                    {
                         // C# `BotSpot.tail => 1` (always 1, unlike Player which checks running).
                         // C# casts negative bot_id to u16 (wraps around).
                         let wire_id = data.bot_id as u16;
@@ -141,6 +140,30 @@ pub fn check_chunk_changed(
         if new_visible.contains(&(ocx, ocy)) {
             continue;
         }
+
+        // Notify the player to remove bots that are now too far away
+        if let Some(pids) = state.chunk_players.get(&(ocx, ocy)) {
+            for &opid in pids.iter() {
+                if opid == pid {
+                    continue;
+                }
+                sub_packets.push(hb_bot_del(net_u16_nonneg(opid)));
+                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+            }
+        }
+
+        // Notify BotSpots removal
+        if let Some(botspot_entities) = state.chunk_botspots.get(&(ocx, ocy)) {
+            let ecs = state.ecs.read();
+            for &botspot_entity in botspot_entities.iter() {
+                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
+                    sub_packets.push(hb_bot_del(data.bot_id as u16));
+                    sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+                }
+            }
+        }
+
+        // Notify buildings removal
         for (_, px, py, _, _) in state.get_packs_in_chunk_area(ocx, ocy) {
             if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
                 sub_packets.push(hb_packs(block_pos, &[]));
@@ -158,6 +181,11 @@ pub fn check_chunk_changed(
                 }
             }
         }
+
+        // IMPORTANT: Notify players in the OLD chunk that WE left their view
+        let we_del = hb_bot_del(net_u16_nonneg(pid));
+        let we_del_data = encode_hb_bundle(&hb_bundle(&[we_del]).1);
+        state.broadcast_to_nearby_specific_chunk(ocx, ocy, &we_del_data, Some(pid));
     }
 
     if !sub_packets.is_empty() {

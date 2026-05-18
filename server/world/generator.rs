@@ -265,8 +265,9 @@ pub fn generate(world: &super::World, seed: u64) {
 
     let t0 = std::time::Instant::now();
 
-    world.with_generation_layers(|cells_mmap, dur_mmap| {
-        cells_mmap
+    let mut flat_cells = vec![0u8; total_cells];
+    world.with_durability_mmap(|dur_mmap| {
+        flat_cells
             .par_chunks_exact_mut(cells_per_chunk)
             .zip(dur_mmap.par_chunks_exact_mut(cells_per_chunk * 4))
             .enumerate()
@@ -293,7 +294,7 @@ pub fn generate(world: &super::World, seed: u64) {
             });
 
         fill_sectors(
-            cells_mmap,
+            &mut flat_cells,
             dur_mmap,
             w,
             h,
@@ -303,6 +304,7 @@ pub fn generate(world: &super::World, seed: u64) {
             &cell_dur_table,
         );
     });
+    world.ingest_generated_cells(&flat_cells);
 
     tracing::info!(
         "World generator: finished ({:?}, ~{} MiB layers)",

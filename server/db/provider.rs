@@ -1,5 +1,5 @@
 use crate::db::{
-    BuildingExtra, BuildingRow, ClanRank, ClanRow, Database, PlayerRow, ProgramRow, Role,
+    BuildingExtra, BuildingRow, ChatRow, ClanRank, ClanRow, Database, PlayerRow, ProgramRow, Role,
 };
 use anyhow::Result;
 
@@ -34,12 +34,14 @@ pub trait DatabaseProvider: Send + Sync {
     ) -> Result<()>;
 
     // chats
-    fn add_chat_message(&self, tag: &str, name: &str, msg: &str) -> Result<()>;
-    fn get_recent_chat_messages(
+    fn add_chat_message(
         &self,
         tag: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, String, i64)>>;
+        name: &str,
+        msg: &str,
+        player_id: i32,
+    ) -> Result<(i64, i32)>;
+    fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>>;
 
     // clans
     fn create_clan(&self, id: i32, name: &str, abr: &str, owner_id: i32) -> Result<()>;
@@ -124,14 +126,16 @@ impl DatabaseProvider for Database {
         self.update_building_state(id, type_code, x, y, owner_id, clan_id, extra)
     }
 
-    fn add_chat_message(&self, tag: &str, name: &str, msg: &str) -> Result<()> {
-        self.add_chat_message(tag, name, msg)
-    }
-    fn get_recent_chat_messages(
+    fn add_chat_message(
         &self,
         tag: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, String, i64)>> {
+        name: &str,
+        msg: &str,
+        player_id: i32,
+    ) -> Result<(i64, i32)> {
+        self.add_chat_message(tag, name, msg, player_id)
+    }
+    fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>> {
         self.get_recent_chat_messages(tag, limit)
     }
 

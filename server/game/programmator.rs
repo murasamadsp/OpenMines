@@ -105,9 +105,9 @@ pub enum ActionType {
     FillGun,
 }
 
-fn get_action_type(id: u8) -> ActionType {
+const fn get_action_type(id: u8) -> ActionType {
     match id {
-        0 => ActionType::None,
+        // 0 → None (как и любой неизвестный id, см. wildcard).
         1 => ActionType::NextRow,
         2 => ActionType::Start,
         3 => ActionType::Stop,
@@ -218,7 +218,7 @@ pub struct PFunction {
 }
 
 impl PFunction {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             actions: Vec::new(),
             current: 0,
@@ -229,7 +229,7 @@ impl PFunction {
         }
     }
 
-    fn reset(&mut self) {
+    pub const fn reset(&mut self) {
         self.current = 0;
         self.startoffset = (0, 0);
     }
@@ -281,7 +281,8 @@ impl ProgrammatorState {
         if payload.len() < 8 {
             return None;
         }
-        let len = i32::from_le_bytes(payload[0..4].try_into().ok()?) as usize;
+        let len = usize::try_from(i32::from_le_bytes(payload[0..4].try_into().ok()?))
+            .unwrap_or(usize::MAX);
         let id = i32::from_le_bytes(payload[4..8].try_into().ok()?);
         // Source is UTF-8 after the header + len bytes
         let source_start = 8 + len;
@@ -293,36 +294,39 @@ impl ProgrammatorState {
         Some((id, source))
     }
 
-    /// Parse script from base64-encoded LZMA data (the "normal" format from C# `parseNormal`).
-    pub fn parse_normal(data: &str) -> Option<(HashMap<String, PFunction>, Vec<String>)> {
+    /// Декодировать base64+LZMA полезную нагрузку `parseNormal` →
+    /// (распакованные байты, число действий, метки). Вынесено из
+    /// `parse_normal` (лимит строк).
+    fn decode_normal_payload(data: &str) -> Option<(Vec<u8>, usize, Vec<String>)> {
         if data.is_empty() {
             return None;
         }
-
         let decoded =
             base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).ok()?;
-
-        // LZMA decompress
         let mut decompressed = Vec::new();
         let mut reader = std::io::Cursor::new(&decoded);
         lzma_rs::lzma_decompress(&mut reader, &mut decompressed).ok()?;
-
         if decompressed.len() < 4 {
             return None;
         }
-
-        let num = i32::from_le_bytes(decompressed[0..4].try_into().ok()?) as usize;
+        let num = usize::try_from(i32::from_le_bytes(decompressed[0..4].try_into().ok()?))
+            .unwrap_or(usize::MAX);
         if decompressed.len() < 4 + num {
             return None;
         }
-
         // Action bytes start at offset 4, labels UTF-8 after 4+num
         let labels_str = if decompressed.len() > 4 + num {
             String::from_utf8_lossy(&decompressed[4 + num..]).to_string()
         } else {
             String::new()
         };
-        let labels: Vec<&str> = labels_str.split(':').collect();
+        let labels: Vec<String> = labels_str.split(':').map(str::to_string).collect();
+        Some((decompressed, num, labels))
+    }
+
+    /// Parse script from base64-encoded LZMA data (the "normal" format from C# `parseNormal`).
+    pub fn parse_normal(data: &str) -> Option<(HashMap<String, PFunction>, Vec<String>)> {
+        let (decompressed, num, labels) = Self::decode_normal_payload(data)?;
 
         let mut functions: HashMap<String, PFunction> = HashMap::new();
         let mut function_order: Vec<String> = Vec::new();
@@ -338,7 +342,7 @@ impl ProgrammatorState {
             let mut name = "0".to_string();
             let mut number = 0i32;
             if i < labels.len() {
-                let lbl = labels[i];
+                let lbl = labels[i].as_str();
                 if let Some(at_pos) = lbl.find('@') {
                     name = lbl[..at_pos].to_string();
                     if let Ok(n) = lbl[at_pos + 1..].parse::<i32>() {
@@ -493,10 +497,10 @@ fn check_cell(
     let (sx, sy) = {
         let f = prog.current_prog.get(&prog.current_function);
         if let Some(f) = f {
-            if f.startoffset != (0, 0) {
-                f.startoffset
-            } else {
+            if f.startoffset == (0, 0) {
                 (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
+            } else {
+                f.startoffset
             }
         } else {
             (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
@@ -524,9 +528,9 @@ fn check_cell(
     let func = prog.current_prog.get_mut(&prog.current_function);
     if let Some(f) = func {
         match f.last_state_action {
-            None => f.state = Some(result),
             Some(ActionType::Or) => f.state = Some(f.state.unwrap_or(false) || result),
             Some(ActionType::And) => f.state = Some(f.state.unwrap_or(true) && result),
+            // None и прочее → прямое значение result.
             _ => f.state = Some(result),
         }
     }
@@ -564,12 +568,11 @@ pub fn programmator_system(
         // Get current function actions count
         let (action_count, current_pos) = {
             let f = prog.current_prog.get(&prog.current_function);
-            match f {
-                Some(f) => (f.actions.len(), f.current),
-                None => {
-                    prog.running = false;
-                    continue;
-                }
+            if let Some(f) = f {
+                (f.actions.len(), f.current)
+            } else {
+                prog.running = false;
+                continue;
             }
         };
 
@@ -629,6 +632,12 @@ pub fn programmator_system(
 }
 
 #[allow(clippy::too_many_arguments)]
+// 1:1 ref C# program executor (Program.cs ActionType switch). Это
+// дословный порт большого switch — механический разрез на под-функции и
+// substring-переименование `state`/`stats` в 1:1-логике рискуют сломать
+// паритет с референсом (жёсткое требование CLAUDE.md). Точечный allow в
+// той же конвенции, что db/mod.rs / skills.rs.
+#[allow(clippy::too_many_lines, clippy::similar_names)]
 fn execute_action(
     action: &PAction,
     prog: &mut ProgrammatorState,
@@ -695,9 +704,9 @@ fn execute_action(
             *delay_ms = speed_pause(skills);
             let d = match pos.dir {
                 0 => 3,
-                1 => 0,
                 2 => 1,
                 3 => 2,
+                // dir 1 → 0 (как и любое прочее).
                 _ => 0,
             };
             push_move(prog_q, meta, conn, pos.x, pos.y, d);
@@ -709,7 +718,7 @@ fn execute_action(
                 0 => 1,
                 1 => 2,
                 2 => 3,
-                3 => 0,
+                // dir 3 → 0 (как и любое прочее).
                 _ => 0,
             };
             push_move(prog_q, meta, conn, pos.x, pos.y, d);
@@ -732,7 +741,7 @@ fn execute_action(
             });
             ExecResult::None
         }
-        ActionType::BuildBlock => {
+        ActionType::BuildBlock | ActionType::MacrosBuild => {
             *delay_ms = 100;
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
@@ -1027,9 +1036,9 @@ fn execute_action(
             let result = stats.health < stats.max_health;
             if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
                 match f.last_state_action {
-                    None => f.state = Some(result),
                     Some(ActionType::Or) => f.state = Some(f.state.unwrap_or(false) || result),
                     Some(ActionType::And) => f.state = Some(f.state.unwrap_or(true) && result),
+                    // None и прочее → прямое значение result.
                     _ => f.state = Some(result),
                 }
             }
@@ -1039,9 +1048,9 @@ fn execute_action(
             let result = stats.health < stats.max_health / 2;
             if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
                 match f.last_state_action {
-                    None => f.state = Some(result),
                     Some(ActionType::Or) => f.state = Some(f.state.unwrap_or(false) || result),
                     Some(ActionType::And) => f.state = Some(f.state.unwrap_or(true) && result),
+                    // None и прочее → прямое значение result.
                     _ => f.state = Some(result),
                 }
             }
@@ -1049,8 +1058,8 @@ fn execute_action(
         }
 
         // ─── Flow control ───────────────────────────────────────────────
-        ActionType::GoTo => ExecResult::Label(action.label.clone()),
-        ActionType::RunSub
+        ActionType::GoTo
+        | ActionType::RunSub
         | ActionType::RunFunction
         | ActionType::RunState
         | ActionType::RunOnRespawn => ExecResult::Label(action.label.clone()),
@@ -1059,16 +1068,13 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(false) = state_val {
+            if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+                f.state = None;
+            }
+            if state_val == Some(false) {
                 // Condition is false, don't jump
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.state = None;
-                }
                 ExecResult::None
             } else {
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.state = None;
-                }
                 ExecResult::Label(action.label.clone())
             }
         }
@@ -1077,16 +1083,13 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(true) = state_val {
+            if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+                f.state = None;
+            }
+            if state_val == Some(true) {
                 // Condition is true, don't jump
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.state = None;
-                }
                 ExecResult::None
             } else {
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.state = None;
-                }
                 ExecResult::Label(action.label.clone())
             }
         }
@@ -1112,13 +1115,8 @@ fn execute_action(
             ExecResult::None
         }
 
-        // ─── Control ────────────────────────────────────────────────────
-        ActionType::Start
-        | ActionType::Stop
-        | ActionType::Return
-        | ActionType::ReturnState
-        | ActionType::Flip => ExecResult::None,
-
+        // Control (Start/Stop/Return/ReturnState/Flip) → ExecResult::None
+        // через общий wildcard ниже.
         ActionType::Beep => {
             // Send BB (beep sound) to player via protocol encoding
             let pkt = crate::protocol::u_packet("BB", &[]);
@@ -1180,16 +1178,6 @@ fn execute_action(
             }
             ExecResult::None
         }
-        ActionType::MacrosBuild => {
-            *delay_ms = 100;
-            prog_q.0.push(ProgrammatorAction::Build {
-                pid: meta.id,
-                tx: conn.tx.clone(),
-                dir: pos.dir,
-                block_type: "G".to_string(),
-            });
-            ExecResult::None
-        }
         ActionType::MacrosMine => {
             // Simplified: dig in current direction if crystal
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
@@ -1214,7 +1202,7 @@ fn execute_action(
         | ActionType::WritableStateMore => {
             // WritableState with "del" label = set delay
             if action.label.eq_ignore_ascii_case("del") {
-                *delay_ms = action.num as u64;
+                *delay_ms = u64::try_from(action.num).unwrap_or(0);
             }
             ExecResult::None
         }
@@ -1223,32 +1211,35 @@ fn execute_action(
     }
 }
 
+/// Ветка `GoTo` из `handle_label_result` (вынесена — лимит строк).
+fn handle_goto_label(label: &str, prog: &mut ProgrammatorState) {
+    if prog.current_prog.contains_key(label) {
+        if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+            f.reset();
+        }
+        if label.is_empty() {
+            let sp_name = prog.startpoint.0.clone();
+            let sp_pos = prog.startpoint.1;
+            prog.current_function = sp_name;
+            if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+                f.current = sp_pos;
+            }
+        } else {
+            prog.current_function = label.to_string();
+        }
+    } else {
+        let sp_name = prog.startpoint.0.clone();
+        let sp_pos = prog.startpoint.1;
+        prog.current_function = sp_name;
+        if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+            f.current = sp_pos;
+        }
+    }
+}
+
 fn handle_label_result(action: &PAction, label: &str, prog: &mut ProgrammatorState) {
     match action.action_type {
-        ActionType::GoTo => {
-            if prog.current_prog.contains_key(label) {
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.reset();
-                }
-                if label.is_empty() {
-                    let sp_name = prog.startpoint.0.clone();
-                    let sp_pos = prog.startpoint.1;
-                    prog.current_function = sp_name;
-                    if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                        f.current = sp_pos;
-                    }
-                } else {
-                    prog.current_function = label.to_string();
-                }
-            } else {
-                let sp_name = prog.startpoint.0.clone();
-                let sp_pos = prog.startpoint.1;
-                prog.current_function = sp_name;
-                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                    f.current = sp_pos;
-                }
-            }
-        }
+        ActionType::GoTo => handle_goto_label(label, prog),
         ActionType::RunSub => {
             if prog.current_prog.contains_key(label) {
                 let cf = prog.current_function.clone();
@@ -1283,8 +1274,7 @@ fn handle_label_result(action: &PAction, label: &str, prog: &mut ProgrammatorSta
                 let (state_val, last_state) = prog
                     .current_prog
                     .get(&cf)
-                    .map(|f| (f.state, f.last_state_action))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |f| (f.state, f.last_state_action));
                 let has_offset = prog.shift_x != 0
                     || prog.shift_y != 0
                     || prog.check_x != 0
@@ -1349,7 +1339,7 @@ fn handle_bool_result(action: &PAction, state: bool, prog: &mut ProgrammatorStat
                 .get(&cf)
                 .and_then(|f| f.called_from.clone());
             if let Some(caller) = called_from {
-                prog.current_function = caller.clone();
+                prog.current_function.clone_from(&caller);
                 if let Some(f) = prog.current_prog.get_mut(&caller) {
                     f.state = Some(state);
                     f.startoffset = (0, 0);
@@ -1410,11 +1400,10 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
             if let Some(f) = prog.current_prog.get_mut(&cf) {
                 f.reset();
             }
-            let (state_val, last_state, called_from) = prog
-                .current_prog
-                .get(&cf)
-                .map(|f| (f.state, f.last_state_action, f.called_from.clone()))
-                .unwrap_or((None, None, None));
+            let (state_val, last_state, called_from) =
+                prog.current_prog.get(&cf).map_or((None, None, None), |f| {
+                    (f.state, f.last_state_action, f.called_from.clone())
+                });
             if let Some(caller) = called_from {
                 let has_offset = prog.shift_x != 0
                     || prog.shift_y != 0
@@ -1469,7 +1458,13 @@ fn push_move(
 /// `pause = (int)(Movement.Effect * 100)`, `ServerPause = pause / 10`.
 fn speed_pause(skills: &PlayerSkills) -> u64 {
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
-    let pause = (move_effect * 100.0) as u64;
-    // ServerPause = pause / 10; minimum 50ms
-    (pause / 10).max(50)
+    // 1:1 ref Player.cs:153: (pause * 5) * 1.4 = pause * 7
+    // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
+    // (1:1 с C#, нельзя в int без потери паритета); каст намеренный,
+    // move_effect ≥ 0. Та же конвенция, что skills.rs.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pause_units = (move_effect * 100.0) as u64;
+    let server_pause_ms = pause_units * 7 / 1000;
+    // Minimum 20ms to prevent infinite loops / CPU stall
+    server_pause_ms.max(20)
 }

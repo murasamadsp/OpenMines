@@ -8,25 +8,25 @@ use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkills, PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
+use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, place_building_in_world, validate_building_area,
 };
-use crate::net::session::play::death::handle_death;
 
 // ─── Healing ────────────────────────────────────────────────────────────────
 
 pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
     let result = state
         .modify_player(pid, |ecs, entity| {
-            let (h, mh, cry2, _px, _py) = {
-                let stats = ecs.get::<PlayerStats>(entity)?;
+            let (h, mh, cry2, hx, hy) = {
+                let pstats = ecs.get::<PlayerStats>(entity)?;
                 let pos = ecs.get::<PlayerPosition>(entity)?;
                 (
-                    stats.health,
-                    stats.max_health,
-                    stats.crystals[2],
+                    pstats.health,
+                    pstats.max_health,
+                    pstats.crystals[2],
                     pos.x,
                     pos.y,
                 )
@@ -43,10 +43,10 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
                 return None;
             }
             let (new_health, new_crys, pid_val) = {
-                let mut stats_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                stats_mut.crystals[2] -= 1;
-                stats_mut.health = (h + heal_amount).min(mh);
-                (stats_mut.health, stats_mut.crystals, _px)
+                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                pstats_mut.crystals[2] -= 1;
+                pstats_mut.health = (h + heal_amount).min(mh);
+                (pstats_mut.health, pstats_mut.crystals, hx)
             };
             let skill_payload = if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
                 add_skill_exp(&mut skills_mut.states, "e", 1.0);
@@ -54,11 +54,11 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
             } else {
                 None
             };
-            Some((new_health, mh, new_crys, pid_val, _py, skill_payload))
+            Some((new_health, mh, new_crys, pid_val, hy, skill_payload))
         })
         .flatten();
 
-    if let Some((h, mh, crys, _px, _py, skill_payload)) = result {
+    if let Some((h, mh, crys, hx, hy, skill_payload)) = result {
         send_u_packet(tx, "@L", &health(h, mh).1);
         send_u_packet(tx, "@B", &basket(&crys, 1).1);
         // Always send @S after skill exp (C# Skill.AddExp always sends)
@@ -69,8 +69,8 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         // D20: C# sends coordinates (0, 0) for heal FX
         let fx = hb_directed_fx(net_u16_nonneg(pid), 0, 0, 5, 0, 0);
         state.broadcast_to_nearby(
-            World::chunk_pos(_px, _py).0,
-            World::chunk_pos(_px, _py).1,
+            World::chunk_pos(hx, hy).0,
+            World::chunk_pos(hx, hy).1,
             &encode_hb_bundle(&hb_bundle(&[fx]).1),
             None,
         );
@@ -205,9 +205,9 @@ pub fn handle_inventory_choose(
 
 /// Item-to-alive-cell mapping for geopack items.
 /// Returns `None` for item 10 (no placement), `Some(cell_type)` for all others.
-fn geopack_item_to_cell(item: i32) -> Option<u8> {
+const fn geopack_item_to_cell(item: i32) -> Option<u8> {
     match item {
-        10 => None,
+        // 10 → None (как и любой неизвестный item, см. wildcard).
         11 => Some(cell_type::ALIVE_CYAN),
         12 => Some(cell_type::ALIVE_RED),
         13 => Some(cell_type::ALIVE_VIOL),
@@ -224,7 +224,7 @@ fn geopack_item_to_cell(item: i32) -> Option<u8> {
 
 /// D26: Reverse mapping — alive cell to item ID for geopack pickup.
 /// C# `World.isAlive` only includes the 7 alive types (not HypnoRock/BlackRock/RedRock).
-fn alive_cell_to_item(cell: u8) -> Option<i32> {
+const fn alive_cell_to_item(cell: u8) -> Option<i32> {
     match cell {
         cell_type::ALIVE_CYAN => Some(11),
         cell_type::ALIVE_RED => Some(12),
@@ -384,6 +384,12 @@ pub fn place_building_from_item(
             ))
             .id();
         state.building_index.insert((bx, by), entity);
+        let (cx, cy) = crate::world::World::chunk_pos(bx, by);
+        state
+            .chunk_buildings
+            .entry((cx, cy))
+            .or_default()
+            .push(entity);
         let view = PackView {
             id: db_id,
             pack_type,
@@ -404,7 +410,7 @@ pub fn place_building_from_item(
 }
 
 /// Helper: check if a cell is a building block type (C# `World.isBuildingBlock`).
-fn is_building_block(cell: u8) -> bool {
+const fn is_building_block(cell: u8) -> bool {
     matches!(
         cell,
         cell_type::GREEN_BLOCK
@@ -418,7 +424,7 @@ fn is_building_block(cell: u8) -> bool {
 }
 
 /// Helper: check if a cell is alive (C# `World.isAlive`).
-fn is_alive_cell(cell: u8) -> bool {
+const fn is_alive_cell(cell: u8) -> bool {
     matches!(
         cell,
         cell_type::ALIVE_BLUE
@@ -448,16 +454,16 @@ fn aoe_damage_players(
         // Returns Some((survived, px, py)) if player was in range and damaged
         let hit_result = state
             .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                let (px_o, py_o, h, mh, conn_tx) = {
+                let (prev_x, prev_y, h, mh, conn_tx) = {
                     let p = ecs.get::<PlayerPosition>(entity)?;
                     let s = ecs.get::<PlayerStats>(entity)?;
                     let c = ecs.get::<PlayerConnection>(entity)?;
                     (p.x, p.y, s.health, s.max_health, c.tx.clone())
                 };
-                if (px_o - cx).abs() > scan_range || (py_o - cy).abs() > scan_range {
+                if (prev_x - cx).abs() > scan_range || (prev_y - cy).abs() > scan_range {
                     return Some(None);
                 }
-                let dist = (((px_o - cx) as f32).powi(2) + ((py_o - cy) as f32).powi(2)).sqrt();
+                let dist = ((prev_x - cx) as f32).hypot((prev_y - cy) as f32);
                 if dist > radius {
                     return Some(None);
                 }
@@ -468,11 +474,11 @@ fn aoe_damage_players(
                 }
                 // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
                 if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
-                    crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
-                    // Always send @S after skill exp (C# Skill.AddExp always sends)
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
-                    let _ =
-                        conn_tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                    if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
+                        let sk = skills_packet(&skill_progress_payload(&skills.states));
+                        let _ = conn_tx
+                            .send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                    }
                 }
                 let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
                 if h > damage {
@@ -485,13 +491,13 @@ fn aoe_damage_players(
                     "@L",
                     &health(s_mut.health, mh).1,
                 ));
-                Some(Some((survived, px_o, py_o)))
+                Some(Some((survived, prev_x, prev_y)))
             })
             .flatten();
         // Broadcast hurt FX for surviving players (C# SendDFToBots(6,0,0,id,0))
-        if let Some(Some((true, px_o, py_o))) = hit_result {
+        if let Some(Some((true, prev_x, prev_y))) = hit_result {
             let fx = hb_directed_fx(net_u16_nonneg(opid), 0, 0, 6, 0, 0);
-            let (chunk_x, chunk_y) = World::chunk_pos(px_o, py_o);
+            let (chunk_x, chunk_y) = World::chunk_pos(prev_x, prev_y);
             state.broadcast_to_nearby(
                 chunk_x,
                 chunk_y,
@@ -539,30 +545,31 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
     // AoE: radius 3.5 centered on facing cell
     for ddx in -4..=4 {
         for ddy in -4..=4 {
-            let tx_c = cx + ddx;
-            let ty_c = cy + ddy;
-            if !state.world.valid_coord(tx_c, ty_c) {
+            let tgt_x = cx + ddx;
+            let tgt_y = cy + ddy;
+            if !state.world.valid_coord(tgt_x, tgt_y) {
                 continue;
             }
-            let dist = ((ddx as f32).powi(2) + (ddy as f32).powi(2)).sqrt();
+            let dist = (ddx as f32).hypot(ddy as f32);
             if dist > 3.5 {
                 continue;
             }
-            let c = state.world.get_cell(tx_c, ty_c);
+            let c = state.world.get_cell(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
             let prop = defs.get(c);
-            if prop.physical.is_destructible && !state.building_index.contains_key(&(tx_c, ty_c)) {
+            if prop.physical.is_destructible && !state.building_index.contains_key(&(tgt_x, tgt_y))
+            {
                 // Special cell conversions
                 if c == cell_type::RED_ROCK && rand::random::<u32>() % 100 >= 98 {
                     // 2% chance: 117 → 118
-                    state.world.set_cell(tx_c, ty_c, cell_type::ACID_ROCK);
+                    state.world.set_cell(tgt_x, tgt_y, cell_type::ACID_ROCK);
                 } else if c == cell_type::ACID_ROCK {
                     // 118 → 103
-                    state.world.set_cell(tx_c, ty_c, cell_type::ROCK);
+                    state.world.set_cell(tgt_x, tgt_y, cell_type::ROCK);
                 } else if c != cell_type::RED_ROCK && c != cell_type::ACID_ROCK {
-                    state.world.destroy(tx_c, ty_c);
+                    state.world.destroy(tgt_x, tgt_y);
                 }
-                broadcast_cell_update(state, tx_c, ty_c);
+                broadcast_cell_update(state, tgt_x, tgt_y);
             }
         }
     }
@@ -590,7 +597,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
     true
 }
 
-/// D15: Protector (item 6) — C# `ShitClass.Prot` — AoE bomb, NOT a shield.
+/// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
@@ -616,14 +623,14 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
     for ddx in -1..=1 {
         for ddy in -1..=1 {
-            let tx_c = cx + ddx;
-            let ty_c = cy + ddy;
-            if !state.world.valid_coord(tx_c, ty_c) {
+            let tgt_x = cx + ddx;
+            let tgt_y = cy + ddy;
+            if !state.world.valid_coord(tgt_x, tgt_y) {
                 continue;
             }
             // Destroy gates in range
             // (Gate buildings are in building_index; check and remove if it's a Gate)
-            if let Some(bld_entity) = state.building_index.get(&(tx_c, ty_c)) {
+            if let Some(bld_entity) = state.building_index.get(&(tgt_x, tgt_y)) {
                 let is_gate = state
                     .ecs
                     .read()
@@ -631,22 +638,27 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
                     .is_some_and(|m| m.pack_type == PackType::Gate);
                 if is_gate {
                     // Remove gate
-                    state.building_index.remove(&(tx_c, ty_c));
+                    state.building_index.remove(&(tgt_x, tgt_y));
+                    let (gcx, gcy) = crate::world::World::chunk_pos(tgt_x, tgt_y);
+                    if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy)) {
+                        e.retain(|&ent| ent != *bld_entity);
+                    }
                     let ent = *bld_entity;
                     drop(bld_entity);
                     state.ecs.write().despawn(ent);
                     // Clear the gate cell
-                    state.world.set_cell(tx_c, ty_c, cell_type::EMPTY);
-                    broadcast_cell_update(state, tx_c, ty_c);
+                    state.world.set_cell(tgt_x, tgt_y, cell_type::EMPTY);
+                    broadcast_cell_update(state, tgt_x, tgt_y);
                 }
             }
             // Destroy destructible non-building cells
-            let c = state.world.get_cell(tx_c, ty_c);
+            let c = state.world.get_cell(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
             let prop = defs.get(c);
-            if prop.physical.is_destructible && !state.building_index.contains_key(&(tx_c, ty_c)) {
-                state.world.destroy(tx_c, ty_c);
-                broadcast_cell_update(state, tx_c, ty_c);
+            if prop.physical.is_destructible && !state.building_index.contains_key(&(tgt_x, tgt_y))
+            {
+                state.world.destroy(tgt_x, tgt_y);
+                broadcast_cell_update(state, tgt_x, tgt_y);
             }
         }
     }
@@ -692,15 +704,15 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     {
         let mut ecs = state.ecs.write();
         let mut query = ecs.query::<(&BuildingMetadata, &GridPosition, &mut BuildingStats)>();
-        for (_meta, bpos, mut stats) in query.iter_mut(&mut ecs) {
+        for (_meta, bpos, mut pstats) in query.iter_mut(&mut ecs) {
             let ddx = (bpos.x - cx) as f32;
             let ddy = (bpos.y - cy) as f32;
-            let dist = (ddx * ddx + ddy * ddy).sqrt();
+            let dist = ddx.hypot(ddy);
             if dist <= 9.5 {
                 // Zero charge
-                stats.charge = 0.0;
+                pstats.charge = 0.0;
                 // Damage building 10 HP
-                stats.hp -= 10;
+                pstats.hp -= 10;
             }
         }
     }
@@ -750,19 +762,19 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
 
     // Iterate all 10 cells — don't stop early
     for i in 0..10 {
-        let (tx_c, ty_c) = (start_x + dx * i, start_y + dy * i);
-        if !state.world.valid_coord(tx_c, ty_c) {
+        let (tgt_x, tgt_y) = (start_x + dx * i, start_y + dy * i);
+        if !state.world.valid_coord(tgt_x, tgt_y) {
             break;
         }
 
         // Damage valid cells: not alive, is_diggable, is_destructible, not building block
-        let c = state.world.get_cell(tx_c, ty_c);
+        let c = state.world.get_cell(tgt_x, tgt_y);
         if !is_alive_cell(c) && !is_building_block(c) {
             let defs = state.world.cell_defs();
             let prop = defs.get(c);
             if prop.physical.is_diggable && prop.physical.is_destructible {
-                state.world.damage_cell(tx_c, ty_c, 50.0);
-                broadcast_cell_update(state, tx_c, ty_c);
+                state.world.damage_cell(tgt_x, tgt_y, 50.0);
+                broadcast_cell_update(state, tgt_x, tgt_y);
             }
         }
 
@@ -771,11 +783,11 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
             let opid = *entry.key();
             let death_tx = state
                 .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                    let (px_o, py_o) = {
+                    let (prev_x, prev_y) = {
                         let p = ecs.get::<PlayerPosition>(entity)?;
                         (p.x, p.y)
                     };
-                    if px_o != tx_c || py_o != ty_c {
+                    if prev_x != tgt_x || prev_y != tgt_y {
                         return None;
                     }
                     // Check protection
@@ -786,9 +798,12 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                     }
                     // Health skill exp (C# Player.Hurt → AddExp("l"))
                     let skill_pkt = if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
-                        crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
-                        let sk = skills_packet(&skill_progress_payload(&skills.states));
-                        Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
+                        if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
+                            let sk = skills_packet(&skill_progress_payload(&skills.states));
+                            Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     };
@@ -836,13 +851,13 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                     // Hurt FX for survivor: SendDFToBots(6, 0, 0, id, 0)
                     let fx = hb_directed_fx(
                         net_u16_nonneg(opid),
-                        net_u16_nonneg(tx_c),
-                        net_u16_nonneg(ty_c),
+                        net_u16_nonneg(tgt_x),
+                        net_u16_nonneg(tgt_y),
                         6,
                         0,
                         0,
                     );
-                    let (cx, cy) = World::chunk_pos(tx_c, ty_c);
+                    let (cx, cy) = World::chunk_pos(tgt_x, tgt_y);
                     state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
                 }
             }

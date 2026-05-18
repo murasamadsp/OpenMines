@@ -502,7 +502,7 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
 
 /// Experience needed to level up from the current level.
 #[allow(clippy::cast_precision_loss)]
-pub fn exp_needed(skill: SkillType, _level: i32) -> f32 {
+pub const fn exp_needed(skill: SkillType, _level: i32) -> f32 {
     match skill {
         SkillType::AntiGun => 0.0,
         _ => 1.0,
@@ -520,19 +520,23 @@ pub fn get_player_skill_effect(skills: &HashMap<String, SkillState>, skill: Skil
 /// Level-up happens only through `Up()` in the skill UI (Up building).
 /// Returns `false` always (kept for API compat — callers should always send @S).
 pub fn add_skill_exp(skills: &mut HashMap<String, SkillState>, code: &str, amount: f32) -> bool {
-    // Сначала читаем модификаторы из `skills` иммутабельно, чтобы дальше спокойно взять entry mut.
     let upgrade_mult = skills
         .get(SkillType::Upgrade.code())
         .map(|s| skill_effect(SkillType::Upgrade, s.level))
         .unwrap_or(1.0);
+
     let entry = skills
         .entry(code.to_string())
         .or_insert(SkillState { level: 1, exp: 0.0 });
 
     let total_amount = amount * upgrade_mult;
     entry.exp += total_amount;
-    // C# AddExp does NOT call Up(). Level-up is manual via Up building GUI.
-    false
+
+    // C# `Skill.AddExp` НЕ делает Up() (level-up — только через Up GUI), НО
+    // ВСЕГДА шлёт `SkillsPacket` (@S) клиенту (`Skill.cs:78`). Возвращаем
+    // `true`, чтобы вызывающие (`if add_skill_exp {...send @S...}`) всегда
+    // слали @S — иначе прогресс скиллов не виден в клиенте (1:1 фикс).
+    true
 }
 
 /// Convert skills into outbound packets payload (`(skill_code, percent)`), preserving legacy rounding.

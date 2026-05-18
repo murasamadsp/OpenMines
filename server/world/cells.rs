@@ -241,7 +241,7 @@ impl CellDefs {
                 if def.cell_type < 126 {
                     let idx = def.cell_type as usize;
                     // Ensure the in-memory slot's type matches its index, even if the JSON was inconsistent.
-                    def.cell_type = idx as u8;
+                    def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
                     cells[idx] = def;
                 }
             }

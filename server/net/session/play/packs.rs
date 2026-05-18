@@ -20,8 +20,8 @@ pub fn handle_pack_action(
     let p_info = state
         .query_player(pid, |ecs, entity| {
             let pos = ecs.get::<PlayerPosition>(entity)?;
-            let stats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, stats.clan_id.unwrap_or(0)))
+            let pk_stats = ecs.get::<PlayerStats>(entity)?;
+            Some((pos.x, pos.y, pk_stats.clan_id.unwrap_or(0)))
         })
         .flatten();
 
@@ -64,7 +64,7 @@ pub fn handle_pack_action(
                 state,
                 tx,
                 pid,
-                &format!("pack_op:open:{}:{}", x, y),
+                &format!("pack_op:open:{x}:{y}"),
             );
         }
     }
@@ -95,8 +95,8 @@ pub fn open_resp_gui(
         .get(&(view.x, view.y))
         .and_then(|ent| {
             let ecs = state.ecs.read();
-            let stats = ecs.get::<BuildingStats>(*ent)?;
-            Some(stats.cost)
+            let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+            Some(pk_stats.cost)
         })
         .unwrap_or(10);
 
@@ -149,7 +149,7 @@ pub fn open_resp_gui(
     });
 }
 
-/// Open Resp admin page with RichList (fill sliders, cost, clanzone, profit).
+/// Open Resp admin page with `RichList` (fill sliders, cost, clanzone, profit).
 /// 1:1 with C# `Resp.AdmnPage`.
 pub fn open_resp_admin_gui(
     state: &Arc<GameState>,
@@ -168,13 +168,13 @@ pub fn open_resp_admin_gui(
     // Fetch building details from ECS
     let details = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
         let ecs = state.ecs.read();
-        let stats = ecs.get::<BuildingStats>(*ent)?;
+        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
         let storage = ecs.get::<BuildingStorage>(*ent)?;
         let ownership = ecs.get::<BuildingOwnership>(*ent)?;
         Some((
-            stats.charge,
-            stats.max_charge,
-            stats.cost,
+            pk_stats.charge,
+            pk_stats.max_charge,
+            pk_stats.cost,
             storage.money,
             ownership.clan_id,
         ))
@@ -196,25 +196,25 @@ pub fn open_resp_admin_gui(
     let charge_i = charge as i32;
     let max_charge_i = max_charge as i32;
     let percent = if max_charge_i > 0 {
-        ((charge as f64) / (max_charge as f64 / 100.0)).round() as i32
+        (f64::from(charge) / (f64::from(max_charge) / 100.0)).round() as i32
     } else {
         0
     };
     let bar_label = format!("{charge_i}/{max_charge_i}");
 
     // Fill button actions (active only if player has enough blue crystals)
-    let fill100_action = if blue_crys >= 100 {
-        format!("resp_fill:100:{}:{}", pack_x, pack_y)
+    let small_fill_action = if blue_crys >= 100 {
+        format!("resp_fill:100:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
-    let fill1000_action = if blue_crys >= 1000 {
-        format!("resp_fill:1000:{}:{}", pack_x, pack_y)
+    let large_fill_action = if blue_crys >= 1000 {
+        format!("resp_fill:1000:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
     let fill_max_action = if blue_crys > 0 {
-        format!("resp_fill:max:{}:{}", pack_x, pack_y)
+        format!("resp_fill:max:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
@@ -224,13 +224,14 @@ pub fn open_resp_admin_gui(
     // Fill: label="заряд", type="fill",
     //   values="{percent}#{barLabel}#{crystal_type}#{action100}#{action1000}#{actionMax}",
     //   action="", value=""
-    let fill_values =
-        format!("{percent}#{bar_label}#1#{fill100_action}#{fill1000_action}#{fill_max_action}");
+    let fill_values = format!(
+        "{percent}#{bar_label}#1#{small_fill_action}#{large_fill_action}#{fill_max_action}"
+    );
 
     // Profit button
     let profit_label = format!("прибыль {money_inside}$");
     let profit_btn_action = if money_inside > 0 {
-        format!("resp_profit:{}:{}", pack_x, pack_y)
+        format!("resp_profit:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
@@ -345,8 +346,8 @@ pub fn handle_resp_fill(
     // Get max fill amount from building
     let fill_info = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
         let ecs = state.ecs.read();
-        let stats = ecs.get::<BuildingStats>(*ent)?;
-        Some((stats.charge, stats.max_charge))
+        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+        Some((pk_stats.charge, pk_stats.max_charge))
     });
     let Some((charge, max_charge)) = fill_info else {
         return;
@@ -385,10 +386,10 @@ pub fn handle_resp_fill(
 
     // Add charge to building
     let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
-        if let Some(mut stats) = ecs.get_mut::<BuildingStats>(entity) {
-            stats.charge += actual as f32;
-            if stats.charge > stats.max_charge {
-                stats.charge = stats.max_charge;
+        if let Some(mut pk_stats) = ecs.get_mut::<BuildingStats>(entity) {
+            pk_stats.charge += actual as f32;
+            if pk_stats.charge > pk_stats.max_charge {
+                pk_stats.charge = pk_stats.max_charge;
             }
         }
     });
@@ -435,7 +436,7 @@ pub fn handle_resp_profit(
 
 /// Handle resp admin save (cost, clan toggle, clanzone).
 /// Button format: `resp_save:{richlist_data}` (coordinates from `current_window`).
-/// RichList data from client: `key:value#key:value#...` (hash-separated, colon key:value).
+/// `RichList` data from client: `key:value#key:value#...` (hash-separated, colon key:value).
 pub fn handle_resp_save(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -489,11 +490,11 @@ pub fn handle_resp_save(
         .unwrap_or(0);
 
     let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
-        if let Some(mut stats) = ecs.get_mut::<BuildingStats>(entity) {
+        if let Some(mut pk_stats) = ecs.get_mut::<BuildingStats>(entity) {
             if let Some(cost_str) = fields.get("cost") {
                 if let Ok(c) = cost_str.parse::<i32>() {
                     if (0..=5000).contains(&c) {
-                        stats.cost = c;
+                        pk_stats.cost = c;
                     }
                 }
             }

@@ -8,6 +8,7 @@ pub mod provider;
 
 pub use boxes::*;
 pub use buildings::*;
+pub use chats::ChatRow;
 pub use clans::*;
 pub use players::*;
 pub use programs::ProgramRow;
@@ -134,9 +135,17 @@ impl Database {
                 name TEXT NOT NULL,
                 code TEXT NOT NULL,
                 FOREIGN KEY(player_id) REFERENCES players(id)
-            );
+            );",
+            )?;
+        }
+        self.init_box_table()
+    }
 
-            -- Boxes (Cell 90): crystal storage like reference `boxes` table
+    /// Таблица `boxes` (ячейка 90) — вынесена из `init_tables` (лимит строк).
+    fn init_box_table(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute_batch(
+            "-- Boxes (Cell 90): crystal storage like reference `boxes` table
             CREATE TABLE IF NOT EXISTS boxes (
                 x INTEGER NOT NULL,
                 y INTEGER NOT NULL,
@@ -154,8 +163,8 @@ impl Database {
                 cry_cyan INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (x, y)
             );",
-            )?;
-        }
+        )?;
+        drop(conn);
         Ok(())
     }
 
@@ -224,86 +233,30 @@ impl Database {
 
         // Reference-compatible `boxes` crystal columns: ze/cr/si/be/fi/go
         {
-            let conn = self.conn.lock();
-            let has_ze = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='ze'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            let has_cr = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='cr'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            let has_si = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='si'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            let has_be = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='be'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            let has_fi = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='fi'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            let has_go = conn
-                .prepare("SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='go'")?
-                .query_row([], |r| r.get::<_, i32>(0))
-                .map(|c| c > 0)
-                .unwrap_or(false);
-            drop(conn);
-
-            if !has_ze {
+            // Колонки кристаллов (фикс. набор, не пользовательский ввод):
+            // проверить все под одним локом, затем добавить недостающие.
+            let crystal_cols = ["ze", "cr", "si", "be", "fi", "go"];
+            let missing_cols: Vec<&str> = {
+                let conn = self.conn.lock();
+                crystal_cols
+                    .into_iter()
+                    .filter(|name| {
+                        conn.prepare(&format!(
+                            "SELECT COUNT(*) FROM pragma_table_info('boxes') WHERE name='{name}'"
+                        ))
+                        .and_then(|mut s| s.query_row([], |r| r.get::<_, i32>(0)))
+                        .map(|c| c == 0)
+                        .unwrap_or(true)
+                    })
+                    .collect()
+            };
+            for name in missing_cols {
                 self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN ze INTEGER NOT NULL DEFAULT 0",
+                    &format!("ALTER TABLE boxes ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0"),
                     [],
                 )?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.ze");
-            }
-            if !has_cr {
-                self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN cr INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-                did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.cr");
-            }
-            if !has_si {
-                self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN si INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-                did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.si");
-            }
-            if !has_be {
-                self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN be INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-                did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.be");
-            }
-            if !has_fi {
-                self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN fi INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-                did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.fi");
-            }
-            if !has_go {
-                self.conn.lock().execute(
-                    "ALTER TABLE boxes ADD COLUMN go INTEGER NOT NULL DEFAULT 0",
-                    [],
-                )?;
-                did_migrate = true;
-                tracing::info!("Migrated DB: added boxes.go");
+                tracing::info!("Migrated DB: added boxes.{name}");
             }
 
             // Best-effort backfill from legacy cry_* columns if present.
@@ -492,6 +445,96 @@ impl Database {
                         Err(e) => tracing::warn!("Migrated DB: could not DROP is_moderator: {e}"),
                     }
                 }
+            }
+        }
+
+        // chat_color: код цвета поля ввода чата (mC, 0..=19). Нет в
+        // server_reference (там только структура ChatColorPacket, логики
+        // нет). См. docs/CLIENT_PROTOCOL_GAPS.md §5.
+        {
+            let has_chat_color = {
+                let conn = self.conn.lock();
+                conn.prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('players') WHERE name='chat_color'",
+                )?
+                .query_row([], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false)
+            };
+            if !has_chat_color {
+                let conn = self.conn.lock();
+                conn.execute(
+                    "ALTER TABLE players ADD COLUMN chat_color INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added chat_color column");
+            }
+        }
+
+        // chat_messages.player_id + color: автор сообщения и его цвет на
+        // момент отправки. `server_reference` `GLine.playerid` — реальная
+        // EF-колонка (`player`/`time` — `[NotMapped]`); реф `GCMessage`
+        // хардкодит color 1/история 10/live (баг — один message → разный
+        // цвет). Клиент (источник правды) `ChatLineInfo`: `gid<=0`→fontSize
+        // 10 / без времени/id; `ChatManager.colorFromCode(message.color)`
+        // красит строку. Без хранения player_id/color история ≠ live.
+        // См. docs/CLIENT_PROTOCOL_GAPS.md §1.
+        for (col, ddl) in [
+            (
+                "player_id",
+                "ALTER TABLE chat_messages ADD COLUMN player_id INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "color",
+                "ALTER TABLE chat_messages ADD COLUMN color INTEGER NOT NULL DEFAULT 10",
+            ),
+        ] {
+            let has_col = {
+                let conn = self.conn.lock();
+                conn.prepare(
+                    "SELECT COUNT(*) FROM pragma_table_info('chat_messages') WHERE name=?1",
+                )?
+                .query_row([col], |r| r.get::<_, i32>(0))
+                .map(|c| c > 0)
+                .unwrap_or(false)
+            };
+            if !has_col {
+                let conn = self.conn.lock();
+                conn.execute(ddl, [])?;
+                did_migrate = true;
+                tracing::info!("Migrated DB: added chat_messages.{col} column");
+            }
+        }
+
+        // Бэкфилл player_id легаси-строк (до колонки `player_id` = 0) по
+        // `player_name` → `players.name` (UNIQUE). Без него старые
+        // сообщения (отправленные до миграции) идут `gid=0` → клиент
+        // `ChatLineInfo.cs:54` рисует их `fontSize=10` (мелкие) без
+        // времени/id/ЛС — репорт юзера «всё равно мелкий шрифт» (18/22
+        // FED-истории). Идемпотентно (только `player_id=0`); автор
+        // удалён → остаётся 0 (невосстановимо). `color` не трогаем —
+        // снимок на момент отправки утрачен, дефолт 10 стабилен и НЕ
+        // мелкий (мелкость = `gid`, не `color`). См. GAPS §1.
+        {
+            let conn = self.conn.lock();
+            let backfilled = conn
+                .execute(
+                    "UPDATE chat_messages SET player_id = (
+                         SELECT p.id FROM players p WHERE p.name = chat_messages.player_name
+                     )
+                     WHERE player_id = 0
+                       AND EXISTS (
+                         SELECT 1 FROM players p WHERE p.name = chat_messages.player_name
+                     )",
+                    [],
+                )
+                .unwrap_or(0);
+            if backfilled > 0 {
+                did_migrate = true;
+                tracing::info!(
+                    "Migrated DB: backfilled chat_messages.player_id for {backfilled} legacy rows"
+                );
             }
         }
 

@@ -64,8 +64,9 @@ pub fn handle_gui_button(
                 "Создание программы из GUI пока не подключено к БД.",
             );
         }
-        "clan_menu" => crate::net::session::social::clans::handle_clan_menu(state, tx, pid),
-        "clan_back" => crate::net::session::social::clans::handle_clan_menu(state, tx, pid),
+        "clan_menu" | "clan_back" => {
+            crate::net::session::social::clans::handle_clan_menu(state, tx, pid);
+        }
         "clan_create_view" => handle_clan_create_view(tx),
         "clan_requests" => {
             crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid);
@@ -210,8 +211,8 @@ fn handle_pack_operation(
     let p_info = state
         .query_player(pid, |ecs, entity| {
             let pos = ecs.get::<PlayerPosition>(entity)?;
-            let stats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, stats.clan_id.unwrap_or(0)))
+            let pstats = ecs.get::<PlayerStats>(entity)?;
+            Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
         })
         .flatten();
 
@@ -283,13 +284,13 @@ pub fn open_pack_gui(
 
     let title = view.pack_type.name();
 
-    // Fetch detailed stats from ECS for GUI
-    let stats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
+    // Fetch detailed pstats from ECS for GUI
+    let pstats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
         let ecs = state.ecs.read();
-        let stats = ecs.get::<BuildingStats>(*ent)?;
-        Some((stats.hp, stats.max_hp))
+        let pstats = ecs.get::<BuildingStats>(*ent)?;
+        Some((pstats.hp, pstats.max_hp))
     });
-    let (hp, mhp) = stats_info.unwrap_or((0, 0));
+    let (hp, mhp) = pstats_info.unwrap_or((0, 0));
 
     let text = format!(
         "Здание: {}\nЗаряд: {:.1}\nПрочность: {}/{}",
@@ -488,8 +489,8 @@ fn handle_storage_transfer(
     let p_info = state
         .query_player(pid, |ecs, entity| {
             let pos = ecs.get::<PlayerPosition>(entity)?;
-            let stats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, stats.clan_id.unwrap_or(0)))
+            let pstats = ecs.get::<PlayerStats>(entity)?;
+            Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
         })
         .flatten();
     let Some((px, py, p_clan)) = p_info else {
@@ -709,7 +710,7 @@ fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
 }
 
 /// Show recipe details + Start button.
-/// Called from `craft_recipe:{id}:{x}:{y}` but handle_complex_button parses
+/// Called from `craft_recipe:{id}:{x}:{y}` but `handle_complex_button` parses
 /// only the prefix `craft_recipe:` and passes the rest as a string.
 fn handle_craft_recipe_view(
     state: &Arc<GameState>,
@@ -807,9 +808,9 @@ fn handle_craft_start(
     let deducted = state
         .modify_player(pid, |ecs, entity| {
             {
-                let stats = ecs.get::<PlayerStats>(entity)?;
+                let pstats = ecs.get::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
-                    if stats.crystals[c.id as usize] < i64::from(c.num) * i64::from(num) {
+                    if pstats.crystals[c.id as usize] < i64::from(c.num) * i64::from(num) {
                         return Some(false);
                     }
                 }
@@ -825,11 +826,11 @@ fn handle_craft_start(
             }
 
             {
-                let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
+                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
-                    stats.crystals[c.id as usize] -= i64::from(c.num) * i64::from(num);
+                    pstats.crystals[c.id as usize] -= i64::from(c.num) * i64::from(num);
                 }
-                send_u_packet(tx, "@B", &basket(&stats.crystals, 1).1);
+                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
             }
 
             if !recipe.cost_res.is_empty() {
@@ -949,8 +950,8 @@ fn open_teleport_gui(
                 if (pos.x - view.x).abs() >= 1000 || (pos.y - view.y).abs() >= 1000 {
                     return None;
                 }
-                let stats = ecs.get::<BuildingStats>(entity)?;
-                if stats.charge <= 0.0 {
+                let pstats = ecs.get::<BuildingStats>(entity)?;
+                if pstats.charge <= 0.0 {
                     return None;
                 }
                 Some((pos.x, pos.y))
@@ -984,12 +985,12 @@ fn open_teleport_gui(
             .map(|l| serde_json::json!(l)),
     );
 
-    let stats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
+    let pstats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
         let ecs = state.ecs.read();
-        let stats = ecs.get::<BuildingStats>(*ent)?;
-        Some((stats.hp, stats.max_hp))
+        let pstats = ecs.get::<BuildingStats>(*ent)?;
+        Some((pstats.hp, pstats.max_hp))
     });
-    let (hp, mhp) = stats_info.unwrap_or((0, 0));
+    let (hp, mhp) = pstats_info.unwrap_or((0, 0));
 
     let text = if nearby_tps.is_empty() {
         format!(
@@ -1157,8 +1158,8 @@ fn open_market_gui(
     // Fetch player money and crystals
     let player_info = state
         .query_player(pid, |ecs, entity| {
-            let stats = ecs.get::<PlayerStats>(entity)?;
-            Some((stats.money, stats.crystals))
+            let pstats = ecs.get::<PlayerStats>(entity)?;
+            Some((pstats.money, pstats.crystals))
         })
         .flatten();
 
@@ -1195,7 +1196,7 @@ fn open_market_gui(
 }
 
 /// Build the tabs JSON array for Market.
-/// C# Window.ToString: active tab = ["Label", ""], inactive = ["Label", "action"].
+/// C# Window.ToString: active tab = `["Label", ""]`, inactive = `["Label", "action"]`.
 fn build_market_tabs(active_tab: &str) -> serde_json::Value {
     let sell_active = active_tab == "sellcrys";
     let buy_active = active_tab == "buycrys";
@@ -1212,7 +1213,7 @@ fn build_market_tabs(active_tab: &str) -> serde_json::Value {
 }
 
 /// Build sell tab page JSON.
-/// C# ref: Market.BuildSelltab — CrystalConfig with sell prices, sliders up to player's crystals.
+/// C# ref: Market.BuildSelltab — `CrystalConfig` with sell prices, sliders up to player's crystals.
 fn build_market_sell_page(
     player_crys: &[i64; 6],
     is_owner: bool,
@@ -1256,8 +1257,8 @@ fn build_market_sell_page(
 }
 
 /// Build buy tab page JSON.
-/// C# ref: Market.BuildBuytab — CrystalConfig with buy prices (10x), sliders denominator =
-/// player.money / (cost * 10). BuyMode = true (`crys_buy: true`).
+/// C# ref: Market.BuildBuytab — `CrystalConfig` with buy prices (10x), sliders denominator =
+/// player.money / (cost * 10). `BuyMode` = true (`crys_buy: true`).
 fn build_market_buy_page(
     player_money: i64,
     is_owner: bool,
@@ -1313,7 +1314,7 @@ fn build_market_auc_page(tabs: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// Resolve market coordinates and tab from current_window ("market:{x}:{y}:{tab}").
+/// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
 fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
     state
         .query_player(pid, |ecs, entity| {
@@ -1413,7 +1414,7 @@ fn handle_market_sellall(
 
 /// Common sell logic (used by sell and sellall).
 /// C# ref: `MarketSystem.Sell`:
-///   for each i: if RemoveCrys succeeds, money += value * GetCrysCost(i)
+///   for each i: if `RemoveCrys` succeeds, money += value * GetCrysCost(i)
 ///   market.moneyinside += (long)(money * 0.1)
 fn do_market_sell(
     state: &Arc<GameState>,
@@ -1427,23 +1428,23 @@ fn do_market_sell(
 
     // Deduct crystals from player, compute money earned
     state.modify_player(pid, |ecs, entity| {
-        let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
+        let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
         for i in 0..6 {
             let to_sell = sliders[i];
             if to_sell <= 0 {
                 continue;
             }
             // C# RemoveCrys: only succeeds if player has enough
-            if stats.crystals[i] >= to_sell {
-                stats.crystals[i] -= to_sell;
+            if pstats.crystals[i] >= to_sell {
+                pstats.crystals[i] -= to_sell;
                 total_money += to_sell * market::get_crystal_cost(i);
             }
         }
         // Add money to player
-        stats.money += total_money;
+        pstats.money += total_money;
         // Send updates
-        send_u_packet(tx, "@B", &basket(&stats.crystals, 1).1);
-        send_u_packet(tx, "P$", &money(stats.money, stats.creds).1);
+        send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
+        send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
         Some(())
     });
 
@@ -1493,7 +1494,7 @@ fn handle_market_buy(
     // Buy crystals: deduct money, add crystals
     // C# ref: for each i: if sliders[i] > 0 && player can afford -> deduct money, add crystals
     state.modify_player(pid, |ecs, entity| {
-        let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
+        let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
         for i in 0..6 {
             let to_buy = sliders[i];
             if to_buy <= 0 {
@@ -1501,14 +1502,14 @@ fn handle_market_buy(
             }
             let cost = to_buy * market::get_crystal_buy_price(i);
             // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
-            if stats.money < cost {
+            if pstats.money < cost {
                 continue;
             }
-            stats.money -= cost;
-            stats.crystals[i] += to_buy;
+            pstats.money -= cost;
+            pstats.crystals[i] += to_buy;
         }
-        send_u_packet(tx, "@B", &basket(&stats.crystals, 1).1);
-        send_u_packet(tx, "P$", &money(stats.money, stats.creds).1);
+        send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
+        send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
         Some(())
     });
 
@@ -1518,7 +1519,7 @@ fn handle_market_buy(
 
 /// Handle "getprofit" — owner withdraws accumulated market profit.
 /// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
-/// then re-open the admin RichList page.
+/// then re-open the admin `RichList` page.
 fn handle_market_getprofit(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -1556,7 +1557,7 @@ fn handle_market_getprofit(
     open_market_admin_gui(state, tx, pid, bx, by);
 }
 
-/// Open Market admin page with RichList (1:1 with C# `Market.onadmn`).
+/// Open Market admin page with `RichList` (1:1 with C# `Market.onadmn`).
 /// Shows HP and profit withdrawal button. Called from ADMN gear icon.
 pub fn open_market_admin_gui(
     state: &Arc<GameState>,
@@ -1575,9 +1576,9 @@ pub fn open_market_admin_gui(
     // Fetch building details from ECS
     let details = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
         let ecs = state.ecs.read();
-        let stats = ecs.get::<BuildingStats>(*ent)?;
+        let pstats = ecs.get::<BuildingStats>(*ent)?;
         let storage = ecs.get::<BuildingStorage>(*ent)?;
-        Some((stats.hp, storage.money))
+        Some((pstats.hp, storage.money))
     });
 
     let Some((hp, money_inside)) = details else {
@@ -1622,7 +1623,7 @@ pub fn open_market_admin_gui(
     // Keep market window tag so getprofit can resolve coordinates
     state.modify_player(pid, |ecs, entity| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("market:{}:{}:admin", pack_x, pack_y));
+            ui.current_window = Some(format!("market:{pack_x}:{pack_y}:admin"));
         }
         Some(())
     });
@@ -1646,13 +1647,27 @@ fn handle_settings_save(
 
     state.modify_player(pid, |ecs, entity| {
         let mut s = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
-        if let Some(&v) = pairs.get("isca") { s.isca = v.parse().unwrap_or(s.isca); }
-        if let Some(&v) = pairs.get("tsca") { s.tsca = v.parse().unwrap_or(s.tsca); }
-        if let Some(&v) = pairs.get("mous") { s.mous = v == "1"; }
-        if let Some(&v) = pairs.get("pot") { s.pot = v == "1"; }
-        if let Some(&v) = pairs.get("frc") { s.frc = v == "1"; }
-        if let Some(&v) = pairs.get("ctrl") { s.ctrl = v == "1"; }
-        if let Some(&v) = pairs.get("mof") { s.mof = v == "1"; }
+        if let Some(&v) = pairs.get("isca") {
+            s.isca = v.parse().unwrap_or(s.isca);
+        }
+        if let Some(&v) = pairs.get("tsca") {
+            s.tsca = v.parse().unwrap_or(s.tsca);
+        }
+        if let Some(&v) = pairs.get("mous") {
+            s.mous = v == "1";
+        }
+        if let Some(&v) = pairs.get("pot") {
+            s.pot = v == "1";
+        }
+        if let Some(&v) = pairs.get("frc") {
+            s.frc = v == "1";
+        }
+        if let Some(&v) = pairs.get("ctrl") {
+            s.ctrl = v == "1";
+        }
+        if let Some(&v) = pairs.get("mof") {
+            s.mof = v == "1";
+        }
         if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
             f.dirty = true;
         }

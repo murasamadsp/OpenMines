@@ -1,36 +1,26 @@
-name: development
+name: openmines
 
 services:
   server:
-    # Docker: tini как PID 1 (сигналы/zombie) — не часть игрового референса, только рантайм контейнера.
-    init: true
-    build:
-      context: ..
-      dockerfile: ops/Dockerfile.vps
-    image: openmines-server-dev:latest
-    restart: unless-stopped
+    image: rust:1.89-bookworm
+    command: cargo run --release
     ports:
       - "8090:8090"
       - "8091:8091"
     volumes:
-      - development_server_data:/data
-    labels:
-      - "com.example.group=games"
-      - "com.example.environment=development"
+      - openmines_server_data:/data
+      - ../:/build
+      # Кеш cargo (ускоряет пересборку при итерациях; volume'ы уже есть на VPS).
+      - openmines-cargo-registry:/usr/local/cargo/registry
+      - openmines-cargo-git:/usr/local/cargo/git
+    working_dir: /build
     environment:
-      # Паники в логах Docker: строка + стек (см. server/logging.rs `log_panic_to_stderr`).
       RUST_BACKTRACE: "1"
-      # Жёстко выйти после паники (exit 101), чтобы `restart` и метрики явно зафиксировали сбой.
-      # Раскомментируй на время расследования «немых» падений воркеров Tokio.
-      # M3R_ABORT_ON_PANIC: "1"
-      # Не ждать SIGINT от `ctrl_c()` в контейнере (см. server/main.rs shutdown task).
-      M3R_USE_CTRL_C: "0"
-      # Временно усилить копание (множитель урона по НЕ-кристаллам).
-      M3R_DIG_MULT: "6"
-      # Включить точечные логи копания сыпучки (см. dig_build.rs); выключать, когда отладим.
-      M3R_TRACE_DIG: "1"
-      # Роли: `players.role` — 0 игрок, 1 модератор, 2 админ (ручной SQL: UPDATE … SET role=2).
-      M3R_GRANT_ADMIN: Murasama,Admin
+      M3R_DATA_DIR: "/data"
+      # REGEN отключён: сохраняем существующий мир/игроков на volume при
+      # деплое фикса (force-recreate контейнера НЕ трогает named volume).
+      # Было "1" для repro фриза (чистый мир); для прод-деплоя — "0".
+      M3R_REGEN_WORLD: "0"
     logging:
       driver: "json-file"
       options:
@@ -38,9 +28,14 @@ services:
         max-file: "3"
 
 volumes:
-  development_server_data:
-    # Имя оставлено для совместимости с уже созданным томом на VPS (данные не теряются).
-    name: mines3_server_data
+  openmines_server_data:
+    name: openmines_server_data
+  openmines-cargo-registry:
+    name: openmines-cargo-registry
+    external: true
+  openmines-cargo-git:
+    name: openmines-cargo-git
+    external: true
 
 networks:
   default:

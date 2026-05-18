@@ -61,9 +61,6 @@ pub struct PlayerUI {
 
 #[derive(Component)]
 pub struct PlayerCooldowns {
-    // TODO: last_move will be used when movement rate-limiting is fully wired
-    #[allow(dead_code)]
-    pub last_move: Instant,
     pub last_dig: Instant,
     /// Как `Player.TryAct(..., 200)` для `Xbld` в референсе.
     pub last_build: Instant,
@@ -92,7 +89,12 @@ pub struct PlayerMetadata {
     pub resp_y: Option<i32>,
 }
 
-#[derive(Component)]
+// 1:1 ref Settings.cs: поля настроек мапятся 1:1 на клиентский протокол
+// (cc/snd/mus/isca/tsca/mous/pot/frc/ctrl/mof). Битпакинг/группировка
+// сломали бы это соответствие — каждое поле адресуется по имени в
+// settings GUI и sync. Та же конвенция точечного allow, что skills.rs.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Component, Clone, Copy)]
 pub struct PlayerSettings {
     pub auto_dig: bool,
     // C# ref Settings.cs fields:
@@ -108,20 +110,20 @@ pub struct PlayerSettings {
     pub mof: bool,
 }
 
-impl Clone for PlayerSettings {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl Copy for PlayerSettings {}
-
 impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
             auto_dig: false,
-            cc: 10, snd: false, mus: false, isca: 0, tsca: 0,
-            mous: true, pot: false, frc: true, ctrl: true, mof: true,
+            cc: 10,
+            snd: false,
+            mus: false,
+            isca: 0,
+            tsca: 0,
+            mous: true,
+            pot: false,
+            frc: true,
+            ctrl: true,
+            mof: true,
         }
     }
 }
@@ -142,11 +144,11 @@ pub struct ActivePlayer {
 
 impl PlayerPosition {
     pub fn chunk_x(&self) -> u32 {
-        self.x.max(0) as u32 / 32
+        self.x.max(0).cast_unsigned() / 32
     }
 
     pub fn chunk_y(&self) -> u32 {
-        self.y.max(0) as u32 / 32
+        self.y.max(0).cast_unsigned() / 32
     }
 }
 

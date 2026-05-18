@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     logging::install_early_panic_hook();
     println!("[Main] Process started");
     let cfg = config::Config::load("config.json").map_err(|e| {
-        println!("[Main] CRITICAL: Failed to load config.json: {}", e);
+        println!("[Main] CRITICAL: Failed to load config.json: {e}");
         e
     })?;
     println!("[Main] Config loaded, initializing logging...");
@@ -132,7 +132,13 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("net::run finished with error (process may exit): {e:#}"),
     }
 
-    // Final flush/save on shutdown.
+    shutdown_flush(&game_state);
+    net_res
+}
+
+/// Финальное сохранение игроков + flush мира при остановке
+/// (вынесено из `main` — лимит строк).
+fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     tracing::info!("Shutdown: saving all players and flushing world...");
     let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
     for pid in shutdown_pids {
@@ -145,14 +151,12 @@ async fn main() -> Result<()> {
         if let Some(row) = player_row
             && let Err(e) = game_state.db.save_player(&row)
         {
-            tracing::error!("Shutdown save failed for player {}: {e}", pid);
+            tracing::error!("Shutdown save failed for player {pid}: {e}");
         }
     }
     if let Err(e) = game_state.world.flush() {
         tracing::error!("Shutdown world flush error: {e}");
     }
-
-    net_res
 }
 
 /// Выставить роль админа (`role = 2`) по нику из `M3R_GRANT_ADMIN` (через запятую).
@@ -193,8 +197,7 @@ fn migrate_legacy_state_files(state_dir: &Path, world_name: &str) -> Result<()> 
         "openmines.db".to_string(),
         "openmines.db-wal".to_string(),
         "openmines.db-shm".to_string(),
-        format!("{world_name}.mapb"),
-        format!("{world_name}_road.mapb"),
+        format!("{world_name}_v2.map"),
         format!("{world_name}_durability.mapb"),
     ];
     for name in names {
@@ -242,9 +245,13 @@ fn migrate_mines3_db_to_openmines(state_dir: &Path) {
 
 fn remove_world_files(world_name: &str, state_dir: &Path) {
     let files = [
+        format!("{world_name}_v2.map"),
+        format!("{world_name}_v2.map.bak"),
+        format!("{world_name}_durability.mapb"),
+        format!("{world_name}_durability.mapb.bak"),
+        // legacy `.mapb`-формат — тоже сносим при полной регенерации
         format!("{world_name}.mapb"),
         format!("{world_name}_road.mapb"),
-        format!("{world_name}_durability.mapb"),
     ];
     for file in files {
         let path = state_dir.join(&file);

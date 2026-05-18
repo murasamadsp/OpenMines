@@ -48,7 +48,7 @@ pub fn get_building_config(pack_type: PackType) -> Option<&'static BuildingConfi
     cfg.buildings.get(key)
 }
 
-/// Как `MinesServer.GameShit.Buildings.PackType` в server_reference (`PackType.cs`).
+/// Как `MinesServer.GameShit.Buildings.PackType` в `server_reference` (`PackType.cs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackType {
     None,     // ' ' — в т.ч. класс Gate в C# объявлен как `PackType.None`
@@ -72,7 +72,7 @@ pub enum PackType {
 }
 
 impl PackType {
-    fn config_json_key(self) -> Option<&'static str> {
+    const fn config_json_key(self) -> Option<&'static str> {
         match self {
             Self::Teleport => Some("Teleport"),
             Self::Resp => Some("Resp"),
@@ -212,6 +212,40 @@ pub struct GridPosition {
 #[derive(Component)]
 pub struct BuildingFlags {
     pub dirty: bool,
+}
+
+pub fn spawn_building_from_row(ecs: &mut bevy_ecs::prelude::World, row: &BuildingRow) -> Entity {
+    let pack_type = PackType::from_str(&row.type_code).unwrap_or(PackType::Resp);
+    ecs.spawn((
+        BuildingMetadata {
+            id: row.id,
+            pack_type,
+        },
+        GridPosition { x: row.x, y: row.y },
+        BuildingStats {
+            charge: row.charge,
+            max_charge: row.max_charge,
+            cost: row.cost,
+            hp: row.hp,
+            max_hp: row.max_hp,
+        },
+        BuildingStorage {
+            money: row.money_inside,
+            crystals: row.crystals_inside,
+            items: row.items_inside.clone(),
+        },
+        BuildingOwnership {
+            owner_id: row.owner_id,
+            clan_id: row.clan_id,
+        },
+        BuildingCrafting {
+            recipe_id: row.craft_recipe_id,
+            num: row.craft_num,
+            end_ts: row.craft_end_ts,
+        },
+        BuildingFlags { dirty: false },
+    ))
+    .id()
 }
 
 pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> Option<BuildingRow> {

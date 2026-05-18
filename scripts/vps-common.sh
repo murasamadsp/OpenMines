@@ -74,14 +74,40 @@ vps_rsync_repo() {
     "$remote_host:$remote_dir/ops/"
 }
 
-# Virtuozzo/OpenVZ: BuildKit RUN в образе rust:* даёт runc «PID pipe EOF»;
-# обычный путь создания контейнеров (`docker run`) с тем же образом — стабилен.
+# Повтор команды при ТРАНЗИЕНТНОМ сбое рантайма (OpenVZ/Virtuozzo: runc
+# «can't get final child's PID from pipe: EOF» — хост не смог форкнуть init
+# контейнера под моментальным лимитом PID/ресурсов). Не маскирует реальные
+# ошибки сборки: те детерминированы и упадут на всех попытках одинаково.
+# $1=описание, далее — команда с аргументами. rc последней попытки.
+vps_retry_transient() {
+  local what=$1
+  shift
+  local attempt max_attempts=4 rc=0
+  for attempt in $(seq 1 "$max_attempts"); do
+    rc=0
+    "$@" && return 0 || rc=$?
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      echo "WARN: «$what» попытка $attempt/$max_attempts упала (rc=$rc; вероятно транзиентный runc на OpenVZ). Повтор через $((attempt * 8))s…" >&2
+      sleep "$((attempt * 8))"
+    fi
+  done
+  return "$rc"
+}
+
+# Прогрев cargo-кеша на VPS отдельным `docker run` (быстрее последующий
+# `cargo run --release` в compose-контейнере). НЕ КРИТИЧЕН и НЕ ФАТАЛЕН:
+# сам compose-сервis это `rust:1.89` + `cargo run --release`, контейнер
+# компилит код сам при `up --force-recreate` (авторитетный шаг). Поэтому
+# даже стойкий сбой прогрева не должен ронять деплой — функция всегда
+# возвращает 0; деплой продолжается к `up`. Локальный `cargo check`/`test`
+# уже отсеял ошибки компиляции до деплоя.
 vps_build_openmines_binary() {
   local remote_host=$1
   local remote_dir=$2
 
-  echo "==> Сборка openmines-server на VPS (docker run + cargo, не BuildKit rust-слой)"
-  vps_ssh "$remote_host" "set -euo pipefail
+  echo "==> Прогрев cargo-кеша на VPS (docker run + cargo; не критичен для деплоя)"
+  _vps_prebuild_once() {
+    vps_ssh "$remote_host" "set -euo pipefail
 cd $(printf '%q' "$remote_dir")
 docker volume create openmines-cargo-registry >/dev/null 2>&1 || true
 docker volume create openmines-cargo-git >/dev/null 2>&1 || true
@@ -93,6 +119,16 @@ docker run --rm \
   -w /build \
   rust:1.89-bookworm \
   bash /build/ops/vps-cargo-docker.sh"
+  }
+  if vps_retry_transient "prebuild" _vps_prebuild_once; then
+    echo "==> Прогрев кеша завершён"
+  else
+    echo "WARN: прогрев cargo-кеша не удался (повторы исчерпаны)." >&2
+    echo "WARN: НЕ фатально — compose-контейнер сам соберёт код через" >&2
+    echo "WARN: 'cargo run --release' при 'up --force-recreate'. Деплой идёт дальше." >&2
+  fi
+  unset -f _vps_prebuild_once
+  return 0
 }
 
 vps_ssh_compose() {

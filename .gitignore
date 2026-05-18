@@ -1,94 +1,88 @@
-# Rust
-/target/
-**/*.rs.bk
-
-# SQLite (по умолчанию `data/openmines.db`, см. `data_dir` в config; legacy — mines3.db)
-/mines3.db
-/openmines.db
-/data/
-*.db-shm
-*.db-wal
-*.db-journal
-
-# Мир: mmap-файлы из World::new (`{world_name}.mapb`, `{world_name}_road.mapb`, …)
-*.mapb
-
-# Клиентские артефакты Unity
-client/Library/
-client/Temp/
-client/obj/
-client/Build/
-client-builds/
-
 # .NET-сборки утилит под tools/ (MinesServer/ — свой .gitignore)
 tools/**/bin/
 tools/**/obj/
 
-# Состояние ассистентов / IDE (не коммитить)
-.omc/
-.claude/settings.local.json
+# Legacy/temporary artifacts
+MinesServer_DO_NOT_READ_ME/
+MinesSetup.exe
+
+# Map viewer (Vite)
+web/mapviewer/dist/
+web/mapviewer/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference / legacy server sources (не коммитить)
+# server_reference/
+
+# Rust
+**/*.rs.bk
+/target/
+
+# SQLite (по умолчанию `data/openmines.db`, см. `data_dir` в config; legacy — mines3.db)
+*.db-journal
+*.db-shm
+*.db-wal
+/data/
+/mines3.db
+/openmines.db
+
+# Клиентские артефакты Unity
+client-builds/
+client/Build/
+client/Library/
+client/obj/
+client/Temp/
+
+# Ключи/сертификаты/креды (никогда не коммитить)
+**/*credentials*.json
+**/*secret*.json
+**/*secret*.yaml
+**/*secret*.yml
+*.cer
+*.crt
+*.der
+*.jks
+*.key
+*.keystore
+*.p12
+*.pem
+*.pfx
+*keystore*
+.netrc
+.npmrc
+.pypirc
+google-services.json
+GoogleService-Info.plist
+
+# Логи
+*.log
+
+# Локальные настройки линтера (если меняются локально)
+.markdownlint.json
+
+# Мир: mmap-файлы из World::new (`{world_name}.mapb`, `{world_name}_road.mapb`, …)
+*.mapb
+
+# Редакторы / мусор
+*.swo
+*.swp
+*~
+.idea/
+
+# Резервные копии рядом с артефактами
+*.bak
 
 # Секреты и локальное окружение
 .env
 .env.*
 !.env.example
 
-# Ключи/сертификаты/креды (никогда не коммитить)
-*.pem
-*.key
-*.p12
-*.pfx
-*.der
-*.crt
-*.cer
-*.jks
-*keystore*
-*.keystore
-**/*credentials*.json
-**/*secret*.json
-**/*secret*.yml
-**/*secret*.yaml
-google-services.json
-GoogleService-Info.plist
-.npmrc
-.pypirc
-.netrc
+# Состояние ассистентов / IDE (не коммитить)
+.claude/settings.local.json
+.omc/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Локальные настройки линтера (если меняются локально)
-.markdownlint.json
-
-# Legacy/temporary artifacts
-MinesSetup.exe
-MinesServer_DO_NOT_READ_ME/
-
-# Редакторы / мусор
-.idea/
-*.swp
-*.swo
-*~
-
-# Резервные копии рядом с артефактами
-*.bak
-
-# Map viewer (Vite)
-web/mapviewer/node_modules/
-web/mapviewer/dist/
-
-# Reference / legacy server sources (не коммитить)
-server_reference/
-
-# Логи
-*.log
-
-
-
-
-temp/
 Temp/
-
-client/
-client-builds/
+temp/

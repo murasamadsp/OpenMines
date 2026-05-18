@@ -1,14 +1,17 @@
 //! Диспетчеризация TY-пакетов (игровые действия).
+use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::{handle_build, handle_dig};
+use crate::net::session::play::geo::handle_geo;
 use crate::net::session::play::movement::handle_move;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     handle_dpbx_crystal_box, handle_my_buildings_list, handle_programmator_pope_menu,
 };
+use crate::net::session::social::chat::{
+    handle_channel_chat, handle_chat_choose, handle_chat_menu, handle_chat_private,
+    handle_chat_resync, handle_chat_settings, handle_local_chat,
+};
 use crate::net::session::social::clans::handle_clan_menu;
-use crate::net::session::play::death::handle_death;
-use crate::net::session::play::geo::handle_geo;
-use crate::net::session::social::chat::{handle_channel_chat, handle_chat_init_ty, handle_local_chat};
 use crate::net::session::social::commands::{is_admin_command, send_admin_help, send_ok};
 use crate::net::session::social::misc::{
     handle_auto_dig_toggle, handle_prog_ty, handle_sett_ty, handle_whoi,
@@ -25,6 +28,7 @@ pub fn dispatch_ty_packet(
     packet: &TyPacket,
 ) -> Result<()> {
     let event = packet.event_str();
+    let __d0 = std::time::Instant::now();
     // Имена событий 1:1 с референсом (case-sensitive!).
     match event {
         "Xmov" => {
@@ -86,7 +90,28 @@ pub fn dispatch_ty_packet(
             handle_channel_chat(state, tx, pid, &packet.sub_payload);
         }
         "Chin" => {
-            handle_chat_init_ty(state, tx, pid, &packet.sub_payload);
+            // Ресинк чата по `getLasts()` клиента. Реф `Session.Chin` ПУСТ
+            // (реф неполон — клиент шлёт `lasts` для инкрементальной
+            // догрузки, реф это не реализовал). НИКОГДА не слать `mL`
+            // (это ломало вход в чат — прежняя итерация). История —
+            // здесь, не в login (иначе дубли на реконнекте).
+            // docs/CLIENT_PROTOCOL_GAPS.md §2.
+            handle_chat_resync(state, tx, pid, &packet.sub_payload);
+        }
+        // Навигация чата — НЕТ в server_reference (Session.cs только пустой
+        // Chin; TYPacket.cs декодит, но `default: //Invalid`). Контракт
+        // восстановлен по клиенту. docs/CLIENT_PROTOCOL_GAPS.md §3–6.
+        "Cmen" => {
+            handle_chat_menu(state, tx, pid, &packet.sub_payload);
+        }
+        "Choo" => {
+            handle_chat_choose(state, tx, pid, &packet.sub_payload);
+        }
+        "Cset" => {
+            handle_chat_settings(state, tx, pid, &packet.sub_payload);
+        }
+        "Cpri" => {
+            handle_chat_private(state, tx, pid, &packet.sub_payload);
         }
         "RESP" => {
             handle_death(state, tx, pid);
@@ -155,6 +180,10 @@ pub fn dispatch_ty_packet(
         _ => {
             tracing::warn!("Unknown TY event: {event}");
         }
+    }
+    let __el = __d0.elapsed();
+    if __el > std::time::Duration::from_millis(50) {
+        tracing::warn!(target: "tickprof", "SLOW handler event={event} pid={pid} elapsed={__el:?}");
     }
     Ok(())
 }

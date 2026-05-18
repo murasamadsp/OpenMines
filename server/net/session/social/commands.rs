@@ -41,15 +41,15 @@ const ADMIN_COMMAND_NO_RIGHTS: &str = "Нет прав на админ-кома�
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
-pub(crate) fn send_ok(tx: &mpsc::UnboundedSender<Vec<u8>>, title: &str, text: &str) {
+pub fn send_ok(tx: &mpsc::UnboundedSender<Vec<u8>>, title: &str, text: &str) {
     send_u_packet(tx, "OK", &ok_message(title, text).1);
 }
 
-pub(crate) fn send_admin_help(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+pub fn send_admin_help(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     send_ok(tx, "Админ-команды", ADMIN_COMMAND_HELP);
 }
 
-pub(crate) fn is_admin_command(state: &Arc<GameState>, pid: PlayerId) -> bool {
+pub fn is_admin_command(state: &Arc<GameState>, pid: PlayerId) -> bool {
     state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             ecs.get::<crate::game::player::PlayerStats>(entity)
@@ -121,12 +121,31 @@ fn handle_chat_giveall_command(
     }
     // All known item IDs: buildings (0-4,24,26,27,29), consumables (5-7,35,40), geopacks (10-16,34,42,43,46)
     let items: &[(i32, i32)] = &[
-        (0, 10), (1, 10), (2, 10), (3, 10), (4, 10),  // T,R,U,M,?
-        (5, 10), (6, 10), (7, 10),                      // boom, protector, razryadka
-        (10, 5), (11, 5), (12, 5), (13, 5), (14, 5), (15, 5), (16, 5), // geopacks
-        (24, 10), (26, 10), (27, 10), (29, 10),        // F,G,N,L buildings
-        (34, 5), (35, 10), (40, 10),                    // hypno, poli, C190
-        (42, 5), (43, 5), (46, 5),                      // special geopacks
+        (0, 10),
+        (1, 10),
+        (2, 10),
+        (3, 10),
+        (4, 10), // T,R,U,M,?
+        (5, 10),
+        (6, 10),
+        (7, 10), // boom, protector, razryadka
+        (10, 5),
+        (11, 5),
+        (12, 5),
+        (13, 5),
+        (14, 5),
+        (15, 5),
+        (16, 5), // geopacks
+        (24, 10),
+        (26, 10),
+        (27, 10),
+        (29, 10), // F,G,N,L buildings
+        (34, 5),
+        (35, 10),
+        (40, 10), // hypno, poli, C190
+        (42, 5),
+        (43, 5),
+        (46, 5), // special geopacks
     ];
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
@@ -464,7 +483,18 @@ fn handle_pack_move_command(
         .is_ok()
         {
             if let Some((_, entity)) = state.building_index.remove(&(x, y)) {
+                let (ocx, ocy) = crate::world::World::chunk_pos(x, y);
+                if let Some(mut e) = state.chunk_buildings.get_mut(&(ocx, ocy)) {
+                    e.retain(|&ent| ent != entity);
+                }
+
                 state.building_index.insert((nx, ny), entity);
+                let (ncx, ncy) = crate::world::World::chunk_pos(nx, ny);
+                state
+                    .chunk_buildings
+                    .entry((ncx, ncy))
+                    .or_default()
+                    .push(entity);
             }
             send_ok(tx, "Пак", "Позиция обновлена");
         } else {

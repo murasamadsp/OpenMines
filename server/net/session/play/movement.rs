@@ -1,7 +1,9 @@
 //! Движение робота по миру и рассылка HB соседям.
-//! Референс: `Session.MoveHandler` → `player.TryAct(() => player.Move(parent.X, parent.Y, dir), player.ServerPause)`
+//! Референс: C# `Player.Move` — БЕЗ серверного cooldown внутри Move
+//! (тайминг движения клиентский, `SpeedPacket`). Серверный silent-drop
+//! cooldown ломал client-prediction → rubber-band, убран (1:1 C#).
 use crate::game::buildings::PackType;
-use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
+use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats};
 use crate::net::session::prelude::*;
 
 #[allow(clippy::similar_names)]
@@ -29,44 +31,92 @@ pub fn handle_move(
 
     let result = state
         .modify_player(pid, |ecs, entity| {
-            let (px, py, skin, clan) = {
+            // 1. Immutable data gathering
+            let (px, py, skin, clan, window_open, prog_running) = {
                 let pos = ecs.get::<PlayerPosition>(entity)?;
                 let stats = ecs.get::<PlayerStats>(entity)?;
-                let ui = ecs.get::<PlayerUI>(entity)?;
-
-                let pos_x = pos.x;
-                let pos_y = pos.y;
-                let skin = stats.skin;
-                let clan = stats.clan_id.unwrap_or(0);
-
-                // Клиент — истина по таймингу движения; серверный cooldown убран.
-                // Клиент сам пейсит Xmov по `SpeedPacket`, сервер только валидирует позицию.
-
-                // 1:1 ref: `(win != null && !prog) => tp back`. For normal `Xmov` we treat it as `!prog`.
-                if ui.current_window.is_some() {
-                    tp_back("window", tx, pos_x, pos_y, target_x, target_y, "");
-                    return None;
-                }
-
-                // ref Player.cs:214-216: `if (programsData.ProgRunning) return;` — silent drop when programmator is running.
-                if let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                {
-                    if prog.running {
-                        return None;
-                    }
-                }
-
-                (pos_x, pos_y, skin, clan)
+                let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+                let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+                (
+                    pos.x,
+                    pos.y,
+                    stats.skin,
+                    stats.clan_id.unwrap_or(0),
+                    ui.current_window.is_some(),
+                    prog.running,
+                )
             };
 
-            // Референс: ValidCoord check
+            // 2. 1:1 C# `Player.Move`: ВНУТРИ Move НЕТ серверного cooldown.
+            // Тайминг движения — клиентский (SpeedPacket pacing). Серверный
+            // silent-drop cooldown (re-added рефактором) ломал client-
+            // prediction: при любом стопоре tick'а очередь Xmov батчилась,
+            // лишние ходы тихо дропались, клиент уходил вперёд → dist>порог
+            // → жёсткий @T rubber-band. Убрано (1:1 C# Move + server/
+            // CLAUDE.md методология «rate-limit делает клиент» + ae637b9).
+            // C# `Move`: `(win != null && !prog)` → tp; `TryAct`:
+            // ProgRunning → silent return.
+            if prog_running {
+                return None;
+            }
+            if window_open {
+                tracing::info!("[MOVE REJECTED: WINDOW] pid={} pos=({},{})", pid, px, py);
+                tp_back("window", tx, px, py, target_x, target_y, "");
+                return None;
+            }
+
+            // 3. Movement validation
             if !state.world.valid_coord(target_x, target_y) {
                 tp_back("invalid_coord", tx, px, py, target_x, target_y, "");
                 return None;
             }
 
-            // Референс: dir computation — if position changed, compute from delta; otherwise use client dir
-            let actual_dir = if px != target_x || py != target_y {
+            if !state.world.is_empty(target_x, target_y) {
+                let cell = state.world.get_cell(target_x, target_y);
+                tracing::info!(
+                    "[MOVE REJECTED: OBSTACLE] pid={} cell={} pos=({},{}) dest=({},{})",
+                    pid, cell, px, py, target_x, target_y
+                );
+                tp_back("not_empty", tx, px, py, target_x, target_y, &format!("cell={cell}"));
+                return None;
+            }
+
+            // Gate check
+            if let Some(bld_entity) = state.building_index.get(&(target_x, target_y)) {
+                let bld_entity = *bld_entity;
+                if let (Some(meta), Some(ownership)) = (
+                    ecs.get::<crate::game::BuildingMetadata>(bld_entity),
+                    ecs.get::<crate::game::BuildingOwnership>(bld_entity),
+                ) {
+                    if meta.pack_type == PackType::Gate && ownership.clan_id != clan {
+                        tracing::info!(
+                            "[MOVE REJECTED: GATE] pid={} gate_clan={} player_clan={} pos=({},{}) dest=({},{})",
+                            pid, ownership.clan_id, clan, px, py, target_x, target_y
+                        );
+                        tp_back("gate", tx, px, py, target_x, target_y, &format!("pack_clan={} player_clan={clan}", ownership.clan_id));
+                        return None;
+                    }
+                }
+            }
+
+            let dx = (target_x - px) as f32;
+            let dy = (target_y - py) as f32;
+            let dist = dx.hypot(dy);
+            // 1:1 C# `Player.cs:441`: `if (Distance < 1.2f) accept else tp`.
+            // Безопасно теперь, когда cooldown-дропов нет (сервер
+            // обрабатывает каждый ход → dist всегда ~1.0 при честной игре).
+            if dist >= 1.2 {
+                tracing::info!(
+                    "[MOVE REJECTED: DISTANCE] pid={} dist={:.3} pos=({},{}) dest=({},{})",
+                    pid, dist, px, py, target_x, target_y
+                );
+                tp_back("dist", tx, px, py, target_x, target_y, &format!("dist={dist:.3}"));
+                return None;
+            }
+
+            // 1:1 C# `Player.cs:416-418`: позиция меняется (или dir==-1) →
+            // направление из дельты реального хода; иначе — присланный dir.
+            let actual_dir = if dir == -1 || px != target_x || py != target_y {
                 if px > target_x {
                     1
                 } else if px < target_x {
@@ -77,66 +127,10 @@ pub fn handle_move(
                     0
                 }
             } else {
-                let d = if dir > 9 { dir - 10 } else { dir };
-                d.clamp(0, 3)
+                dir
             };
 
-            // Референс: `!GetProp(cell).isEmpty` → tp back
-            if !state.world.is_empty(target_x, target_y) {
-                let cell = state.world.get_cell(target_x, target_y);
-                tp_back(
-                    "not_empty",
-                    tx,
-                    px,
-                    py,
-                    target_x,
-                    target_y,
-                    &format!("cell={cell}"),
-                );
-                return None;
-            }
-
-            // 1:1 ref: Gate blocks movement for other clans (`pack is Gate && pack.cid != cid`).
-            // Нельзя вызывать `state.get_pack_at()` — она берёт `ecs.read()`, а мы уже под `ecs.write()` (self-deadlock).
-            // Используем `building_index` + `ecs` напрямую из замыкания.
-            if let Some(bld_entity) = state.building_index.get(&(target_x, target_y)) {
-                let bld_entity = *bld_entity;
-                if let (Some(meta), Some(ownership)) = (
-                    ecs.get::<crate::game::BuildingMetadata>(bld_entity),
-                    ecs.get::<crate::game::BuildingOwnership>(bld_entity),
-                ) {
-                    if meta.pack_type == PackType::Gate && ownership.clan_id != clan {
-                        tp_back(
-                            "gate",
-                            tx,
-                            px,
-                            py,
-                            target_x,
-                            target_y,
-                            &format!("pack_clan={} player_clan={clan}", ownership.clan_id),
-                        );
-                        return None;
-                    }
-                }
-            }
-
-            // Референс: `Distance < 1.2` — accept; otherwise tp back
-            let dx = (target_x - px) as f32;
-            let dy = (target_y - py) as f32;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist >= 1.2 {
-                tp_back(
-                    "dist",
-                    tx,
-                    px,
-                    py,
-                    target_x,
-                    target_y,
-                    &format!("dist={dist:.3}"),
-                );
-                return None;
-            }
-
+            // 4. State updates
             {
                 let mut pos_mut = ecs.get_mut::<PlayerPosition>(entity)?;
                 pos_mut.x = target_x;
@@ -148,12 +142,13 @@ pub fn handle_move(
                 flags_mut.dirty = true;
             }
 
-            // D5 fix: award Movement skill exp on every successful move (1:1 ref Player.cs:443-452)
+            // Exp and skills
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                add_skill_exp(&mut skills.states, "M", 1.0);
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
-                send_u_packet(tx, sk.0, &sk.1);
+                if add_skill_exp(&mut skills.states, "M", 1.0) {
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    send_u_packet(tx, sk.0, &sk.1);
+                }
             }
 
             Some((target_x, target_y, actual_dir, skin, clan))
@@ -182,11 +177,7 @@ pub fn handle_move(
         crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
         // Feature 1: ref Player.cs:462-467 — auto-open pack GUI when landing on a building cell.
-        // Note: `get_pack_at` finds buildings whose origin is exactly at (nx, ny). Multi-cell
-        // footprint coverage requires a reverse index (separate concern, same limitation as the
-        // gate check above). Programmator check mirrors C#: `!programsData.ProgRunning`.
         if let Some(view) = state.get_pack_at(nx, ny) {
-            // C# ref: `Gate.GUIWin()` returns null — stepping on a gate never opens a window.
             if view.pack_type != PackType::Gate && (view.clan_id == 0 || view.clan_id == clan) {
                 let prog_running = state
                     .query_player(pid, |ecs, entity| {
@@ -199,10 +190,69 @@ pub fn handle_move(
                 }
             }
         }
+    }
+}
 
-        // Feature 2: ref Player.cs:428-436 (dir == -1 autoDig branch) — N/A for the Xmov path.
-        // In the Rust architecture, `handle_dig` never calls `handle_move`; it reads player
-        // position independently and digs the adjacent cell directly. The `dir == -1` case in C#
-        // is an internal Move() call from the dig handler, which does not exist here.
+/// A "pure" version of `handle_move` that bypasses all network-related cooldown checks and distance validations.
+/// Used for Programmator execution where the movement is already throttled by the internal programmator timer.
+pub fn handle_move_pure(
+    state: &Arc<GameState>,
+    tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    pid: crate::game::PlayerId,
+    target_x: i32,
+    target_y: i32,
+    dir: i32,
+) {
+    let result = state
+        .modify_player(pid, |ecs, entity| {
+            let actual_dir = dir;
+            let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+            let skin = p_stats.skin;
+            let clan = p_stats.clan_id.unwrap_or(0);
+
+            {
+                let mut pos_mut = ecs.get_mut::<PlayerPosition>(entity)?;
+                pos_mut.x = target_x;
+                pos_mut.y = target_y;
+                pos_mut.dir = actual_dir;
+            }
+            {
+                let mut flags_mut = ecs.get_mut::<PlayerFlags>(entity)?;
+                flags_mut.dirty = true;
+            }
+
+            // Award Movement skill exp (1:1 ref Player.cs:443-452)
+            {
+                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
+                if add_skill_exp(&mut skills.states, "M", 1.0) {
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    send_u_packet(tx, sk.0, &sk.1);
+                }
+            }
+
+            Some((target_x, target_y, actual_dir, skin, clan))
+        })
+        .flatten();
+
+    if let Some((nx, ny, ndir, skin, clan)) = result {
+        let tail = state
+            .query_player(pid, |ecs, entity| {
+                ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .map_or(0, |ps| u8::from(ps.running))
+            })
+            .unwrap_or(0);
+        let (cx, cy) = World::chunk_pos(nx, ny);
+        let bot = hb_bot(
+            net_u16_nonneg(pid),
+            net_u16_nonneg(nx),
+            net_u16_nonneg(ny),
+            net_u8_clamped(ndir, 3),
+            net_u8_clamped(skin, 255),
+            net_u16_nonneg(clan),
+            tail,
+        );
+        let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
+        state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
+        crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
     }
 }
