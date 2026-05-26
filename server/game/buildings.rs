@@ -48,7 +48,7 @@ pub fn get_building_config(pack_type: PackType) -> Option<&'static BuildingConfi
     cfg.buildings.get(key)
 }
 
-/// Как `MinesServer.GameShit.Buildings.PackType` в server_reference (`PackType.cs`).
+/// Как `MinesServer.GameShit.Buildings.PackType` в `server_reference` (`PackType.cs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackType {
     None,     // ' ' — в т.ч. класс Gate в C# объявлен как `PackType.None`
@@ -72,7 +72,7 @@ pub enum PackType {
 }
 
 impl PackType {
-    fn config_json_key(self) -> Option<&'static str> {
+    const fn config_json_key(self) -> Option<&'static str> {
         match self {
             Self::Teleport => Some("Teleport"),
             Self::Resp => Some("Resp"),

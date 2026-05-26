@@ -5,7 +5,7 @@ use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 
 /// Broadcast-данные, собранные внутри `ecs.write()`, выполняются снаружи.
-pub(crate) struct DeathBroadcasts {
+pub struct DeathBroadcasts {
     pub box_cell: Option<(i32, i32)>,
     pub fx_death: Option<(i32, i32)>,
     pub death_pos: (i32, i32),
@@ -15,9 +15,9 @@ pub(crate) struct DeathBroadcasts {
 }
 
 /// Мутации ECS как в `Player.Death()` (`Player.cs`).
-/// **НЕ** вызывает ничего, что лочит `state.ecs` (broadcast/get_pack_at) —
+/// **НЕ** вызывает ничего, что лочит `state.ecs` (`broadcast/get_pack_at`) —
 /// вместо этого возвращает `DeathBroadcasts` для вызывающего.
-pub(crate) fn apply_player_death_core(
+pub fn apply_player_death_core(
     state: &Arc<GameState>,
     ecs: &mut bevy_ecs::prelude::World,
     pid: PlayerId,
@@ -91,7 +91,7 @@ pub(crate) fn apply_player_death_core(
         if let Some((bld_ent, resp_cost)) = resp_data {
             // Deduct resp cost from player money, add to building storage.
             let cost = if resp_cost > 0 {
-                resp_cost as i64
+                i64::from(resp_cost)
             } else {
                 10i64
             };
@@ -165,10 +165,7 @@ pub(crate) fn apply_player_death_core(
 }
 
 /// C# ref: Player.resp getter — when null, pick random public resp (ownerid==0).
-fn find_random_public_resp(
-    state: &Arc<GameState>,
-    ecs: &bevy_ecs::prelude::World,
-) -> (i32, i32) {
+fn find_random_public_resp(state: &Arc<GameState>, ecs: &bevy_ecs::prelude::World) -> (i32, i32) {
     use rand::Rng;
     let public_resps: Vec<(i32, i32)> = state
         .building_index
@@ -198,7 +195,7 @@ fn find_random_public_resp(
 }
 
 /// Выполнить отложенные broadcast'ы после отпускания `ecs.write()`.
-pub(crate) fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid: PlayerId) {
+pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid: PlayerId) {
     // Сообщить всем соседям, что бот исчез
     let (dx, dy) = bcast.death_pos;
     let del = hb_bot_del(net_u16_nonneg(pid));
@@ -257,7 +254,7 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
     }
 }
 
-/// `Player.Hurt(num, Pure)` — без AntiGun; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
+/// `Player.Hurt(num, Pure)` — без `AntiGun`; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
 pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;

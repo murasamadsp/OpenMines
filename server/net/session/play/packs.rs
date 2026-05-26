@@ -64,7 +64,7 @@ pub fn handle_pack_action(
                 state,
                 tx,
                 pid,
-                &format!("pack_op:open:{}:{}", x, y),
+                &format!("pack_op:open:{x}:{y}"),
             );
         }
     }
@@ -149,7 +149,7 @@ pub fn open_resp_gui(
     });
 }
 
-/// Open Resp admin page with RichList (fill sliders, cost, clanzone, profit).
+/// Open Resp admin page with `RichList` (fill sliders, cost, clanzone, profit).
 /// 1:1 with C# `Resp.AdmnPage`.
 pub fn open_resp_admin_gui(
     state: &Arc<GameState>,
@@ -196,7 +196,7 @@ pub fn open_resp_admin_gui(
     let charge_i = charge as i32;
     let max_charge_i = max_charge as i32;
     let percent = if max_charge_i > 0 {
-        ((charge as f64) / (max_charge as f64 / 100.0)).round() as i32
+        (f64::from(charge) / (f64::from(max_charge) / 100.0)).round() as i32
     } else {
         0
     };
@@ -204,17 +204,17 @@ pub fn open_resp_admin_gui(
 
     // Fill button actions (active only if player has enough blue crystals)
     let fill100_action = if blue_crys >= 100 {
-        format!("resp_fill:100:{}:{}", pack_x, pack_y)
+        format!("resp_fill:100:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
     let fill1000_action = if blue_crys >= 1000 {
-        format!("resp_fill:1000:{}:{}", pack_x, pack_y)
+        format!("resp_fill:1000:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
     let fill_max_action = if blue_crys > 0 {
-        format!("resp_fill:max:{}:{}", pack_x, pack_y)
+        format!("resp_fill:max:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
@@ -230,7 +230,7 @@ pub fn open_resp_admin_gui(
     // Profit button
     let profit_label = format!("прибыль {money_inside}$");
     let profit_btn_action = if money_inside > 0 {
-        format!("resp_profit:{}:{}", pack_x, pack_y)
+        format!("resp_profit:{pack_x}:{pack_y}")
     } else {
         String::new()
     };
@@ -435,7 +435,7 @@ pub fn handle_resp_profit(
 
 /// Handle resp admin save (cost, clan toggle, clanzone).
 /// Button format: `resp_save:{richlist_data}` (coordinates from `current_window`).
-/// RichList data from client: `key:value#key:value#...` (hash-separated, colon key:value).
+/// `RichList` data from client: `key:value#key:value#...` (hash-separated, colon key:value).
 pub fn handle_resp_save(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,

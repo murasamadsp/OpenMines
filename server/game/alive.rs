@@ -300,8 +300,8 @@ fn alive_viol(
     }
 }
 
-/// `AliveBlack`: colony behavior. If >=6 neighbors are AliveBlack, converts self to BlackRock.
-/// Otherwise, if an adjacent AliveBlack exists and opposite side is empty, spawns Red/Cyan.
+/// `AliveBlack`: colony behavior. If >=6 neighbors are `AliveBlack`, converts self to `BlackRock`.
+/// Otherwise, if an adjacent `AliveBlack` exists and opposite side is empty, spawns Red/Cyan.
 #[allow(clippy::too_many_arguments)]
 fn alive_black(
     x: i32,

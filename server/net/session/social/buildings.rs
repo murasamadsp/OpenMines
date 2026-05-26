@@ -542,7 +542,7 @@ pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
 
 // ─── BotSpot spawning/despawning ────────────────────────────────────────────
 
-/// Spawn a BotSpot entity associated with a Spot building.
+/// Spawn a `BotSpot` entity associated with a Spot building.
 /// 1:1 with C# `new BotSpot(x, y, owner)` called when Spot is placed.
 pub fn spawn_botspot(
     state: &Arc<GameState>,
@@ -575,7 +575,7 @@ pub fn spawn_botspot(
     tracing::info!(owner_id, x, y, "Spawned BotSpot entity for Spot building");
 }
 
-/// Despawn a BotSpot entity when its Spot building is removed.
+/// Despawn a `BotSpot` entity when its Spot building is removed.
 pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
     if let Some((_, entity)) = state.botspot_index.remove(&owner_id) {
         state.ecs.write().despawn(entity);

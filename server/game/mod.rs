@@ -50,7 +50,7 @@ pub enum BroadcastEffect {
     },
 }
 
-/// Отложенные команды программатора (handle_move/handle_dig ре-лочат ecs).
+/// Отложенные команды программатора (`handle_move/handle_dig` ре-лочат ecs).
 #[derive(Resource, Default)]
 pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
 
@@ -95,8 +95,8 @@ pub struct GameState {
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub chunk_players: DashMap<(u32, u32), Vec<PlayerId>>,
     pub building_index: DashMap<(i32, i32), Entity>,
-    /// BotSpot entities indexed by owner player ID.
-    /// Each Spot building spawns one BotSpot entity.
+    /// `BotSpot` entities indexed by owner player ID.
+    /// Each Spot building spawns one `BotSpot` entity.
     pub botspot_index: DashMap<PlayerId, Entity>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     pub ecs: RwLock<EcsWorld>,
@@ -258,7 +258,7 @@ impl GameState {
         if fails >= Self::AUTH_FAILURE_LIMIT {
             let elapsed = now.duration_since(last);
             if elapsed < Self::AUTH_BLOCK_DURATION {
-                return Some(Self::AUTH_BLOCK_DURATION - elapsed);
+                return Some(Self::AUTH_BLOCK_DURATION.checked_sub(elapsed).unwrap());
             }
         }
         None
@@ -324,7 +324,7 @@ impl GameState {
         x: i32,
         y: i32,
     ) -> Option<(i32, i32)> {
-        for entry in building_index.iter() {
+        for entry in building_index {
             let entity = *entry.value();
             let Some(pos) = ecs.get::<GridPosition>(entity) else {
                 continue;
@@ -365,7 +365,7 @@ impl GameState {
         player_clan_id: i32,
     ) -> bool {
         let mut ret = true;
-        for entry in building_index.iter() {
+        for entry in building_index {
             let entity = *entry.value();
             let Some(pos) = ecs.get::<GridPosition>(entity) else {
                 continue;
@@ -387,7 +387,7 @@ impl GameState {
                 let by = pos.y + dy;
                 let ddx = (bx - x) as f32;
                 let ddy = (by - y) as f32;
-                if (ddx * ddx + ddy * ddy).sqrt() <= 20.0 {
+                if ddx.hypot(ddy) <= 20.0 {
                     ret = ret && own.clan_id == player_clan_id;
                 }
             }
@@ -407,7 +407,7 @@ impl GameState {
     pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<(u8, u16, u16, u8, u8)> {
         let mut result = Vec::new();
         let ecs = self.ecs.read();
-        for entry in self.building_index.iter() {
+        for entry in &self.building_index {
             let entity = *entry.value();
             let Some(pos) = ecs.get::<GridPosition>(entity) else {
                 continue;
@@ -422,7 +422,9 @@ impl GameState {
                 continue;
             };
             let (pcx, pcy) = crate::world::World::chunk_pos(pos.x, pos.y);
-            if (pcx as i64 - cx as i64).abs() <= 1 && (pcy as i64 - cy as i64).abs() <= 1 {
+            if (i64::from(pcx) - i64::from(cx)).abs() <= 1
+                && (i64::from(pcy) - i64::from(cy)).abs() <= 1
+            {
                 if !meta.pack_type.included_in_hb_overlay() {
                     continue;
                 }
@@ -467,12 +469,12 @@ impl GameState {
         let mut res = Vec::new();
         for dx in -2..=2 {
             for dy in -2..=2 {
-                let ncx = cx as i64 + dx;
-                let ncy = cy as i64 + dy;
+                let ncx = i64::from(cx) + dx;
+                let ncy = i64::from(cy) + dy;
                 if ncx >= 0
                     && ncy >= 0
-                    && ncx < self.world.chunks_w() as i64
-                    && ncy < self.world.chunks_h() as i64
+                    && ncx < i64::from(self.world.chunks_w())
+                    && ncy < i64::from(self.world.chunks_h())
                 {
                     res.push((ncx as u32, ncy as u32));
                 }
@@ -496,7 +498,7 @@ impl GameState {
             .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
             .collect()
     }
-    /// Как `Auth.GenerateSessionId()` в server_reference: длина 5, алфавит без `q`/`v`/`w`.
+    /// Как `Auth.GenerateSessionId()` в `server_reference`: длина 5, алфавит без `q`/`v`/`w`.
     pub fn generate_session_id() -> String {
         use rand::Rng;
         const CHARSET: &[u8] = b"abcdefghijklmnoprtsuxyz0123456789";

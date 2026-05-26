@@ -120,8 +120,16 @@ impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
             auto_dig: false,
-            cc: 10, snd: false, mus: false, isca: 0, tsca: 0,
-            mous: true, pot: false, frc: true, ctrl: true, mof: true,
+            cc: 10,
+            snd: false,
+            mus: false,
+            isca: 0,
+            tsca: 0,
+            mous: true,
+            pot: false,
+            frc: true,
+            ctrl: true,
+            mof: true,
         }
     }
 }

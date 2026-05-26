@@ -46,7 +46,7 @@ pub fn tp(x: i32, y: i32) -> (&'static str, Vec<u8>) {
     ("@T", s.into_bytes())
 }
 
-/// Encode a BotInfo packet (`BotInfoPacket.packetName` = `"BI"`).
+/// Encode a `BotInfo` packet (`BotInfoPacket.packetName` = `"BI"`).
 pub fn bot_info(name: &str, x: i32, y: i32, id: i32) -> (&'static str, Vec<u8>) {
     let json = serde_json::json!({
         "x": x,
@@ -343,7 +343,7 @@ pub fn hb_bot_del(id: u16) -> Vec<u8> {
 }
 
 /// HB sub-packet: Bot leave block (type "S")
-/// [1B tag 'S'] [u16 LE id] [i32 LE block_pos]
+/// [1B tag 'S'] [u16 LE id] [i32 LE `block_pos`]
 // TODO: will be used when bot block-leave events are fully wired
 #[allow(dead_code)]
 pub fn hb_bot_leave_block(id: u16, block_pos: i32) -> Vec<u8> {

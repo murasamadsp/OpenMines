@@ -51,7 +51,7 @@ pub fn handle_auto_dig_set(
     }
 }
 
-/// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в server_reference.
+/// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в `server_reference`.
 pub fn handle_prog_ty(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -109,7 +109,8 @@ pub fn handle_prog_ty(
                         None
                     };
                     if was_running {
-                        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?.running = false;
+                        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
+                            .running = false;
                     }
                     Some((false, editor_data))
                 })
@@ -117,8 +118,11 @@ pub fn handle_prog_ty(
             let (running, editor_data) = result.unwrap_or((false, None));
             // C# ref: OpenProg sends #P packet with program data
             if let Some((prog_id, source)) = editor_data {
-                let name = state.db.get_program(prog_id)
-                    .ok().flatten()
+                let name = state
+                    .db
+                    .get_program(prog_id)
+                    .ok()
+                    .flatten()
                     .map(|p| p.name)
                     .unwrap_or_default();
                 send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
@@ -160,7 +164,7 @@ pub fn handle_prog_ty(
     }
 }
 
-/// TY `Sett` → `Settings.SendSettingsGUI` в server_reference — 1:1 с C# RichList.
+/// TY `Sett` → `Settings.SendSettingsGUI` в `server_reference` — 1:1 с C# `RichList`.
 pub fn handle_sett_ty(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -188,32 +192,46 @@ pub fn handle_sett_ty(
     // Bool: values = "0", action = key, value = "0"/"1"
     let rich: Vec<serde_json::Value> = vec![
         // DropDown: "Масштаб интерфейса"
-        serde_json::json!("Масштаб интерфейса"), serde_json::json!("drop"),
-        serde_json::json!("0:мелко#1:КРУПНО#"), serde_json::json!("isca"),
+        serde_json::json!("Масштаб интерфейса"),
+        serde_json::json!("drop"),
+        serde_json::json!("0:мелко#1:КРУПНО#"),
+        serde_json::json!("isca"),
         serde_json::json!(s.isca.to_string()),
         // DropDown: "Масштаб территории"
-        serde_json::json!("Масштаб территории"), serde_json::json!("drop"),
-        serde_json::json!("0:мелко#1:КРУПНО#"), serde_json::json!("tsca"),
+        serde_json::json!("Масштаб территории"),
+        serde_json::json!("drop"),
+        serde_json::json!("0:мелко#1:КРУПНО#"),
+        serde_json::json!("tsca"),
         serde_json::json!(s.tsca.to_string()),
         // Bool: "Включить управление мышкой"
-        serde_json::json!("Включить управление мышкой"), serde_json::json!("bool"),
-        serde_json::json!("0"), serde_json::json!("mous"),
+        serde_json::json!("Включить управление мышкой"),
+        serde_json::json!("bool"),
+        serde_json::json!("0"),
+        serde_json::json!("mous"),
         serde_json::json!(if s.mous { "1" } else { "0" }),
         // Bool: "Упрощенный режим графики"
-        serde_json::json!("Упрощенный режим графики"), serde_json::json!("bool"),
-        serde_json::json!("0"), serde_json::json!("pot"),
+        serde_json::json!("Упрощенный режим графики"),
+        serde_json::json!("bool"),
+        serde_json::json!("0"),
+        serde_json::json!("pot"),
         serde_json::json!(if s.pot { "1" } else { "0" }),
         // Bool: "ринудительно обновлять породы"
-        serde_json::json!("ринудительно обновлять породы (увеличит потр. CPU)"), serde_json::json!("bool"),
-        serde_json::json!("0"), serde_json::json!("frc"),
+        serde_json::json!("ринудительно обновлять породы (увеличит потр. CPU)"),
+        serde_json::json!("bool"),
+        serde_json::json!("0"),
+        serde_json::json!("frc"),
         serde_json::json!(if s.frc { "1" } else { "0" }),
         // Bool: "CTRL переключает скорость"
-        serde_json::json!("CTRL переключает скорость робота (вместо удерживания)"), serde_json::json!("bool"),
-        serde_json::json!("0"), serde_json::json!("ctrl"),
+        serde_json::json!("CTRL переключает скорость робота (вместо удерживания)"),
+        serde_json::json!("bool"),
+        serde_json::json!("0"),
+        serde_json::json!("ctrl"),
         serde_json::json!(if s.ctrl { "1" } else { "0" }),
         // Bool: "Отключить ближайшие звуки"
-        serde_json::json!("Отключить ближайшие звуки"), serde_json::json!("bool"),
-        serde_json::json!("0"), serde_json::json!("mof"),
+        serde_json::json!("Отключить ближайшие звуки"),
+        serde_json::json!("bool"),
+        serde_json::json!("0"),
+        serde_json::json!("mof"),
         serde_json::json!(if s.mof { "1" } else { "0" }),
     ];
 

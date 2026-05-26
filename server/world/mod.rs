@@ -73,7 +73,7 @@ impl Layer {
     }
 
     #[inline]
-    pub fn cell_offset(&self, x: u32, y: u32) -> usize {
+    pub const fn cell_offset(&self, x: u32, y: u32) -> usize {
         let cx = x / CHUNK_SIZE;
         let cy = y / CHUNK_SIZE;
         let lx = x % CHUNK_SIZE;

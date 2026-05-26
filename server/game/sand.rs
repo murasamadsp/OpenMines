@@ -7,10 +7,10 @@ use bevy_ecs::prelude::*;
 use rand::Rng;
 
 /// Quick check: is this cell type a building background?
-/// These cells have `isEmpty=true` in cells.json but are placed by Pack.Build()
+/// These cells have `isEmpty=true` in cells.json but are placed by `Pack.Build()`
 /// as part of building footprints. Sand/boulders must not land on them.
 /// C# ref: `World.PackPart` / `World.TrueEmpty` checks prevent physics overwrites.
-fn is_building_background_cell(cell: u8) -> bool {
+const fn is_building_background_cell(cell: u8) -> bool {
     matches!(cell, 30 | 32 | 35 | 37 | 38 | 106)
 }
 

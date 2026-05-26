@@ -53,8 +53,8 @@ pub fn check_chunk_changed(
         }
 
         let cells = state.world.read_chunk_cells(ncx, ncy);
-        let ox = u16::try_from((ncx * 32).min(u16::MAX as u32)).unwrap_or(u16::MAX);
-        let oy = u16::try_from((ncy * 32).min(u16::MAX as u32)).unwrap_or(u16::MAX);
+        let ox = u16::try_from((ncx * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
+        let oy = u16::try_from((ncy * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
         sub_packets.push(hb_map(ox, oy, 32, 32, &cells));
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
 
@@ -93,7 +93,7 @@ pub fn check_chunk_changed(
         // BotSpot entities (C# BotSpot: skin=3, tail=1, id=-owner_id)
         {
             let ecs = state.ecs.read();
-            for entry in state.botspot_index.iter() {
+            for entry in &state.botspot_index {
                 let botspot_entity = *entry.value();
                 if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
                     let (bcx, bcy) = crate::world::World::chunk_pos(data.x, data.y);

@@ -1,6 +1,6 @@
-//! BotSpot — stationary programmator bot entity (1:1 with C# `BotSpot : PEntity`).
+//! `BotSpot` — stationary programmator bot entity (1:1 with C# `BotSpot : PEntity`).
 //!
-//! A BotSpot is spawned when a Spot building (PackType::Spot) is placed.
+//! A `BotSpot` is spawned when a Spot building (`PackType::Spot`) is placed.
 //! It runs programs on behalf of its owner but has its own crystal basket.
 //! Key properties from C# reference:
 //! - `id = -owner.id` (negative of owner player ID)
@@ -12,15 +12,15 @@
 use crate::game::player::PlayerId;
 use bevy_ecs::prelude::{Component, Entity};
 
-/// Marker component for BotSpot entities in ECS.
+/// Marker component for `BotSpot` entities in ECS.
 #[derive(Component, Debug)]
 pub struct BotSpotMarker;
 
-/// Core data for a BotSpot entity.
+/// Core data for a `BotSpot` entity.
 #[allow(dead_code)]
 #[derive(Component, Debug)]
 pub struct BotSpotData {
-    /// BotSpot ID on the wire (= -owner_id). Stored as i32 for encoding.
+    /// `BotSpot` ID on the wire (= -`owner_id`). Stored as i32 for encoding.
     pub bot_id: i32,
     /// Owner player ID.
     pub owner_id: PlayerId,
@@ -36,7 +36,7 @@ pub struct BotSpotData {
     pub building_entity: Entity,
 }
 
-/// BotSpot's own crystal basket (separate from owner's).
+/// `BotSpot`'s own crystal basket (separate from owner's).
 /// 1:1 with C# `BotSpot.crys = new Basket(true)`.
 #[allow(dead_code)]
 #[derive(Component, Debug, Default)]

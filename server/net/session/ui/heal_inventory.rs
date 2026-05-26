@@ -8,12 +8,12 @@ use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkills, PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
+use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, place_building_in_world, validate_building_area,
 };
-use crate::net::session::play::death::handle_death;
 
 // ─── Healing ────────────────────────────────────────────────────────────────
 
@@ -205,7 +205,7 @@ pub fn handle_inventory_choose(
 
 /// Item-to-alive-cell mapping for geopack items.
 /// Returns `None` for item 10 (no placement), `Some(cell_type)` for all others.
-fn geopack_item_to_cell(item: i32) -> Option<u8> {
+const fn geopack_item_to_cell(item: i32) -> Option<u8> {
     match item {
         10 => None,
         11 => Some(cell_type::ALIVE_CYAN),
@@ -224,7 +224,7 @@ fn geopack_item_to_cell(item: i32) -> Option<u8> {
 
 /// D26: Reverse mapping — alive cell to item ID for geopack pickup.
 /// C# `World.isAlive` only includes the 7 alive types (not HypnoRock/BlackRock/RedRock).
-fn alive_cell_to_item(cell: u8) -> Option<i32> {
+const fn alive_cell_to_item(cell: u8) -> Option<i32> {
     match cell {
         cell_type::ALIVE_CYAN => Some(11),
         cell_type::ALIVE_RED => Some(12),
@@ -404,7 +404,7 @@ pub fn place_building_from_item(
 }
 
 /// Helper: check if a cell is a building block type (C# `World.isBuildingBlock`).
-fn is_building_block(cell: u8) -> bool {
+const fn is_building_block(cell: u8) -> bool {
     matches!(
         cell,
         cell_type::GREEN_BLOCK
@@ -418,7 +418,7 @@ fn is_building_block(cell: u8) -> bool {
 }
 
 /// Helper: check if a cell is alive (C# `World.isAlive`).
-fn is_alive_cell(cell: u8) -> bool {
+const fn is_alive_cell(cell: u8) -> bool {
     matches!(
         cell,
         cell_type::ALIVE_BLUE
@@ -457,7 +457,7 @@ fn aoe_damage_players(
                 if (px_o - cx).abs() > scan_range || (py_o - cy).abs() > scan_range {
                     return Some(None);
                 }
-                let dist = (((px_o - cx) as f32).powi(2) + ((py_o - cy) as f32).powi(2)).sqrt();
+                let dist = ((px_o - cx) as f32).hypot((py_o - cy) as f32);
                 if dist > radius {
                     return Some(None);
                 }
@@ -544,7 +544,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
             if !state.world.valid_coord(tx_c, ty_c) {
                 continue;
             }
-            let dist = ((ddx as f32).powi(2) + (ddy as f32).powi(2)).sqrt();
+            let dist = (ddx as f32).hypot(ddy as f32);
             if dist > 3.5 {
                 continue;
             }
@@ -590,7 +590,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
     true
 }
 
-/// D15: Protector (item 6) — C# `ShitClass.Prot` — AoE bomb, NOT a shield.
+/// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
@@ -695,7 +695,7 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
         for (_meta, bpos, mut stats) in query.iter_mut(&mut ecs) {
             let ddx = (bpos.x - cx) as f32;
             let ddy = (bpos.y - cy) as f32;
-            let dist = (ddx * ddx + ddy * ddy).sqrt();
+            let dist = ddx.hypot(ddy);
             if dist <= 9.5 {
                 // Zero charge
                 stats.charge = 0.0;

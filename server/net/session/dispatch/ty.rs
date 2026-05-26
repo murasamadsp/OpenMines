@@ -1,14 +1,16 @@
 //! Диспетчеризация TY-пакетов (игровые действия).
+use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::{handle_build, handle_dig};
+use crate::net::session::play::geo::handle_geo;
 use crate::net::session::play::movement::handle_move;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     handle_dpbx_crystal_box, handle_my_buildings_list, handle_programmator_pope_menu,
 };
+use crate::net::session::social::chat::{
+    handle_channel_chat, handle_chat_init_ty, handle_local_chat,
+};
 use crate::net::session::social::clans::handle_clan_menu;
-use crate::net::session::play::death::handle_death;
-use crate::net::session::play::geo::handle_geo;
-use crate::net::session::social::chat::{handle_channel_chat, handle_chat_init_ty, handle_local_chat};
 use crate::net::session::social::commands::{is_admin_command, send_admin_help, send_ok};
 use crate::net::session::social::misc::{
     handle_auto_dig_toggle, handle_prog_ty, handle_sett_ty, handle_whoi,

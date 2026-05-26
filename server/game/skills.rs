@@ -502,7 +502,7 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
 
 /// Experience needed to level up from the current level.
 #[allow(clippy::cast_precision_loss)]
-pub fn exp_needed(skill: SkillType, _level: i32) -> f32 {
+pub const fn exp_needed(skill: SkillType, _level: i32) -> f32 {
     match skill {
         SkillType::AntiGun => 0.0,
         _ => 1.0,

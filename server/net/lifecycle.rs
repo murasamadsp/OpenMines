@@ -68,9 +68,14 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
             }
 
             if !dirty_rows.is_empty() {
-                tracing::info!("Periodic save: {} dirty players, inv sizes: {:?}",
+                tracing::info!(
+                    "Periodic save: {} dirty players, inv sizes: {:?}",
                     dirty_rows.len(),
-                    dirty_rows.iter().map(|(pid, r)| (*pid, r.inventory.len())).collect::<Vec<_>>());
+                    dirty_rows
+                        .iter()
+                        .map(|(pid, r)| (*pid, r.inventory.len()))
+                        .collect::<Vec<_>>()
+                );
             }
             let mut saved = 0usize;
             for (pid, player_data) in &dirty_rows {

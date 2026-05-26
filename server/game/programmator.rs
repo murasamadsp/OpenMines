@@ -105,7 +105,7 @@ pub enum ActionType {
     FillGun,
 }
 
-fn get_action_type(id: u8) -> ActionType {
+const fn get_action_type(id: u8) -> ActionType {
     match id {
         0 => ActionType::None,
         1 => ActionType::NextRow,
@@ -218,7 +218,7 @@ pub struct PFunction {
 }
 
 impl PFunction {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             actions: Vec::new(),
             current: 0,
@@ -229,7 +229,7 @@ impl PFunction {
         }
     }
 
-    fn reset(&mut self) {
+    const fn reset(&mut self) {
         self.current = 0;
         self.startoffset = (0, 0);
     }
@@ -493,10 +493,10 @@ fn check_cell(
     let (sx, sy) = {
         let f = prog.current_prog.get(&prog.current_function);
         if let Some(f) = f {
-            if f.startoffset != (0, 0) {
-                f.startoffset
-            } else {
+            if f.startoffset == (0, 0) {
                 (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
+            } else {
+                f.startoffset
             }
         } else {
             (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
@@ -564,12 +564,11 @@ pub fn programmator_system(
         // Get current function actions count
         let (action_count, current_pos) = {
             let f = prog.current_prog.get(&prog.current_function);
-            match f {
-                Some(f) => (f.actions.len(), f.current),
-                None => {
-                    prog.running = false;
-                    continue;
-                }
+            if let Some(f) = f {
+                (f.actions.len(), f.current)
+            } else {
+                prog.running = false;
+                continue;
             }
         };
 
@@ -1059,7 +1058,7 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(false) = state_val {
+            if state_val == Some(false) {
                 // Condition is false, don't jump
                 if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
                     f.state = None;
@@ -1077,7 +1076,7 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(true) = state_val {
+            if state_val == Some(true) {
                 // Condition is true, don't jump
                 if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
                     f.state = None;
@@ -1283,8 +1282,7 @@ fn handle_label_result(action: &PAction, label: &str, prog: &mut ProgrammatorSta
                 let (state_val, last_state) = prog
                     .current_prog
                     .get(&cf)
-                    .map(|f| (f.state, f.last_state_action))
-                    .unwrap_or((None, None));
+                    .map_or((None, None), |f| (f.state, f.last_state_action));
                 let has_offset = prog.shift_x != 0
                     || prog.shift_y != 0
                     || prog.check_x != 0
@@ -1410,11 +1408,10 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
             if let Some(f) = prog.current_prog.get_mut(&cf) {
                 f.reset();
             }
-            let (state_val, last_state, called_from) = prog
-                .current_prog
-                .get(&cf)
-                .map(|f| (f.state, f.last_state_action, f.called_from.clone()))
-                .unwrap_or((None, None, None));
+            let (state_val, last_state, called_from) =
+                prog.current_prog.get(&cf).map_or((None, None, None), |f| {
+                    (f.state, f.last_state_action, f.called_from.clone())
+                });
             if let Some(caller) = called_from {
                 let has_offset = prog.shift_x != 0
                     || prog.shift_y != 0

@@ -1,6 +1,6 @@
 //! Копание клеток и установка блоков (Xdig, Xbld).
-use crate::net::session::prelude::*;
 use crate::net::session::play::death::hurt_player_pure;
+use crate::net::session::prelude::*;
 
 pub fn handle_dig(
     state: &Arc<GameState>,

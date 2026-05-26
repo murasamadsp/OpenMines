@@ -178,12 +178,7 @@ impl Database {
             craft_num: row.craft_num,
             craft_end_ts: row.craft_end_ts,
         };
-        let type_code = row
-            .type_code
-            .chars()
-            .next()
-            .map(|c| c as u8)
-            .unwrap_or(b' ');
+        let type_code = row.type_code.chars().next().map_or(b' ', |c| c as u8);
         self.update_building_state(
             row.id,
             type_code,
