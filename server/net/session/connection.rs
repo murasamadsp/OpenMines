@@ -185,7 +185,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     Ok(())
 }
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum AuthState {
     PreAuth,
     GuiAuth(GuiAuthStep),
@@ -194,7 +194,7 @@ pub enum AuthState {
 
 /// Sub-state of the GUI auth flow (registration / login through client GUI).
 /// 1:1 with C# `Auth` class state machine.
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum GuiAuthStep {
     /// Default window: "Новый акк" / "ok" (nick input).
     MainMenu,

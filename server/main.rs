@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
     logging::install_early_panic_hook();
     println!("[Main] Process started");
     let cfg = config::Config::load("config.json").map_err(|e| {
-        println!("[Main] CRITICAL: Failed to load config.json: {}", e);
+        println!("[Main] CRITICAL: Failed to load config.json: {e}");
         e
     })?;
     println!("[Main] Config loaded, initializing logging...");

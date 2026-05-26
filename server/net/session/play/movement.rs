@@ -123,7 +123,7 @@ pub fn handle_move(
             // Референс: `Distance < 1.2` — accept; otherwise tp back
             let dx = (target_x - px) as f32;
             let dy = (target_y - py) as f32;
-            let dist = (dx * dx + dy * dy).sqrt();
+            let dist = dx.hypot(dy);
             if dist >= 1.2 {
                 tp_back(
                     "dist",

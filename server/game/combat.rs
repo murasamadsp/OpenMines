@@ -36,7 +36,10 @@ pub fn standing_cell_hazard_system(
 
     for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
-        if cooldowns.last_c190_hit.is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(60)) {
+        if cooldowns
+            .last_c190_hit
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+        {
             cooldowns.c190_stacks = 1;
             cooldowns.last_c190_hit = Some(std::time::Instant::now());
         }
@@ -59,7 +62,9 @@ pub fn standing_cell_hazard_system(
             let sk = crate::protocol::packets::skills_packet(
                 &crate::game::skills::skill_progress_payload(&skills.states),
             );
-            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+            let _ = conn
+                .tx
+                .send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
 
             if stats.health > fd {
                 stats.health -= fd;
@@ -76,7 +81,11 @@ pub fn standing_cell_hazard_system(
             if stats.health > 0 {
                 let fx = crate::protocol::packets::hb_directed_fx(
                     crate::net::session::util::net_u16_nonneg(p_meta.id),
-                    0, 0, 6, 0, 0,
+                    0,
+                    0,
+                    6,
+                    0,
+                    0,
                 );
                 let (cx, cy) = crate::world::World::chunk_pos(px, py);
                 bcast_q.0.push(BroadcastEffect::Nearby {
@@ -112,7 +121,7 @@ pub fn standing_cell_hazard_system(
     }
 }
 
-/// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → AntiGun.
+/// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → `AntiGun`.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
     state_res: Res<GameStateResource>,

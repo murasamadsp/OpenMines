@@ -709,7 +709,7 @@ fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
 }
 
 /// Show recipe details + Start button.
-/// Called from `craft_recipe:{id}:{x}:{y}` but handle_complex_button parses
+/// Called from `craft_recipe:{id}:{x}:{y}` but `handle_complex_button` parses
 /// only the prefix `craft_recipe:` and passes the rest as a string.
 fn handle_craft_recipe_view(
     state: &Arc<GameState>,
@@ -1212,7 +1212,7 @@ fn build_market_tabs(active_tab: &str) -> serde_json::Value {
 }
 
 /// Build sell tab page JSON.
-/// C# ref: Market.BuildSelltab — CrystalConfig with sell prices, sliders up to player's crystals.
+/// C# ref: Market.BuildSelltab — `CrystalConfig` with sell prices, sliders up to player's crystals.
 fn build_market_sell_page(
     player_crys: &[i64; 6],
     is_owner: bool,
@@ -1256,8 +1256,8 @@ fn build_market_sell_page(
 }
 
 /// Build buy tab page JSON.
-/// C# ref: Market.BuildBuytab — CrystalConfig with buy prices (10x), sliders denominator =
-/// player.money / (cost * 10). BuyMode = true (`crys_buy: true`).
+/// C# ref: Market.BuildBuytab — `CrystalConfig` with buy prices (10x), sliders denominator =
+/// player.money / (cost * 10). `BuyMode` = true (`crys_buy: true`).
 fn build_market_buy_page(
     player_money: i64,
     is_owner: bool,
@@ -1313,7 +1313,7 @@ fn build_market_auc_page(tabs: &serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// Resolve market coordinates and tab from current_window ("market:{x}:{y}:{tab}").
+/// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
 fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
     state
         .query_player(pid, |ecs, entity| {
@@ -1413,7 +1413,7 @@ fn handle_market_sellall(
 
 /// Common sell logic (used by sell and sellall).
 /// C# ref: `MarketSystem.Sell`:
-///   for each i: if RemoveCrys succeeds, money += value * GetCrysCost(i)
+///   for each i: if `RemoveCrys` succeeds, money += value * GetCrysCost(i)
 ///   market.moneyinside += (long)(money * 0.1)
 fn do_market_sell(
     state: &Arc<GameState>,
@@ -1518,7 +1518,7 @@ fn handle_market_buy(
 
 /// Handle "getprofit" — owner withdraws accumulated market profit.
 /// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
-/// then re-open the admin RichList page.
+/// then re-open the admin `RichList` page.
 fn handle_market_getprofit(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -1556,7 +1556,7 @@ fn handle_market_getprofit(
     open_market_admin_gui(state, tx, pid, bx, by);
 }
 
-/// Open Market admin page with RichList (1:1 with C# `Market.onadmn`).
+/// Open Market admin page with `RichList` (1:1 with C# `Market.onadmn`).
 /// Shows HP and profit withdrawal button. Called from ADMN gear icon.
 pub fn open_market_admin_gui(
     state: &Arc<GameState>,
@@ -1622,7 +1622,7 @@ pub fn open_market_admin_gui(
     // Keep market window tag so getprofit can resolve coordinates
     state.modify_player(pid, |ecs, entity| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("market:{}:{}:admin", pack_x, pack_y));
+            ui.current_window = Some(format!("market:{pack_x}:{pack_y}:admin"));
         }
         Some(())
     });
@@ -1646,13 +1646,27 @@ fn handle_settings_save(
 
     state.modify_player(pid, |ecs, entity| {
         let mut s = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
-        if let Some(&v) = pairs.get("isca") { s.isca = v.parse().unwrap_or(s.isca); }
-        if let Some(&v) = pairs.get("tsca") { s.tsca = v.parse().unwrap_or(s.tsca); }
-        if let Some(&v) = pairs.get("mous") { s.mous = v == "1"; }
-        if let Some(&v) = pairs.get("pot") { s.pot = v == "1"; }
-        if let Some(&v) = pairs.get("frc") { s.frc = v == "1"; }
-        if let Some(&v) = pairs.get("ctrl") { s.ctrl = v == "1"; }
-        if let Some(&v) = pairs.get("mof") { s.mof = v == "1"; }
+        if let Some(&v) = pairs.get("isca") {
+            s.isca = v.parse().unwrap_or(s.isca);
+        }
+        if let Some(&v) = pairs.get("tsca") {
+            s.tsca = v.parse().unwrap_or(s.tsca);
+        }
+        if let Some(&v) = pairs.get("mous") {
+            s.mous = v == "1";
+        }
+        if let Some(&v) = pairs.get("pot") {
+            s.pot = v == "1";
+        }
+        if let Some(&v) = pairs.get("frc") {
+            s.frc = v == "1";
+        }
+        if let Some(&v) = pairs.get("ctrl") {
+            s.ctrl = v == "1";
+        }
+        if let Some(&v) = pairs.get("mof") {
+            s.mof = v == "1";
+        }
         if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
             f.dirty = true;
         }

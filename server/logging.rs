@@ -41,10 +41,10 @@ fn daily_rolling_appender(
 }
 
 fn log_panic_to_stderr(info: &std::panic::PanicHookInfo<'_>) {
-    let loc = info
-        .location()
-        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-        .unwrap_or_else(|| "unknown location".to_string());
+    let loc = info.location().map_or_else(
+        || "unknown location".to_string(),
+        |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+    );
     let payload = info.payload();
     let msg = payload
         .downcast_ref::<&'static str>()
