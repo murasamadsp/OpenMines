@@ -1,0 +1,53 @@
+name: CI
+
+# Строгие критерии качества из CLAUDE.md. deploy.yml запускается только
+# после ЗЕЛЁНОГО прогона этого workflow (workflow_run).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "config.json"
+      - "cells.json"
+      - "buildings.json"
+      - "ops/Dockerfile"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Пин 1.94 = локальный toolchain разработки (clippy nursery/pedantic
+      # version-sensitive; на 1.89 фаерят другие линты). Бампать синхронно с
+      # ops/Dockerfile при обновлении.
+      - name: Install Rust 1.94
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.94"
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy (strict)
+        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
+
+      - name: test
+        run: cargo test --all-targets --all-features
