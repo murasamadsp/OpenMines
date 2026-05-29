@@ -40,13 +40,19 @@ M3R_REGEN_WORLD=1 cargo run --release
 
 ```bash
 docker build -t openmines-server -f ops/Dockerfile .
-docker run --rm -p 8090:8090 -v openmines_state:/data openmines-server
+docker run --rm -p 8090:8090 -p 8091:8091 -v openmines_state:/data openmines-server
 ```
 
-В образе нужны `config.json`, `cells.json` и `buildings.json`; при первом запуске они копируются в том `/data`. База (`openmines.db`) и слои мира лежат в `/data/data/` (подкаталог по умолчанию `data_dir`). Старые файлы в корне `/data` при старте переносятся в `/data/data/`; при необходимости `mines3.db*` переименовывается в `openmines.db*`.
+Порт `8090` — игровой протокол, `8091` — метрики Prometheus. Конфиги (`config.json`, `cells.json`, `buildings.json`) запекаются в образ в рабочий каталог `/app` и читаются оттуда; том `/data` (`M3R_DATA_DIR`) хранит только состояние — базу (`openmines.db`) и слои мира в `/data/data/`. Поэтому `WORKDIR` образа — `/app`, а не `/data` (иначе том затенил бы запечённые конфиги).
 
-### 4. Деплой на VPS
+### 4. Деплой (CI/CD)
 
-Деплой на прод выполняется через GitOps (сервер сам подтягивает изменения из репозитория). Ручные скрипты деплоя из репозитория удалены.
+Деплой автоматизирован через GitHub Actions:
+
+1. Push в `main` → CI прогоняет `cargo fmt`, строгий `clippy` и тесты.
+2. При зелёном CI собирается Docker-образ (`ops/Dockerfile`) и публикуется в GitHub Container Registry (GHCR).
+3. Образ выкатывается на сервер: бэкап тома состояния → `docker compose pull` → `up -d` (без `down`, том мира сохраняется).
+
+Параметры окружения (хост, пути, ключи) хранятся в секретах репозитория и не присутствуют в исходниках.
 
 Локально «с нуля»: остановить сервер и удалить каталог состояния, например `rm -rf data/` в корне репозитория (или свой `data_dir` / `M3R_DATA_DIR`).
