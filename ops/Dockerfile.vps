@@ -1,6 +1,0 @@
-# Final runtime image without RUN (to bypass Virtuozzo bugs)
-FROM debian:bookworm-slim AS runtime
-WORKDIR /data
-COPY openmines-server.bin /usr/local/bin/openmines-server
-EXPOSE 8090
-ENTRYPOINT ["/usr/local/bin/openmines-server"]

@@ -1,7 +1,10 @@
+pub mod anl;
 pub mod cells;
+pub mod dotnet_random;
 pub mod generator;
 pub mod map_format;
 mod sector_palette;
+mod sectors_gen;
 
 use anyhow::{Context, Result};
 use cells::{CellDefs, cell_type};

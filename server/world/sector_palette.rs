@@ -279,6 +279,7 @@ pub const fn crys_palette(tier: usize, gig: bool) -> &'static [u8] {
 }
 
 /// Слияние `types` + `crys` без дублей (до 64 байт) — замена случайной подвыборки `GenerateInsides`.
+#[allow(dead_code)]
 pub fn merged_palette_buf(tier: usize, gig: bool) -> ([u8; 64], usize) {
     let mut buf = [0u8; 64];
     let mut n = 0usize;

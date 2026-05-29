@@ -45,30 +45,8 @@ docker run --rm -p 8090:8090 -v openmines_state:/data openmines-server
 
 В образе нужны `config.json`, `cells.json` и `buildings.json`; при первом запуске они копируются в том `/data`. База (`openmines.db`) и слои мира лежат в `/data/data/` (подкаталог по умолчанию `data_dir`). Старые файлы в корне `/data` при старте переносятся в `/data/data/`; при необходимости `mines3.db*` переименовывается в `openmines.db*`.
 
-### 4. Полная переустановка сервера на VPS
+### 4. Деплой на VPS
 
-Обычный деплой (синхронизация, затем на VPS `docker run`+`cargo build` — обход нестабильного runc при BuildKit в слое `rust:*` на Virtuozzo — и сборка образа по `ops/Dockerfile.vps`):
+Деплой на прод выполняется через GitOps (сервер сам подтягивает изменения из репозитория). Ручные скрипты деплоя из репозитория удалены.
 
-```bash
-./scripts/deploy-vps.sh
-```
-
-Полная переустановка: сначала остановка compose-стека на хосте `vps`, затем тот же деплой.
-
-- Без потери данных в томе (БД и мир в Docker volume сохраняются):
-
-```bash
-./scripts/full-reinstall-vps.sh
-```
-
-- С **полным сбросом данных** (удаляется именованный том из compose, см. `ops/docker-compose.vps.yml`; это необратимо):
-
-```bash
-./scripts/full-reinstall-vps.sh --wipe-data
-```
-
-Переменные окружения те же, что у деплоя: `REMOTE_HOST`, `REMOTE_DIR` (по умолчанию `/home/admin/openmines-deploy`), `COMPOSE_FILE`, `SERVICE`.
-
-Локально «с нуля» (без VPS): остановить сервер и удалить каталог состояния, например `rm -rf data/` в корне репозитория (или свой `data_dir` / `M3R_DATA_DIR`).
-
-Если после `up` Docker ругается на `iptables` / `Memory allocation` на хосте — это сбой сетевого стека/фаервола на VPS, не репозиторий; перезагрузка хоста или чистка правил `iptables`/перезапуск Docker обычно помогает.
+Локально «с нуля»: остановить сервер и удалить каталог состояния, например `rm -rf data/` в корне репозитория (или свой `data_dir` / `M3R_DATA_DIR`).
