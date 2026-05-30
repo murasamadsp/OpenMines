@@ -340,7 +340,7 @@ pub fn handle_build(
                     .map(|hst| {
                         skills
                             .states
-                            .get(hst.code())
+                            .find(hst.code())
                             .map_or(1.0_f32, |s| s.level as f32)
                     })
                     .unwrap_or(1.0);
@@ -409,7 +409,7 @@ pub fn handle_build(
                                 get_player_skill_effect(&skills.states, SkillType::BuildYellow);
                             let hp = skills
                                 .states
-                                .get(SkillType::BuildYellow.code())
+                                .find(SkillType::BuildYellow.code())
                                 .map_or(1.0_f32, |s| s.level as f32);
                             Some((eff, hp))
                         })
@@ -435,7 +435,7 @@ pub fn handle_build(
                             let eff = get_player_skill_effect(&skills.states, SkillType::BuildRed);
                             let hp = skills
                                 .states
-                                .get(SkillType::BuildRed.code())
+                                .find(SkillType::BuildRed.code())
                                 .map_or(1.0_f32, |s| s.level as f32);
                             Some((eff, hp))
                         })

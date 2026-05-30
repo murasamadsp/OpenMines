@@ -88,12 +88,7 @@ pub fn init_player(
                 miniq: Vec::new(),
             },
             PlayerSkills {
-                total_slots: player.skills.get("__slots").map_or(20, |s| s.level),
-                states: {
-                    let mut s = player.skills.clone();
-                    s.remove("__slots");
-                    s
-                },
+                states: player.skills.clone(),
             },
             PlayerView {
                 last_chunk: None,

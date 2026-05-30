@@ -13,7 +13,7 @@
 //! - `buyslot` — purchase an additional slot
 //! - `exit` / `exit:0` — close window (handled upstream)
 
-use crate::db::SkillState;
+use crate::db::{SkillEntry, SkillSlots};
 use crate::game::player::{PlayerSkills as PlayerSkillsComp, PlayerStats, PlayerUI};
 use crate::game::skills::{
     self, OnHealth, PlayerSkills as PlayerSkillsHelper, SkillType, exp_needed,
@@ -23,7 +23,6 @@ use crate::net::session::outbound::player_sync::{
     send_player_level, send_player_skills, send_player_speed,
 };
 use crate::net::session::prelude::*;
-use std::collections::HashMap;
 
 /// Maximum number of skill slots a player can have.
 const MAX_SLOTS: i32 = 34;
@@ -130,22 +129,21 @@ fn handle_skill_upgrade(
     let upgraded = state
         .modify_player(pid, |ecs, entity| {
             // Read skill code and check upgrade readiness
-            let (skill_code, skill_type, needed) = {
+            let (skill_type, needed) = {
                 let skills = ecs.get::<PlayerSkillsComp>(entity)?;
-                let code = get_skill_code_at_slot(&skills.states, selected_slot)?;
-                let stype = SkillType::from_code(&code)?;
-                let state_entry = skills.states.get(&code)?;
-                let need = exp_needed(stype, state_entry.level);
-                if need > 0.0 && state_entry.exp < need {
+                let entry = skills.states.skills.get(&selected_slot)?;
+                let stype = SkillType::from_code(&entry.code)?;
+                let need = exp_needed(stype, entry.level);
+                if need > 0.0 && entry.exp < need {
                     return Some(false);
                 }
-                (code, stype, need)
+                (stype, need)
             };
 
-            // Perform upgrade (mutable borrow)
+            // Perform upgrade (mutable borrow) — 1:1 C# `Skill.Up`: exp-=need, lvl+1.
             {
                 let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
-                let entry = skills_mut.states.get_mut(&skill_code)?;
+                let entry = skills_mut.states.skills.get_mut(&selected_slot)?;
                 if needed > 0.0 {
                     entry.exp -= needed;
                 }
@@ -207,14 +205,16 @@ fn handle_skill_delete(
     }
 
     state.modify_player(pid, |ecs, entity| {
-        let skill_code = {
+        {
             let skills = ecs.get::<PlayerSkillsComp>(entity)?;
-            get_skill_code_at_slot(&skills.states, slot)?
-        };
+            if !skills.states.skills.contains_key(&slot) {
+                return None;
+            }
+        }
 
         {
             let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
-            skills_mut.states.remove(&skill_code);
+            skills_mut.states.skills.remove(&slot);
         }
 
         let skills = ecs.get::<PlayerSkillsComp>(entity)?;
@@ -254,7 +254,7 @@ fn handle_skill_install(
                 let skills = ecs.get::<PlayerSkillsComp>(entity)?;
 
                 // Check the slot is empty
-                if get_skill_code_at_slot(&skills.states, slot).is_some() {
+                if skills.states.skills.contains_key(&slot) {
                     return Some(false);
                 }
 
@@ -264,8 +264,8 @@ fn handle_skill_install(
                     return Some(false);
                 }
 
-                // Check skill is not already installed
-                if skills.states.contains_key(skill_type.code()) {
+                // Check skill is not already installed (1:1 C# SkillToInstall filter)
+                if skills.states.find(skill_type.code()).is_some() {
                     return Some(false);
                 }
 
@@ -278,9 +278,13 @@ fn handle_skill_install(
             // Install (mutable borrow)
             {
                 let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
-                skills_mut.states.insert(
-                    skill_type.code().to_string(),
-                    SkillState { level: 1, exp: 0.0 },
+                skills_mut.states.skills.insert(
+                    slot,
+                    SkillEntry {
+                        code: skill_type.code().to_string(),
+                        level: 1,
+                        exp: 0.0,
+                    },
                 );
             }
 
@@ -325,7 +329,7 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
             // Increment slot count (mutable borrow on skills)
             {
                 let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
-                skills_mut.total_slots += 1;
+                skills_mut.states.total_slots += 1;
             }
 
             Some(true)
@@ -353,7 +357,7 @@ fn send_up_page(
             let skills = ecs.get::<PlayerSkillsComp>(entity)?;
             Some(build_up_page_json(
                 &skills.states,
-                skills.total_slots,
+                skills.states.total_slots,
                 selected_slot,
             ))
         })
@@ -379,31 +383,25 @@ fn send_up_page(
 }
 
 /// Build the `UpPage` JSON string (1:1 with C# `Window.ToString()` for `UpPage`).
-fn build_up_page_json(
-    skills: &HashMap<String, SkillState>,
-    total_slots: i32,
-    selected_slot: i32,
-) -> String {
-    // Build skills list: "code:level:slot:can_upgrade" entries
-    // C# ref: `GetSkills()` → `UpSkill(slot, lvl, isUpReady, type)`
-    // `obj["k"] = join("#", skills.Select(x => "{type.GetCode()}:{level}:{slot}:{canUpgrade}"))`
+fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32) -> String {
+    // Build skills list: "code:level:slot:can_upgrade" per УСТАНОВЛЕННЫЙ скилл.
+    // 1:1 C# `obj["k"] = join("#", Skills.Select(x => "{code}:{level}:{slot}:{canUp}"))`.
+    // Слоты реальные (ключ map). Сортируем по слоту для детерминированного вывода.
+    let mut slotted: Vec<(&i32, &SkillEntry)> = skills.skills.iter().collect();
+    slotted.sort_by_key(|(slot, _)| **slot);
     let mut skill_entries: Vec<String> = Vec::new();
-    let sorted_codes = get_sorted_skill_codes(skills);
-    for (slot, code) in sorted_codes.iter().enumerate() {
-        if let Some(st) = skills.get(*code) {
-            let skill_type = SkillType::from_code(code);
-            let can_upgrade = skill_type.is_some_and(|st_type| {
-                let needed = exp_needed(st_type, st.level);
-                needed > 0.0 && st.exp >= needed
-            });
-            skill_entries.push(format!(
-                "{}:{}:{}:{}",
-                code,
-                st.level,
-                slot,
-                if can_upgrade { "1" } else { "0" }
-            ));
-        }
+    for (slot, entry) in slotted {
+        let can_upgrade = SkillType::from_code(&entry.code).is_some_and(|st_type| {
+            let needed = exp_needed(st_type, entry.level);
+            needed > 0.0 && entry.exp >= needed
+        });
+        skill_entries.push(format!(
+            "{}:{}:{}:{}",
+            entry.code,
+            entry.level,
+            slot,
+            if can_upgrade { "1" } else { "0" }
+        ));
     }
     let k_value = if skill_entries.is_empty() {
         "#".to_string()
@@ -454,30 +452,20 @@ fn build_up_page_json(
         obj.insert("i".into(), serde_json::Value::String(String::new()));
         obj.insert("si".into(), serde_json::Value::String(String::new()));
     } else {
-        // Slot selected: check if it has a skill or is empty
-        let skill_at_slot = get_skill_code_at_slot(skills, selected_slot);
-
-        if let Some(code) = skill_at_slot {
+        // Slot selected: check if it has a skill or is empty (реальный слот).
+        if let Some(entry) = skills.skills.get(&selected_slot) {
             // Slot has a skill — show description, upgrade button if ready, delete option
-            let skill_type = SkillType::from_code(&code);
-            let st = skills.get(&code);
+            let skill_type = SkillType::from_code(&entry.code);
 
-            let description = if let (Some(stype), Some(state)) = (skill_type, st) {
-                build_skill_description(stype, state)
-            } else {
-                String::new()
-            };
-
+            let description =
+                skill_type.map_or_else(String::new, |stype| build_skill_description(stype, entry));
             obj.insert("txt".into(), serde_json::Value::String(description));
 
             // Upgrade button if exp >= needed
-            let can_upgrade = skill_type
-                .and_then(|stype| {
-                    let state = skills.get(&code)?;
-                    let needed = exp_needed(stype, state.level);
-                    Some(needed > 0.0 && state.exp >= needed)
-                })
-                .unwrap_or(false);
+            let can_upgrade = skill_type.is_some_and(|stype| {
+                let needed = exp_needed(stype, entry.level);
+                needed > 0.0 && entry.exp >= needed
+            });
 
             if can_upgrade {
                 obj.insert("b".into(), serde_json::Value::String("Улучшить".into()));
@@ -496,7 +484,7 @@ fn build_up_page_json(
             obj.insert("i".into(), serde_json::Value::String(String::new()));
 
             // Skill icon
-            obj.insert("si".into(), serde_json::Value::String(code));
+            obj.insert("si".into(), serde_json::Value::String(entry.code.clone()));
         } else {
             // Slot is empty — show installable skills
             obj.insert(
@@ -551,39 +539,17 @@ fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
 
 /// Get the total number of skill slots for a player from the component.
 const fn get_player_slot_count(comp: &PlayerSkillsComp) -> i32 {
-    comp.total_slots
-}
-
-/// Get sorted skill codes (excluding meta keys like "__slots").
-/// The sort order gives stable slot indices.
-fn get_sorted_skill_codes(skills: &HashMap<String, SkillState>) -> Vec<&str> {
-    let mut codes: Vec<&str> = skills
-        .keys()
-        .filter(|k| !k.starts_with("__"))
-        .map(String::as_str)
-        .collect();
-    codes.sort_unstable();
-    codes
-}
-
-/// Get the skill code at a given slot index.
-/// Slot indices correspond to the sorted order of skill codes.
-fn get_skill_code_at_slot(skills: &HashMap<String, SkillState>, slot: i32) -> Option<String> {
-    if slot < 0 {
-        return None;
-    }
-    let sorted = get_sorted_skill_codes(skills);
-    sorted.get(slot as usize).map(|s| (*s).to_string())
+    comp.states.total_slots
 }
 
 /// Check if a skill is visible (requirements installed) and meets level requirements.
 /// C# ref: `Skill.Visible(Player p, out bool meet)`:
 /// - If any requirement skill is not installed → not visible (return false)
 /// - If requirement skill level - 3 < required level → visible but doesn't meet
-fn is_skill_visible_and_meets_reqs(skills: &HashMap<String, SkillState>, skill: SkillType) -> bool {
+fn is_skill_visible_and_meets_reqs(skills: &SkillSlots, skill: SkillType) -> bool {
     if let Some(reqs) = get_skill_requirements(skill) {
         for (req_skill, req_lvl) in &reqs {
-            if let Some(s) = skills.get(req_skill.code()) {
+            if let Some(s) = skills.find(req_skill.code()) {
                 // C# ref: `skill.lvl - 3 < req.Value` → meet = false
                 if s.level - 3 < *req_lvl {
                     return false;
@@ -599,10 +565,10 @@ fn is_skill_visible_and_meets_reqs(skills: &HashMap<String, SkillState>, skill: 
 
 /// Check if a skill is visible (requirement skills installed), regardless of level.
 /// Returns (visible, `meets_reqs`).
-fn skill_visibility(skills: &HashMap<String, SkillState>, skill: SkillType) -> (bool, bool) {
+fn skill_visibility(skills: &SkillSlots, skill: SkillType) -> (bool, bool) {
     if let Some(reqs) = get_skill_requirements(skill) {
         for (req_skill, req_lvl) in &reqs {
-            if let Some(s) = skills.get(req_skill.code()) {
+            if let Some(s) = skills.find(req_skill.code()) {
                 // C# ref: `skill.lvl - 3 < req.Value` → meet = false
                 if s.level - 3 < *req_lvl {
                     return (true, false);
@@ -618,7 +584,7 @@ fn skill_visibility(skills: &HashMap<String, SkillState>, skill: SkillType) -> (
 /// Get the list of skills available for installation.
 /// C# ref: `PlayerSkills.SkillToInstall(Player p)` → Dict<`SkillType`, bool>.
 /// Returns Vec<(`SkillType`, `meets_requirements`)>.
-fn get_installable_skills(skills: &HashMap<String, SkillState>) -> Vec<(SkillType, bool)> {
+fn get_installable_skills(skills: &SkillSlots) -> Vec<(SkillType, bool)> {
     use SkillType::{
         AntiGun, BuildGreen, BuildRed, BuildRoad, BuildStructure, BuildWar, BuildYellow, Digging,
         Fridge, Health, Induction, MineGeneral, Movement, Packing, PackingBlue, PackingCyan,
@@ -653,7 +619,7 @@ fn get_installable_skills(skills: &HashMap<String, SkillState>) -> Vec<(SkillTyp
     let mut result = Vec::new();
     for &stype in &all_skills {
         // Skip already installed
-        if skills.contains_key(stype.code()) {
+        if skills.find(stype.code()).is_some() {
             continue;
         }
         let (visible, meets) = skill_visibility(skills, stype);
@@ -666,7 +632,7 @@ fn get_installable_skills(skills: &HashMap<String, SkillState>) -> Vec<(SkillTyp
 
 /// Build a human-readable skill description.
 /// C# ref: `Skill.Description` property.
-fn build_skill_description(skill_type: SkillType, state: &SkillState) -> String {
+fn build_skill_description(skill_type: SkillType, state: &SkillEntry) -> String {
     let lvl = state.level;
     let effect = skill_effect(skill_type, lvl);
     let needed = exp_needed(skill_type, lvl);

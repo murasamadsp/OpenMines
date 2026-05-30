@@ -36,30 +36,97 @@ impl Role {
 }
 
 /// Default skills for a new player — basic digging, movement, building, mining, health, repair
-pub fn default_skills() -> HashMap<String, SkillState> {
-    let mut s = HashMap::new();
-    // Skill codes from C# SkillType enum comments
-    s.insert("d".into(), SkillState { level: 1, exp: 0.0 }); // Digging
-    s.insert(
-        "M".into(),
-        SkillState {
-            level: 60,
-            exp: 0.0,
-        },
-    ); // Movement
-    s.insert("L".into(), SkillState { level: 1, exp: 0.0 }); // BuildGreen
-    s.insert("A".into(), SkillState { level: 1, exp: 0.0 }); // BuildRoad
-    s.insert("O".into(), SkillState { level: 1, exp: 0.0 }); // BuildStructure
-    s.insert("m".into(), SkillState { level: 1, exp: 0.0 }); // MineGeneral
-    s.insert("l".into(), SkillState { level: 1, exp: 0.0 }); // Health
-    s.insert("e".into(), SkillState { level: 1, exp: 0.0 }); // Repair
-    s
+const fn default_total_slots() -> i32 {
+    20
 }
 
+/// Дефолтные скиллы нового игрока — 1:1 C# `PlayerSkills` ctor:
+/// MineGeneral@slot0, Digging@1, Movement@2, Health@3, slots=20.
+#[must_use]
+pub fn default_skills() -> SkillSlots {
+    let mut skills = HashMap::new();
+    skills.insert(0, SkillEntry { code: "m".into(), level: 1, exp: 0.0 }); // MineGeneral
+    skills.insert(1, SkillEntry { code: "d".into(), level: 1, exp: 0.0 }); // Digging
+    skills.insert(2, SkillEntry { code: "M".into(), level: 1, exp: 0.0 }); // Movement
+    skills.insert(3, SkillEntry { code: "l".into(), level: 1, exp: 0.0 }); // Health
+    SkillSlots {
+        skills,
+        total_slots: 20,
+    }
+}
+
+/// Скилл в слоте (1:1 C# `Skill`: код типа + уровень + опыт).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillEntry {
+    pub code: String,
+    pub level: i32,
+    pub exp: f32,
+}
+
+/// Слотовая модель скиллов — 1:1 C# `PlayerSkills`:
+/// `Dictionary<int slot, Skill> skills` + `int slots` + `selectedslot`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillSlots {
+    /// slot index → установленный скилл.
+    pub skills: HashMap<i32, SkillEntry>,
+    /// Всего слотов (C# `slots`), дефолт 20, макс 34.
+    #[serde(default = "default_total_slots")]
+    pub total_slots: i32,
+}
+
+impl SkillSlots {
+    /// Найти установленный скилл по коду типа (1:1 C# `skills.FirstOrDefault(type)`).
+    #[must_use]
+    pub fn find(&self, code: &str) -> Option<&SkillEntry> {
+        self.skills.values().find(|e| e.code == code)
+    }
+    pub fn find_mut(&mut self, code: &str) -> Option<&mut SkillEntry> {
+        self.skills.values_mut().find(|e| e.code == code)
+    }
+    /// Сумма уровней всех установленных скиллов (1:1 C# `lvlsummary`).
+    #[must_use]
+    pub fn lvl_summary(&self) -> i32 {
+        self.skills.values().map(|e| e.level).sum()
+    }
+}
+
+/// Старый формат БД (`HashMap<code, {level,exp}>`) — для миграции в слоты.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillState {
     pub level: i32,
     pub exp: f32,
+}
+
+/// Мигрировать старый code-keyed формат в слотовый: `__slots` → `total_slots`,
+/// остальные коды раскладываются по слотам 0..n (стабильный порядок по коду).
+#[must_use]
+fn migrate_old_skills(old: HashMap<String, SkillState>) -> SkillSlots {
+    let mut total = 20;
+    let mut entries: Vec<(String, SkillState)> = Vec::new();
+    for (code, st) in old {
+        if code == "__slots" {
+            total = st.level.max(20);
+            continue;
+        }
+        entries.push((code, st));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut skills = HashMap::new();
+    for (i, (code, st)) in entries.into_iter().enumerate() {
+        let slot = i32::try_from(i).unwrap_or(0);
+        skills.insert(
+            slot,
+            SkillEntry {
+                code,
+                level: st.level,
+                exp: st.exp,
+            },
+        );
+    }
+    SkillSlots {
+        skills,
+        total_slots: total,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +149,7 @@ pub struct PlayerRow {
     pub resp_x: Option<i32>,
     pub resp_y: Option<i32>,
     pub inventory: HashMap<i32, i32>,
-    pub skills: HashMap<String, SkillState>,
+    pub skills: SkillSlots,
     /// Сырое значение `Role` из БД. Меняется только в БД или через `set_player_role`.
     pub role: i32,
     pub clan_rank: i32,
@@ -130,7 +197,13 @@ fn row_to_player(r: &rusqlite::Row) -> PlayerRow {
         ],
         clan_id: r.get(19).unwrap(),
         inventory: serde_json::from_str(&inv_str).unwrap_or_default(),
-        skills: serde_json::from_str(&skills_str).unwrap_or_else(|_| default_skills()),
+        // Новый слотовый формат; при неудаче — миграция старого code-keyed; иначе дефолт.
+        skills: serde_json::from_str::<SkillSlots>(&skills_str)
+            .or_else(|_| {
+                serde_json::from_str::<HashMap<String, SkillState>>(&skills_str)
+                    .map(migrate_old_skills)
+            })
+            .unwrap_or_else(|_| default_skills()),
         resp_x: r.get(22).unwrap_or(None),
         resp_y: r.get(23).unwrap_or(None),
         role: r.get::<_, i32>(24).unwrap_or(0),

@@ -27,7 +27,7 @@ pub fn send_player_health(tx: &mpsc::UnboundedSender<Vec<u8>>, stats: &PlayerSta
 }
 
 pub fn send_player_level(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
-    let total_lvl: i32 = skills.states.values().map(|s| s.level).sum();
+    let total_lvl: i32 = skills.states.lvl_summary();
     send_u_packet(tx, "LV", &level(total_lvl).1);
 }
 

@@ -9,7 +9,7 @@
     clippy::map_unwrap_or
 )]
 
-use crate::db::SkillState;
+use crate::db::SkillSlots;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -378,7 +378,7 @@ pub trait OnExp {
 }
 
 pub struct PlayerSkills<'a> {
-    pub skills: &'a HashMap<String, SkillState>,
+    pub skills: &'a SkillSlots,
 }
 
 impl<'a> OnDig for PlayerSkills<'a> {
@@ -413,7 +413,7 @@ impl<'a> OnBld for PlayerSkills<'a> {
             | SkillType::BuildRed
             | SkillType::BuildWar => self
                 .skills
-                .get(skill.code())
+                .find(skill.code())
                 .map_or(1.0, |s| s.level as f32),
             _ => 1.0,
         }
@@ -448,7 +448,7 @@ impl<'a> OnPackCrys for PlayerSkills<'a> {
 
 impl<'a> OnExp for PlayerSkills<'a> {
     fn on_exp(&self, current_val: f32) -> f32 {
-        if let Some(upgr_state) = self.skills.get(SkillType::Upgrade.code()) {
+        if let Some(upgr_state) = self.skills.find(SkillType::Upgrade.code()) {
             current_val * skill_effect(SkillType::Upgrade, upgr_state.level)
         } else {
             current_val
@@ -510,41 +510,38 @@ pub const fn exp_needed(skill: SkillType, _level: i32) -> f32 {
 }
 
 /// Get the effect value for a player's skill, defaulting to level 0 if not present.
-pub fn get_player_skill_effect(skills: &HashMap<String, SkillState>, skill: SkillType) -> f32 {
+pub fn get_player_skill_effect(skills: &SkillSlots, skill: SkillType) -> f32 {
     skills
-        .get(skill.code())
+        .find(skill.code())
         .map_or_else(|| skill_effect(skill, 0), |s| skill_effect(skill, s.level))
 }
 
-/// Add exp to a skill. C# `Skill.AddExp`: does NOT auto-level-up.
-/// Level-up happens only through `Up()` in the skill UI (Up building).
-/// Returns `false` always (kept for API compat — callers should always send @S).
-pub fn add_skill_exp(skills: &mut HashMap<String, SkillState>, code: &str, amount: f32) -> bool {
+/// Add exp to a skill IF установлен в слот. C# `Skill.AddExp`: вызывается только
+/// для установленных скиллов (`UseSkill` итерирует `skills.Values`), НЕ делает
+/// auto-level-up (level-up — только через Up GUI). Возвращает `true`, если скилл
+/// установлен и exp добавлен (вызывающие тогда шлют @S); `false`, если скилла нет
+/// в слотах (тогда @S не нужен — 1:1 C#, неустановленный скилл опыт не копит).
+pub fn add_skill_exp(skills: &mut SkillSlots, code: &str, amount: f32) -> bool {
     let upgrade_mult = skills
-        .get(SkillType::Upgrade.code())
-        .map(|s| skill_effect(SkillType::Upgrade, s.level))
-        .unwrap_or(1.0);
+        .find(SkillType::Upgrade.code())
+        .map_or(1.0, |s| skill_effect(SkillType::Upgrade, s.level));
 
-    let entry = skills
-        .entry(code.to_string())
-        .or_insert(SkillState { level: 1, exp: 0.0 });
-
-    let total_amount = amount * upgrade_mult;
-    entry.exp += total_amount;
-
-    // C# `Skill.AddExp` НЕ делает Up() (level-up — только через Up GUI), НО
-    // ВСЕГДА шлёт `SkillsPacket` (@S) клиенту (`Skill.cs:78`). Возвращаем
-    // `true`, чтобы вызывающие (`if add_skill_exp {...send @S...}`) всегда
-    // слали @S — иначе прогресс скиллов не виден в клиенте (1:1 фикс).
-    true
+    if let Some(entry) = skills.find_mut(code) {
+        entry.exp += amount * upgrade_mult;
+        true
+    } else {
+        false
+    }
 }
 
 /// Convert skills into outbound packets payload (`(skill_code, percent)`), preserving legacy rounding.
-pub fn skill_progress_payload(skills: &HashMap<String, SkillState>) -> Vec<(String, i32)> {
+#[must_use]
+pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {
     skills
-        .iter()
-        .map(|(code, s)| {
-            let skill_type = SkillType::from_code(code);
+        .skills
+        .values()
+        .map(|s| {
+            let skill_type = SkillType::from_code(&s.code);
             let needed = skill_type.map_or(1.0, |st| exp_needed(st, s.level));
             let pct = if needed > 0.0 {
                 #[allow(clippy::cast_possible_truncation)]
@@ -553,7 +550,7 @@ pub fn skill_progress_payload(skills: &HashMap<String, SkillState>) -> Vec<(Stri
             } else {
                 100
             };
-            (code.clone(), pct)
+            (s.code.clone(), pct)
         })
         .collect()
 }
@@ -621,13 +618,13 @@ pub fn get_skill_requirements(skill: SkillType) -> Option<HashMap<SkillType, i32
     Some(reqs)
 }
 
-pub fn can_install_skill(player_skills: &HashMap<String, SkillState>, skill: SkillType) -> bool {
-    if player_skills.contains_key(skill.code()) {
+pub fn can_install_skill(player_skills: &SkillSlots, skill: SkillType) -> bool {
+    if player_skills.find(skill.code()).is_some() {
         return false;
     }
     if let Some(reqs) = get_skill_requirements(skill) {
         for (req_skill, req_lvl) in reqs {
-            if let Some(s) = player_skills.get(req_skill.code()) {
+            if let Some(s) = player_skills.find(req_skill.code()) {
                 if s.level < req_lvl {
                     return false;
                 }
