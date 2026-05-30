@@ -116,9 +116,7 @@ fn handle_chat_giveall_command(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    if !ensure_admin(tx, state, pid) {
-        return;
-    }
+    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
     // All known item IDs: buildings (0-4,24,26,27,29), consumables (5-7,35,40), geopacks (10-16,34,42,43,46)
     let items: &[(i32, i32)] = &[
         (0, 10),
@@ -169,6 +167,18 @@ fn handle_chat_giveall_command(
         }
         Some(())
     });
+    // + деньги и creds (по просьбе «выдать все предметы И деньги»).
+    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+        let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        s.money = s.money.saturating_add(1_000_000);
+        s.creds = s.creds.saturating_add(100_000);
+        let (m, c) = (s.money, s.creds);
+        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            f.dirty = true;
+        }
+        send_u_packet(tx, "P$", &money(m, c).1);
+        Some(())
+    });
 }
 
 // ─── /give ──────────────────────────────────────────────────────────────────
@@ -179,9 +189,7 @@ fn handle_chat_give_command(
     pid: PlayerId,
     args: &[&str],
 ) {
-    if !ensure_admin(tx, state, pid) {
-        return;
-    }
+    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
     let item_id = match parse_required_arg::<i32>(tx, args, 0, CMD_USAGE_GIVE) {
         Some(id) => id,
         None => return,
@@ -212,9 +220,7 @@ fn handle_chat_money_command(
     pid: PlayerId,
     args: &[&str],
 ) {
-    if !ensure_admin(tx, state, pid) {
-        return;
-    }
+    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
     let amount = match parse_required_arg::<i64>(tx, args, 0, CMD_USAGE_MONEY) {
         Some(a) => a,
         None => return,
