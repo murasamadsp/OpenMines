@@ -237,7 +237,7 @@ cargo fmt --all
 Структура: `[event:4B][time:u32 LE][x:u32 LE][y:u32 LE][sub_payload...]`
 
 | Event | Описание | Sub-payload |
-|-------|----------|-------------|
+| - | - | - |
 | `Xmov` | Движение | direction (число) |
 | `Xdig` | Копание | direction (число) |
 | `Xbld` | Строительство | `"{direction}{blockType}"` |
@@ -448,3 +448,7 @@ GameState {
 **Здания GUI:** ❌ — все здания показывают generic GUI (take money/crystals/delete). Нет: Teleport list+TP, Resp fill, Market buy/sell, Crafter recipes, Storage deposit, Up skills.
 
 **Настройки:** ⚠️ — ключи определены, #S отправляется при логине. Нет полного Settings GUI (RichList с слайдерами).
+
+ЗАПРЕЩАЮ СПИХИВАТЬ НА НЕ ЗАДЕПЛОЕН
+
+РАБОТАЕМ ТОЛЬКО В МЕЙНЕ
