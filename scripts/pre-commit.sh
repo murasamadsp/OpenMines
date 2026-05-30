@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
+# Проверки качества перед коммитом.
+# Прерывание (SIGTERM/SIGINT/SIGHUP) = exit 1 = коммит отклонён.
 
 set -euo pipefail
+
+_abort() {
+    echo ""
+    echo "!!! pre-commit прерван (сигнал). Коммит отклонён. !!!"
+    exit 1
+}
+trap '_abort' SIGTERM SIGINT SIGHUP
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=scripts/quality-common.sh

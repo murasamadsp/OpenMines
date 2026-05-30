@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Pre-commit hook — вызывает scripts/pre-commit.sh.
+# Хук живёт в .githooks/ (tracked by git) и активируется через:
+#   git config core.hooksPath .githooks
+#
+# Защита от прерывания: SIGTERM/SIGINT/SIGHUP завершают с exit 1,
+# что заставляет git отклонить коммит.
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Trap: любой сигнал прерывания = коммит отклонён
+_abort() {
+    echo ""
+    echo "!!! pre-commit прерван (сигнал). Коммит отклонён. !!!"
+    exit 1
+}
+trap '_abort' SIGTERM SIGINT SIGHUP
+
+exec "$ROOT_DIR/scripts/pre-commit.sh"

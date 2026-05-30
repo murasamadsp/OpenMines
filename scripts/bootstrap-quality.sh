@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
+# Первичная настройка окружения разработки.
+# Запускать один раз после клонирования репозитория.
 
 set -euo pipefail
 
+echo "==> Устанавливаем компоненты rustup"
 rustup component add rustfmt clippy
 
+echo "==> Устанавливаем cargo-инструменты качества"
 cargo install --locked cargo-deny cargo-audit cargo-machete cargo-outdated cargo-geiger cargo-bloat
 
-if command -v pre-commit >/dev/null 2>&1; then
-  pre-commit install
-else
-  echo "pre-commit not found, install it manually (for example: brew install pre-commit)"
-fi
+echo "==> Подключаем git-хук из .githooks/ (tracked, не требует pre-commit)"
+git config core.hooksPath .githooks
+echo "    git config core.hooksPath = .githooks  ✓"
 
 echo "Bootstrap complete."

@@ -251,19 +251,6 @@ fn skills_packet_empty_is_just_trailing_hash() {
 }
 
 #[test]
-fn inventory_show_formats_show_total_selected_grid() {
-    let (event, payload) = inventory_show(&[(1, 5), (2, 3)], 1, 10);
-    assert_eq!(event, "IN");
-    assert_eq!(payload, b"show:10:1:1#5#2#3");
-}
-
-#[test]
-fn inventory_show_empty_grid_has_trailing_colon() {
-    let (_event, payload) = inventory_show(&[], 0, 0);
-    assert_eq!(payload, b"show:0:0:");
-}
-
-#[test]
 fn inventory_full_formats_full_selected_grid() {
     let (event, payload) = inventory_full(&[(1, 5), (2, 3)], 1);
     assert_eq!(event, "IN");

@@ -168,21 +168,6 @@ pub fn programmator_status(running: bool) -> (&'static str, Vec<u8>) {
     )
 }
 
-/// Encode an Inventory Show packet (IN): "show:{all}:{selected}:{key1#val1#key2#val2...}"
-pub fn inventory_show(items: &[(i32, i32)], selected: i32, total: i32) -> (&'static str, Vec<u8>) {
-    let grid = if items.is_empty() {
-        String::new()
-    } else {
-        items
-            .iter()
-            .map(|(k, v)| format!("{k}#{v}"))
-            .collect::<Vec<_>>()
-            .join("#")
-    };
-    let s = format!("show:{total}:{selected}:{grid}");
-    ("IN", s.into_bytes())
-}
-
 /// Encode an Inventory Full packet (IN): "full:{selected}:{key1#val1#key2#val2...}"
 pub fn inventory_full(items: &[(i32, i32)], selected: i32) -> (&'static str, Vec<u8>) {
     let grid = if items.is_empty() {

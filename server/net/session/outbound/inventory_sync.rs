@@ -59,7 +59,7 @@ pub fn send_inventory(tx: &mpsc::UnboundedSender<Vec<u8>>, inv: &mut PlayerInven
     if !inv.minv {
         grid.sort_by_key(|(k, _)| *k);
     }
-    
+
     // Если у игрока в сумме 5 или более предметов, мы дополняем сетку
     // пустыми слотами (-1, 0) до 5 предметов, чтобы на клиенте кнопка
     // сворачивания/разворачивания была активна (требует не менее 10 элементов в сплите #).
@@ -68,6 +68,6 @@ pub fn send_inventory(tx: &mpsc::UnboundedSender<Vec<u8>>, inv: &mut PlayerInven
             grid.push((-1, 0));
         }
     }
-    
+
     send_u_packet(tx, "IN", &inventory_full(&grid, inv.selected).1);
 }
