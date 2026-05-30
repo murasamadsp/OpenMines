@@ -116,9 +116,12 @@
   устарела, там было «1.5»); серверный cooldown убран (rubber-band-фикс).
 - [x] **Move dir** — уже 1:1: `movement.rs:119-131` считает dir из дельты
   при `dir==-1`/смене позиции (1:1 `Player.cs:416-418`). Стр.115 устарела.
-- [ ] **Rubber-band** («назад отбрасывает», репорт юзера): server move
-  cooldown vs client pace + очередь TY; вероятно частично снят PO→PI
-  фиксом — требует замера (`tools/repro_freeze.py tp_rollback`).
+- [ ] **Rubber-band** («назад отбрасывает», репорт юзера) — DEFER (нужен
+  живой замер, нельзя автономно). Server move cooldown vs client pace +
+  очередь TY. Вероятно уже снят: (1) PO→PI фикс, (2) move-cooldown убран
+  (`movement.rs` — нет server-side cooldown в Move). Проверка:
+  `tools/repro_freeze.py tp_rollback` на живом сервере. НЕ менять вслепую —
+  см. связь с «Единый Delay» ниже (унификация ВЕРНЁТ rubber-band).
 - [x] **Auto-dig `dir==-1`** ПОРТИРОВАНО 2026-05-30 (не верифицировано в
   живом клиенте — клиент шлёт `Xmov dir=-1` при автокопе-в-стену; имена
   пакетов RSA-зашифрованы, граф проверить нельзя). `movement.rs`: при
@@ -127,11 +130,23 @@
   ПОСЛЕ закрытия `modify_player` (реентрантность лока). Девиация: C# `Bz()`
   идёт мимо 200ms dig-cooldown, Rust `handle_dig` его применяет (≈ пейс
   ServerPause, безопаснее). Стр.165 («мёртвый код») вводила в заблуждение.
-- [ ] **Единый `Delay`**: C# один cooldown на move/dig/build/geo;
-  Rust раздельные (`player.rs`). Поведенческое (после dig нельзя move
-  200ms) — менять с пометкой «меняет ощущение».
-- [ ] **HB init-order**: Rust шлёт HB первым; C# `CheckChunkChanged`
-  ПОСЛЕ `SendInventory` (`Player.cs:618-629`). Стр.14 порядок неточен.
+- [ ] **Единый `Delay`** — DEFER, НАМЕРЕННАЯ ДЕВИАЦИЯ (1:1 регрессирует).
+  C# `Player.cs:150` ОДИН `Delay`; `TryAct` (214-220) блокирует ВСЕ действия
+  одним таймером: dig/build/geo `TryAct(...,200)`, move `TryAct(...,ServerPause)`.
+  Rust: раздельные `last_dig`/`last_build`/`last_geo` + move БЕЗ cooldown.
+  Унификация 1:1 = добавить move в общий cooldown = ВЕРНУТЬ rubber-band
+  (тот самый баг, что чинили — см. выше). Клиент пейсит сам (SpeedPacket).
+  Вывод: НЕ унифицировать. Поведение «после dig 200ms нельзя move» —
+  жертвуем ради отсутствия rubber-band (клиент важнее реф-говнокода).
+- [ ] **HB init-order** — DEFER (риск десинка, нельзя верифицировать без
+  клиента). C# `Player.Init` (597-630): `MoveToChunk`(616, только
+  spatial-индекс) рано → sync-пакеты (BD/GE/@L/BI/sp/@B/P$/LV/IN) →
+  `CheckChunkChanged(true)`(629, HB карты клиенту) **ПОСЛЕДНИМ** → `tp`(630).
+  Rust `init.rs:200` зовёт `check_chunk_changed` (spatial+HB вместе) ПЕРВЫМ,
+  до sync-пакетов. Для 1:1 надо РАЗДЕЛИТЬ: spatial-регистрация рано + HB
+  после `send_inventory`. Реордер Init = классический «1:1-критичный»
+  порядок, ломающий клиент при ошибке. Текущий порядок РАБОТАЕТ (сервер
+  живой). Менять только с проверкой на живом клиенте.
 - [ ] **BotSpot programmator** не реализован (стр.56 верно).
 - [x] **Chat-навигация `Cmen`/`Choo`/`Cset`/`Cpri` РЕАЛИЗОВАНА** по
   контракту клиента (референс их не обрабатывает — `Session.cs` только
