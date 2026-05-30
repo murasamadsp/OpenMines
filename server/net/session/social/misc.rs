@@ -209,14 +209,14 @@ pub fn handle_sett_ty(
         serde_json::json!("0"),
         serde_json::json!("mous"),
         serde_json::json!(if s.mous { "1" } else { "0" }),
-        // Bool: "Упрощенный режим графики"
-        serde_json::json!("Упрощенный режим графики"),
+        // Bool: "Упрощённый режим графики"
+        serde_json::json!("Упрощённый режим графики"),
         serde_json::json!("bool"),
         serde_json::json!("0"),
         serde_json::json!("pot"),
         serde_json::json!(if s.pot { "1" } else { "0" }),
-        // Bool: "ринудительно обновлять породы"
-        serde_json::json!("ринудительно обновлять породы (увеличит потр. CPU)"),
+        // Bool: "Принудительно обновлять породы"
+        serde_json::json!("Принудительно обновлять породы (увеличит потр. CPU)"),
         serde_json::json!("bool"),
         serde_json::json!("0"),
         serde_json::json!("frc"),
@@ -243,11 +243,11 @@ pub fn handle_sett_ty(
         buttons.push(serde_json::json!("Создать клан"));
         buttons.push(serde_json::json!("clancreate"));
     }
-    buttons.push(serde_json::json!("ВЫЙТИ"));
+    buttons.push(serde_json::json!("Выйти"));
     buttons.push(serde_json::json!("exit"));
 
     let gui = serde_json::json!({
-        "title": "НА СТРОЙКЕ",
+        "title": "Настройки",
         "tabs": ["Настройки", ""],
         "richList": rich,
         "buttons": buttons,
