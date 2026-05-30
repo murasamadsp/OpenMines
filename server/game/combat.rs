@@ -153,27 +153,30 @@ pub fn gun_firing_system(
             continue;
         }
 
-        let mut target_entity = None;
-        for (p_entity, _p_meta, p_pos, _p_sk, p_stats, p_cd, _, _) in players_query.iter() {
-            if p_stats.clan_id == Some(b_ownership.clan_id) {
+        // 1:1 C# `Gun.Update`: бьёт КАЖДОГО игрока в радиусе 20 (foreach), а не
+        // одного. Charge списывается per-hit; C# НЕ прерывает цикл при обнулении
+        // charge (оставшиеся жертвы всё равно получают урон в этот тик) — top-guard
+        // `charge <= 0` лишь пропускает пушку на СЛЕДУЮЩЕМ тике.
+        for (_p_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
+            &mut players_query
+        {
+            // clan immunity (C# `player.cid == cid` → continue)
+            if stats.clan_id == Some(b_ownership.clan_id) {
                 continue;
             }
+            // Protector-скип. ВНИМАНИЕ: в C# `Player.Hurt`/`Gun.Update` проверки
+            // неуязвимости НЕТ — это добавление Rust (protector-механика идёт иным
+            // путём). См. `docs/CLIENT_PROTOCOL_GAPS.md`.
             if p_cd.protection_until.is_some_and(|u| now < u) {
                 continue;
             }
 
             let dx = p_pos.x - b_pos.x;
             let dy = p_pos.y - b_pos.y;
-            if dx * dx + dy * dy <= 400 {
-                target_entity = Some(p_entity);
-                break;
+            if dx * dx + dy * dy > 400 {
+                continue;
             }
-        }
 
-        if let Some(entity) = target_entity
-            && let Ok((_ent, p_meta, _pos, mut p_sk, mut stats, _cd, conn, mut flags)) =
-                players_query.get_mut(entity)
-        {
             // C# Player.Hurt(60, DamageType.Gun): skill exp before damage
             let mut changed = false;
             changed |= crate::game::skills::add_skill_exp(&mut p_sk.states, "l", 1.0); // Health

@@ -369,7 +369,30 @@ MissionPanelPacket.cs` (`MM`), `MissionProgressPacket.cs` (`MP`),
 
 ---
 
-## Сводка безопасности
+## 8. Combat — Gun (`gun_firing_system` ↔ `Gun.Update`)
+
+Источник правды — `server_reference/GameShit/Buildings/Gun.cs:122-167` (боевое
+поведение, не протокол-с-клиентом).
+
+- **Мульти-таргет — ✅ портировано 2026-05-30 (pending live verify).** C#
+  `Gun.Update` в `foreach` бьёт КАЖДОГО игрока в радиусе 20, списывая charge
+  per-hit, и НЕ прерывает цикл при обнулении charge (оставшиеся жертвы всё равно
+  получают урон в этот тик). Rust бил одного (`break` после первого). Исправлено:
+  итерация всех игроков, урон/charge per-victim, без `break`; top-guard
+  `charge <= 0` лишь пропускает пушку на следующем тике. Charge-формула
+  (`0.5 * Induction.Effect/100`) уже была 1:1 (`skill_effect(Induction,0)=100` →
+  0.5 для игрока без Induction, как C# default).
+- **Protector-скип — ⚠ девиация Rust сверх референса.** `gun_firing_system`
+  пропускает игрока с активным `protection_until`. В C# `Player.Hurt` И
+  `Gun.Update` проверки неуязвимости НЕТ (`Player.cs:827-869` — только
+  Health/Induction/AntiGun exp + AntiGun-снижение урона). Protector-механика в
+  C# идёт иным путём (не найден в Hurt). Оставлено как есть — соответствует
+  документированному «protector = 30s неуязвимость»; помечено для ревью.
+- **FX — ⚠ форма пакета отличается (pending).** C# шлёт per-victim направленный
+  FX `SendDFToBots(7, x, y, player.id, 1)` (подпакет `D`: тип 7, от пушки к
+  боту). Rust шлёт позиционный `hb_fx` (подпакет `F`) у пушки. Сейчас FX
+  внутри per-victim цикла, но shape другой (нет направления/bot_id). Точный 1:1
+  требует `D`-подпакета с `player.bot_id` — отложено.
 
 Клиент НЕ доверенный. Любой `Choo`/`Cpri`/`Chat` может нести подделанный
 tag/uid. Инварианты, проверяемые на сервере ДО смены `current_chat` и ДО
