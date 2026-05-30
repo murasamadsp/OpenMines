@@ -264,6 +264,19 @@ fn inventory_show_empty_grid_has_trailing_colon() {
 }
 
 #[test]
+fn inventory_full_formats_full_selected_grid() {
+    let (event, payload) = inventory_full(&[(1, 5), (2, 3)], 1);
+    assert_eq!(event, "IN");
+    assert_eq!(payload, b"full:1:1#5#2#3");
+}
+
+#[test]
+fn inventory_full_empty_grid_has_trailing_colon() {
+    let (_event, payload) = inventory_full(&[], 0);
+    assert_eq!(payload, b"full:0:");
+}
+
+#[test]
 fn inventory_close_is_close_colon() {
     let (event, payload) = inventory_close();
     assert_eq!(event, "IN");

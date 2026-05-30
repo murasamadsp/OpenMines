@@ -38,6 +38,8 @@ fn prefill_miniq_if_needed(inv: &mut PlayerInventory) {
 }
 
 /// Как `Inventory.InvToSend` → `InventoryShowPacket` (`Inventory.cs`).
+/// Примечание: Для обхода бага парсера клиента на событие "show" (пытается парсить
+/// строку грида как число price), сервер всегда шлёт пакеты в формате "full".
 pub fn send_inventory(tx: &mpsc::UnboundedSender<Vec<u8>>, inv: &mut PlayerInventory) {
     prefill_miniq_if_needed(inv);
     let all = inventory_nonzero_count(&inv.items);
@@ -57,5 +59,15 @@ pub fn send_inventory(tx: &mpsc::UnboundedSender<Vec<u8>>, inv: &mut PlayerInven
     if !inv.minv {
         grid.sort_by_key(|(k, _)| *k);
     }
-    send_u_packet(tx, "IN", &inventory_show(&grid, inv.selected, all).1);
+    
+    // Если у игрока в сумме 5 или более предметов, мы дополняем сетку
+    // пустыми слотами (-1, 0) до 5 предметов, чтобы на клиенте кнопка
+    // сворачивания/разворачивания была активна (требует не менее 10 элементов в сплите #).
+    if all >= 5 {
+        while grid.len() < 5 {
+            grid.push((-1, 0));
+        }
+    }
+    
+    send_u_packet(tx, "IN", &inventory_full(&grid, inv.selected).1);
 }
