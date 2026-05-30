@@ -271,6 +271,20 @@ fn inventory_close_is_close_colon() {
 }
 
 #[test]
+fn inventory_choose_has_eight_colon_fields_with_empty_grid() {
+    // Client `InventoryHandler` requires the "choose" payload to split into 8
+    // fields (choose:hint:dist:dx:dy:w:h:grid) before it arms the item via
+    // `ChooseInventoryItem` (sets inventoryItem != -1 → enables Enter→INUS).
+    // w=0/h=0 makes the client call HideGrid() and ignore the placement grid.
+    let (event, payload) = inventory_choose();
+    assert_eq!(event, "IN");
+    assert_eq!(payload, b"choose::0:0:0:0:0:");
+    let s = std::str::from_utf8(&payload).unwrap();
+    assert_eq!(s.split(':').count(), 8);
+    assert_eq!(s.split(':').next(), Some("choose"));
+}
+
+#[test]
 fn chat_list_single_entry_uses_pm_separators() {
     let entries = vec![(
         "FED".to_string(),

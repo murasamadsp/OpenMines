@@ -184,9 +184,21 @@ pub fn inventory_full(items: &[(i32, i32)], selected: i32) -> (&'static str, Vec
 }
 
 /// Encode an Inventory Close packet (IN): "close:"
-#[allow(dead_code)]
 pub fn inventory_close() -> (&'static str, Vec<u8>) {
     ("IN", b"close:".to_vec())
+}
+
+/// Encode an Inventory Choose packet (IN):
+/// "choose:{hint}:{distance}:{dx}:{dy}:{w}:{h}:{grid01}"
+///
+/// C# `Inventory.Choose` (Inventory.cs) always follows `InvToSend()` with this
+/// packet (placeholder `bool[0,0]` grid). The client only needs it to set
+/// `GUIManager.inventoryItem != -1`, which is the precondition that enables
+/// Enter→`INUS` and shows the "item selected" UI state. With `w=0`/`h=0` the
+/// client calls `HideGrid()` and ignores hint/distance/dx/dy. Without this
+/// packet, selecting an item never arms it and pressing Enter does nothing.
+pub fn inventory_choose() -> (&'static str, Vec<u8>) {
+    ("IN", b"choose::0:0:0:0:0:".to_vec())
 }
 
 /// `MinesServer.Network.GUI.SkillsPacket`: имя `@S`, тело `Join("#", k:v...) + "#"`.

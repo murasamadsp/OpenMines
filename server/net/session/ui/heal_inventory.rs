@@ -189,18 +189,28 @@ pub fn handle_inventory_choose(
     let Ok(id) = s.parse::<i32>() else {
         return;
     };
-    state.modify_player(pid, |ecs, entity| {
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        if id != -1 {
+    // C# `Inventory.Choose` (Inventory.cs): AddChoose(id) — внутри no-op для -1 —
+    // selected = id, затем ВСЕГДА SendU(InvToSend()), затем SendU(choose) при
+    // id != -1 либо SendU(close) при id == -1. Второй пакет обязателен: только
+    // он арм'ит предмет на клиенте (inventoryItem != -1) и включает Enter→INUS.
+    let updated = state
+        .modify_player(pid, |ecs, entity| {
+            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
             add_choose_miniq(&mut inv.miniq, id);
-        }
-        inv.selected = id;
-        // C# ref: selection == -1 → Choose(-1) without SendInventory()
-        if id != -1 {
+            inv.selected = id;
             send_inventory(tx, &mut inv);
-        }
-        Some(())
-    });
+            Some(())
+        })
+        .is_some();
+    if !updated {
+        return;
+    }
+    let (ev, payload) = if id == -1 {
+        inventory_close()
+    } else {
+        inventory_choose()
+    };
+    send_u_packet(tx, ev, &payload);
 }
 
 /// Item-to-alive-cell mapping for geopack items.
@@ -268,14 +278,17 @@ pub fn use_geopack(
     if let Some(pickup_item) = alive_cell_to_item(facing_cell) {
         state.world.destroy(fx, fy);
         broadcast_cell_update(state, fx, fy);
-        // Add the mapped item to inventory (don't consume the used item).
+        // C# `ShitClass.Geopack` (ShitClass.cs): pickup делает `p.inventory[id]++`
+        // и возвращает `true`, поэтому `Inventory.Use` декрементит использованный
+        // geopack (`this[selected]--`). Добавляем поднятый тип и возвращаем true,
+        // чтобы вызывающий код израсходовал geopack — паритет 1:1 с референсом.
         state.modify_player(pid, |ecs, entity| {
             let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
             let c = inv.items.entry(pickup_item).or_insert(0);
             *c += 1;
             Some(())
         });
-        return false; // don't consume the item used
+        return true;
     }
 
     // D25: placement — target cell must be truly empty (NOTHING or EMPTY), not can_place_over.
