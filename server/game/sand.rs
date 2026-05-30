@@ -149,8 +149,13 @@ pub fn sand_physics_system(
 
     for (sx, sy, dest_x, dest_y, cell) in tasks {
         if is_physics_empty(state, dest_x, dest_y) {
+            // 1:1 C# `World.MoveCell` (Physics): durability ПЕРЕНОСИТСЯ. `set_cell`
+            // сбрасывает её на дефолт типа → без переноса недокопанный валун «лечится»
+            // до полной при падении. Читаем durability ДО очистки источника.
+            let dur = state.world.get_durability(sx, sy);
             state.world.set_cell(sx, sy, cell_type::EMPTY);
             state.world.set_cell(dest_x, dest_y, cell);
+            state.world.set_durability(dest_x, dest_y, dur);
 
             bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));
             bcast_q.0.push(BroadcastEffect::CellUpdate(dest_x, dest_y));

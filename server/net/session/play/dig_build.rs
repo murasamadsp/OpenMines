@@ -225,11 +225,22 @@ pub fn handle_dig(
     });
     let _ = mined_amount;
 
-    // Fix 9: Boulder push on EVERY hit, not just on destroy.
-    let pushed_boulder = if is_boulder(cell) {
+    // Boulder push на КАЖДЫЙ удар (не только при разрушении), 1:1 C# `Player.Bz`
+    // (390-404) → `World.MoveCell`: валун ПЕРЕМЕЩАЕТСЯ на клетку в направлении копки,
+    // если она пуста. `MoveCell` ОЧИЩАЕТ источник и ПЕРЕНОСИТ durability — раньше
+    // Rust только `set_cell(dest)` без очистки источника → валун ДУБЛИРОВАЛСЯ
+    // (эксплойт: копай валун → плодятся). Гейт `!destroyed`: при разрушении
+    // `damage_cell` уже очистил клетку, а `cell` захвачен ДО удара (иначе воскресим);
+    // C# в этом случае MoveCell'ит пустую клетку = no-op.
+    let pushed_boulder = if is_boulder(cell) && !destroyed {
         let (bx, by) = (tgt_x + dx, tgt_y + dy);
         if state.world.valid_coord(bx, by) && state.world.is_empty(bx, by) {
+            // durability читаем ПОСЛЕ damage_cell (как C# GetDurability после DamageCell).
+            let dur = state.world.get_durability(tgt_x, tgt_y);
+            state.world.destroy(tgt_x, tgt_y);
+            broadcast_cell_update(state, tgt_x, tgt_y);
             state.world.set_cell(bx, by, cell);
+            state.world.set_durability(bx, by, dur);
             broadcast_cell_update(state, bx, by);
             true
         } else {
