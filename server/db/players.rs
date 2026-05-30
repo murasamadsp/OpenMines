@@ -45,10 +45,38 @@ const fn default_total_slots() -> i32 {
 #[must_use]
 pub fn default_skills() -> SkillSlots {
     let mut skills = HashMap::new();
-    skills.insert(0, SkillEntry { code: "m".into(), level: 1, exp: 0.0 }); // MineGeneral
-    skills.insert(1, SkillEntry { code: "d".into(), level: 1, exp: 0.0 }); // Digging
-    skills.insert(2, SkillEntry { code: "M".into(), level: 1, exp: 0.0 }); // Movement
-    skills.insert(3, SkillEntry { code: "l".into(), level: 1, exp: 0.0 }); // Health
+    skills.insert(
+        0,
+        SkillEntry {
+            code: "m".into(),
+            level: 1,
+            exp: 0.0,
+        },
+    ); // MineGeneral
+    skills.insert(
+        1,
+        SkillEntry {
+            code: "d".into(),
+            level: 1,
+            exp: 0.0,
+        },
+    ); // Digging
+    skills.insert(
+        2,
+        SkillEntry {
+            code: "M".into(),
+            level: 1,
+            exp: 0.0,
+        },
+    ); // Movement
+    skills.insert(
+        3,
+        SkillEntry {
+            code: "l".into(),
+            level: 1,
+            exp: 0.0,
+        },
+    ); // Health
     SkillSlots {
         skills,
         total_slots: 20,
