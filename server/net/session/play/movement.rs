@@ -6,6 +6,20 @@ use crate::game::buildings::PackType;
 use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats};
 use crate::net::session::prelude::*;
 
+/// Исход `Move` внутри ECS-лока. `Autodig` сигнализирует, что нужно копнуть
+/// ПОСЛЕ освобождения лока (`handle_dig` сам берёт `modify_player` —
+/// реентрантность лока недопустима).
+enum MoveOutcome {
+    Moved {
+        nx: i32,
+        ny: i32,
+        ndir: i32,
+        skin: i32,
+        clan: i32,
+    },
+    Autodig(i32),
+}
+
 #[allow(clippy::similar_names)]
 pub fn handle_move(
     state: &Arc<GameState>,
@@ -32,11 +46,12 @@ pub fn handle_move(
     let result = state
         .modify_player(pid, |ecs, entity| {
             // 1. Immutable data gathering
-            let (px, py, skin, clan, window_open, prog_running) = {
+            let (px, py, skin, clan, window_open, prog_running, auto_dig) = {
                 let pos = ecs.get::<PlayerPosition>(entity)?;
                 let stats = ecs.get::<PlayerStats>(entity)?;
                 let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                 let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+                let settings = ecs.get::<crate::game::player::PlayerSettings>(entity)?;
                 (
                     pos.x,
                     pos.y,
@@ -44,6 +59,7 @@ pub fn handle_move(
                     stats.clan_id.unwrap_or(0),
                     ui.current_window.is_some(),
                     prog.running,
+                    settings.auto_dig,
                 )
             };
 
@@ -78,6 +94,21 @@ pub fn handle_move(
                     pid, cell, px, py, target_x, target_y
                 );
                 tp_back("not_empty", tx, px, py, target_x, target_y, &format!("cell={cell}"));
+                // 1:1 C# `Player.cs:429-437`: непустая клетка + `dir==-1` + autoDig →
+                // tp назад и копнуть (`Bz`). Направление копки — из дельты (как this.dir
+                // в C# `Player.cs:416-417`), совпадает с `dir_offset`. Иначе просто tp.
+                if dir == -1 && auto_dig {
+                    let dig_dir = if px > target_x {
+                        1
+                    } else if px < target_x {
+                        3
+                    } else if py > target_y {
+                        2
+                    } else {
+                        0
+                    };
+                    return Some(MoveOutcome::Autodig(dig_dir));
+                }
                 return None;
             }
 
@@ -151,11 +182,34 @@ pub fn handle_move(
                 }
             }
 
-            Some((target_x, target_y, actual_dir, skin, clan))
+            Some(MoveOutcome::Moved {
+                nx: target_x,
+                ny: target_y,
+                ndir: actual_dir,
+                skin,
+                clan,
+            })
         })
         .flatten();
 
-    if let Some((nx, ny, ndir, skin, clan)) = result {
+    let (nx, ny, ndir, skin, clan) = match result {
+        Some(MoveOutcome::Moved {
+            nx,
+            ny,
+            ndir,
+            skin,
+            clan,
+        }) => (nx, ny, ndir, skin, clan),
+        Some(MoveOutcome::Autodig(dig_dir)) => {
+            // C# `Player.cs:434`: Bz() после tp назад. handle_dig сам берёт лок —
+            // вызываем ПОСЛЕ закрытия modify_player.
+            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dig_dir);
+            return;
+        }
+        None => return,
+    };
+
+    {
         let tail = state
             .query_player(pid, |ecs, entity| {
                 ecs.get::<crate::game::programmator::ProgrammatorState>(entity)

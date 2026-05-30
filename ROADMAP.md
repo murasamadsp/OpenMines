@@ -107,16 +107,26 @@
   [[ping-tick-refactor-open]].
 
 ### Открытые верифицированные 1:1 расхождения (НЕ закрыто — честно)
-- [ ] **Gun single-target** (`combat.rs:169` `break`) vs C# `Gun.cs:122-167`
-  бьёт ВСЕХ в радиусе 20, charge списывается per-hit. Стр.52 ниже ЛОЖНА.
-- [ ] **Move dist** `>1.5` (`movement.rs:128`) vs C# `<1.2` accept
-  (`Player.cs:441`). Стр.24 ниже ЛОЖНА (там «1.2 ... cooldown убран» —
-  оба неверны: 1.5, и cooldown РЕ-добавлен → rubber-band).
-- [ ] **Move dir** держит старый `pd` vs C# из дельты (`Player.cs:416-418`).
+- [x] **Gun single-target → мульти-таргет ПОРТИРОВАНО 2026-05-30** (не
+  верифицировано в живом клиенте). C# `Gun.cs:122-167` бьёт ВСЕХ в радиусе
+  20, charge per-hit, без break при обнулении. `combat.rs gun_firing_system`
+  переписан: итерация всех игроков, урон/charge per-victim. Charge-формула
+  уже была 1:1. Расхождения protector-скип/FX — `CLIENT_PROTOCOL_GAPS §8`.
+- [x] **Move dist** — уже 1:1: `movement.rs:108` `dist >= 1.2` (стр.112
+  устарела, там было «1.5»); серверный cooldown убран (rubber-band-фикс).
+- [x] **Move dir** — уже 1:1: `movement.rs:119-131` считает dir из дельты
+  при `dir==-1`/смене позиции (1:1 `Player.cs:416-418`). Стр.115 устарела.
 - [ ] **Rubber-band** («назад отбрасывает», репорт юзера): server move
   cooldown vs client pace + очередь TY; вероятно частично снят PO→PI
   фиксом — требует замера (`tools/repro_freeze.py tp_rollback`).
-- [ ] **Auto-dig `dir==-1`** ветка отсутствует (`Player.cs:432-436`).
+- [x] **Auto-dig `dir==-1`** ПОРТИРОВАНО 2026-05-30 (не верифицировано в
+  живом клиенте — клиент шлёт `Xmov dir=-1` при автокопе-в-стену; имена
+  пакетов RSA-зашифрованы, граф проверить нельзя). `movement.rs`: при
+  непустой целевой клетке + `dir==-1` + `auto_dig` → tp назад + `handle_dig`
+  в направлении из дельты (1:1 `Player.cs:429-437`). Вызов `handle_dig` —
+  ПОСЛЕ закрытия `modify_player` (реентрантность лока). Девиация: C# `Bz()`
+  идёт мимо 200ms dig-cooldown, Rust `handle_dig` его применяет (≈ пейс
+  ServerPause, безопаснее). Стр.165 («мёртвый код») вводила в заблуждение.
 - [ ] **Единый `Delay`**: C# один cooldown на move/dig/build/geo;
   Rust раздельные (`player.rs`). Поведенческое (после dig нельзя move
   200ms) — менять с пометкой «меняет ощущение».
