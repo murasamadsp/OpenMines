@@ -589,7 +589,10 @@ pub fn programmator_system(
         // Get next action
         let action = {
             let cf = prog.current_function.clone();
-            let f = prog.current_prog.get_mut(&cf).unwrap();
+            let Some(f) = prog.current_prog.get_mut(&cf) else {
+                prog.running = false;
+                continue;
+            };
             let a = f.actions[f.current].clone();
             f.current += 1;
             a

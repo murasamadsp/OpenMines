@@ -166,8 +166,7 @@ pub fn apply_player_death_core(
     }
     if let Some(mut prog) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
         if prog.running {
-            if is_free_resp && prog.goto_death.is_some() {
-                let label = prog.goto_death.clone().unwrap();
+            if let Some(label) = prog.goto_death.clone().filter(|_| is_free_resp) {
                 if prog.current_prog.contains_key(&label) {
                     prog.current_function = label.clone();
                     if let Some(f) = prog.current_prog.get_mut(&label) {

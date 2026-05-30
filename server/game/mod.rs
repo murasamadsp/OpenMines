@@ -355,7 +355,7 @@ impl GameState {
         if fails >= Self::AUTH_FAILURE_LIMIT {
             let elapsed = now.duration_since(last);
             if elapsed < Self::AUTH_BLOCK_DURATION {
-                return Some(Self::AUTH_BLOCK_DURATION.checked_sub(elapsed).unwrap());
+                return Some(Self::AUTH_BLOCK_DURATION.saturating_sub(elapsed));
             }
         }
         None

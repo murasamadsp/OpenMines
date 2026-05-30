@@ -1,5 +1,8 @@
 pub mod packets;
 
+#[cfg(test)]
+mod wire_tests;
+
 use anyhow::{Result, bail};
 use bytes::{Buf, BufMut, BytesMut};
 

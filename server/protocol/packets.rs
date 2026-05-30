@@ -664,6 +664,87 @@ pub fn decode_whoi(data: &[u8]) -> Vec<i32> {
 mod tests {
     use super::*;
     use crate::game::chat::ChatMessage;
+    use crate::protocol::{Packet, u_packet};
+
+    // Golden wire bytes привязаны к ДОКУМЕНТИРОВАННОМУ контракту фрейма
+    // `[len i32 LE][type u8][2B event][payload]`, а НЕ сняты со снапшота текущего кода.
+    // Имена событий case-sensitive (`AU` ≠ `au`). Тесты стерегут фрейминг,
+    // порядок байт и регистр события; они НЕ заменяют проверку на живом клиенте.
+    #[test]
+    fn au_session_frame_golden_bytes() {
+        let (event, payload) = au_session("abcde");
+        assert_eq!(event, "AU");
+        let mut buf = BytesMut::new();
+        u_packet(event, &payload).encode(&mut buf).unwrap();
+        assert_eq!(
+            buf.as_ref(),
+            &[
+                0x0C, 0x00, 0x00,
+                0x00, // length = 12 (i32 LE, включая эти 4 байта)
+                b'U', // data_type
+                b'A', b'U', // event_name
+                b'a', b'b', b'c', b'd', b'e', // payload
+            ]
+        );
+    }
+
+    #[test]
+    fn ping_frame_golden_bytes() {
+        let (event, payload) = ping(0, 100, "hi");
+        assert_eq!(event, "PI");
+        let mut buf = BytesMut::new();
+        u_packet(event, &payload).encode(&mut buf).unwrap();
+        assert_eq!(
+            buf.as_ref(),
+            &[
+                0x0F, 0x00, 0x00, 0x00, // length = 15
+                b'U', b'P', b'I', // type + event
+                b'0', b':', b'1', b'0', b'0', b':', b'h', b'i', // "0:100:hi"
+            ]
+        );
+    }
+
+    #[test]
+    fn tp_frame_golden_bytes() {
+        let (event, payload) = tp(5, 7);
+        assert_eq!(event, "@T");
+        let mut buf = BytesMut::new();
+        u_packet(event, &payload).encode(&mut buf).unwrap();
+        assert_eq!(
+            buf.as_ref(),
+            &[
+                0x0A, 0x00, 0x00, 0x00, // length = 10
+                b'U', b'@', b'T', // type + event
+                b'5', b':', b'7', // "5:7"
+            ]
+        );
+    }
+
+    #[test]
+    fn frame_roundtrip_decode_matches_encode() {
+        let (event, payload) = au_session("xyzab");
+        let mut buf = BytesMut::new();
+        u_packet(event, &payload).encode(&mut buf).unwrap();
+        let decoded = Packet::try_decode(&mut buf)
+            .unwrap()
+            .expect("полный фрейм обязан декодироваться");
+        assert_eq!(decoded.data_type, b'U');
+        assert_eq!(&decoded.event_name, b"AU");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn try_decode_rejects_bogus_length_without_panic() {
+        // Сетевой ввод: кривой length-префикс не паникует — только Err / Ok(None).
+        let mut tiny = BytesMut::from(&[0x05, 0x00, 0x00, 0x00, b'U', b'A'][..]); // length=5 (<7)
+        assert!(Packet::try_decode(&mut tiny).is_err());
+
+        let mut huge = BytesMut::from(&[0xFF, 0xFF, 0xFF, 0x7F, b'U'][..]); // length=i32::MAX
+        assert!(Packet::try_decode(&mut huge).is_err());
+
+        let mut partial = BytesMut::from(&[0x0C, 0x00, 0x00, 0x00, b'U'][..]); // объявлено 12, есть 5
+        assert!(matches!(Packet::try_decode(&mut partial), Ok(None)));
+    }
 
     /// Контракт `client/Assets/Scripts/ChatManager.cs` `muHandler` (источник
     /// правды по wire, клиент неизменяем):

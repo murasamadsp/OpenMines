@@ -49,7 +49,11 @@ pub fn init_player(
     // 1:1-ish ref behavior: immediately allow first actions after login.
     // If we initialize cooldown timestamps to `now`, the first few client `Xmov` packets can be ignored,
     // causing the next accepted move to be "too far" and trigger a server correction (@T).
-    let ready = now.checked_sub(std::time::Duration::from_secs(1)).unwrap();
+    // `checked_sub` может вернуть None в первую секунду аптайма машины (Instant у базы);
+    // тогда `now` — безопасный фолбэк (худшее — одна @T-коррекция на первом ходе).
+    let ready = now
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or(now);
 
     let entity = state
         .ecs
