@@ -100,14 +100,17 @@ jobs:
 
             # === ЖЁСТКИЙ ГЕЙТ: бэкап world-volume ПЕРЕД деплоем (Урок 4) ===
             # Если бэкап падает — деплой НЕ продолжается. Мир невосстановим.
-            echo "[deploy] backing up world volume '$VOL'"
+            # Исключаем *.bak — это серверные atomic-копии mmap-слоёв (~половина
+            # объёма, ~3.3ГБ), дублируют живые слои. БД (.db/-wal/-shm) бэкапим
+            # целиком: в -wal лежат закоммиченные, но не чекпойнтнутые транзакции.
+            echo "[deploy] backing up world volume '$VOL' (excl *.bak)"
             mkdir -p "$BACKUP_DIR"
             TS=$(date +%F-%H%M%S)
             docker run --rm \
               -v "$VOL":/data:ro \
               -v "$BACKUP_DIR":/backup \
               alpine:3.20 \
-              tar czf "/backup/world-$TS.tgz" -C /data .
+              tar czf "/backup/world-$TS.tgz" --exclude='*.bak' -C /data .
             echo "[deploy] backup OK -> $BACKUP_DIR/world-$TS.tgz"
             # ротация: держим последние 10 бэкапов
             ls -1t "$BACKUP_DIR"/world-*.tgz | tail -n +11 | xargs -r rm -f
