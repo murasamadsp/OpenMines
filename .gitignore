@@ -1,42 +1,109 @@
-# .NET-сборки утилит под tools/ (MinesServer/ — свой .gitignore)
+# ======================================================================
+# Системные файлы (OS)
+# ======================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ======================================================================
+# Редакторы кода и IDE
+# ======================================================================
+# VS Code
+.vscode/
+
+# JetBrains (Rider / IntelliJ / WebStorm)
+.idea/
+*.sln.iml
+*.suo
+*.user
+*.userprefs
+
+# Visual Studio
+*.suo
+*.user
+*.userprefs
+*.sln.docstates
+
+# Vim / временные файлы
+*.swp
+*.swo
+*~
+
+# ======================================================================
+# Язык программирования Rust (Cargo)
+# ======================================================================
+/target/
+**/*.rs.bk
+Cargo.lock.status
+
+# ======================================================================
+# Frontend / Web (Vite / Map Viewer)
+# ======================================================================
+web/mapviewer/dist/
+web/mapviewer/node_modules/
+.eslintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ======================================================================
+# Клиент Unity (client/)
+# ======================================================================
+# Исключаем временные папки Unity в подкаталоге client/
+/client/[Ll]ibrary/
+/client/[Tt]emp/
+/client/[Oo]bj/
+/client/[Ll]ogs/
+/client/[Uu]serSettings/
+/client/[Mm]emoryCaptures/
+/client/[Bb]uild/
+/client/[Bb]uilds/
+
+# Сборки клиента
+/client-builds/
+
+# Исключаем метафайлы для проигнорированных папок
+/client/[Ll]ibrary.meta
+/client/[Tt]emp.meta
+/client/[Oo]bj.meta
+/client/[Ll]ogs.meta
+/client/[Uu]serSettings.meta
+/client/[Mm]emoryCaptures.meta
+/client/[Bb]uild.meta
+/client/[Bb]uilds.meta
+
+# Сгенерированные схемы UI
+/client/UIElementsSchema/
+
+# ======================================================================
+# Утилиты и инструменты (Tools)
+# ======================================================================
+# Исключаем bin/obj сборки утилит в tools/
 tools/**/bin/
 tools/**/obj/
 
-# Legacy/temporary artifacts
-MinesServer_DO_NOT_READ_ME/
-MinesSetup.exe
-
-# Map viewer (Vite)
-web/mapviewer/dist/
-web/mapviewer/node_modules/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Reference / legacy server sources (не коммитить)
-# server_reference/
-
-# Rust
-**/*.rs.bk
-/target/
-
-# SQLite (по умолчанию `data/openmines.db`, см. `data_dir` в config; legacy — mines3.db)
+# ======================================================================
+# Базы данных (SQLite) и Карты
+# ======================================================================
 *.db-journal
 *.db-shm
 *.db-wal
+*.mapb
 /data/
 /mines3.db
 /openmines.db
 
-# Клиентские артефакты Unity
-client-builds/
-client/Build/
-client/Library/
-client/obj/
-client/Temp/
-
-# Ключи/сертификаты/креды (никогда не коммитить)
+# ======================================================================
+# Секреты, ключи и файлы окружения (Критически важно!)
+# ======================================================================
+.env
+.env.*
+!.env.example
 **/*credentials*.json
 **/*secret*.json
 **/*secret*.yaml
@@ -57,32 +124,53 @@ client/Temp/
 google-services.json
 GoogleService-Info.plist
 
-# Логи
+# ======================================================================
+# Логи и временные файлы
+# ======================================================================
 *.log
-
-# Локальные настройки линтера (если меняются локально)
-.markdownlint.json
-
-# Мир: mmap-файлы из World::new (`{world_name}.mapb`, `{world_name}_road.mapb`, …)
-*.mapb
-
-# Редакторы / мусор
-*.swo
-*.swp
-*~
-.idea/
-
-# Резервные копии рядом с артефактами
+Temp/
+temp/
 *.bak
 
-# Секреты и локальное окружение
-.env
-.env.*
-!.env.example
+# ======================================================================
+# Временные артефакты проекта
+# ======================================================================
+MinesServer_DO_NOT_READ_ME/
+MinesSetup.exe
 
-# Состояние ассистентов / IDE (не коммитить)
+# ======================================================================
+# Проект FMOD Studio (если создается в корне репозитория)
+# ======================================================================
+/FMODProject/.unsaved/
+/FMODProject/.user/
+/FMODProject/.cache/
+/FMODProject/Build/
+/FMODProject/Plugins/
+
+
+# ======================================================================
+# FMOD Аудиоинтеграция в Unity (client/Assets)
+# ======================================================================
+# НЕ игнорируем DLL и библиотеки в FMOD
+!/client/[Aa]ssets/Plugins/FMOD/**/lib/*
+
+# НЕ игнорируем изображения и Gizmos FMOD для Unity Editor
+!/client/[Aa]ssets/Gizmos/FMOD/*
+!/client/[Aa]ssets/Editor Default Resources/FMOD/*
+
+# Игнорируем локальный кэш FMOD
+/client/[Aa]ssets/Plugins/FMOD/Cache/*
+
+# Игнорируем скомпилированные банки звуков в StreamingAssets
+/client/[Aa]ssets/StreamingAssets/**/*.bank
+/client/[Aa]ssets/StreamingAssets/**/*.bank.meta
+
+# Логи редактора FMOD
+fmod_editor.log
+
+# ======================================================================
+# Состояние ассистентов и AI-настройки
+# ======================================================================
 .claude/settings.local.json
 .omc/
 
-Temp/
-temp/

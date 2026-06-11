@@ -1,31 +1,54 @@
-# Глобальные настройки
+# ----------------------------------------------------------------------
+# Глобальные настройки Git
+# ----------------------------------------------------------------------
 * text=auto
 
-# Документация и текстовые файлы
-*.md text
-*.txt text
+# ----------------------------------------------------------------------
+# Исходный код и скрипты
+# ----------------------------------------------------------------------
+# C# (Unity)
+*.cs text diff=csharp eol=lf
+*.csproj text eol=lf
+*.sln text eol=lf
 
-# Конфигурационные файлы и разметка
-*.cfg text
-*.json text
-*.jsonc text
-*.toml text
-*.xml text
-*.yaml text
-*.yml text
+# Rust
+*.rs text diff=rust eol=lf
+Cargo.lock text eol=lf
+*.toml text eol=lf
 
-# Исходный код
-*.cs text
-*.gradle text
-*.rs text
+# Shell / Bash
 *.sh text eol=lf
 
-# Проекты и сборка
-*.csproj text
-*.lock text
-*.sln text
+# Web / Frontend (Vite)
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
 
-# Ресурсы и сцены Unity
+# Шейдеры (Unity)
+*.shader text eol=lf
+*.cginc text eol=lf
+*.hlsl text eol=lf
+*.glsl text eol=lf
+
+# ----------------------------------------------------------------------
+# Документация и разметка
+# ----------------------------------------------------------------------
+*.md text eol=lf
+*.txt text eol=lf
+*.cfg text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# ----------------------------------------------------------------------
+# Unity ресурсы и сцены (текстовая сериализация)
+# ----------------------------------------------------------------------
 *.anim text eol=lf
 *.asset text eol=lf
 *.controller text eol=lf
@@ -33,7 +56,25 @@
 *.meta text eol=lf
 *.prefab text eol=lf
 *.unity text eol=lf
+*.overrideController text eol=lf
+*.physicMaterial text eol=lf
+*.physicsMaterial2D text eol=lf
+*.playable text eol=lf
+*.mask text eol=lf
+*.brush text eol=lf
+*.terrainlayer text eol=lf
+*.spriteatlas text eol=lf
 
+# ----------------------------------------------------------------------
+# FMOD Аудиоинтеграция
+# ----------------------------------------------------------------------
+**/Assets/Plugins/FMOD/**/Info.plist text eol=lf
+*.bundle binary
+*.bank binary
+
+# ----------------------------------------------------------------------
+# Бинарные ресурсы и медиа
+# ----------------------------------------------------------------------
 # Изображения
 *.bmp binary
 *.gif binary
@@ -41,6 +82,10 @@
 *.jpg binary
 *.png binary
 *.webp binary
+*.tga binary
+*.psd binary
+*.exr binary
+*.hdr binary
 
 # Аудио
 *.flac binary
@@ -48,10 +93,13 @@
 *.ogg binary
 *.wav binary
 
-# Архивы и пакеты
+# Архивы
 *.7z binary
 *.unitypackage binary
 *.zip binary
+*.tar binary
+*.gz binary
+*.rar binary
 
 # Базы данных и карты
 *.db binary
@@ -67,3 +115,4 @@
 *.pdb binary
 *.so binary
 *.wasm binary
+
