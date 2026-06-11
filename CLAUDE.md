@@ -346,7 +346,7 @@ GameState {
 ### Environment Variables
 
 | Variable | Purpose |
-|----------|---------|
+| - | - |
 | `M3R_DATA_DIR` | Override директории состояния (default: `data/`) |
 | `M3R_REGEN_WORLD` | Форсировать регенерацию мира |
 | `M3R_GRANT_ADMIN` | Comma-separated имена игроков для роли admin |
@@ -389,7 +389,7 @@ GameState {
 ### ❌ Не реализовано
 
 | Компонент | Что нужно сделать |
-|-----------|-------------------|
+| - | - |
 | Программатор | PROG→parse→store в ECS, running=true, If/Loop execution, tail=1 в hb_bot, DB persistence |
 | Building GUIs | Teleport: TP list + action. Market: buy/sell/auction. Storage: deposit slider. Crafter: recipe start/timer. Resp: fill slider. Up: skill management |
 | Alive-клетки | 7 типов поведения (AliveCyan flood, AliveBlack colony, etc.) — ECS system нужен |
