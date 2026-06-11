@@ -337,6 +337,8 @@ GameState {
 
 **Кристаллы:** 6 типов (Green, Blue, Red, Violet, White, Cyan). Basket с capacity.
 
+**Звук (FMOD):** Проект FMOD Studio находится в `client/FMODProject/` (версия 2.03). Банки звуков (`.bank`) компилируются в `client/Assets/StreamingAssets/` (игнорируются Git, собираются по F7 в FMOD Studio).
+
 **Кланы:** создание (1000 creds), ранги (Member/Officer/Owner), invite/request, Gate/Gun доступ.
 
 **Чат:** FED, DNO глобальные + клановый + локальный (HB bubble). Admin команды: `/give`, `/money`, `/tp`, `/heal`, `/clan`, `/pack`.
@@ -398,10 +400,10 @@ GameState {
 
 ## Клиент (Unity) — источник правды
 
-Клиент **не может быть изменён**. Ключевые файлы:
+Клиент **может быть изменён** по явному запросу (см. «Обязательные ограничения»). Ключевые файлы:
 
 | Файл | Назначение |
-|------|------------|
+| - | - |
 | `ServerController.cs` | Главный диспатчер (~45 обработчиков) |
 | `ConnectionManager.cs` | TCP соединение, статус, реконнект |
 | `AuthManager.cs` | Аутентификация, хранение credentials |
@@ -422,7 +424,7 @@ GameState {
 Ключевые файлы:
 
 | Файл | Что содержит |
-|------|-------------|
+| - | - |
 | `Server/Session.cs` | Основной обработчик пакетов, TY роутинг |
 | `Server/Auth.cs` | Аутентификация, создание аккаунта, MD5 токен |
 | `GameShit/Entities/PlayerStaff/Player.cs` | CreatePlayer(), Init(), Move(), Bz(), Death() |
