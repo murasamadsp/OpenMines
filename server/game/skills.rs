@@ -12,199 +12,154 @@
 use crate::db::SkillSlots;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Коды (`#[strum(serialize)]`) — единственный источник истины для wire (@S) и
+/// БД (skills JSON keyed by code). `code()`/`from_code()` выведены из них через
+/// strum, что исключает рассинхрон прямого/обратного маппинга.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::IntoStaticStr,
+    strum::EnumString,
+    strum::EnumIter,
+)]
 pub enum SkillType {
+    #[strum(serialize = "a")]
     AntiSlime = 0,
+    #[strum(serialize = "k")]
     AntiBlock = 1,
+    #[strum(serialize = "j")]
     AdjacentExtraction = 2,
+    #[strum(serialize = "U")]
     Geology = 3,
+    #[strum(serialize = "B")]
     MineBlue = 4,
+    #[strum(serialize = "G")]
     MineGreen = 5,
+    #[strum(serialize = "D")]
     Destruction = 6,
+    #[strum(serialize = "x")]
     Annihilation = 7,
+    #[strum(serialize = "y")]
     Crystallography = 8,
+    #[strum(serialize = "z")]
     Deconstruction = 9,
+    #[strum(serialize = "u")]
     AntiGun = 10,
+    #[strum(serialize = "E")]
     BuildRed = 11,
+    #[strum(serialize = "d")]
     Digging = 12,
+    #[strum(serialize = "l")]
     Health = 13,
+    #[strum(serialize = "m")]
     MineGeneral = 14,
+    #[strum(serialize = "R")]
     MineRed = 15,
+    #[strum(serialize = "L")]
     BuildGreen = 16,
+    #[strum(serialize = "Q")]
     BuildQuadro = 17,
+    #[strum(serialize = "q")]
     Detection = 18,
+    #[strum(serialize = "M")]
     Movement = 19,
+    #[strum(serialize = "Y")]
     BuildYellow = 20,
+    #[strum(serialize = "P")]
     Compression = 21,
+    #[strum(serialize = "F")]
     Fridge = 22,
+    #[strum(serialize = "C")]
     MineCyan = 23,
+    #[strum(serialize = "t")]
     RoadMovement = 24,
+    #[strum(serialize = "*U")]
     Upgrade = 25,
+    #[strum(serialize = "Z")]
     Deactivation = 26,
+    #[strum(serialize = "h")]
     HyperPacking = 27,
+    #[strum(serialize = "V")]
     MineViolet = 28,
+    #[strum(serialize = "p")]
     Packing = 29,
+    #[strum(serialize = "b")]
     PackingBlue = 30,
+    #[strum(serialize = "c")]
     PackingCyan = 31,
+    #[strum(serialize = "v")]
     PackingViolet = 32,
+    #[strum(serialize = "*M")]
     Discount = 33,
+    #[strum(serialize = "J")]
     Sort = 34,
+    #[strum(serialize = "S")]
     Turbo = 35,
+    #[strum(serialize = "X")]
     DeMagnetizing = 36,
+    #[strum(serialize = "W")]
     MineWhite = 37,
+    #[strum(serialize = "r")]
     PackingRed = 38,
+    #[strum(serialize = "w")]
     PackingWhite = 39,
+    #[strum(serialize = "g")]
     PackingGreen = 40,
+    #[strum(serialize = "o")]
     Extraction = 41,
+    #[strum(serialize = "e")]
     Repair = 42,
+    #[strum(serialize = "*D")]
     ExpertMining = 43,
+    #[strum(serialize = "i")]
     Washing = 44,
+    #[strum(serialize = "f")]
     Fracturing = 45,
+    #[strum(serialize = "H")]
     NanoPacking = 46,
+    #[strum(serialize = "O")]
     BuildStructure = 47,
+    #[strum(serialize = "A")]
     BuildRoad = 48,
+    #[strum(serialize = "*B")]
     BuildUniversal = 49,
+    #[strum(serialize = "*L")]
     BuildWar = 50,
+    #[strum(serialize = "*A")]
     Architecture = 51,
+    #[strum(serialize = "*T")]
     TotalDestruction = 52,
+    #[strum(serialize = "*u")]
     UltraWhite = 53,
+    #[strum(serialize = "*J")]
     Jewlery = 54,
+    #[strum(serialize = "*I")]
     Induction = 55,
+    #[strum(serialize = "*a")]
     MineSlime = 56,
+    #[strum(serialize = "*d")]
     MineDeep = 57,
+    #[strum(serialize = "*g")]
     GluonPacking = 58,
 }
 
 impl SkillType {
     #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::AntiSlime => "a",
-            Self::AntiBlock => "k",
-            Self::AdjacentExtraction => "j",
-            Self::Geology => "U",
-            Self::MineBlue => "B",
-            Self::MineGreen => "G",
-            Self::Destruction => "D",
-            Self::Annihilation => "x",
-            Self::Crystallography => "y",
-            Self::Deconstruction => "z",
-            Self::AntiGun => "u",
-            Self::BuildRed => "E",
-            Self::Digging => "d",
-            Self::Health => "l",
-            Self::MineGeneral => "m",
-            Self::MineRed => "R",
-            Self::BuildGreen => "L",
-            Self::BuildQuadro => "Q",
-            Self::Detection => "q",
-            Self::Movement => "M",
-            Self::BuildYellow => "Y",
-            Self::Compression => "P",
-            Self::Fridge => "F",
-            Self::MineCyan => "C",
-            Self::RoadMovement => "t",
-            Self::Upgrade => "*U",
-            Self::Deactivation => "Z",
-            Self::HyperPacking => "h",
-            Self::MineViolet => "V",
-            Self::Packing => "p",
-            Self::PackingBlue => "b",
-            Self::PackingCyan => "c",
-            Self::PackingViolet => "v",
-            Self::Discount => "*M",
-            Self::Sort => "J",
-            Self::Turbo => "S",
-            Self::DeMagnetizing => "X",
-            Self::MineWhite => "W",
-            Self::PackingRed => "r",
-            Self::PackingWhite => "w",
-            Self::PackingGreen => "g",
-            Self::Extraction => "o",
-            Self::Repair => "e",
-            Self::ExpertMining => "*D",
-            Self::Washing => "i",
-            Self::Fracturing => "f",
-            Self::NanoPacking => "H",
-            Self::BuildStructure => "O",
-            Self::BuildRoad => "A",
-            Self::BuildUniversal => "*B",
-            Self::BuildWar => "*L",
-            Self::Architecture => "*A",
-            Self::TotalDestruction => "*T",
-            Self::UltraWhite => "*u",
-            Self::Jewlery => "*J",
-            Self::Induction => "*I",
-            Self::MineSlime => "*a",
-            Self::MineDeep => "*d",
-            Self::GluonPacking => "*g",
-        }
+    /// Wire/БД-код навыка (выведен из `#[strum(serialize)]`).
+    pub fn code(self) -> &'static str {
+        self.into()
     }
 
     #[must_use]
+    /// Навык по wire/БД-коду (выведен из `#[strum(serialize)]`).
     pub fn from_code(s: &str) -> Option<Self> {
-        match s {
-            "a" => Some(Self::AntiSlime),
-            "k" => Some(Self::AntiBlock),
-            "j" => Some(Self::AdjacentExtraction),
-            "U" => Some(Self::Geology),
-            "B" => Some(Self::MineBlue),
-            "G" => Some(Self::MineGreen),
-            "D" => Some(Self::Destruction),
-            "x" => Some(Self::Annihilation),
-            "y" => Some(Self::Crystallography),
-            "z" => Some(Self::Deconstruction),
-            "u" => Some(Self::AntiGun),
-            "E" => Some(Self::BuildRed),
-            "d" => Some(Self::Digging),
-            "l" => Some(Self::Health),
-            "m" => Some(Self::MineGeneral),
-            "R" => Some(Self::MineRed),
-            "L" => Some(Self::BuildGreen),
-            "Q" => Some(Self::BuildQuadro),
-            "q" => Some(Self::Detection),
-            "M" => Some(Self::Movement),
-            "Y" => Some(Self::BuildYellow),
-            "P" => Some(Self::Compression),
-            "F" => Some(Self::Fridge),
-            "C" => Some(Self::MineCyan),
-            "t" => Some(Self::RoadMovement),
-            "*U" => Some(Self::Upgrade),
-            "Z" => Some(Self::Deactivation),
-            "h" => Some(Self::HyperPacking),
-            "V" => Some(Self::MineViolet),
-            "p" => Some(Self::Packing),
-            "b" => Some(Self::PackingBlue),
-            "c" => Some(Self::PackingCyan),
-            "v" => Some(Self::PackingViolet),
-            "*M" => Some(Self::Discount),
-            "J" => Some(Self::Sort),
-            "S" => Some(Self::Turbo),
-            "X" => Some(Self::DeMagnetizing),
-            "W" => Some(Self::MineWhite),
-            "r" => Some(Self::PackingRed),
-            "w" => Some(Self::PackingWhite),
-            "g" => Some(Self::PackingGreen),
-            "o" => Some(Self::Extraction),
-            "e" => Some(Self::Repair),
-            "*D" => Some(Self::ExpertMining),
-            "i" => Some(Self::Washing),
-            "f" => Some(Self::Fracturing),
-            "H" => Some(Self::NanoPacking),
-            "O" => Some(Self::BuildStructure),
-            "A" => Some(Self::BuildRoad),
-            "*B" => Some(Self::BuildUniversal),
-            "*L" => Some(Self::BuildWar),
-            "*A" => Some(Self::Architecture),
-            "*T" => Some(Self::TotalDestruction),
-            "*u" => Some(Self::UltraWhite),
-            "*J" => Some(Self::Jewlery),
-            "*I" => Some(Self::Induction),
-            "*a" => Some(Self::MineSlime),
-            "*d" => Some(Self::MineDeep),
-            "*g" => Some(Self::GluonPacking),
-            _ => None,
-        }
+        s.parse().ok()
     }
 
     #[must_use]
@@ -634,4 +589,25 @@ pub fn can_install_skill(player_skills: &SkillSlots, skill: SkillType) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SkillType;
+    use strum::IntoEnumIterator as _;
+
+    #[test]
+    fn code_from_code_roundtrip_all_variants() {
+        // Залочить bijection code()↔from_code() для всех вариантов после перехода
+        // на strum: коды персистятся в БД (skills JSON) и на проводе (@S).
+        for skill in SkillType::iter() {
+            assert_eq!(SkillType::from_code(skill.code()), Some(skill));
+        }
+    }
+
+    #[test]
+    fn from_code_unknown_is_none() {
+        assert_eq!(SkillType::from_code("?"), None);
+        assert_eq!(SkillType::from_code(""), None);
+    }
 }
