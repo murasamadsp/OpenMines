@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "language": "Русский",
+  "model": "sonnet",
+  "effortLevel": "high",
+  "alwaysThinkingEnabled": true,
+  "respectGitignore": true,
+  "showTurnDuration": true,
+  "viewMode": "default",
+  "tui": "default",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Bash",
+      "Glob",
+      "Grep",
+      "Edit"
+    ],
+    "deny": [],
+    "defaultMode": "bypassPermissions"
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "ralph-loop@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "greptile@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "csharp-lsp@claude-plugins-official": true,
+    "remember@claude-plugins-official": true,
+    "semgrep@claude-plugins-official": true
+  },
+  "outputStyle": "default",
+  "autoMemoryEnabled": true,
+  "cleanupPeriodDays": 30,
+  "autoUpdatesChannel": "latest",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ts=$(date '+%H:%M'); branch=$(git -C \"$CLAUDE_PROJECT_DIR\" symbolic-ref --short HEAD 2>/dev/null); echo \"\" >> \"$CLAUDE_PROJECT_DIR/.remember/now.md\" && echo \"## $ts | ${branch:-main}\" >> \"$CLAUDE_PROJECT_DIR/.remember/now.md\" && echo \"Session ended. Review handoff above.\" >> \"$CLAUDE_PROJECT_DIR/.remember/now.md\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(echo \"$CLAUDE_TOOL_INPUT\" | jq -r '.file_path // \"\"'); [[ \"$file\" == *.rs ]] && cargo clippy --message-format=short 2>&1 | grep -E '^error' | head -5 || true"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_MAX_OUTPUT_LENGTH": "100000",
+    "CLAUDE_AUTO_BACKGROUND_TASKS": "1"
+  }
+}
