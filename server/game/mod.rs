@@ -478,14 +478,17 @@ impl GameState {
         y.checked_mul(w)?.checked_add(x)
     }
 
+    /// C# `World.AccessGun` → `(access, anygun)`. `access`: нет вражеской ЗАРЯЖЕННОЙ
+    /// пушки в радиусе 20. `anygun`: есть ЛЮБАЯ пушка в радиусе (для Gate-item).
     pub(crate) fn access_gun_with(
         ecs: &EcsWorld,
         chunk_buildings: &DashMap<(u32, u32), Vec<Entity>>,
         x: i32,
         y: i32,
         player_clan_id: i32,
-    ) -> bool {
+    ) -> (bool, bool) {
         let mut ret = true;
+        let mut anygun = false;
         let (cx, cy) = World::chunk_pos(x, y);
         for ncy in (cy.cast_signed() - 1)..=(cy.cast_signed() + 1) {
             for ncx in (cx.cast_signed() - 1)..=(cx.cast_signed() + 1) {
@@ -510,7 +513,7 @@ impl GameState {
                         let Some(own) = ecs.get::<BuildingOwnership>(entity) else {
                             continue;
                         };
-                        if meta.pack_type != PackType::Gun || stats.charge <= 0.0 {
+                        if meta.pack_type != PackType::Gun {
                             continue;
                         }
                         for (dx, dy, _) in meta.pack_type.building_cells() {
@@ -519,17 +522,26 @@ impl GameState {
                             let ddx = f64::from(bx - x);
                             let ddy = f64::from(by - y);
                             if ddx.hypot(ddy) <= 20.0 {
-                                ret = ret && own.clan_id == player_clan_id;
+                                // C# anygun ставится для любой пушки (до проверки charge).
+                                anygun = true;
+                                if stats.charge > 0.0 {
+                                    ret = ret && own.clan_id == player_clan_id;
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        ret
+        (ret, anygun)
     }
 
     pub fn access_gun(&self, x: i32, y: i32, player_clan_id: i32) -> bool {
+        self.access_gun_full(x, y, player_clan_id).0
+    }
+
+    /// C# `World.AccessGun` целиком: `(access, anygun)`.
+    pub fn access_gun_full(&self, x: i32, y: i32, player_clan_id: i32) -> (bool, bool) {
         let ecs = self.ecs.read();
         Self::access_gun_with(&ecs, &self.chunk_buildings, x, y, player_clan_id)
     }

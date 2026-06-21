@@ -153,7 +153,7 @@ pub fn handle_inventory_use(
         4 => true,
         24 => place_building_from_item(state, tx, pid, "F"),
         26 => place_building_from_item(state, tx, pid, "G"),
-        27 => place_building_from_item(state, tx, pid, "N"),
+        27 => use_gate_item(state, tx, pid),
         29 => place_building_from_item(state, tx, pid, "L"),
         5 => use_boom(state, pid),
         6 => use_protector(state, pid),
@@ -336,6 +336,36 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
     state.world.set_cell(fx, fy, cell_type::POLYMER_ROAD);
     broadcast_cell_update(state, fx, fy);
     false
+}
+
+/// C# Inventory item 27 (Gate): `if (p.clan != null && c.access && c.anygun)`.
+/// Только в клане, без вражеской заряженной пушки рядом (access) и при наличии
+/// любой пушки в радиусе (anygun). Иначе ворота не ставятся.
+fn use_gate_item(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) -> bool {
+    let info = state
+        .query_player(pid, |ecs, entity| {
+            let p = ecs.get::<PlayerPosition>(entity)?;
+            let s = ecs.get::<PlayerStats>(entity)?;
+            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+        })
+        .flatten();
+    let Some((px, py, pdir, cid)) = info else {
+        return false;
+    };
+    if cid == 0 {
+        return false; // C# p.clan != null
+    }
+    let (dx, dy) = dir_offset(pdir);
+    let (bx, by) = (px + dx * 3, py + dy * 3);
+    let (access, anygun) = state.access_gun_full(bx, by, cid);
+    if !access || !anygun {
+        return false;
+    }
+    place_building_from_item(state, tx, pid, "N")
 }
 
 pub fn place_building_from_item(

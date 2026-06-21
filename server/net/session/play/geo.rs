@@ -33,7 +33,7 @@ pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
             let mut broadcast: Vec<(i32, i32)> = Vec::new();
 
             if state.world.valid_coord(tgt_x, tgt_y)
-                && GameState::access_gun_with(ecs, &state.chunk_buildings, tgt_x, tgt_y, cid)
+                && GameState::access_gun_with(ecs, &state.chunk_buildings, tgt_x, tgt_y, cid).0
             {
                 let cell = state.world.get_cell(tgt_x, tgt_y);
                 let defs = state.world.cell_defs();
