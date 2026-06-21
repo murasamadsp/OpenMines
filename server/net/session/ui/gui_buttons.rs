@@ -34,11 +34,10 @@ pub async fn handle_gui_button(
 
     // C# ref: CallWinAction — if win is null, send Gu close and return.
     let has_window = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerUI>(entity)
                 .map(|ui| ui.current_window.is_some())
         })
-        .flatten()
         .unwrap_or(false);
     if !has_window {
         let g = gu_close();
@@ -96,11 +95,10 @@ pub async fn handle_gui_button(
     // C# ref: after CallWinAction, SendWindow() re-sends the window or closes if null.
     // Safety net: if no handler sent a response and window was cleared, send Gu close.
     let still_has_window = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerUI>(entity)
                 .map(|ui| ui.current_window.is_some())
         })
-        .flatten()
         .unwrap_or(false);
     if !still_has_window {
         let g = gu_close();
@@ -215,13 +213,11 @@ async fn handle_pack_operation(
         return;
     };
 
-    let p_info = state
-        .query_player(pid, |ecs, entity| {
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            let pstats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let p_info = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let pstats = ecs.get::<PlayerStats>(entity)?;
+        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
+    });
 
     let Some((px, py, p_clan)) = p_info else {
         return;
@@ -408,10 +404,9 @@ fn open_storage_gui(
 
     // Fetch player crystals
     let player_crys = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
         })
-        .flatten()
         .unwrap_or([0; 6]);
 
     // Build crys_lines: each line is "LeftMin:RightMin:Denominator:CurrentValue:Label"
@@ -472,18 +467,16 @@ fn handle_storage_transfer(
     }
 
     // Resolve storage coordinates from current_window ("pack:{x}:{y}")
-    let coords = state
-        .query_player(pid, |ecs, entity| {
-            let ui = ecs.get::<PlayerUI>(entity)?;
-            let window = ui.current_window.as_deref()?;
-            let parts: Vec<&str> = window.strip_prefix("pack:")?.split(':').collect();
-            if parts.len() == 2 {
-                Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
-            } else {
-                None
-            }
-        })
-        .flatten();
+    let coords = state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?;
+        let parts: Vec<&str> = window.strip_prefix("pack:")?.split(':').collect();
+        if parts.len() == 2 {
+            Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
+        } else {
+            None
+        }
+    });
 
     let Some((bx, by)) = coords else {
         return;
@@ -498,13 +491,11 @@ fn handle_storage_transfer(
     }
 
     // Validate player access
-    let p_info = state
-        .query_player(pid, |ecs, entity| {
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            let pstats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let p_info = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let pstats = ecs.get::<PlayerStats>(entity)?;
+        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
+    });
     let Some((px, py, p_clan)) = p_info else {
         return;
     };
@@ -526,10 +517,9 @@ fn handle_storage_transfer(
 
     // Get current player crystals
     let player_crys = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
         })
-        .flatten()
         .unwrap_or([0; 6]);
 
     // Validate slider values (C# ref: count - sliders[i] >= 0 && sliders[i] >= 0)
@@ -1059,19 +1049,17 @@ fn handle_teleport_action(
         return;
     }
 
-    let src_coords = state
-        .query_player(pid, |ecs, entity| {
-            let ui = ecs.get::<PlayerUI>(entity)?;
-            let window = ui.current_window.as_deref()?;
-            let rest = window.strip_prefix("pack:")?;
-            let p: Vec<&str> = rest.split(':').collect();
-            if p.len() == 2 {
-                Some((p[0].parse::<i32>().ok()?, p[1].parse::<i32>().ok()?))
-            } else {
-                None
-            }
-        })
-        .flatten();
+    let src_coords = state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?;
+        let rest = window.strip_prefix("pack:")?;
+        let p: Vec<&str> = rest.split(':').collect();
+        if p.len() == 2 {
+            Some((p[0].parse::<i32>().ok()?, p[1].parse::<i32>().ok()?))
+        } else {
+            None
+        }
+    });
 
     let Some((src_x, src_y)) = src_coords else {
         tracing::warn!(pid, "TP action: player not at a teleport window");
@@ -1168,12 +1156,10 @@ fn open_market_gui(
     let is_owner = view.owner_id == pid;
 
     // Fetch player money and crystals
-    let player_info = state
-        .query_player(pid, |ecs, entity| {
-            let pstats = ecs.get::<PlayerStats>(entity)?;
-            Some((pstats.money, pstats.crystals))
-        })
-        .flatten();
+    let player_info = state.query_player_opt(pid, |ecs, entity| {
+        let pstats = ecs.get::<PlayerStats>(entity)?;
+        Some((pstats.money, pstats.crystals))
+    });
 
     let Some((player_money, player_crys)) = player_info else {
         return;
@@ -1330,23 +1316,21 @@ fn build_market_auc_page(tabs: &serde_json::Value) -> serde_json::Value {
 
 /// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
 fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
-    state
-        .query_player(pid, |ecs, entity| {
-            let ui = ecs.get::<PlayerUI>(entity)?;
-            let window = ui.current_window.as_deref()?;
-            let rest = window.strip_prefix("market:")?;
-            let parts: Vec<&str> = rest.split(':').collect();
-            if parts.len() == 3 {
-                Some((
-                    parts[0].parse::<i32>().ok()?,
-                    parts[1].parse::<i32>().ok()?,
-                    parts[2].to_string(),
-                ))
-            } else {
-                None
-            }
-        })
-        .flatten()
+    state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?;
+        let rest = window.strip_prefix("market:")?;
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3 {
+            Some((
+                parts[0].parse::<i32>().ok()?,
+                parts[1].parse::<i32>().ok()?,
+                parts[2].to_string(),
+            ))
+        } else {
+            None
+        }
+    })
 }
 
 /// Handle Market tab switching.
@@ -1416,10 +1400,9 @@ fn handle_market_sellall(
 
     // Get player's full crystal array
     let player_crys = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
         })
-        .flatten()
         .unwrap_or([0; 6]);
 
     let sliders: Vec<i64> = player_crys.to_vec();
@@ -1699,11 +1682,10 @@ fn handle_settings_save(
 /// Wire format: `#key#value#key#value...` — 1:1 с `SettingsPacket.Encode()` в C# референсе.
 fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
     let s = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<crate::game::player::PlayerSettings>(entity)
                 .copied()
         })
-        .flatten()
         .unwrap_or_default();
     let pairs: &[(&str, String)] = &[
         ("cc", s.cc.to_string()),

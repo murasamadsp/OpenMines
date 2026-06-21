@@ -143,11 +143,9 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     tracing::info!("Shutdown: saving all players and flushing world...");
     let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
     for pid in shutdown_pids {
-        let player_row = game_state
-            .query_player(pid, |ecs, entity| {
-                crate::game::player::extract_player_row(ecs, entity)
-            })
-            .flatten();
+        let player_row = game_state.query_player_opt(pid, |ecs, entity| {
+            crate::game::player::extract_player_row(ecs, entity)
+        });
 
         if let Some(row) = player_row
             && let Err(e) = game_state.db.save_player(&row).await

@@ -191,20 +191,17 @@ pub fn handle_sett_ty(
     pid: PlayerId,
     _payload: &[u8],
 ) {
-    let settings = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<crate::game::player::PlayerSettings>(entity)
-                .copied()
-        })
-        .flatten();
+    let settings = state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<crate::game::player::PlayerSettings>(entity)
+            .copied()
+    });
     let Some(s) = settings else { return };
 
     let has_clan = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<crate::game::player::PlayerStats>(entity)
                 .map(|st| st.clan_id.unwrap_or(0) != 0)
         })
-        .flatten()
         .unwrap_or(false);
 
     // C# ref: RichList entries — each entry = [label, type, values, action, value]
@@ -286,12 +283,10 @@ pub fn handle_sett_ty(
 pub async fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
     let mut parts = Vec::new();
     for &id in ids {
-        let mut name_opt = state
-            .query_player(id, |ecs: &bevy_ecs::prelude::World, entity| {
-                ecs.get::<crate::game::player::PlayerMetadata>(entity)
-                    .map(|m| m.name.clone())
-            })
-            .flatten();
+        let mut name_opt = state.query_player_opt(id, |ecs: &bevy_ecs::prelude::World, entity| {
+            ecs.get::<crate::game::player::PlayerMetadata>(entity)
+                .map(|m| m.name.clone())
+        });
         if name_opt.is_none() {
             if let Ok(Some(p)) = state.db.get_player_by_id(id).await {
                 name_opt = Some(p.name);

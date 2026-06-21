@@ -334,6 +334,16 @@ impl GameState {
         Some(f(&ecs, entity))
     }
 
+    /// Как [`query_player`](Self::query_player), но для замыканий, возвращающих
+    /// `Option<T>`: флэтит `Option<Option<T>>` → `Option<T>`. Убирает `.flatten()`
+    /// на стороне вызова (offline-игрок и `None` из замыкания → один `None`).
+    pub fn query_player_opt<F, T>(&self, pid: PlayerId, f: F) -> Option<T>
+    where
+        F: FnOnce(&EcsWorld, Entity) -> Option<T>,
+    {
+        self.query_player(pid, f).flatten()
+    }
+
     pub fn modify_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
     where
         F: FnOnce(&mut EcsWorld, Entity) -> R,

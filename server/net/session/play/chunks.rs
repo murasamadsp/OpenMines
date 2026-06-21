@@ -6,18 +6,16 @@ pub fn check_chunk_changed(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let p_data = state
-        .query_player(pid, |ecs, entity| {
-            let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-            let view = ecs.get::<crate::game::player::PlayerView>(entity)?;
-            Some((
-                pos.chunk_x(),
-                pos.chunk_y(),
-                view.last_chunk,
-                view.visible_chunks.clone(),
-            ))
-        })
-        .flatten();
+    let p_data = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+        let view = ecs.get::<crate::game::player::PlayerView>(entity)?;
+        Some((
+            pos.chunk_x(),
+            pos.chunk_y(),
+            view.last_chunk,
+            view.visible_chunks.clone(),
+        ))
+    });
 
     let Some((cx, cy, last_chunk, old_visible)) = p_data else {
         return;
@@ -64,25 +62,23 @@ pub fn check_chunk_changed(
                 if opid == pid {
                     continue;
                 }
-                let bot_data = state
-                    .query_player(opid, |ecs, entity| {
-                        let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-                        let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                        // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
-                        let tail = ecs
-                            .get::<crate::game::programmator::ProgrammatorState>(entity)
-                            .map_or(0, |ps| u8::from(ps.running));
-                        Some(hb_bot(
-                            net_u16_nonneg(opid),
-                            net_u16_nonneg(p.x),
-                            net_u16_nonneg(p.y),
-                            net_u8_clamped(p.dir, 3),
-                            net_u8_clamped(s.skin, 255),
-                            net_u16_nonneg(s.clan_id.unwrap_or(0)),
-                            tail,
-                        ))
-                    })
-                    .flatten();
+                let bot_data = state.query_player_opt(opid, |ecs, entity| {
+                    let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                    let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
+                    let tail = ecs
+                        .get::<crate::game::programmator::ProgrammatorState>(entity)
+                        .map_or(0, |ps| u8::from(ps.running));
+                    Some(hb_bot(
+                        net_u16_nonneg(opid),
+                        net_u16_nonneg(p.x),
+                        net_u16_nonneg(p.y),
+                        net_u8_clamped(p.dir, 3),
+                        net_u8_clamped(s.skin, 255),
+                        net_u16_nonneg(s.clan_id.unwrap_or(0)),
+                        tail,
+                    ))
+                });
                 if let Some(bot) = bot_data {
                     sub_packets.push(bot);
                     sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());

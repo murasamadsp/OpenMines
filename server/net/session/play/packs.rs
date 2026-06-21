@@ -17,13 +17,11 @@ pub async fn handle_pack_action(
         return;
     };
 
-    let p_info = state
-        .query_player(pid, |ecs, entity| {
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            let pk_stats = ecs.get::<PlayerStats>(entity)?;
-            Some((pos.x, pos.y, pk_stats.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let p_info = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let pk_stats = ecs.get::<PlayerStats>(entity)?;
+        Some((pos.x, pos.y, pk_stats.clan_id.unwrap_or(0)))
+    });
 
     let Some((px, py, p_clan)) = p_info else {
         return;
@@ -82,12 +80,11 @@ pub fn open_resp_gui(
 ) {
     // Get player resp and check if bound here
     let (is_bound, is_owner) = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             let meta = ecs.get::<PlayerMetadata>(entity)?;
             let bound = meta.resp_x == Some(view.x) && meta.resp_y == Some(view.y);
             Some((bound, view.owner_id == pid))
         })
-        .flatten()
         .unwrap_or((false, false));
 
     // Get cost from ECS
@@ -187,10 +184,9 @@ pub fn open_resp_admin_gui(
 
     // Get player's blue crystals for fill button availability
     let blue_crys = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerStats>(entity).map(|s| s.crystals[1]) // Blue = index 1
         })
-        .flatten()
         .unwrap_or(0);
 
     // Build fill bar: percent, label, crystal type, button actions
@@ -445,19 +441,17 @@ pub fn handle_resp_save(
     richlist_data: &str,
 ) {
     // Resolve coordinates from current_window ("resp:{x}:{y}")
-    let coords = state
-        .query_player(pid, |ecs, entity| {
-            let ui = ecs.get::<PlayerUI>(entity)?;
-            let window = ui.current_window.as_deref()?;
-            let rest = window.strip_prefix("resp:")?;
-            let parts: Vec<&str> = rest.split(':').collect();
-            if parts.len() == 2 {
-                Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
-            } else {
-                None
-            }
-        })
-        .flatten();
+    let coords = state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?;
+        let rest = window.strip_prefix("resp:")?;
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2 {
+            Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
+        } else {
+            None
+        }
+    });
 
     let Some((pack_x, pack_y)) = coords else {
         return;
@@ -484,10 +478,9 @@ pub fn handle_resp_save(
 
     // Pre-fetch owner's clan_id before acquiring ECS write lock to avoid deadlock
     let owner_clan = state
-        .query_player(pid, |ecs, e| {
+        .query_player_opt(pid, |ecs, e| {
             ecs.get::<PlayerStats>(e).and_then(|s| s.clan_id)
         })
-        .flatten()
         .unwrap_or(0);
 
     let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
@@ -534,10 +527,9 @@ pub fn open_gun_gui(
 
     // Cyan = crystals[5] (1:1 CrystalType.Cyan = 5)
     let cyan_crys = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             ecs.get::<PlayerStats>(entity).map(|s| s.crystals[5])
         })
-        .flatten()
         .unwrap_or(0);
 
     let charge_i = charge as i32;

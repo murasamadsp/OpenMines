@@ -399,7 +399,7 @@ pub fn handle_build(
                 // Upgrading green → yellow uses BuildYellow skill effect/cost.
                 let yellow_effect = {
                     state
-                        .query_player(pid, |ecs, entity| {
+                        .query_player_opt(pid, |ecs, entity| {
                             let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
                             let eff =
                                 get_player_skill_effect(&skills.states, SkillType::BuildYellow);
@@ -409,7 +409,6 @@ pub fn handle_build(
                                 .map_or(1.0_f32, |s| s.level as f32);
                             Some((eff, hp))
                         })
-                        .flatten()
                         .unwrap_or((1.0, 1.0))
                 };
                 let y_cost = yellow_effect.0.max(1.0) as i64;
@@ -426,7 +425,7 @@ pub fn handle_build(
                 // Upgrading yellow → red uses BuildRed skill effect/cost.
                 let red_effect = {
                     state
-                        .query_player(pid, |ecs, entity| {
+                        .query_player_opt(pid, |ecs, entity| {
                             let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
                             let eff = get_player_skill_effect(&skills.states, SkillType::BuildRed);
                             let hp = skills
@@ -435,7 +434,6 @@ pub fn handle_build(
                                 .map_or(1.0_f32, |s| s.level as f32);
                             Some((eff, hp))
                         })
-                        .flatten()
                         .unwrap_or((1.0, 1.0))
                 };
                 let r_cost = red_effect.0.max(1.0) as i64;

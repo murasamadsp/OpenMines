@@ -58,13 +58,11 @@ async fn handle_chat_command_if_present(
 }
 
 fn broadcast_player_chat(state: &Arc<GameState>, pid: PlayerId, msg: &str) {
-    let data = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-            let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
-            Some((pos.x, pos.y, meta.name.clone()))
-        })
-        .flatten();
+    let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+        let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
+        Some((pos.x, pos.y, meta.name.clone()))
+    });
 
     if let Some((px, py, name)) = data {
         let text = format!("{name}: {msg}");
@@ -92,19 +90,17 @@ pub async fn handle_channel_chat(
         return;
     }
 
-    let p_data = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
-            let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-            let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
-            Some((
-                meta.name.clone(),
-                meta.id,
-                pstats.clan_id,
-                ui.current_chat.clone(),
-            ))
-        })
-        .flatten();
+    let p_data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
+        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+        Some((
+            meta.name.clone(),
+            meta.id,
+            pstats.clan_id,
+            ui.current_chat.clone(),
+        ))
+    });
 
     let Some((nickname, my_id, clan_opt, channel_tag)) = p_data else {
         return;
@@ -233,11 +229,10 @@ pub async fn handle_chat_resync(
 ) {
     let s = String::from_utf8_lossy(payload).trim().to_string();
     let cur_default = state
-        .query_player(pid, |w, e| {
+        .query_player_opt(pid, |w, e| {
             w.get::<crate::game::player::PlayerUI>(e)
                 .map(|u| u.current_chat.clone())
         })
-        .flatten()
         .unwrap_or_else(|| "FED".to_string());
 
     if s.is_empty() || s == "_" {

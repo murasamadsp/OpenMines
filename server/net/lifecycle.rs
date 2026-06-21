@@ -369,12 +369,10 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             }
             for (pid, rx, ry, mh, bcast) in pending {
                 crate::net::session::play::death::run_death_broadcasts(&state, &bcast, pid);
-                let tx = state
-                    .query_player(pid, |ecs, entity| {
-                        ecs.get::<crate::game::player::PlayerConnection>(entity)
-                            .map(|c| c.tx.clone())
-                    })
-                    .flatten();
+                let tx = state.query_player_opt(pid, |ecs, entity| {
+                    ecs.get::<crate::game::player::PlayerConnection>(entity)
+                        .map(|c| c.tx.clone())
+                });
                 if let Some(tx) = tx {
                     crate::net::session::play::death::send_respawn_after_death(
                         &tx, pid, rx, ry, mh, &bcast,

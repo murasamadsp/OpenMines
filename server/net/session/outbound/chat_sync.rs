@@ -9,11 +9,10 @@ pub async fn send_chat_login_per_reference(
     pid: PlayerId,
 ) {
     let tag = state
-        .query_player(pid, |ecs, e| {
+        .query_player_opt(pid, |ecs, e| {
             ecs.get::<crate::game::player::PlayerUI>(e)
                 .map(|u| u.current_chat.clone())
         })
-        .flatten()
         .unwrap_or_else(|| "FED".to_string());
     if let Some((name, _history)) = chat_access(state, pid, &tag).await {
         send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
@@ -61,13 +60,11 @@ pub async fn chat_access(
     pid: PlayerId,
     tag: &str,
 ) -> Option<(String, Vec<ChatMessage>)> {
-    let (my_id, clan_id) = state
-        .query_player(pid, |w, e| {
-            let m = w.get::<crate::game::player::PlayerMetadata>(e)?;
-            let s = w.get::<PlayerStats>(e)?;
-            Some((m.id, s.clan_id))
-        })
-        .flatten()?;
+    let (my_id, clan_id) = state.query_player_opt(pid, |w, e| {
+        let m = w.get::<crate::game::player::PlayerMetadata>(e)?;
+        let s = w.get::<PlayerStats>(e)?;
+        Some((m.id, s.clan_id))
+    })?;
 
     {
         let channels = state.chat_channels.read();
@@ -136,14 +133,11 @@ pub async fn send_channel_list(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let (my_id, clan_id) = match state
-        .query_player(pid, |w, e| {
-            let m = w.get::<crate::game::player::PlayerMetadata>(e)?;
-            let s = w.get::<PlayerStats>(e)?;
-            Some((m.id, s.clan_id))
-        })
-        .flatten()
-    {
+    let (my_id, clan_id) = match state.query_player_opt(pid, |w, e| {
+        let m = w.get::<crate::game::player::PlayerMetadata>(e)?;
+        let s = w.get::<PlayerStats>(e)?;
+        Some((m.id, s.clan_id))
+    }) {
         Some(v) => v,
         None => return,
     };

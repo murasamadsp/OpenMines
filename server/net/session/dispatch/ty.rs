@@ -131,12 +131,10 @@ pub async fn dispatch_ty_packet(
         "ADMN" => {
             // C# ref: ADMN triggers AdminButton() on current window (gear icon).
             // Check if player has a building window open with admin support.
-            let handled = state
-                .query_player(pid, |ecs, entity| {
-                    let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
-                    ui.current_window.clone()
-                })
-                .flatten();
+            let handled = state.query_player_opt(pid, |ecs, entity| {
+                let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+                ui.current_window.clone()
+            });
             if let Some(ref window) = handled {
                 if let Some(coords) = window.strip_prefix("resp:") {
                     let parts: Vec<&str> = coords.split(':').collect();

@@ -352,16 +352,14 @@ fn send_up_page(
     pid: PlayerId,
     selected_slot: i32,
 ) {
-    let page_data = state
-        .query_player(pid, |ecs, entity| {
-            let skills = ecs.get::<PlayerSkillsComp>(entity)?;
-            Some(build_up_page_json(
-                &skills.states,
-                skills.states.total_slots,
-                selected_slot,
-            ))
-        })
-        .flatten();
+    let page_data = state.query_player_opt(pid, |ecs, entity| {
+        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+        Some(build_up_page_json(
+            &skills.states,
+            skills.states.total_slots,
+            selected_slot,
+        ))
+    });
 
     if let Some(json_str) = page_data {
         send_u_packet(tx, "GU", format!("up:{json_str}").as_bytes());
@@ -522,7 +520,7 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
 /// Window format: "`up:{x}:{y}:{selected_slot`}"
 fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
     state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             let ui = ecs.get::<PlayerUI>(entity)?;
             let window = ui.current_window.as_deref()?;
             // "up:x:y:slot"
@@ -533,7 +531,6 @@ fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
                 Some(-1)
             }
         })
-        .flatten()
         .unwrap_or(-1)
 }
 

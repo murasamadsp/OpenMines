@@ -124,11 +124,10 @@ pub async fn handle_inventory_use(
     }
 
     let (sel, count) = state
-        .query_player(pid, |ecs, entity| {
+        .query_player_opt(pid, |ecs, entity| {
             let inv = ecs.get::<PlayerInventory>(entity)?;
             Some((inv.selected, *inv.items.get(&inv.selected).unwrap_or(&0)))
         })
-        .flatten()
         .unwrap_or((-1, 0));
 
     if sel < 0 || count <= 0 {
@@ -139,12 +138,10 @@ pub async fn handle_inventory_use(
     // ContainsPack(facing) применяется ВСЕГДА (здание на facing блокирует ЛЮБОЙ
     // предмет; невалидные координаты C# трактует как занятые → return true).
     // Exemption ({40, 10-16, 34, 42, 43, 46}) обходит только can_place_over.
-    let check = state
-        .query_player(pid, |ecs, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            Some((p.x, p.y, p.dir))
-        })
-        .flatten();
+    let check = state.query_player_opt(pid, |ecs, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        Some((p.x, p.y, p.dir))
+    });
     if let Some((px, py, pdir)) = check {
         let (dx, dy) = dir_offset(pdir);
         let (fx, fy) = (px + dx, py + dy);
@@ -290,12 +287,10 @@ pub fn use_geopack(
     pid: PlayerId,
     item_id: i32,
 ) -> bool {
-    let pos = state
-        .query_player(pid, |ecs, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            Some((p.x, p.y, p.dir))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        Some((p.x, p.y, p.dir))
+    });
     let Some((px, py, pdir)) = pos else {
         return false;
     };
@@ -341,13 +336,11 @@ pub fn use_geopack(
 
 /// C# `ShitClass.Poli()` — place `POLYMER_ROAD` at the facing cell.
 pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state
-        .query_player(pid, |ecs, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+    });
     let Some((px, py, pdir, cid)) = pos else {
         return false;
     };
@@ -377,13 +370,11 @@ async fn use_gate_item(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) -> bool {
-    let info = state
-        .query_player(pid, |ecs, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let info = state.query_player_opt(pid, |ecs, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+    });
     let Some((px, py, pdir, cid)) = info else {
         return false;
     };
@@ -408,12 +399,10 @@ pub async fn place_building_from_item(
     let Some(pack_type) = PackType::from_str(code) else {
         return false;
     };
-    let pos = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            Some((p.x, p.y, p.dir))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        Some((p.x, p.y, p.dir))
+    });
     let Some((px, py, pdir)) = pos else {
         return false;
     };
@@ -579,13 +568,11 @@ fn aoe_damage_players(
             let fx = hb_directed_fx(net_u16_nonneg(opid), 0, 0, 6, 0, 0);
             state.broadcast_hb_at(prev_x, prev_y, &[fx], None);
         }
-        let dead = state
-            .query_player(opid, |ecs, entity| {
-                let s = ecs.get::<PlayerStats>(entity)?;
-                let c = ecs.get::<PlayerConnection>(entity)?;
-                (s.health <= 0).then(|| c.tx.clone())
-            })
-            .flatten();
+        let dead = state.query_player_opt(opid, |ecs, entity| {
+            let s = ecs.get::<PlayerStats>(entity)?;
+            let c = ecs.get::<PlayerConnection>(entity)?;
+            (s.health <= 0).then(|| c.tx.clone())
+        });
         if let Some(tx) = dead {
             killed.push((opid, tx));
         }
@@ -617,13 +604,11 @@ fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
 /// C#: `AccessGun`-гейт → `SendPack`('B', off=0) → `AsyncAction`(1s) → детонация + `ClearPack`.
 /// Предмет тратится сразу (return true), урон отложен на 1 секунду.
 pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+    });
     let Some((px, py, pdir, cid)) = pos else {
         return false;
     };
@@ -704,13 +689,11 @@ fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 /// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
 /// C#: `AccessGun`-гейт → `SendPack`('B', off=1) → `AsyncAction`(2s) → детонация + `ClearPack`.
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
+    });
     let Some((px, py, pdir, cid)) = pos else {
         return false;
     };
@@ -803,12 +786,10 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 /// D16: Razryadka — C# `ShitClass.Raz` parity.
 /// C#: `SendPack`('B', off=2) → `AsyncAction`(5s) → детонация + `ClearPack`. Без `AccessGun`.
 pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            Some((p.x, p.y, p.dir))
-        })
-        .flatten();
+    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        Some((p.x, p.y, p.dir))
+    });
     let Some((px, py, pdir)) = pos else {
         return false;
     };
@@ -892,12 +873,10 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 
 /// D17: C190 — C# `ShitClass.C190Shot` parity.
 pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let data = state
-        .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            Some((p.x, p.y, p.dir))
-        })
-        .flatten();
+    let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        Some((p.x, p.y, p.dir))
+    });
     let Some((px, py, pdir)) = data else {
         return false;
     };

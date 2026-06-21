@@ -65,9 +65,8 @@ pub fn handle_dpbx_crystal_box(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let Some(cry) = state
-        .query_player(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
-        .flatten()
+    let Some(cry) =
+        state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
     else {
         return;
     };
@@ -129,13 +128,11 @@ pub async fn handle_place_building(
     };
     let cost = cfg.cost;
 
-    let p_data = state
-        .query_player(pid, |ecs, entity| {
-            let pstats = ecs.get::<PlayerStats>(entity)?;
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            Some((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
-        })
-        .flatten();
+    let p_data = state.query_player_opt(pid, |ecs, entity| {
+        let pstats = ecs.get::<PlayerStats>(entity)?;
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        Some((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
+    });
 
     let Some((player_clan, px, py, pdir)) = p_data else {
         return;
@@ -288,13 +285,11 @@ pub async fn handle_remove_building(
     bx: i32,
     by: i32,
 ) {
-    let actor = state
-        .query_player(pid, |ecs, entity| {
-            let p = ecs.get::<PlayerPosition>(entity)?;
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some((p.x, p.y, s.clan_id.unwrap_or(0)))
-        })
-        .flatten();
+    let actor = state.query_player_opt(pid, |ecs, entity| {
+        let p = ecs.get::<PlayerPosition>(entity)?;
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, s.clan_id.unwrap_or(0)))
+    });
 
     let Some(actor) = actor else {
         return;
@@ -636,11 +631,9 @@ pub async fn destroy_damagable_building(
     if let (Some(pid), Some(item_idx)) = (trigger_pid, shpaak_item_index(view.pack_type)) {
         use rand::Rng as _;
         if rand::rng().random_range(1u32..=100) < 40 {
-            let tx = state
-                .query_player(pid, |ecs, entity| {
-                    ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
-                })
-                .flatten();
+            let tx = state.query_player_opt(pid, |ecs, entity| {
+                ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
+            });
             if let Some(tx) = tx {
                 let chat_sub = hb_chat(
                     0,

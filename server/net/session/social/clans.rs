@@ -168,12 +168,10 @@ pub async fn handle_clan_create(
         return;
     }
 
-    let pstats = state
-        .query_player(pid, |ecs, entity| {
-            let s = ecs.get::<crate::game::PlayerStats>(entity)?;
-            Some((s.creds, s.money))
-        })
-        .flatten();
+    let pstats = state.query_player_opt(pid, |ecs, entity| {
+        let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+        Some((s.creds, s.money))
+    });
 
     let Some((p_creds, p_money)) = pstats else {
         return;
@@ -370,17 +368,15 @@ pub async fn handle_clan_invite_list(
             continue;
         }
 
-        let target_data = state
-            .query_player(target_pid, |ecs, entity| {
-                let s = ecs.get::<crate::game::PlayerStats>(entity)?;
-                let m = ecs.get::<crate::game::PlayerMetadata>(entity)?;
-                if s.clan_id.is_none() {
-                    Some(m.name.clone())
-                } else {
-                    None
-                }
-            })
-            .flatten();
+        let target_data = state.query_player_opt(target_pid, |ecs, entity| {
+            let s = ecs.get::<crate::game::PlayerStats>(entity)?;
+            let m = ecs.get::<crate::game::PlayerMetadata>(entity)?;
+            if s.clan_id.is_none() {
+                Some(m.name.clone())
+            } else {
+                None
+            }
+        });
 
         if let Some(name) = target_data {
             buttons.push(serde_json::json!(format!("Пригласить {}", name)));
@@ -737,12 +733,10 @@ pub async fn handle_clan_kick_by_name(
 }
 
 fn player_clan_id(state: &Arc<GameState>, pid: PlayerId) -> Option<i32> {
-    state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<crate::game::PlayerStats>(entity)
-                .and_then(|s| s.clan_id)
-        })
-        .flatten()
+    state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<crate::game::PlayerStats>(entity)
+            .and_then(|s| s.clan_id)
+    })
 }
 
 async fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> bool {

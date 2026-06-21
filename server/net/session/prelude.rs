@@ -47,12 +47,11 @@ pub fn is_pack_owner_or_clan_member(
     view: &PackView,
 ) -> bool {
     let player_clan = state
-        .query_player(pid, |world, entity| {
+        .query_player_opt(pid, |world, entity| {
             world
                 .get::<crate::game::PlayerStats>(entity)
                 .and_then(|s| s.clan_id)
         })
-        .flatten()
         .unwrap_or(0);
 
     view.owner_id == pid || (view.clan_id != 0 && view.clan_id == player_clan)

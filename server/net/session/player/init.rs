@@ -231,47 +231,45 @@ async fn send_initial_sync(
         send_inventory(tx, &mut inv);
         Some(())
     });
-    let spawn_broadcast = state
-        .query_player(pid, |ecs, entity| {
-            let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-                tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
-                return None;
-            };
+    let spawn_broadcast = state.query_player_opt(pid, |ecs, entity| {
+        let Some(stats) = ecs.get::<PlayerStats>(entity) else {
+            tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
+            return None;
+        };
 
-            // 11. tp(x, y)
-            tracing::info!(
-                "[Init] @T pid={pid} to=({},{}) (db/player row position)",
-                player.x,
-                player.y
-            );
-            send_u_packet(tx, "@T", &tp(player.x, player.y).1);
-            // 12 консоль — пропускаем
-            // 13. SendSettings (#S)
-            let stg = settings_default_wire();
-            send_u_packet(tx, stg.0, &stg.1);
-            // 14. SendClan
-            if let Some(cid) = stats.clan_id {
-                if cid != 0 {
-                    send_u_packet(tx, "cS", &clan_show(cid).1);
-                } else {
-                    send_u_packet(tx, "cH", &clan_hide().1);
-                }
+        // 11. tp(x, y)
+        tracing::info!(
+            "[Init] @T pid={pid} to=({},{}) (db/player row position)",
+            player.x,
+            player.y
+        );
+        send_u_packet(tx, "@T", &tp(player.x, player.y).1);
+        // 12 консоль — пропускаем
+        // 13. SendSettings (#S)
+        let stg = settings_default_wire();
+        send_u_packet(tx, stg.0, &stg.1);
+        // 14. SendClan
+        if let Some(cid) = stats.clan_id {
+            if cid != 0 {
+                send_u_packet(tx, "cS", &clan_show(cid).1);
             } else {
                 send_u_packet(tx, "cH", &clan_hide().1);
             }
+        } else {
+            send_u_packet(tx, "cH", &clan_hide().1);
+        }
 
-            // BUG 4: Collect data needed to broadcast hb_bot to nearby players.
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            let clan_id_raw = stats.clan_id.unwrap_or(0).clamp(0, 65535) as u16;
-            Some((
-                pos.chunk_x(),
-                pos.chunk_y(),
-                pos.dir as u8,
-                stats.skin as u8,
-                clan_id_raw,
-            ))
-        })
-        .flatten();
+        // BUG 4: Collect data needed to broadcast hb_bot to nearby players.
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let clan_id_raw = stats.clan_id.unwrap_or(0).clamp(0, 65535) as u16;
+        Some((
+            pos.chunk_x(),
+            pos.chunk_y(),
+            pos.dir as u8,
+            stats.skin as u8,
+            clan_id_raw,
+        ))
+    });
 
     // BUG 4: Broadcast @T appearance to nearby players so they see the newly logged-in player.
     if let Some((cx, cy, dir, skin, clan_id_u16)) = spawn_broadcast {
@@ -292,12 +290,10 @@ async fn send_initial_sync(
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
     // 17. UpdateProg (#p) — C# ref: if programsData.selected != null → UpdateProg()
-    let prog_data = state
-        .query_player(pid, |ecs, entity| {
-            let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
-            ps.selected_id.map(|id| (id, ps.running))
-        })
-        .flatten();
+    let prog_data = state.query_player_opt(pid, |ecs, entity| {
+        let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+        ps.selected_id.map(|id| (id, ps.running))
+    });
     if let Some((prog_id, prog_running)) = prog_data {
         if let Ok(Some(prog)) = state.db.get_program(prog_id).await {
             send_u_packet(
