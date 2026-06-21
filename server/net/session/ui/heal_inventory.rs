@@ -226,8 +226,10 @@ const fn geopack_item_to_cell(item: i32) -> Option<u8> {
         15 => Some(cell_type::ALIVE_WHITE),
         16 => Some(cell_type::ALIVE_BLUE),
         34 => Some(cell_type::HYPNO_ROCK),
-        42 => Some(cell_type::BLACK_ROCK),
-        43 => Some(cell_type::RED_ROCK),
+        // item 43 кладёт BlackRock, не RedRock: C# Inventory item 43 вызывает
+        // Geopack(42) (Inventory.cs:170), а ветка 43=>RedRock в C# switch — мёртвый
+        // код (ни один item не зовёт Geopack(43)).
+        42 | 43 => Some(cell_type::BLACK_ROCK),
         46 => Some(cell_type::ALIVE_RAINBOW),
         _ => None,
     }
@@ -718,12 +720,13 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
         handle_death(state, &tx, opid);
     }
 
+    // C# ShitClass.Prot: SendDirectedFx(fx=1, x, y, dir=1, bid=0, color=1).
     let fx = hb_directed_fx(
         net_u16_nonneg(pid),
         net_u16_nonneg(cx),
         net_u16_nonneg(cy),
         1,
-        0,
+        1,
         1,
     );
     state.broadcast_to_nearby(
@@ -799,12 +802,13 @@ pub async fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
         handle_death(state, &tx, opid);
     }
 
+    // C# ShitClass.Raz: SendDirectedFx(fx=1, x, y, dir=9, bid=0, color=2).
     let fx = hb_directed_fx(
         net_u16_nonneg(pid),
         net_u16_nonneg(cx),
         net_u16_nonneg(cy),
         1,
-        0,
+        9,
         2,
     );
     state.broadcast_to_nearby(
