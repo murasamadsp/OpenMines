@@ -835,17 +835,37 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
     // Starting from facing cell, 10 cells total
     let start_x = px + dx;
     let start_y = py + dy;
-    // Endpoint for FX (9 more cells past facing = facing + 9*dir)
+    // Endpoint = facing + 9*dir.
     let end_x = start_x + dx * 9;
     let end_y = start_y + dy * 9;
+    // C# C190Shot пре-проверяет ValidCoord(endpoint): если конец за краем мира —
+    // выстрел не происходит и предмет НЕ тратится (return false до FX и урона).
+    if !state.world.valid_coord(end_x, end_y) {
+        return false;
+    }
     let now = std::time::Instant::now();
 
-    // Iterate all 10 cells — don't stop early
+    // FX (type 7) шлётся ДО цикла урона, на endpoint: C# p.SendDFToBots(7, end,
+    // p.id, dir=1) перед for-циклом. Для fx=7 клиент AddGunShot(x,y,bid,col) → bid
+    // = стрелок (pid).
+    let shot_fx = hb_directed_fx(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(end_x),
+        net_u16_nonneg(end_y),
+        7,
+        1,
+        0,
+    );
+    state.broadcast_to_nearby(
+        World::chunk_pos(px, py).0,
+        World::chunk_pos(px, py).1,
+        &encode_hb_bundle(&hb_bundle(&[shot_fx]).1),
+        None,
+    );
+
+    // Все 10 клеток валидны (endpoint проверен выше) — без early-break.
     for i in 0..10 {
         let (tgt_x, tgt_y) = (start_x + dx * i, start_y + dy * i);
-        if !state.world.valid_coord(tgt_x, tgt_y) {
-            break;
-        }
 
         // Damage valid cells: not alive, is_diggable, is_destructible, not building block
         let c = state.world.get_cell(tgt_x, tgt_y);
@@ -944,22 +964,5 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         }
     }
 
-    // FX: type 7, at endpoint, dir 1 — clamp to world bounds
-    let clamped_end_x = end_x.max(0).min(state.world.cells_width() as i32 - 1);
-    let clamped_end_y = end_y.max(0).min(state.world.cells_height() as i32 - 1);
-    let fx = hb_directed_fx(
-        net_u16_nonneg(pid),
-        net_u16_nonneg(clamped_end_x),
-        net_u16_nonneg(clamped_end_y),
-        7,
-        1,
-        0,
-    );
-    state.broadcast_to_nearby(
-        World::chunk_pos(px, py).0,
-        World::chunk_pos(px, py).1,
-        &encode_hb_bundle(&hb_bundle(&[fx]).1),
-        None,
-    );
     true
 }
