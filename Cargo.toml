@@ -43,3 +43,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# Не стрипать proc-macro/build-script dylib: на macOS (ld-1328+) strip ломает
+# выравнивание LINKEDIT и dlopen падает с "mis-aligned LINKEDIT string pool".
+# Финальный бинарь остаётся stripped — эти артефакты в релиз не попадают.
+[profile.release.build-override]
+strip = false
