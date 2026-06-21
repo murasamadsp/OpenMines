@@ -106,6 +106,7 @@ pub async fn init_player(
                 last_dig: ready,
                 last_build: ready,
                 last_geo: ready,
+                last_inventory_use: ready,
                 protection_until: None,
                 last_shot: None,
                 c190_stacks: 1,

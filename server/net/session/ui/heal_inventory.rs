@@ -105,6 +105,29 @@ pub async fn handle_inventory_use(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
+    // C# Inventory.Use:204 — гейт 400ms: если с прошлого использования прошло
+    // меньше, Use() игнорируется целиком. Таймер обновляется при прохождении
+    // гейта, даже если предмет в итоге не использован (как C# `time = DateTime.Now`).
+    // ДЕВИАЦИЯ: building-items {0,1,2,3,24,26,29} в C# не входят в typeditems и
+    // ставятся отдельным путём (без Inventory.time); здесь они идут через тот же
+    // диспетчер, поэтому делят этот таймер. Benign (предотвращает дабл-плейсмент).
+    let now = std::time::Instant::now();
+    let gate_passed = state
+        .modify_player(pid, |ecs, entity| {
+            let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
+            if now.duration_since(cd.last_inventory_use) >= std::time::Duration::from_millis(400) {
+                cd.last_inventory_use = now;
+                Some(true)
+            } else {
+                Some(false)
+            }
+        })
+        .flatten()
+        .unwrap_or(false);
+    if !gate_passed {
+        return;
+    }
+
     let (sel, count) = state
         .query_player(pid, |ecs, entity| {
             let inv = ecs.get::<PlayerInventory>(entity)?;
@@ -117,29 +140,29 @@ pub async fn handle_inventory_use(
         return;
     }
 
-    // D27+D28: C# checks before using item:
-    // 1. No building at facing cell (unless exempt item)
-    // 2. Facing cell must allow placement (unless exempt item)
-    if !is_exempt_item(sel) {
-        let check = state
-            .query_player(pid, |ecs, entity| {
-                let p = ecs.get::<PlayerPosition>(entity)?;
-                Some((p.x, p.y, p.dir))
-            })
-            .flatten();
-        if let Some((px, py, pdir)) = check {
-            let (dx, dy) = dir_offset(pdir);
-            let (fx, fy) = (px + dx, py + dy);
-            if state.world.valid_coord(fx, fy) {
-                // Check: no building at facing cell
-                if state.building_index.contains_key(&(fx, fy)) {
-                    return;
-                }
-                // Check: facing cell must allow placement
-                let cell = state.world.get_cell(fx, fy);
-                if !state.world.cell_defs().get(cell).can_place_over() {
-                    return;
-                }
+    // D27+D28: C# Inventory.Use:206-208 — проверки facing-клетки перед использованием.
+    // ContainsPack(facing) применяется ВСЕГДА (здание на facing блокирует ЛЮБОЙ
+    // предмет; невалидные координаты C# трактует как занятые → return true).
+    // Exemption ({40, 10-16, 34, 42, 43, 46}) обходит только can_place_over.
+    let check = state
+        .query_player(pid, |ecs, entity| {
+            let p = ecs.get::<PlayerPosition>(entity)?;
+            Some((p.x, p.y, p.dir))
+        })
+        .flatten();
+    if let Some((px, py, pdir)) = check {
+        let (dx, dy) = dir_offset(pdir);
+        let (fx, fy) = (px + dx, py + dy);
+        // ContainsPack: OOB либо любая footprint-клетка здания → блок (find_pack_covering
+        // покрывает весь footprint многоклеточных зданий, как C# ch.GetPack).
+        if !state.world.valid_coord(fx, fy) || state.find_pack_covering(fx, fy).is_some() {
+            return;
+        }
+        // can_place_over: обходится только exempt-предметами.
+        if !is_exempt_item(sel) {
+            let cell = state.world.get_cell(fx, fy);
+            if !state.world.cell_defs().get(cell).can_place_over() {
+                return;
             }
         }
     }

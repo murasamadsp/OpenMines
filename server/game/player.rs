@@ -63,6 +63,8 @@ pub struct PlayerCooldowns {
     pub last_build: Instant,
     /// Как `Player.TryAct(..., 200)` для `Xgeo` в референсе.
     pub last_geo: Instant,
+    /// C# `Inventory.time` — гейт 400ms между использованиями предметов (INUS).
+    pub last_inventory_use: Instant,
     pub protection_until: Option<Instant>,
     // TODO: last_shot will be used when gun cooldown tracking is fully wired
     #[allow(dead_code)]
