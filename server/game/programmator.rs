@@ -557,11 +557,12 @@ pub fn programmator_system(
         &PlayerStats,
         &PlayerSkills,
         &mut ProgrammatorState,
+        &crate::game::player::PlayerGeoStack,
     )>,
 ) {
     let now = Instant::now();
 
-    for (meta, pos, conn, stats, skills, mut prog) in &mut query {
+    for (meta, pos, conn, stats, skills, mut prog, geo) in &mut query {
         if !prog.running {
             continue;
         }
@@ -616,6 +617,7 @@ pub fn programmator_system(
             conn,
             &mut prog_q,
             &mut delay_ms,
+            geo.0.len(),
         );
 
         // Process result (matching C# `ProgrammatorData.Step()`)
@@ -656,6 +658,7 @@ fn execute_action(
     conn: &PlayerConnection,
     prog_q: &mut ProgrammatorQueue,
     delay_ms: &mut u64,
+    geo_count: usize,
 ) -> ExecResult {
     // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
     let on_road = crate::world::cells::is_road(state.world.get_cell(pos.x, pos.y));
@@ -1235,9 +1238,26 @@ fn execute_action(
         ActionType::WritableState
         | ActionType::WritableStateLower
         | ActionType::WritableStateMore => {
-            // WritableState with "del" label = set delay
-            if action.label.eq_ignore_ascii_case("del") {
+            // C# PAction.CallWSAction: "del"→задержка (null, без state);
+            // "geo"→сравнение geo.Count с num; прочее→false.
+            let res: Option<bool> = if action.label.eq_ignore_ascii_case("del") {
                 *delay_ms = u64::try_from(action.num).unwrap_or(0);
+                None
+            } else if action.label.eq_ignore_ascii_case("geo") {
+                let count = i32::try_from(geo_count).unwrap_or(i32::MAX);
+                Some(match action.action_type {
+                    ActionType::WritableStateLower => count < action.num,
+                    ActionType::WritableStateMore => count > action.num,
+                    _ => count == action.num,
+                })
+            } else {
+                Some(false)
+            };
+            // C# Execute: if (res != null) { Check(p, (_,_) => res); return res; }
+            // Check пишет father.state с учётом And/Or — иначе RunIfTrue/False ломаются.
+            if let Some(r) = res {
+                check_cell(prog, pos, &state.world, |_, _, _| r);
+                return ExecResult::BoolResult(r);
             }
             ExecResult::None
         }
