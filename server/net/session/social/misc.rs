@@ -83,7 +83,16 @@ pub fn handle_prog_ty(
                     .flatten()
                     .unwrap_or(false);
 
+                // C# StartedProg: RunProgramm (Gu close) → UpdateProg (#p) → ProgStatus (@P).
                 send_u_packet(tx, "Gu", &gu_close().1);
+                let name = state
+                    .db
+                    .get_program(prog_id)
+                    .ok()
+                    .flatten()
+                    .map(|p| p.name)
+                    .unwrap_or_default();
+                send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
             } else {
                 tracing::warn!(
@@ -112,11 +121,12 @@ pub fn handle_prog_ty(
                         ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
                             .running = false;
                     }
-                    Some((false, editor_data))
+                    Some((false, editor_data, was_running))
                 })
                 .flatten();
-            let (running, editor_data) = result.unwrap_or((false, None));
-            // C# ref: OpenProg sends #P packet with program data
+            let (running, editor_data, was_running) = result.unwrap_or((false, None, false));
+            // C# Prst: if (selected && !running) OpenProg (#P); if (running) RunProgramm (Gu close);
+            // затем ProgStatus (@P). Ветки взаимоисключающие.
             if let Some((prog_id, source)) = editor_data {
                 let name = state
                     .db
@@ -126,6 +136,10 @@ pub fn handle_prog_ty(
                     .map(|p| p.name)
                     .unwrap_or_default();
                 send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
+            }
+            if was_running {
+                // RunProgramm() закрывает окно перед остановкой.
+                send_u_packet(tx, "Gu", &gu_close().1);
             }
             send_u_packet(tx, "@P", &programmator_status(running).1);
         }
@@ -149,7 +163,9 @@ pub fn handle_prog_ty(
                     });
                 }
             }
-            send_u_packet(tx, "@P", &programmator_status(false).1);
+            // C# Pdel: StaticGUI.DeleteProg() только удаляет из БД — НИ одного пакета
+            // (ProgStatus не вызывается). In-memory сброс selected/running оставлен как
+            // безопасность (wire-невидим), сам @P убран для паритета.
         }
         "PREN" => {
             let running = state
