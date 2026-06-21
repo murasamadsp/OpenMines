@@ -253,6 +253,18 @@ const fn alive_cell_to_item(cell: u8) -> Option<i32> {
     }
 }
 
+/// C# `World.TrueEmpty(x,y)` (World.cs:251): клетка пригодна для размещения
+/// geopack/poli, если её свойство `isEmpty` И на ней нет здания (`PackPart`) И тип
+/// клетки не в {36,37,0,39}. `isEmpty`-набор: {30,31,32,33,34,35,36,37,39,83}, так
+/// что эффективно разрешено {30,31,32,33,34,35,83}. `find_pack_covering` покрывает
+/// весь footprint многоклеточных зданий (эквивалент chunk.packsprop).
+fn true_empty(state: &Arc<GameState>, x: i32, y: i32) -> bool {
+    let c = state.world.get_cell(x, y);
+    state.world.is_empty(x, y)
+        && state.find_pack_covering(x, y).is_none()
+        && !matches!(c, 0 | 36 | 37 | 39)
+}
+
 /// D25+D26: Geopack — placement on truly empty cells, pickup of any alive cell.
 pub fn use_geopack(
     state: &Arc<GameState>,
@@ -294,9 +306,8 @@ pub fn use_geopack(
         return true;
     }
 
-    // D25: placement — target cell must be truly empty (NOTHING or EMPTY), not can_place_over.
-    let is_truly_empty = facing_cell == cell_type::NOTHING || facing_cell == cell_type::EMPTY;
-    if !is_truly_empty {
+    // D25: placement — клетка должна проходить C# World.TrueEmpty.
+    if !true_empty(state, fx, fy) {
         return false;
     }
 
@@ -330,9 +341,9 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
     if !state.access_gun(fx, fy, cid) {
         return false;
     }
-    let c = state.world.get_cell(fx, fy);
-    let is_truly_empty = c == cell_type::NOTHING || c == cell_type::EMPTY;
-    if !is_truly_empty {
+    // C# Poli кладёт PolymerRoad только при World.TrueEmpty; возвращает false
+    // в любом случае (предмет не тратится — паритет с референсом).
+    if !true_empty(state, fx, fy) {
         return false;
     }
     state.world.set_cell(fx, fy, cell_type::POLYMER_ROAD);
