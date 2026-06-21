@@ -642,8 +642,9 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
             let c = state.world.get_cell(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
             let prop = defs.get(c);
-            if prop.physical.is_destructible && !state.building_index.contains_key(&(tgt_x, tgt_y))
-            {
+            // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
+            // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
+            if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
                 // Special cell conversions
                 if c == cell_type::RED_ROCK && rand::random::<u32>() % 100 >= 98 {
                     // 2% chance: 117 → 118
@@ -740,8 +741,9 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
             let c = state.world.get_cell(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
             let prop = defs.get(c);
-            if prop.physical.is_destructible && !state.building_index.contains_key(&(tgt_x, tgt_y))
-            {
+            // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
+            // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
+            if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
                 state.world.destroy(tgt_x, tgt_y);
                 broadcast_cell_update(state, tgt_x, tgt_y);
             }
