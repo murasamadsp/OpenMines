@@ -607,6 +607,17 @@ pub fn destroy_damagable_building(
     if state.db.delete_building(view.id).is_err() {
         return false;
     }
+    // Захват crysinside до despawn (для Box-дропа Storage, C# `Storage.Destroy`).
+    let crysinside: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
+        let ecs = state.ecs.read();
+        state
+            .building_index
+            .get(&(bx, by))
+            .and_then(|e| ecs.get::<BuildingStorage>(*e).map(|s| s.crystals))
+    } else {
+        None
+    };
+
     if let Some((_, entity)) = state.building_index.remove(&(bx, by)) {
         let (cx, cy) = crate::world::World::chunk_pos(bx, by);
         if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy)) {
@@ -621,38 +632,93 @@ pub fn destroy_damagable_building(
     broadcast_pack_clear(state, &view);
     close_pack_windows(state, &view);
 
-    // Gun-специфика: 40% шанс дропнуть предмет 26 + HB bubble "ШПАААК ВЫПАЛ"
-    if view.pack_type == PackType::Gun {
-        if let Some(pid) = trigger_pid {
-            use rand::Rng as _;
-            if rand::rng().random_range(1u32..=100) < 40 {
-                let tx = state
-                    .query_player(pid, |ecs, entity| {
-                        ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
-                    })
-                    .flatten();
-                if let Some(tx) = tx {
-                    let chat_sub = hb_chat(
-                        0,
-                        u16::try_from(bx.rem_euclid(65536)).unwrap_or(0),
-                        u16::try_from(by.rem_euclid(65536)).unwrap_or(0),
-                        "ШПАААК ВЫПАЛ",
-                    );
-                    let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
-                    state.modify_player(pid, |ecs, entity| {
-                        use crate::game::player::{PlayerFlags, PlayerInventory};
-                        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-                        *inv.items.entry(26).or_insert(0) += 1;
-                        if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
-                            flags.dirty = true;
-                        }
-                        Some(())
-                    });
+    // C# `<Building>.Destroy()`: дроп кристаллов в Box.
+    // Teleport — White по charge (`[0,0,0,0,charge,0]`); Storage — crysinside.
+    match view.pack_type {
+        PackType::Teleport if view.charge > 0.0 => {
+            drop_destroy_box(state, bx, by, [0, 0, 0, 0, charge_to_crys(view.charge), 0]);
+        }
+        PackType::Storage => {
+            if let Some(crys) = crysinside {
+                if crys.iter().sum::<i64>() > 0 {
+                    drop_destroy_box(state, bx, by, crys);
                 }
+            }
+        }
+        _ => {}
+    }
+
+    // C# `<Building>.Destroy()`: 40% шанс вернуть предмет-размещения в инвентарь сносящего
+    // + HB bubble "ШПАААК ВЫПАЛ". Индекс = item-код здания (см. `shpaak_item_index`).
+    if let (Some(pid), Some(item_idx)) = (trigger_pid, shpaak_item_index(view.pack_type)) {
+        use rand::Rng as _;
+        if rand::rng().random_range(1u32..=100) < 40 {
+            let tx = state
+                .query_player(pid, |ecs, entity| {
+                    ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
+                })
+                .flatten();
+            if let Some(tx) = tx {
+                let chat_sub = hb_chat(
+                    0,
+                    u16::try_from(bx.rem_euclid(65536)).unwrap_or(0),
+                    u16::try_from(by.rem_euclid(65536)).unwrap_or(0),
+                    "ШПАААК ВЫПАЛ",
+                );
+                let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
+                state.modify_player(pid, |ecs, entity| {
+                    use crate::game::player::{PlayerFlags, PlayerInventory};
+                    let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                    *inv.items.entry(item_idx).or_insert(0) += 1;
+                    if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
+                        flags.dirty = true;
+                    }
+                    Some(())
+                });
             }
         }
     }
     true
+}
+
+/// Индекс предмета-размещения здания для 40%-дропа при `Destroy` (C# `p.inventory[N]++`).
+/// `None` — здания без дропа (Gate/Spot и прочие).
+const fn shpaak_item_index(pt: PackType) -> Option<i32> {
+    match pt {
+        PackType::Teleport => Some(0),
+        PackType::Resp => Some(1),
+        PackType::Up => Some(2),
+        PackType::Market => Some(3),
+        PackType::Craft => Some(24),
+        PackType::Gun => Some(26),
+        PackType::Storage => Some(29),
+        _ => None,
+    }
+}
+
+/// `charge` (f32, всегда целое неотрицательное кол-во) → кол-во кристаллов для Box.
+/// 1:1 с C# `(long)charge`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+const fn charge_to_crys(charge: f32) -> i64 {
+    if charge <= 0.0 { 0 } else { charge as i64 }
+}
+
+/// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).
+/// Проверка размещения 1:1: `isEmpty && can_place_over && !PackPart`.
+fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) {
+    if !state.world.valid_coord(x, y) {
+        return;
+    }
+    let cell = state.world.get_cell(x, y);
+    if !state.world.is_empty(x, y) || !state.world.cell_defs().get(cell).can_place_over() {
+        return;
+    }
+    if state.get_pack_at(x, y).is_some() {
+        return;
+    }
+    state.world.set_cell(x, y, cell_type::BOX);
+    state.box_put(x, y, crystals);
+    broadcast_cell_update(state, x, y);
 }
 
 /// Despawn a `BotSpot` entity when its Spot building is removed.
