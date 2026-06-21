@@ -168,6 +168,13 @@ fn handle_complex_button(
                 crate::net::session::play::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
             }
         }
+    } else if let Some(rest) = button.strip_prefix("gun_fill:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3 {
+            if let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
+                crate::net::session::play::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
+            }
+        }
     } else if let Some(rest) = button.strip_prefix("resp_profit:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 2 {
@@ -279,6 +286,10 @@ pub fn open_pack_gui(
     }
     if view.pack_type == PackType::Up {
         super::up_building::open_up_gui(state, tx, pid, view);
+        return;
+    }
+    if view.pack_type == PackType::Gun {
+        crate::net::session::play::packs::open_gun_gui(state, tx, pid, view.x, view.y);
         return;
     }
 
@@ -1682,6 +1693,7 @@ fn handle_settings_save(
 }
 
 /// Build #S packet payload from player's current settings.
+/// Wire format: `#key#value#key#value...` — 1:1 с `SettingsPacket.Encode()` в C# референсе.
 fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
     let s = state
         .query_player(pid, |ecs, entity| {
@@ -1690,17 +1702,22 @@ fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
         })
         .flatten()
         .unwrap_or_default();
-    let json = serde_json::json!({
-        "cc": s.cc.to_string(),
-        "snd": if s.snd { "1" } else { "0" },
-        "mus": if s.mus { "1" } else { "0" },
-        "isca": s.isca.to_string(),
-        "tsca": s.tsca.to_string(),
-        "mous": if s.mous { "1" } else { "0" },
-        "pot": if s.pot { "1" } else { "0" },
-        "frc": if s.frc { "1" } else { "0" },
-        "ctrl": if s.ctrl { "1" } else { "0" },
-        "mof": if s.mof { "1" } else { "0" },
-    });
-    json.to_string().into_bytes()
+    let pairs: &[(&str, String)] = &[
+        ("cc", s.cc.to_string()),
+        ("snd", if s.snd { "1" } else { "0" }.to_string()),
+        ("mus", if s.mus { "1" } else { "0" }.to_string()),
+        ("isca", s.isca.to_string()),
+        ("tsca", s.tsca.to_string()),
+        ("mous", if s.mous { "1" } else { "0" }.to_string()),
+        ("pot", if s.pot { "1" } else { "0" }.to_string()),
+        ("frc", if s.frc { "1" } else { "0" }.to_string()),
+        ("ctrl", if s.ctrl { "1" } else { "0" }.to_string()),
+        ("mof", if s.mof { "1" } else { "0" }.to_string()),
+    ];
+    let inner = pairs
+        .iter()
+        .map(|(k, v)| format!("{k}#{v}"))
+        .collect::<Vec<_>>()
+        .join("#");
+    format!("#{inner}").into_bytes()
 }

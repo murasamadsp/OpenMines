@@ -513,3 +513,158 @@ pub fn handle_resp_save(
     // Refresh admin GUI
     open_resp_admin_gui(state, tx, pid, pack_x, pack_y);
 }
+
+/// Открыть GUI пушки (`RichList` Fill, заряд Cyan).
+pub fn open_gun_gui(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    pack_x: i32,
+    pack_y: i32,
+) {
+    let fill_info = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+        Some((pk_stats.charge, pk_stats.max_charge))
+    });
+    let Some((charge, max_charge)) = fill_info else {
+        return;
+    };
+
+    // Cyan = crystals[5] (1:1 CrystalType.Cyan = 5)
+    let cyan_crys = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<PlayerStats>(entity).map(|s| s.crystals[5])
+        })
+        .flatten()
+        .unwrap_or(0);
+
+    let charge_i = charge as i32;
+    let max_charge_i = max_charge as i32;
+    let percent = if max_charge_i > 0 {
+        (f64::from(charge) / (f64::from(max_charge) / 100.0)).round() as i32
+    } else {
+        0
+    };
+    let bar_label = format!("{charge_i}/{max_charge_i}");
+
+    // C# GUIWin: +100 active if cyan>=100, +1000 if cyan>=1000, max always (cyan>=0)
+    let small_fill_action = if cyan_crys >= 100 {
+        format!("gun_fill:100:{pack_x}:{pack_y}")
+    } else {
+        String::new()
+    };
+    let large_fill_action = if cyan_crys >= 1000 {
+        format!("gun_fill:1000:{pack_x}:{pack_y}")
+    } else {
+        String::new()
+    };
+    let fill_max_action = format!("gun_fill:max:{pack_x}:{pack_y}");
+
+    // crystal_type=5 (Cyan)
+    let fill_values = format!(
+        "{percent}#{bar_label}#5#{small_fill_action}#{large_fill_action}#{fill_max_action}"
+    );
+
+    let richlist = serde_json::json!([["заряд", "fill", fill_values, "", ""]]);
+    let window = serde_json::json!({
+        "tabs": [{
+            "action": "gun",
+            "label": "хуй",
+            "title": "Пушка",
+            "list": richlist,
+            "buttons": []
+        }]
+    });
+    send_u_packet(tx, "GU", format!("horb:{window}").as_bytes());
+
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = Some(format!("gun:{pack_x}:{pack_y}"));
+        }
+        Some(())
+    });
+}
+
+/// Обработать нажатие кнопки заряда пушки (+100, +1000, max).
+pub fn handle_gun_fill(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    amount_str: &str,
+    pack_x: i32,
+    pack_y: i32,
+) {
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return;
+    };
+    if view.owner_id != pid {
+        return;
+    }
+
+    let fill_info = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+        Some((pk_stats.charge, pk_stats.max_charge))
+    });
+    let Some((charge, max_charge)) = fill_info else {
+        return;
+    };
+
+    if charge >= max_charge {
+        return;
+    }
+
+    let requested: i64 = match amount_str {
+        "100" => 100,
+        "1000" => 1000,
+        "max" => (max_charge - charge) as i64,
+        _ => return,
+    };
+
+    if requested <= 0 {
+        return;
+    }
+
+    // Deduct Cyan (index 5) from player, cap at available
+    let actual = state
+        .modify_player(pid, |ecs, entity| {
+            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+            let available = s.crystals[5]; // Cyan = index 5
+            let to_take = requested.min(available);
+            if to_take <= 0 {
+                return Some(0i64);
+            }
+            s.crystals[5] -= to_take;
+            send_u_packet(
+                tx,
+                "@B",
+                &crate::protocol::packets::basket(&s.crystals, 1).1,
+            );
+            Some(to_take)
+        })
+        .flatten()
+        .unwrap_or(0);
+
+    if actual <= 0 {
+        return;
+    }
+
+    // Add charge to gun (cap at max_charge)
+    let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
+        if let Some(mut pk_stats) = ecs.get_mut::<BuildingStats>(entity) {
+            pk_stats.charge += actual as f32;
+            if pk_stats.charge > pk_stats.max_charge {
+                pk_stats.charge = pk_stats.max_charge;
+            }
+        }
+    });
+
+    // Broadcast HB O to nearby players (C# `ResendPack`)
+    if let Some(updated_view) = state.get_pack_at(pack_x, pack_y) {
+        crate::net::session::social::buildings::broadcast_pack_update(state, &updated_view);
+    }
+
+    // Refresh GUI
+    open_gun_gui(state, tx, pid, pack_x, pack_y);
+}

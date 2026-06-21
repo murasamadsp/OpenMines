@@ -6,7 +6,7 @@ use crate::game::player::{
     PlayerSkills as PlayerSkillsCom, PlayerStats,
 };
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
-use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
+use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource, PackResendQueue};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
@@ -129,6 +129,7 @@ pub fn gun_firing_system(
     _state_res: Res<GameStateResource>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
+    mut pack_resend_q: ResMut<PackResendQueue>,
     mut guns_query: Query<(
         &BuildingMetadata,
         &mut BuildingStats,
@@ -224,6 +225,10 @@ pub fn gun_firing_system(
             let charge_cost = 0.5 * (induction_effect / 100.0);
             if b_stats.charge - charge_cost > 0.0 {
                 b_stats.charge -= charge_cost;
+            } else if b_stats.charge > 0.0 {
+                // Charge just depleted — broadcast HB O update (C# `ResendPack`)
+                b_stats.charge = 0.0;
+                pack_resend_q.0.push((b_pos.x, b_pos.y));
             } else {
                 b_stats.charge = 0.0;
             }

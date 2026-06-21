@@ -210,6 +210,7 @@ pub fn handle_place_building(
                 cost: extra.cost,
                 hp: extra.hp,
                 max_hp: extra.max_hp,
+                broken_timer: None,
             },
             BuildingStorage {
                 money: extra.money_inside,
@@ -590,6 +591,68 @@ pub fn spawn_botspot(
         .push(botspot_entity);
 
     tracing::info!(owner_id, x, y, "Spawned BotSpot entity for Spot building");
+}
+
+/// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.
+/// Возвращает true при успехе.
+pub fn destroy_damagable_building(
+    state: &Arc<GameState>,
+    trigger_pid: Option<PlayerId>,
+    bx: i32,
+    by: i32,
+) -> bool {
+    let Some(view) = state.get_pack_at(bx, by) else {
+        return false;
+    };
+    if state.db.delete_building(view.id).is_err() {
+        return false;
+    }
+    if let Some((_, entity)) = state.building_index.remove(&(bx, by)) {
+        let (cx, cy) = crate::world::World::chunk_pos(bx, by);
+        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy)) {
+            e.retain(|&ent| ent != entity);
+        }
+        if view.pack_type == PackType::Spot {
+            despawn_botspot(state, view.owner_id);
+        }
+        state.ecs.write().despawn(entity);
+    }
+    clear_pack_cells(state, &view);
+    broadcast_pack_clear(state, &view);
+    close_pack_windows(state, &view);
+
+    // Gun-специфика: 40% шанс дропнуть предмет 26 + HB bubble "ШПАААК ВЫПАЛ"
+    if view.pack_type == PackType::Gun {
+        if let Some(pid) = trigger_pid {
+            use rand::Rng as _;
+            if rand::rng().random_range(1u32..=100) < 40 {
+                let tx = state
+                    .query_player(pid, |ecs, entity| {
+                        ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
+                    })
+                    .flatten();
+                if let Some(tx) = tx {
+                    let chat_sub = hb_chat(
+                        0,
+                        u16::try_from(bx.rem_euclid(65536)).unwrap_or(0),
+                        u16::try_from(by.rem_euclid(65536)).unwrap_or(0),
+                        "ШПАААК ВЫПАЛ",
+                    );
+                    let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
+                    state.modify_player(pid, |ecs, entity| {
+                        use crate::game::player::{PlayerFlags, PlayerInventory};
+                        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                        *inv.items.entry(26).or_insert(0) += 1;
+                        if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
+                            flags.dirty = true;
+                        }
+                        Some(())
+                    });
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Despawn a `BotSpot` entity when its Spot building is removed.

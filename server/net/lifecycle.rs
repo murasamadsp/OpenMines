@@ -220,7 +220,15 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             // Системы НЕ ре-лочат `ecs` — вместо этого пушат в BroadcastQueue/ProgrammatorQueue.
             // Обрабатываем очереди ПОСЛЕ `schedule.run()`, когда `ecs.write()` уже отпущен.
             let sched_t0 = Instant::now();
-            let (pending, broadcasts, prog_actions, cell_conversions, sched_lock_wait, sched_run) = {
+            let (
+                pending,
+                broadcasts,
+                prog_actions,
+                cell_conversions,
+                pack_resends,
+                sched_lock_wait,
+                sched_run,
+            ) = {
                 let mut ecs = state.ecs.write();
                 let mut schedule = state.schedule.write();
                 let lw = sched_t0.elapsed();
@@ -238,9 +246,10 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 let convs = std::mem::take(
                     &mut ecs.resource_mut::<crate::game::PendingCellConversions>().0,
                 );
+                let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
                 drop(ecs);
                 drop(schedule);
-                (p, bc, pa, convs, lw, rn)
+                (p, bc, pa, convs, pr, lw, rn)
             };
             let dt_schedule = sched_t0.elapsed();
             if dt_schedule > std::time::Duration::from_millis(50) {
@@ -271,6 +280,13 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                     } => {
                         state.broadcast_to_nearby(cx, cy, &data, exclude);
                     }
+                }
+            }
+
+            // Перерасылка HB O для зданий у которых обнулился charge (C# `ResendPack`).
+            for (px, py) in pack_resends {
+                if let Some(view) = state.get_pack_at(px, py) {
+                    crate::net::session::social::buildings::broadcast_pack_update(&state, &view);
                 }
             }
 

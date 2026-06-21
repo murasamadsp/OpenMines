@@ -1,6 +1,7 @@
 use crate::db::buildings::BuildingRow;
 use crate::game::player::PlayerId;
 use bevy_ecs::prelude::{Component, Entity};
+use rand::Rng as _;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
@@ -181,6 +182,67 @@ pub struct BuildingStats {
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
+    /// `IDamagable`: момент когда hp стало 0. None пока здание не сломано.
+    pub broken_timer: Option<std::time::Instant>,
+}
+
+/// Возвращает true если тип здания реализует `IDamagable` (C# ref: 8 классов).
+#[must_use]
+pub const fn is_damagable(pack_type: PackType) -> bool {
+    matches!(
+        pack_type,
+        PackType::Gun
+            | PackType::Resp
+            | PackType::Teleport
+            | PackType::Market
+            | PackType::Up
+            | PackType::Storage
+            | PackType::Craft
+            | PackType::Spot
+    )
+}
+
+/// `IDamagable.Damage(i)` — урон зданию.
+/// Возвращает true если charge изменился (нужен HB O resend).
+pub fn damage_building(stats: &mut BuildingStats, i: i32) -> bool {
+    let charge_before = stats.charge;
+    if i > 5 {
+        stats.charge = (stats.charge - 100.0).max(0.0);
+    }
+    if stats.hp == 0 {
+        return (stats.charge - charge_before).abs() > f32::EPSILON;
+    }
+    stats.hp = (stats.hp - i).max(0);
+    if stats.hp == 0 && stats.broken_timer.is_none() {
+        stats.broken_timer = Some(std::time::Instant::now());
+    }
+    (stats.charge - charge_before).abs() > f32::EPSILON
+}
+
+/// `IDamagable.CanDestroy()` — hp==0 И 8 часов истекло.
+#[must_use]
+pub fn can_destroy(stats: &BuildingStats) -> bool {
+    stats.hp == 0
+        && stats
+            .broken_timer
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(8 * 3600))
+}
+
+/// `IDamagable.NeedEffect()` — вероятность разрушительного FX (вероятнее в начале 8-часового окна).
+#[must_use]
+pub fn need_effect(stats: &BuildingStats) -> bool {
+    if stats.hp != 0 {
+        return false;
+    }
+    let Some(bt) = stats.broken_timer else {
+        return false;
+    };
+    let elapsed = bt.elapsed().as_secs_f64();
+    let total = f64::from(8 * 3600u32);
+    // C#: value = percent elapsed (0..=100); effect if random(0..=100) > value
+    let value = (elapsed / total * 100.0).round();
+    let r = f64::from(rand::rng().random_range(0u32..=100));
+    r > value
 }
 
 #[derive(Component)]
@@ -228,6 +290,7 @@ pub fn spawn_building_from_row(ecs: &mut bevy_ecs::prelude::World, row: &Buildin
             cost: row.cost,
             hp: row.hp,
             max_hp: row.max_hp,
+            broken_timer: None,
         },
         BuildingStorage {
             money: row.money_inside,

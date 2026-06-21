@@ -4,6 +4,7 @@
 pub mod acid;
 pub mod alive;
 pub mod botspot;
+pub mod building_damage;
 pub mod buildings;
 pub mod chat;
 pub mod combat;
@@ -90,6 +91,10 @@ pub enum ProgrammatorAction {
 #[derive(Resource, Default)]
 pub struct PendingCellConversions(pub Vec<PendingConversion>);
 
+/// Координаты зданий, которым нужен HB O re-broadcast после обнуления charge (C# `ResendPack`).
+#[derive(Resource, Default)]
+pub struct PackResendQueue(pub Vec<(i32, i32)>);
+
 pub struct PendingConversion {
     pub x: i32,
     pub y: i32,
@@ -174,6 +179,8 @@ impl GameState {
         schedule.add_systems(programmator::programmator_system);
         schedule.add_systems(alive::alive_physics_system);
         schedule.add_systems(acid::acid_physics_system);
+        schedule.add_systems(building_damage::building_hourly_damage_system);
+        schedule.add_systems(building_damage::building_effect_tick_system);
 
         let mut default_channels = vec![
             chat::ChatChannel::new("FED", "Федеральный чат", true),
@@ -250,7 +257,9 @@ impl GameState {
             ecs.insert_resource(alive::AliveTickTimer::default());
             ecs.insert_resource(acid::AcidTickTimer::default());
             ecs.insert_resource(sand::SandTickTimer::default());
+            ecs.insert_resource(building_damage::BuildingDamageTimer::default());
             ecs.insert_resource(PendingCellConversions::default());
+            ecs.insert_resource(PackResendQueue::default());
         }
 
         Self::load_buildings_into_ecs(&state);

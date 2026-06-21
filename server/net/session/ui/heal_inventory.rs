@@ -2,7 +2,7 @@
 #![allow(clippy::cast_possible_truncation)]
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
-    BuildingStorage, GridPosition,
+    BuildingStorage, GridPosition, can_destroy, damage_building, is_damagable,
 };
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkills, PlayerStats,
@@ -12,7 +12,8 @@ use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
-    building_extra_for_pack_type, place_building_in_world, validate_building_area,
+    broadcast_pack_update, building_extra_for_pack_type, destroy_damagable_building,
+    place_building_in_world, validate_building_area,
 };
 
 // ─── Healing ────────────────────────────────────────────────────────────────
@@ -378,6 +379,7 @@ pub fn place_building_from_item(
                     cost: extra.cost,
                     hp: extra.hp,
                     max_hp: extra.max_hp,
+                    broken_timer: None,
                 },
                 BuildingStorage {
                     money: extra.money_inside,
@@ -713,20 +715,47 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let (dx, dy) = dir_offset(pdir);
     let (cx, cy) = (px + dx, py + dy);
 
-    // Damage buildings (IDamagable) and zero gun charge in radius 9.5
+    // Collect IDamagable buildings in radius 9.5 and apply damage (C# ShitClass.Raz).
+    let mut to_destroy: Vec<(i32, i32)> = Vec::new();
+    let mut resend_charge_zero: Vec<(i32, i32)> = Vec::new();
     {
         let mut ecs = state.ecs.write();
-        let mut query = ecs.query::<(&BuildingMetadata, &GridPosition, &mut BuildingStats)>();
-        for (_meta, bpos, mut pstats) in query.iter_mut(&mut ecs) {
+        let mut query = ecs.query::<(
+            &BuildingMetadata,
+            &GridPosition,
+            &BuildingOwnership,
+            &mut BuildingStats,
+        )>();
+        for (meta, bpos, ownership, mut pstats) in query.iter_mut(&mut ecs) {
+            if !is_damagable(meta.pack_type) || ownership.owner_id == 0 {
+                continue;
+            }
             let ddx = (bpos.x - cx) as f32;
             let ddy = (bpos.y - cy) as f32;
-            let dist = ddx.hypot(ddy);
-            if dist <= 9.5 {
-                // Zero charge
-                pstats.charge = 0.0;
-                // Damage building 10 HP
-                pstats.hp -= 10;
+            if ddx.hypot(ddy) > 9.5 {
+                continue;
             }
+            if can_destroy(&pstats) {
+                to_destroy.push((bpos.x, bpos.y));
+            } else {
+                damage_building(&mut pstats, 10);
+                // C#: if (pack.charge == 0) ResendPack
+                if pstats.charge == 0.0 {
+                    resend_charge_zero.push((bpos.x, bpos.y));
+                }
+            }
+        }
+    }
+
+    // Destroy buildings that reached CanDestroy (release ECS lock first to avoid deadlock).
+    for (bx, by) in to_destroy {
+        destroy_damagable_building(state, Some(pid), bx, by);
+    }
+
+    // Resend HB O for buildings whose charge hit 0 from damage.
+    for (bx, by) in resend_charge_zero {
+        if let Some(view) = state.get_pack_at(bx, by) {
+            broadcast_pack_update(state, &view);
         }
     }
 
