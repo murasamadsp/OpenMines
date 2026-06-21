@@ -636,6 +636,16 @@ impl GameState {
         }
     }
 
+    /// Бродкаст HB-подпакетов игрокам рядом с клеткой `(x, y)`: считает чанк,
+    /// собирает bundle и B-фрейм, шлёт через `broadcast_to_nearby`. Тонкая обёртка
+    /// над повторяющимся паттерном — вывод байт-в-байт идентичен ручной форме.
+    pub fn broadcast_hb_at(&self, x: i32, y: i32, subs: &[Vec<u8>], exclude_id: Option<PlayerId>) {
+        use crate::net::session::wire::encode_hb_bundle;
+        use crate::protocol::packets::hb_bundle;
+        let (cx, cy) = World::chunk_pos(x, y);
+        self.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(subs).1), exclude_id);
+    }
+
     pub fn broadcast_to_nearby_specific_chunk(
         &self,
         cx: u32,
@@ -691,14 +701,11 @@ impl GameState {
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    use crate::net::session::wire::encode_hb_bundle;
-    use crate::protocol::packets::{hb_bundle, hb_cell};
+    use crate::protocol::packets::hb_cell;
     let sub = hb_cell(
         u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
         u16::try_from(y.rem_euclid(65536)).unwrap_or(0),
         state.world.get_cell(x, y),
     );
-    let data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-    let (cx, cy) = World::chunk_pos(x, y);
-    state.broadcast_to_nearby(cx, cy, &data, None);
+    state.broadcast_hb_at(x, y, &[sub], None);
 }

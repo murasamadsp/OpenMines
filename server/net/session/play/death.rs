@@ -228,24 +228,14 @@ pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid
     // Сообщить всем соседям, что бот исчез
     let (pos_x, pos_y) = bcast.death_pos;
     let del = hb_bot_del(net_u16_nonneg(pid));
-    state.broadcast_to_nearby(
-        World::chunk_pos(pos_x, pos_y).0,
-        World::chunk_pos(pos_x, pos_y).1,
-        &encode_hb_bundle(&hb_bundle(&[del]).1),
-        Some(pid),
-    );
+    state.broadcast_hb_at(pos_x, pos_y, &[del], Some(pid));
 
     if let Some((bx, by)) = bcast.box_cell {
         broadcast_cell_update(state, bx, by);
     }
     if let Some((pos_x, pos_y)) = bcast.fx_death {
         let fx = hb_fx(pos_x as u16, pos_y as u16, 2);
-        state.broadcast_to_nearby(
-            World::chunk_pos(pos_x, pos_y).0,
-            World::chunk_pos(pos_x, pos_y).1,
-            &encode_hb_bundle(&hb_bundle(&[fx]).1),
-            None,
-        );
+        state.broadcast_hb_at(pos_x, pos_y, &[fx], None);
     }
 }
 
@@ -339,9 +329,7 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
             handle_death(state, &conn_tx, pid);
         } else {
             // S3-1: Hurt FX broadcast to nearby (C# SendDFToBots(6, 0, 0, id, 0))
-            use crate::net::session::wire::encode_hb_bundle;
-            use crate::protocol::packets::{hb_bundle, hb_directed_fx};
-            use crate::world::World;
+            use crate::protocol::packets::hb_directed_fx;
             let fx = hb_directed_fx(
                 crate::net::session::util::net_u16_nonneg(pid),
                 0,
@@ -350,8 +338,7 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
                 0,
                 0,
             );
-            let (cx, cy) = World::chunk_pos(px, py);
-            state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
+            state.broadcast_hb_at(px, py, &[fx], Some(pid));
         }
     }
 }

@@ -87,8 +87,6 @@ pub fn handle_dig(
         })
         .unwrap_or(0);
 
-    let (cx, cy) = World::chunk_pos(px, py);
-
     // Fix 4: FX broadcast BEFORE the !diggable check — C# sends it unconditionally at top of Bz().
     // Референс: `player.Bz()` → `SendDFToBots(...)` — рассылает FX копания соседям.
     let fx = hb_directed_fx(
@@ -99,7 +97,7 @@ pub fn handle_dig(
         actual_dir as u8,
         0,
     );
-    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), Some(pid));
+    state.broadcast_hb_at(px, py, &[fx], Some(pid));
 
     // Fix 2: BOX (90) special case — pick up crystals and destroy.
     // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
@@ -127,7 +125,7 @@ pub fn handle_dig(
             net_u16_nonneg(clan_id),
             tail,
         );
-        state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
+        state.broadcast_hb_at(px, py, &[bot], Some(pid));
         return;
     }
 
@@ -150,7 +148,7 @@ pub fn handle_dig(
             net_u16_nonneg(clan_id),
             tail,
         );
-        state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
+        state.broadcast_hb_at(px, py, &[bot], Some(pid));
         return;
     }
 
@@ -217,12 +215,7 @@ pub fn handle_dig(
             (amount.min(255)) as u8,
             color_remapped,
         );
-        state.broadcast_to_nearby(
-            cx,
-            cy,
-            &encode_hb_bundle(&hb_bundle(&[mine_fx]).1),
-            Some(pid),
-        );
+        state.broadcast_hb_at(px, py, &[mine_fx], Some(pid));
 
         amount
     });
@@ -300,7 +293,7 @@ pub fn handle_dig(
         net_u16_nonneg(clan_id),
         tail,
     );
-    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[bot]).1), Some(pid));
+    state.broadcast_hb_at(px, py, &[bot], Some(pid));
 }
 
 pub fn handle_build(
@@ -531,8 +524,7 @@ pub fn try_spend_crystal(
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
     let sub = hb_cell(x as u16, y as u16, state.world.get_cell(x, y));
-    let (cx, cy) = World::chunk_pos(x, y);
-    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[sub]).1), None);
+    state.broadcast_hb_at(x, y, &[sub], None);
 }
 
 fn place_block(state: &Arc<GameState>, x: i32, y: i32, cell: u8) {

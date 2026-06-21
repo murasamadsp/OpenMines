@@ -69,12 +69,7 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         }
         // D20: C# sends coordinates (0, 0) for heal FX
         let fx = hb_directed_fx(net_u16_nonneg(pid), 0, 0, 5, 0, 0);
-        state.broadcast_to_nearby(
-            World::chunk_pos(hx, hy).0,
-            World::chunk_pos(hx, hy).1,
-            &encode_hb_bundle(&hb_bundle(&[fx]).1),
-            None,
-        );
+        state.broadcast_hb_at(hx, hy, &[fx], None);
     }
 }
 
@@ -582,13 +577,7 @@ fn aoe_damage_players(
         // Broadcast hurt FX for surviving players (C# SendDFToBots(6,0,0,id,0))
         if let Some(Some((true, prev_x, prev_y))) = hit_result {
             let fx = hb_directed_fx(net_u16_nonneg(opid), 0, 0, 6, 0, 0);
-            let (chunk_x, chunk_y) = World::chunk_pos(prev_x, prev_y);
-            state.broadcast_to_nearby(
-                chunk_x,
-                chunk_y,
-                &encode_hb_bundle(&hb_bundle(&[fx]).1),
-                None,
-            );
+            state.broadcast_hb_at(prev_x, prev_y, &[fx], None);
         }
         let dead = state
             .query_player(opid, |ecs, entity| {
@@ -612,8 +601,7 @@ fn send_consumable_pack(state: &Arc<GameState>, x: i32, y: i32, off: u8) {
     };
     let pack = (b'B', net_u16_nonneg(x), net_u16_nonneg(y), 0u8, off);
     let sub = hb_packs(block_pos, std::slice::from_ref(&pack));
-    let (cx, cy) = World::chunk_pos(x, y);
-    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[sub]).1), None);
+    state.broadcast_hb_at(x, y, &[sub], None);
 }
 
 /// C# `Chunk.ClearPack(x, y)` — HB 'O' с пустым списком pack'ов (стирает спрайт).
@@ -622,8 +610,7 @@ fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
         return;
     };
     let sub = hb_packs(block_pos, &[]);
-    let (cx, cy) = World::chunk_pos(x, y);
-    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[sub]).1), None);
+    state.broadcast_hb_at(x, y, &[sub], None);
 }
 
 /// D14: Boom — C# `ShitClass.Boom` parity.
@@ -711,12 +698,7 @@ fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
         3,
         0,
     );
-    state.broadcast_to_nearby(
-        World::chunk_pos(cx, cy).0,
-        World::chunk_pos(cx, cy).1,
-        &encode_hb_bundle(&hb_bundle(&[fx]).1),
-        None,
-    );
+    state.broadcast_hb_at(cx, cy, &[fx], None);
 }
 
 /// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
@@ -815,12 +797,7 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
         1,
         1,
     );
-    state.broadcast_to_nearby(
-        World::chunk_pos(cx, cy).0,
-        World::chunk_pos(cx, cy).1,
-        &encode_hb_bundle(&hb_bundle(&[fx]).1),
-        None,
-    );
+    state.broadcast_hb_at(cx, cy, &[fx], None);
 }
 
 /// D16: Razryadka — C# `ShitClass.Raz` parity.
@@ -910,12 +887,7 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
         9,
         2,
     );
-    state.broadcast_to_nearby(
-        World::chunk_pos(cx, cy).0,
-        World::chunk_pos(cx, cy).1,
-        &encode_hb_bundle(&hb_bundle(&[fx]).1),
-        None,
-    );
+    state.broadcast_hb_at(cx, cy, &[fx], None);
 }
 
 /// D17: C190 — C# `ShitClass.C190Shot` parity.
@@ -954,12 +926,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         1,
         0,
     );
-    state.broadcast_to_nearby(
-        World::chunk_pos(px, py).0,
-        World::chunk_pos(px, py).1,
-        &encode_hb_bundle(&hb_bundle(&[shot_fx]).1),
-        None,
-    );
+    state.broadcast_hb_at(px, py, &[shot_fx], None);
 
     // Все 10 клеток валидны (endpoint проверен выше) — без early-break.
     for i in 0..10 {
@@ -1055,8 +1022,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         0,
                         0,
                     );
-                    let (cx, cy) = World::chunk_pos(tgt_x, tgt_y);
-                    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[fx]).1), None);
+                    state.broadcast_hb_at(tgt_x, tgt_y, &[fx], None);
                 }
             }
         }

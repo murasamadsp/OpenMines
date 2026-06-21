@@ -68,14 +68,13 @@ fn broadcast_player_chat(state: &Arc<GameState>, pid: PlayerId, msg: &str) {
 
     if let Some((px, py, name)) = data {
         let text = format!("{name}: {msg}");
-        let (cx, cy) = World::chunk_pos(px, py);
         let chat_sub = hb_chat(
             net_u16_nonneg(pid),
             net_u16_nonneg(px),
             net_u16_nonneg(py),
             &text,
         );
-        state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[chat_sub]).1), None);
+        state.broadcast_hb_at(px, py, &[chat_sub], None);
     }
 }
 
