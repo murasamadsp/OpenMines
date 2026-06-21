@@ -319,39 +319,15 @@ pub async fn handle_remove_building(
         return;
     }
 
-    if state.db.delete_building(view.id).await.is_err() {
+    // Снос через C# `Destroy(p)`-семантику: `destroy_damagable_building` делает
+    // DB-delete, despawn (+ `BotSpot` для Spot), очистку клеток, broadcast и
+    // `close_pack_windows` (закрывает GUI у всех зрителей, включая сносящего),
+    // плюс 40%-дроп предмета-размещения в инвентарь сносящего и Box-дроп
+    // кристаллов (Storage) / charge (Teleport). Без C#-эталона для GUI-сноса —
+    // унифицировано с боевым разрушением по решению (иначе терялись кристаллы).
+    if !destroy_damagable_building(state, Some(pid), view.x, view.y).await {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-        return;
     }
-
-    if let Some((_, entity)) = state.building_index.remove(&(view.x, view.y)) {
-        let (cx, cy) = crate::world::World::chunk_pos(view.x, view.y);
-        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy)) {
-            e.retain(|&ent| ent != entity);
-        }
-        state.ecs.write().despawn(entity);
-    }
-
-    // Despawn BotSpot when Spot building is removed (1:1 with C# `Spot.Destroy`).
-    if view.pack_type == PackType::Spot {
-        despawn_botspot(state, view.owner_id);
-    }
-
-    clear_pack_cells(state, &view);
-    broadcast_pack_clear(state, &view);
-    close_pack_windows(state, &view);
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            let window = format!("pack:{}:{}", view.x, view.y);
-            if ui.current_window.as_deref() == Some(window.as_str()) {
-                ui.current_window = None;
-            }
-        }
-        Some(())
-    });
-    let g = gu_close();
-    send_u_packet(tx, g.0, &g.1);
 }
 
 pub fn building_extra_for_pack_type(pack_type: PackType) -> BuildingExtra {
