@@ -19,6 +19,8 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
                 _ = shutdown.recv() => break,
             }
             state.prune_auth_failures_by_addr(Instant::now());
+            // C# World.Update: ежечасный пересчёт цен кристаллов (self-throttled на 1ч).
+            crate::game::market::tick_crystal_prices(&state);
             let t0 = std::time::Instant::now();
             tracing::warn!(target: "tickprof", "WORLD FLUSH start");
             let state_c = state.clone();

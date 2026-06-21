@@ -198,6 +198,9 @@ pub fn handle_dig(
             Some(())
         });
 
+        // C# Player.Mine: World.AddDob(type, odob) — объём добычи для динамики цен.
+        crate::game::market::add_dob(state, idx, amount);
+
         // Crystal mine FX (fx=2) on every hit.
         // Color remapping: type 1→3, 2→1, 3→2, other→same.
         let color_remapped = match idx {

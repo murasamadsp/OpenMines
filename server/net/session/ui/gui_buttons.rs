@@ -1183,7 +1183,7 @@ fn open_market_gui(
 
     let (gui_json, window_tag) = match active_tab {
         "buycrys" => (
-            build_market_buy_page(player_money, is_owner, &tabs),
+            build_market_buy_page(state, player_money, is_owner, &tabs),
             format!("market:{}:{}:buycrys", view.x, view.y),
         ),
         "auc" => (
@@ -1191,7 +1191,7 @@ fn open_market_gui(
             format!("market:{}:{}:auc", view.x, view.y),
         ),
         _ => (
-            build_market_sell_page(&player_crys, is_owner, &tabs),
+            build_market_sell_page(state, &player_crys, is_owner, &tabs),
             format!("market:{}:{}:sellcrys", view.x, view.y),
         ),
     };
@@ -1226,6 +1226,7 @@ fn build_market_tabs(active_tab: &str) -> serde_json::Value {
 /// Build sell tab page JSON.
 /// C# ref: Market.BuildSelltab — `CrystalConfig` with sell prices, sliders up to player's crystals.
 fn build_market_sell_page(
+    state: &Arc<GameState>,
     player_crys: &[i64; 6],
     is_owner: bool,
     tabs: &serde_json::Value,
@@ -1234,7 +1235,7 @@ fn build_market_sell_page(
     // C# CrysLine(label, leftMin=0, rightMin=0, denominator=player_crys[i], currentValue=0)
     let crys_lines: Vec<serde_json::Value> = (0..6)
         .map(|i| {
-            let cost = market::get_crystal_cost(i);
+            let cost = market::get_crystal_cost(state, i);
             let label = format!("<color=#aaeeaa>{cost}$</color>");
             serde_json::json!(format!("0:0:{}:0:{}", player_crys[i], label))
         })
@@ -1271,13 +1272,14 @@ fn build_market_sell_page(
 /// C# ref: Market.BuildBuytab — `CrystalConfig` with buy prices (10x), sliders denominator =
 /// player.money / (cost * 10). `BuyMode` = true (`crys_buy: true`).
 fn build_market_buy_page(
+    state: &Arc<GameState>,
     player_money: i64,
     is_owner: bool,
     tabs: &serde_json::Value,
 ) -> serde_json::Value {
     let crys_lines: Vec<serde_json::Value> = (0..6)
         .map(|i| {
-            let buy_price = market::get_crystal_buy_price(i);
+            let buy_price = market::get_crystal_buy_price(state, i);
             let max_can_buy = if buy_price > 0 {
                 player_money / buy_price
             } else {
@@ -1448,7 +1450,7 @@ fn do_market_sell(
             // C# RemoveCrys: only succeeds if player has enough
             if pstats.crystals[i] >= to_sell {
                 pstats.crystals[i] -= to_sell;
-                total_money += to_sell * market::get_crystal_cost(i);
+                total_money += to_sell * market::get_crystal_cost(state, i);
             }
         }
         // Add money to player
@@ -1511,7 +1513,7 @@ fn handle_market_buy(
             if to_buy <= 0 {
                 continue;
             }
-            let cost = to_buy * market::get_crystal_buy_price(i);
+            let cost = to_buy * market::get_crystal_buy_price(state, i);
             // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
             if pstats.money < cost {
                 continue;

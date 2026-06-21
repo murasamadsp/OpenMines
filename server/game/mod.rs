@@ -166,6 +166,8 @@ pub struct GameState {
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
     /// Дренится в game-tick ВНЕ `ecs.write()` → `spawn_blocking` (`SQLite`).
     pub box_persist_q: Mutex<Vec<BoxPersist>>,
+    /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
+    pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
 }
 
 impl GameState {
@@ -231,6 +233,7 @@ impl GameState {
             player_sessions: DashMap::new(),
             box_index: DashMap::new(),
             box_persist_q: Mutex::new(Vec::new()),
+            crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
