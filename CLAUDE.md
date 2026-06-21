@@ -61,13 +61,6 @@
 
 **Правило:** Запрещается использовать команды git, изменяющие состояние рабочей директории (например, `git clean`, `git restore`, `git reset`, `git checkout`), без явного прямого разрешения пользователя. Git можно использовать только для чтения (например, `git status`, `git diff`, `git log`).
 
-## Claude Code инструменты (`.claude/`)
-
-- **`skills/port-cs-reference/`** — skill для портирования C#→Rust. Вызывать перед анализом любого C# файла из `server_reference/`.
-- **`agents/port-verifier.md`** — субагент для аудита паритета Rust↔C# после портирования фичи.
-- **`settings.json`** — hooks: PostToolUse clippy на `.rs`-файлы, Stop hook записывает метку в `.remember/now.md`.
-- **`.git/hooks/pre-commit`** — блокирует коммит при ошибках `cargo fmt --check` или `cargo clippy`.
-
 ## Контекстные CLAUDE.md
 
 В подпапках `server/` лежат локальные CLAUDE.md с описанием конкретных модулей. **Читай их перед работой с модулем** — это быстрее чем разбирать код целиком.
