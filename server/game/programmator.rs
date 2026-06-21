@@ -653,58 +653,61 @@ fn execute_action(
     prog_q: &mut ProgrammatorQueue,
     delay_ms: &mut u64,
 ) -> ExecResult {
+    // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
+    let on_road = crate::world::cells::is_road(state.world.get_cell(pos.x, pos.y));
     match action.action_type {
         // ─── Movement ────────────────────────────────────────────────────
         ActionType::MoveDown => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x, pos.y + 1);
             push_move(prog_q, meta, conn, pos.x, pos.y + 1, 0);
             ExecResult::None
         }
         ActionType::MoveUp => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x, pos.y - 1);
             push_move(prog_q, meta, conn, pos.x, pos.y - 1, 2);
             ExecResult::None
         }
         ActionType::MoveRight => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x + 1, pos.y);
             push_move(prog_q, meta, conn, pos.x + 1, pos.y, 3);
             ExecResult::None
         }
         ActionType::MoveLeft => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x - 1, pos.y);
             push_move(prog_q, meta, conn, pos.x - 1, pos.y, 1);
             ExecResult::None
         }
         ActionType::MoveForward => {
-            *delay_ms = speed_pause(skills);
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
+            *delay_ms =
+                speed_pause(skills, on_road) + move_block_penalty(state, pos.x + dx, pos.y + dy);
             push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, pos.dir);
             ExecResult::None
         }
 
         // ─── Rotation ────────────────────────────────────────────────────
         ActionType::RotateDown => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             push_move(prog_q, meta, conn, pos.x, pos.y, 0);
             ExecResult::None
         }
         ActionType::RotateUp => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             push_move(prog_q, meta, conn, pos.x, pos.y, 2);
             ExecResult::None
         }
         ActionType::RotateLeft => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             push_move(prog_q, meta, conn, pos.x, pos.y, 1);
             ExecResult::None
         }
         ActionType::RotateRight => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             push_move(prog_q, meta, conn, pos.x, pos.y, 3);
             ExecResult::None
         }
         ActionType::RotateLeftRelative => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             let d = match pos.dir {
                 0 => 3,
                 2 => 1,
@@ -716,7 +719,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRightRelative => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             let d = match pos.dir {
                 0 => 1,
                 1 => 2,
@@ -728,7 +731,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRandom => {
-            *delay_ms = speed_pause(skills);
+            *delay_ms = speed_pause(skills, on_road);
             let d = rand::random_range(0..4);
             push_move(prog_q, meta, conn, pos.x, pos.y, d);
             ExecResult::None
@@ -1171,7 +1174,9 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::MacrosHeal => {
-            if stats.health < stats.max_health {
+            // C# PAction.cs:122-131: требует Red-кристалл (`crys[Red] > 0`) перед Heal.
+            // Red — индекс 2 (Green0 Blue1 Red2 Violet3 White4 Cyan5).
+            if stats.crystals[2] > 0 && stats.health < stats.max_health {
                 prog_q.0.push(ProgrammatorAction::Heal {
                     pid: meta.id,
                     tx: conn.tx.clone(),
@@ -1459,15 +1464,60 @@ fn push_move(
 
 /// Calculate movement pause in ms from skills (C# `Player.ServerPause` = `pause / 10`).
 /// `pause = (int)(Movement.Effect * 100)`, `ServerPause = pause / 10`.
-fn speed_pause(skills: &PlayerSkills) -> u64 {
+/// C# `Player.Move` возвращает `true` (→ `delay += 200ms`) когда ход заблокирован
+/// непустой клеткой (ветка `dir==-1`, PAction.cs:143-176). Это чистый read-only
+/// предикат от состояния целевой клетки — мутацию делает очередь хода, дублировать
+/// её не нужно. Клетка ворот (тип 30) пустая → штрафа нет (как и C# `return false`).
+fn move_block_penalty(state: &std::sync::Arc<crate::game::GameState>, tx: i32, ty: i32) -> u64 {
+    if state.world.valid_coord(tx, ty) && !state.world.is_empty(tx, ty) {
+        200
+    } else {
+        0
+    }
+}
+
+fn speed_pause(skills: &PlayerSkills, on_road: bool) -> u64 {
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
-    // 1:1 ref Player.cs:153: (pause * 5) * 1.4 = pause * 7
+    // 1:1 ref Player.cs:155: ServerPause = (OnRoad ? pause*5*0.80 : pause*5) * 1.4 / 1000.
     // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
     // (1:1 с C#, нельзя в int без потери паритета); каст намеренный,
     // move_effect ≥ 0. Та же конвенция, что skills.rs.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pause_units = (move_effect * 100.0) as u64;
-    let server_pause_ms = pause_units * 7 / 1000;
-    // Minimum 20ms to prevent infinite loops / CPU stall
+    // off-road: pause*5*1.4 = pause*7; on-road (×0.80): pause*5.6 = pause*56/10000.
+    let server_pause_ms = if on_road {
+        pause_units * 56 / 10000
+    } else {
+        pause_units * 7 / 1000
+    };
+    // Minimum 20ms to prevent infinite loops / CPU stall (намеренная девиация: C# без пола)
     server_pause_ms.max(20)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::SkillSlots;
+    use std::collections::HashMap;
+
+    fn empty_skills() -> PlayerSkills {
+        PlayerSkills {
+            states: SkillSlots {
+                skills: HashMap::new(),
+                total_slots: 20,
+            },
+        }
+    }
+
+    #[test]
+    fn speed_pause_road_bonus_is_faster() {
+        // C# Player.cs:155: на дороге ServerPause ×0.80 → меньше пауза.
+        // Movement lvl0 effect=70 → pause_units=7000; off=49ms, on=39ms.
+        let skills = empty_skills();
+        let off = speed_pause(&skills, false);
+        let on = speed_pause(&skills, true);
+        assert_eq!(off, 49);
+        assert_eq!(on, 39);
+        assert!(on < off, "on-road должно быть быстрее off-road");
+    }
 }

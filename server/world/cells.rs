@@ -131,13 +131,14 @@ pub const fn crystal_multiplier(cell: u8) -> i64 {
     }
 }
 
-/// Референс `World.isRoad`
-// TODO: will be used when road-type cell detection is needed for movement/building logic
-#[allow(dead_code)]
+/// Референс `World.isRoad` (World.cs:394): `Road` | `GoldenRoad` | `PolymerRoad` | `BuildingDoor`.
 pub const fn is_road(cell: u8) -> bool {
     matches!(
         cell,
-        cell_type::ROAD | cell_type::GOLDEN_ROAD | cell_type::POLYMER_ROAD
+        cell_type::ROAD
+            | cell_type::GOLDEN_ROAD
+            | cell_type::POLYMER_ROAD
+            | cell_type::BUILDING_DOOR
     )
 }
 
@@ -273,5 +274,21 @@ impl CellDefs {
     #[inline]
     pub fn get(&self, cell_type: u8) -> &CellDef {
         self.cells.get(cell_type as usize).unwrap_or(&self.cells[0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_road_matches_csharp_set() {
+        // C# World.isRoad (World.cs:394): Road | GoldenRoad | PolymerRoad | BuildingDoor.
+        assert!(is_road(cell_type::ROAD));
+        assert!(is_road(cell_type::GOLDEN_ROAD));
+        assert!(is_road(cell_type::POLYMER_ROAD));
+        assert!(is_road(cell_type::BUILDING_DOOR)); // ранее пропускалось — паритет-фикс
+        assert!(!is_road(cell_type::NOTHING));
+        assert!(!is_road(cell_type::EMPTY));
     }
 }
