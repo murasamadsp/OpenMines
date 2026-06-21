@@ -220,7 +220,7 @@ lock-freeze, юзер играет соло; отдельная заметка.
 - [x] Teleport (0): GUI со списком TP (distance filter 1000), TP action (offset y+3), charge check — 1:1 с C#
 - [x] Up (2): skill tree GUI (upgrade/install/delete/buyslot), 58 skill types, dependencies, total_slots persistence -- 1:1 with C#
 - [x] Market (3): buy/sell crystals (prices 1:1), 10% owner commission, admin page, Sell/Buy/Auc tabs -- 1:1 with C#
-- [x] Gun (26): ECS firing 1:1 (радиус 20, 60HP, clan immunity). Не реализовано: fill GUI, charge-depleted HB resend, building damage
+- [x] Gun (26): ECS firing 1:1 (радиус 20, 60HP, clan immunity), fill GUI, charge-depleted HB resend, building damage — 1:1
 - [x] Gate (27): clan blocking работает, GUI=null (не открывается) — 1:1
 - [x] Storage (29): двунаправленные слайдеры (deposit + withdrawal), transfer через GUI — 1:1 с C#
 - [x] Crafter (24): 8 рецептов, GUI с выбором/стартом/прогрессом/claim, таймер на Unix epoch — 1:1 с C#
