@@ -1,6 +1,6 @@
 use super::{Database, clans::ClanRank};
 use anyhow::{Result, bail};
-use rusqlite::{OptionalExtension, params};
+use sqlx::Row;
 use std::collections::HashMap;
 
 /// Роль игрока (`players.role`). Новые уровни — только новыми числами, старые не переиспользовать.
@@ -40,8 +40,7 @@ const fn default_total_slots() -> i32 {
     20
 }
 
-/// Дефолтные скиллы нового игрока — 1:1 C# `PlayerSkills` ctor:
-/// MineGeneral@slot0, Digging@1, Movement@2, Health@3, slots=20.
+/// Дефолтные скиллы нового игрока
 #[must_use]
 pub fn default_skills() -> SkillSlots {
     let mut skills = HashMap::new();
@@ -91,19 +90,15 @@ pub struct SkillEntry {
     pub exp: f32,
 }
 
-/// Слотовая модель скиллов — 1:1 C# `PlayerSkills`:
-/// `Dictionary<int slot, Skill> skills` + `int slots` + `selectedslot`.
+/// Слотовая модель скиллов — 1:1 C# `PlayerSkills`
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillSlots {
-    /// slot index → установленный скилл.
     pub skills: HashMap<i32, SkillEntry>,
-    /// Всего слотов (C# `slots`), дефолт 20, макс 34.
     #[serde(default = "default_total_slots")]
     pub total_slots: i32,
 }
 
 impl SkillSlots {
-    /// Найти установленный скилл по коду типа (1:1 C# `skills.FirstOrDefault(type)`).
     #[must_use]
     pub fn find(&self, code: &str) -> Option<&SkillEntry> {
         self.skills.values().find(|e| e.code == code)
@@ -111,22 +106,19 @@ impl SkillSlots {
     pub fn find_mut(&mut self, code: &str) -> Option<&mut SkillEntry> {
         self.skills.values_mut().find(|e| e.code == code)
     }
-    /// Сумма уровней всех установленных скиллов (1:1 C# `lvlsummary`).
     #[must_use]
     pub fn lvl_summary(&self) -> i32 {
         self.skills.values().map(|e| e.level).sum()
     }
 }
 
-/// Старый формат БД (`HashMap<code, {level,exp}>`) — для миграции в слоты.
+/// Старый формат БД
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillState {
     pub level: i32,
     pub exp: f32,
 }
 
-/// Мигрировать старый code-keyed формат в слотовый: `__slots` → `total_slots`,
-/// остальные коды раскладываются по слотам 0..n (стабильный порядок по коду).
 #[must_use]
 fn migrate_old_skills(old: HashMap<String, SkillState>) -> SkillSlots {
     let mut total = 20;
@@ -178,7 +170,6 @@ pub struct PlayerRow {
     pub resp_y: Option<i32>,
     pub inventory: HashMap<i32, i32>,
     pub skills: SkillSlots,
-    /// Сырое значение `Role` из БД. Меняется только в БД или через `set_player_role`.
     pub role: i32,
     pub clan_rank: i32,
 }
@@ -198,63 +189,67 @@ impl PlayerRow {
     }
 }
 
-fn row_to_player(r: &rusqlite::Row) -> PlayerRow {
-    let inv_str: String = r.get(20).unwrap_or_default();
-    let skills_str: String = r.get(21).unwrap_or_default();
+fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> PlayerRow {
+    let inv_str: String = r.try_get("inventory").unwrap_or_default();
+    let skills_str: String = r.try_get("skills").unwrap_or_default();
+    let auto_dig_val: i32 = r.try_get("auto_dig").unwrap_or(0);
     PlayerRow {
-        id: r.get(0).unwrap(),
-        name: r.get(1).unwrap(),
-        passwd: r.get(2).unwrap(),
-        hash: r.get(3).unwrap(),
-        x: r.get(4).unwrap(),
-        y: r.get(5).unwrap(),
-        dir: r.get(6).unwrap(),
-        health: r.get(7).unwrap(),
-        max_health: r.get(8).unwrap(),
-        money: r.get(9).unwrap(),
-        creds: r.get(10).unwrap(),
-        skin: r.get(11).unwrap(),
-        auto_dig: r.get::<_, i32>(12).unwrap() != 0,
+        id: r.try_get("id").unwrap(),
+        name: r.try_get("name").unwrap(),
+        passwd: r.try_get("passwd").unwrap(),
+        hash: r.try_get("hash").unwrap(),
+        x: r.try_get("x").unwrap(),
+        y: r.try_get("y").unwrap(),
+        dir: r.try_get("dir").unwrap(),
+        health: r.try_get("health").unwrap(),
+        max_health: r.try_get("max_health").unwrap(),
+        money: r.try_get("money").unwrap(),
+        creds: r.try_get("creds").unwrap(),
+        skin: r.try_get("skin").unwrap(),
+        auto_dig: auto_dig_val != 0,
         crystals: [
-            r.get(13).unwrap(),
-            r.get(14).unwrap(),
-            r.get(15).unwrap(),
-            r.get(16).unwrap(),
-            r.get(17).unwrap(),
-            r.get(18).unwrap(),
+            r.try_get("cry_green").unwrap(),
+            r.try_get("cry_blue").unwrap(),
+            r.try_get("cry_red").unwrap(),
+            r.try_get("cry_violet").unwrap(),
+            r.try_get("cry_white").unwrap(),
+            r.try_get("cry_cyan").unwrap(),
         ],
-        clan_id: r.get(19).unwrap(),
+        clan_id: r.try_get("clan_id").unwrap_or(None),
         inventory: serde_json::from_str(&inv_str).unwrap_or_default(),
-        // Новый слотовый формат; при неудаче — миграция старого code-keyed; иначе дефолт.
         skills: serde_json::from_str::<SkillSlots>(&skills_str)
             .or_else(|_| {
                 serde_json::from_str::<HashMap<String, SkillState>>(&skills_str)
                     .map(migrate_old_skills)
             })
             .unwrap_or_else(|_| default_skills()),
-        resp_x: r.get(22).unwrap_or(None),
-        resp_y: r.get(23).unwrap_or(None),
-        role: r.get::<_, i32>(24).unwrap_or(0),
-        clan_rank: r.get::<_, i32>(25).unwrap_or(0),
+        resp_x: r.try_get("resp_x").unwrap_or(None),
+        resp_y: r.try_get("resp_y").unwrap_or(None),
+        role: r.try_get("role").unwrap_or(0),
+        clan_rank: r.try_get("clan_rank").unwrap_or(0),
     }
 }
 
 impl Database {
-    pub fn create_player(&self, name: &str, passwd: &str, hash: &str) -> Result<PlayerRow> {
+    pub async fn create_player(&self, name: &str, passwd: &str, hash: &str) -> Result<PlayerRow> {
         let name = name.trim();
         if name.is_empty() {
             bail!("empty player name");
         }
         let skills_json = serde_json::to_string(&default_skills())?;
-        let id = {
-            let conn = self.conn.lock();
-            conn.execute(
-                "INSERT INTO players (name, passwd, hash, skills) VALUES (?1, ?2, ?3, ?4)",
-                params![name, passwd, hash, skills_json],
-            )?;
-            i32::try_from(conn.last_insert_rowid())
-                .map_err(|_| anyhow::anyhow!("player id overflow"))?
-        };
+
+        let result =
+            sqlx::query("INSERT INTO players (name, passwd, hash, skills) VALUES (?1, ?2, ?3, ?4)")
+                .bind(name)
+                .bind(passwd)
+                .bind(hash)
+                .bind(skills_json)
+                .execute(&self.pool)
+                .await?;
+
+        let id = i32::try_from(result.last_insert_rowid())
+            .map_err(|_| anyhow::anyhow!("player id overflow"))?;
+
         Ok(PlayerRow {
             id,
             name: name.to_owned(),
@@ -280,113 +275,117 @@ impl Database {
         })
     }
 
-    /// Явная смена роли. Обычный `save_player` роль не трогает.
-    pub fn set_player_role(&self, player_id: i32, role: Role) -> Result<bool> {
-        let n = self.conn.lock().execute(
-            "UPDATE players SET role = ?1 WHERE id = ?2",
-            params![role as i32, player_id],
-        )?;
-        Ok(n > 0)
+    pub async fn set_player_role(&self, player_id: i32, role: Role) -> Result<bool> {
+        let result = sqlx::query("UPDATE players SET role = ?1 WHERE id = ?2")
+            .bind(role as i32)
+            .bind(player_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
-    pub fn get_player_by_id(&self, id: i32) -> Result<Option<PlayerRow>> {
-        let row = self.conn.lock().prepare_cached(
-                "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+    pub async fn get_player_by_id(&self, id: i32) -> Result<Option<PlayerRow>> {
+        let row = sqlx::query(
+            "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
                     inventory, skills, resp_x, resp_y, role, clan_rank
-             FROM players WHERE id = ?1",
-            )?
-            .query_row(params![id], |r| Ok(row_to_player(r)))
-            .optional()?;
-        Ok(row)
+             FROM players WHERE id = ?1"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| row_to_player(&r)))
     }
 
-    pub fn get_player_by_name(&self, name: &str) -> Result<Option<PlayerRow>> {
+    pub async fn get_player_by_name(&self, name: &str) -> Result<Option<PlayerRow>> {
         let name = name.trim();
         if name.is_empty() {
             return Ok(None);
         }
-        let row = self.conn.lock().prepare_cached(
-                "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+        let row = sqlx::query(
+            "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
                     inventory, skills, resp_x, resp_y, role, clan_rank
-             FROM players WHERE lower(trim(name)) = lower(?1) ORDER BY id LIMIT 1",
-            )?
-            .query_row(params![name], |r| Ok(row_to_player(r)))
-            .optional()?;
-        Ok(row)
+             FROM players WHERE lower(trim(name)) = lower(?1) ORDER BY id LIMIT 1"
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| row_to_player(&r)))
     }
 
-    pub fn save_player(&self, p: &PlayerRow) -> Result<()> {
+    pub async fn save_player(&self, p: &PlayerRow) -> Result<()> {
         let inv_json = serde_json::to_string(&p.inventory)?;
         let skills_json = serde_json::to_string(&p.skills)?;
-        self.conn.lock().execute(
+        sqlx::query(
             "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
              skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
              cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
              resp_x=?21, resp_y=?22, clan_rank=?23
              WHERE id=?20",
-            params![
-                p.x,
-                p.y,
-                p.dir,
-                p.health,
-                p.max_health,
-                p.money,
-                p.creds,
-                p.skin,
-                i32::from(p.auto_dig),
-                p.crystals[0],
-                p.crystals[1],
-                p.crystals[2],
-                p.crystals[3],
-                p.crystals[4],
-                p.crystals[5],
-                p.clan_id,
-                p.passwd,
-                inv_json,
-                skills_json,
-                p.id,
-                p.resp_x,
-                p.resp_y,
-                p.clan_rank
-            ],
-        )?;
+        )
+        .bind(p.x)
+        .bind(p.y)
+        .bind(p.dir)
+        .bind(p.health)
+        .bind(p.max_health)
+        .bind(p.money)
+        .bind(p.creds)
+        .bind(p.skin)
+        .bind(i32::from(p.auto_dig))
+        .bind(p.crystals[0])
+        .bind(p.crystals[1])
+        .bind(p.crystals[2])
+        .bind(p.crystals[3])
+        .bind(p.crystals[4])
+        .bind(p.crystals[5])
+        .bind(p.clan_id)
+        .bind(&p.passwd)
+        .bind(inv_json)
+        .bind(skills_json)
+        .bind(p.id)
+        .bind(p.resp_x)
+        .bind(p.resp_y)
+        .bind(p.clan_rank)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn player_name_exists(&self, name: &str) -> Result<bool> {
+    pub async fn player_name_exists(&self, name: &str) -> Result<bool> {
         let name = name.trim();
         if name.is_empty() {
             return Ok(false);
         }
-        let count: i32 = self.conn.lock().query_row(
-            "SELECT COUNT(*) FROM players WHERE lower(trim(name)) = lower(?1)",
-            params![name],
-            |r| r.get(0),
-        )?;
+        let row = sqlx::query("SELECT COUNT(*) FROM players WHERE lower(trim(name)) = lower(?1)")
+            .bind(name)
+            .fetch_one(&self.pool)
+            .await?;
+        let count: i32 = row.get(0);
         Ok(count > 0)
     }
 
     #[allow(dead_code)]
-    pub fn update_player_resp(
+    pub async fn update_player_resp(
         &self,
         player_id: i32,
         resp_x: Option<i32>,
         resp_y: Option<i32>,
     ) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE players SET resp_x = ?1, resp_y = ?2 WHERE id = ?3",
-            params![resp_x, resp_y, player_id],
-        )?;
+        sqlx::query("UPDATE players SET resp_x = ?1, resp_y = ?2 WHERE id = ?3")
+            .bind(resp_x)
+            .bind(resp_y)
+            .bind(player_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
-    pub fn add_money_to_all(&self, amount: i64) -> Result<usize> {
-        let updated = self
-            .conn
-            .lock()
-            .execute("UPDATE players SET money = money + ?1", params![amount])?;
-        Ok(updated)
+    pub async fn add_money_to_all(&self, amount: i64) -> Result<usize> {
+        let result = sqlx::query("UPDATE players SET money = money + ?1")
+            .bind(amount)
+            .execute(&self.pool)
+            .await?;
+        Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
     }
 }

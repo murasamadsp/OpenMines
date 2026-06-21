@@ -1,0 +1,8 @@
+# Конфиг cargo-audit (см. также deny.toml [advisories]).
+# RUSTSEC-2023-0071 (rsa, Marvin timing-attack): rsa тянется ТОЛЬКО как
+# optional-dep sqlx-macros-core (нужен для sqlx::migrate!). При фиче sqlite
+# драйвер mysql/postgres не активируется — rsa в бинарь не линкуется
+# (cargo tree -e normal,build → 0). Lockfile-only, не эксплуатируется.
+# Фикса у rsa нет.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

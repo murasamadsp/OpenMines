@@ -92,10 +92,9 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
                 let state_c = state.clone();
                 let pid_c = pid;
                 tokio::spawn(async move {
-                    let res =
-                        tokio::task::spawn_blocking(move || db.save_player(&player_data)).await;
+                    let res = db.save_player(&player_data).await;
                     match res {
-                        Ok(Ok(())) => {
+                        Ok(()) => {
                             state_c.modify_player(pid_c, |ecs, entity| {
                                 if let Some(mut flags) =
                                     ecs.get_mut::<crate::game::PlayerFlags>(entity)
@@ -105,10 +104,9 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
                             });
                             crate::metrics::PLAYER_SAVE_TOTAL.inc();
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             tracing::error!("Periodic save failed for player {}: {e}", pid_c);
                         }
-                        Err(e) => tracing::error!("Task join error during player save: {e}"),
                     }
                 });
                 saved += 1;
@@ -160,11 +158,10 @@ pub fn spawn_building_dirty_flush_loop(
 
                 if let Some(r) = row {
                     let db = state.db.clone();
-                    let res = tokio::task::spawn_blocking(move || db.save_building(&r)).await;
+                    let res = db.save_building(&r).await;
                     match res {
-                        Ok(Ok(())) => saved += 1,
-                        Ok(Err(e)) => tracing::error!("Periodic save failed for building: {e}"),
-                        Err(e) => tracing::error!("Task join error during building save: {e}"),
+                        Ok(()) => saved += 1,
+                        Err(e) => tracing::error!("Periodic save failed for building: {e}"),
                     }
                 }
             }
@@ -214,7 +211,8 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             let n_actions = actions.len();
             let d0 = Instant::now();
             for (pid, tx, ty) in actions {
-                let _ = crate::net::session::dispatch::dispatch_ty_packet(&state, &tx, pid, &ty);
+                let _ =
+                    crate::net::session::dispatch::dispatch_ty_packet(&state, &tx, pid, &ty).await;
             }
             let dt_dispatch = d0.elapsed();
 
@@ -298,18 +296,15 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             if !box_ops.is_empty() {
                 let db = state.db.clone();
                 tokio::spawn(async move {
-                    let _ = tokio::task::spawn_blocking(move || {
-                        for ((bx, by), op) in box_ops {
-                            let r = op.map_or_else(
-                                || db.delete_box_at(bx, by),
-                                |crystals| db.upsert_box(bx, by, &crystals),
-                            );
-                            if let Err(e) = r {
-                                tracing::error!("box persist ({bx},{by}) failed: {e}");
-                            }
+                    for ((bx, by), op) in box_ops {
+                        let r = match op {
+                            None => db.delete_box_at(bx, by).await,
+                            Some(crystals) => db.upsert_box(bx, by, &crystals).await,
+                        };
+                        if let Err(e) = r {
+                            tracing::error!("box persist ({bx},{by}) failed: {e}");
                         }
-                    })
-                    .await;
+                    }
                 });
             }
 

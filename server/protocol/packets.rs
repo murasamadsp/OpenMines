@@ -1,3 +1,4 @@
+use binrw::{BinRead, BinWrite};
 use bytes::{BufMut, BytesMut};
 
 /// Encode a Status packet (ST): UTF-8 string
@@ -299,32 +300,99 @@ pub fn hb_bundle(sub_packets: &[Vec<u8>]) -> (&'static str, Vec<u8>) {
     ("HB", buf.to_vec())
 }
 
+fn write_slice<'a, T, W>(
+    slice: &&[T],
+    writer: &mut W,
+    endian: binrw::Endian,
+    _args: (),
+) -> binrw::BinResult<()>
+where
+    T: binrw::BinWrite<Args<'a> = ()>,
+    W: std::io::Write + std::io::Seek,
+{
+    for item in *slice {
+        item.write_options(writer, endian, ())?;
+    }
+    Ok(())
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbMap<'a> {
+    tag: u8,
+    width: u8,
+    height: u8,
+    x: u16,
+    y: u16,
+    #[bw(write_with = write_slice)]
+    cells: &'a [u8],
+}
+
 /// HB sub-packet: Map chunk (type `M`)
 /// `[1B tag M][1B width][1B height][u16 LE x][u16 LE y][cells...]`
 pub fn hb_map(x: u16, y: u16, width: u8, height: u8, cells: &[u8]) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(1 + 2 + 4 + cells.len());
-    buf.put_u8(b'M');
-    buf.put_u8(width);
-    buf.put_u8(height);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    buf.put_slice(cells);
-    buf.to_vec()
+    let packet = HbMap {
+        tag: b'M',
+        width,
+        height,
+        x,
+        y,
+        cells,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbBot {
+    tag: u8,
+    dir: u8,
+    skin: u8,
+    tail: u8,
+    id: u16,
+    x: u16,
+    y: u16,
+    clan_id: u16,
 }
 
 /// HB sub-packet: Bot (type "X")
 /// [1B tag 'X'] [1B dir] [1B skin] [1B tail] [u16 LE id] [u16 LE x] [u16 LE y] [u16 LE `clan_id`]
 pub fn hb_bot(id: u16, x: u16, y: u16, dir: u8, skin: u8, clan_id: u16, tail: u8) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(12);
-    buf.put_u8(b'X');
-    buf.put_u8(dir);
-    buf.put_u8(skin);
-    buf.put_u8(tail);
-    buf.put_u16_le(id);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    buf.put_u16_le(clan_id);
-    buf.to_vec()
+    let packet = HbBot {
+        tag: b'X',
+        dir,
+        skin,
+        tail,
+        id,
+        x,
+        y,
+        clan_id,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbPackItem {
+    code: u8,
+    x: u16,
+    y: u16,
+    zero: u8,
+    clan_id: u8,
+    off: u8,
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbPacks {
+    tag: u8,
+    block_pos: i32,
+    count: u16,
+    packs: Vec<HbPackItem>,
 }
 
 /// HB sub-packet: Pack/building (type "O")
@@ -336,39 +404,73 @@ pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u8, u8)]) -> Vec<u8> {
     let Ok(n) = u16::try_from(packs.len()) else {
         return vec![];
     };
-    let mut buf = BytesMut::with_capacity(1 + 4 + 2 + packs.len() * 8);
-    buf.put_u8(b'O');
-    buf.put_i32_le(block_pos);
-    buf.put_u16_le(n);
-    for &(code, x, y, clan_id, off) in packs {
-        buf.put_u8(code);
-        buf.put_u16_le(x);
-        buf.put_u16_le(y);
-        buf.put_u8(0);
-        buf.put_u8(clan_id);
-        buf.put_u8(off);
-    }
-    buf.to_vec()
+    let items = packs
+        .iter()
+        .map(|&(code, x, y, clan_id, off)| HbPackItem {
+            code,
+            x,
+            y,
+            zero: 0,
+            clan_id,
+            off,
+        })
+        .collect();
+    let packet = HbPacks {
+        tag: b'O',
+        block_pos,
+        count: n,
+        packs: items,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbFx {
+    tag: u8,
+    fx_type: u8,
+    x: u16,
+    y: u16,
 }
 
 /// HB sub-packet: FX effect (type "F")
 /// [1B tag 'F'] [1B `fx_type`] [u16 LE x] [u16 LE y]
 pub fn hb_fx(x: u16, y: u16, fx_type: u8) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(6);
-    buf.put_u8(b'F');
-    buf.put_u8(fx_type);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    buf.to_vec()
+    let packet = HbFx {
+        tag: b'F',
+        fx_type,
+        x,
+        y,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbBotDel {
+    tag: u8,
+    id: u16,
 }
 
 /// HB sub-packet: Delete object/bot (type "L")
 /// [1B tag 'L'] [u16 LE id]
 pub fn hb_bot_del(id: u16) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(3);
-    buf.put_u8(b'L');
-    buf.put_u16_le(id);
-    buf.to_vec()
+    let packet = HbBotDel { tag: b'L', id };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbBotLeaveBlock {
+    tag: u8,
+    id: u16,
+    block_pos: i32,
 }
 
 /// HB sub-packet: Bot leave block (type "S")
@@ -376,25 +478,55 @@ pub fn hb_bot_del(id: u16) -> Vec<u8> {
 // TODO: will be used when bot block-leave events are fully wired
 #[allow(dead_code)]
 pub fn hb_bot_leave_block(id: u16, block_pos: i32) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(7);
-    buf.put_u8(b'S');
-    buf.put_u16_le(id);
-    buf.put_i32_le(block_pos);
-    buf.to_vec()
+    let packet = HbBotLeaveBlock {
+        tag: b'S',
+        id,
+        block_pos,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbDirectedFx {
+    tag: u8,
+    fx: u8,
+    dir: u8,
+    color: u8,
+    x: u16,
+    y: u16,
+    bot_id: u16,
 }
 
 /// HB sub-packet: Directed FX (type "D")
 /// [1B tag 'D'] [1B fx] [1B dir] [1B color] [u16 LE x] [u16 LE y] [u16 LE `bot_id`]
 pub fn hb_directed_fx(bot_id: u16, x: u16, y: u16, fx: u8, dir: u8, color: u8) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(10);
-    buf.put_u8(b'D');
-    buf.put_u8(fx);
-    buf.put_u8(dir);
-    buf.put_u8(color);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    buf.put_u16_le(bot_id);
-    buf.to_vec()
+    let packet = HbDirectedFx {
+        tag: b'D',
+        fx,
+        dir,
+        color,
+        x,
+        y,
+        bot_id,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbChat<'a> {
+    tag: u8,
+    bot_id: u16,
+    x: u16,
+    y: u16,
+    text_len: u16,
+    #[bw(write_with = write_slice)]
+    text: &'a [u8],
 }
 
 /// HB sub-packet: Chat bubble (type "C")
@@ -404,14 +536,26 @@ pub fn hb_chat(bot_id: u16, x: u16, y: u16, text: &str) -> Vec<u8> {
     let Ok(text_len) = u16::try_from(text_bytes.len()) else {
         return vec![];
     };
-    let mut buf = BytesMut::with_capacity(1 + 2 + 2 + 2 + 2 + text_bytes.len());
-    buf.put_u8(b'C');
-    buf.put_u16_le(bot_id);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    buf.put_u16_le(text_len);
-    buf.put_slice(text_bytes);
-    buf.to_vec()
+    let packet = HbChat {
+        tag: b'C',
+        bot_id,
+        x,
+        y,
+        text_len,
+        text: text_bytes,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbBotsList<'a> {
+    tag: u8,
+    count: u16,
+    #[bw(write_with = write_slice)]
+    bot_ids: &'a [u16],
 }
 
 /// HB sub-packet: Bot list (type "B")
@@ -422,13 +566,26 @@ pub fn hb_bots_list(bot_ids: &[u16]) -> Vec<u8> {
     let Ok(n) = u16::try_from(bot_ids.len()) else {
         return vec![];
     };
-    let mut buf = BytesMut::with_capacity(1 + 2 + bot_ids.len() * 2);
-    buf.put_u8(b'B');
-    buf.put_u16_le(n);
-    for &id in bot_ids {
-        buf.put_u16_le(id);
-    }
-    buf.to_vec()
+    let packet = HbBotsList {
+        tag: b'B',
+        count: n,
+        bot_ids,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
+}
+
+#[derive(BinWrite)]
+#[bw(little)]
+struct HbGun<'a> {
+    tag: u8,
+    amount: u8,
+    color: u8,
+    x: u16,
+    y: u16,
+    #[bw(write_with = write_slice)]
+    bot_ids: &'a [u16],
 }
 
 /// HB sub-packet: Gun/shot (type "Z")
@@ -439,16 +596,17 @@ pub fn hb_gun(x: u16, y: u16, color: u8, bot_ids: &[u16]) -> Vec<u8> {
     let Ok(n) = u8::try_from(bot_ids.len()) else {
         return vec![];
     };
-    let mut buf = BytesMut::with_capacity(1 + 2 + 4 + bot_ids.len() * 2);
-    buf.put_u8(b'Z');
-    buf.put_u8(n);
-    buf.put_u8(color);
-    buf.put_u16_le(x);
-    buf.put_u16_le(y);
-    for &id in bot_ids {
-        buf.put_u16_le(id);
-    }
-    buf.to_vec()
+    let packet = HbGun {
+        tag: b'Z',
+        amount: n,
+        color,
+        x,
+        y,
+        bot_ids,
+    };
+    let mut writer = std::io::Cursor::new(Vec::new());
+    packet.write(&mut writer).unwrap();
+    writer.into_inner()
 }
 
 /// HB sub-packet: single cell update — wraps `hb_map` with 1x1
@@ -459,32 +617,21 @@ pub fn hb_cell(x: u16, y: u16, cell: u8) -> Vec<u8> {
 // ─── Decode helpers for client→server packets ───────────────────────────────
 
 /// Decode a TY wrapper: [4B `event_name`] [u32 LE time] [u32 LE x] [u32 LE y] [`sub_payload`...]
+#[derive(BinRead)]
+#[br(little)]
 pub struct TyPacket {
     pub event_name: [u8; 4],
     pub time: u32,
     pub x: u32,
     pub y: u32,
+    #[br(parse_with = binrw::helpers::until_eof)]
     pub sub_payload: Vec<u8>,
 }
 
 impl TyPacket {
     pub fn decode(data: &[u8]) -> Option<Self> {
-        if data.len() < 16 {
-            return None;
-        }
-        let mut event_name = [0u8; 4];
-        event_name.copy_from_slice(&data[0..4]);
-        let time = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-        let x = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-        let y = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
-        let sub_payload = data[16..].to_vec();
-        Some(Self {
-            event_name,
-            time,
-            x,
-            y,
-            sub_payload,
-        })
+        let mut reader = std::io::Cursor::new(data);
+        Self::read(&mut reader).ok()
     }
 
     pub fn event_str(&self) -> &str {

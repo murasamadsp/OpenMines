@@ -6,7 +6,7 @@ use crate::net::session::social::buildings::modify_pack_with_db;
 
 // TODO: will be used when pack interaction is fully wired to session dispatch
 #[allow(dead_code)]
-pub fn handle_pack_action(
+pub async fn handle_pack_action(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -65,7 +65,8 @@ pub fn handle_pack_action(
                 tx,
                 pid,
                 &format!("pack_op:open:{x}:{y}"),
-            );
+            )
+            .await;
         }
     }
 }

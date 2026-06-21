@@ -2,16 +2,8 @@ use crate::game::player::PlayerStats;
 use crate::net::session::prelude::*;
 use std::sync::Arc;
 
-/// После логина — ТОЛЬКО `mO` (восстановить `currentChat` UI + триггер
-/// `moHandler`: clear `ChatContainer` + re-render существующей History на
-/// реконнекте). Историю шлёт `Chin`-resync (по `getLasts()` клиента),
-/// НЕ login. Иначе на реконнекте login слал бы полную пере-отправку
-/// `mU`, а клиент `muHandler` `AddLine`'ит КАЖДОЕ сообщение пакета при
-/// `ch==currentChat` (дедуп — только History-словаря, НЕ визуала) →
-/// визуальные дубли (репорт юзера). Реф `Player.SendChat` слал mO+mU,
-/// `Chin` пуст — реф неполон, контракт по клиенту.
-/// `docs/CLIENT_PROTOCOL_GAPS.md` §2.
-pub fn send_chat_login_per_reference(
+/// После логина — ТОЛЬКО `mO`
+pub async fn send_chat_login_per_reference(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -23,14 +15,12 @@ pub fn send_chat_login_per_reference(
         })
         .flatten()
         .unwrap_or_else(|| "FED".to_string());
-    if let Some((name, _history)) = chat_access(state, pid, &tag) {
+    if let Some((name, _history)) = chat_access(state, pid, &tag).await {
         send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
     }
 }
 
 /// Разбор тега приватного канала `_a_b` → `(a, b)` (id игроков, i32).
-/// Формат: ведущий `_`, ровно две числовые части через `_`. Нет в
-/// `server_reference` — см. `docs/CLIENT_PROTOCOL_GAPS.md` §6.
 pub fn parse_private_tag(tag: &str) -> Option<(i32, i32)> {
     let rest = tag.strip_prefix('_')?;
     let mut it = rest.split('_');
@@ -42,15 +32,11 @@ pub fn parse_private_tag(tag: &str) -> Option<(i32, i32)> {
     Some((a, b))
 }
 
-/// `clan_id`/`user_id`/`color`/`time` берутся ИЗ строки (`player_id`, цвет —
-/// снимок на отправку; клан — `LEFT JOIN players`, динамический = 1:1 C#
-/// `line.player.cid`). Раньше хардкодилось `user_id=0`/`color=1`/`ts/60`
-/// → история ≠ live (мелкий шрифт, иной цвет/время).
-/// См. `docs/CLIENT_PROTOCOL_GAPS.md` §1.
-fn load_db_history(state: &Arc<GameState>, db_tag: &str) -> Vec<ChatMessage> {
+async fn load_db_history(state: &Arc<GameState>, db_tag: &str) -> Vec<ChatMessage> {
     state
         .db
         .get_recent_chat_messages(db_tag, 50)
+        .await
         .map(|msgs| {
             msgs.into_iter()
                 .map(
@@ -70,11 +56,7 @@ fn load_db_history(state: &Arc<GameState>, db_tag: &str) -> Vec<ChatMessage> {
 }
 
 /// Граница безопасности + резолв канала. `Some((display_name, history))`
-/// если игрок ВПРАВЕ видеть `tag`, иначе `None` (клиент не доверенный —
-/// `Choo`/`Cpri` могут прислать любой tag). Правила: глобальные in-mem
-/// (FED/DNO/LOC) — всегда; `CLAN` — только член клана; `_a_b` — только
-/// участник. См. `docs/CLIENT_PROTOCOL_GAPS.md` (сводка безопасности).
-pub fn chat_access(
+pub async fn chat_access(
     state: &Arc<GameState>,
     pid: PlayerId,
     tag: &str,
@@ -99,11 +81,12 @@ pub fn chat_access(
         let name = state
             .db
             .get_clan(cid)
+            .await
             .ok()
             .flatten()
             .map(|c| c.name)
             .unwrap_or_else(|| "Клан".to_string());
-        return Some((name, load_db_history(state, &format!("CLAN_{cid}"))));
+        return Some((name, load_db_history(state, &format!("CLAN_{cid}")).await));
     }
 
     if let Some((a, b)) = parse_private_tag(tag) {
@@ -114,28 +97,26 @@ pub fn chat_access(
         let name = state
             .db
             .get_player_by_id(other)
+            .await
             .ok()
             .flatten()
             .map(|p| p.name)
             .unwrap_or_else(|| format!("#{other}"));
-        return Some((name, load_db_history(state, tag)));
+        return Some((name, load_db_history(state, tag).await));
     }
 
     None
 }
 
 /// Войти/переключить канал (`Choo`/`Cpri`): валидирует доступ, ставит
-/// `current_chat`, шлёт ТОЛЬКО `mO`+`mU` (НЕ `mL` — тот переводит клиент
-/// в режим списка, `docs/CLIENT_PROTOCOL_GAPS.md` §2/§4). `mO` и `mU`
-/// идут с ОДНИМ tag: клиент `moHandler` ставит `currentChat=tag`, а
-/// `muHandler` показывает только `MuPacket.ch == currentChat`.
-pub fn send_enter_channel(
+/// `current_chat`, шлёт ТОЛЬКО `mO`+`mU`
+pub async fn send_enter_channel(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     tag: &str,
 ) {
-    let Some((name, history)) = chat_access(state, pid, tag) else {
+    let Some((name, history)) = chat_access(state, pid, tag).await else {
         tracing::warn!("[chat] enter denied pid={pid} tag={tag}");
         return;
     };
@@ -149,10 +130,8 @@ pub fn send_enter_channel(
     send_u_packet(tx, "mU", &chat_messages(tag, &history).1);
 }
 
-/// Список каналов (`Cmen`): `mL` (глобальные + `CLAN` если в клане +
-/// приватные игрока из БД) + `mN`. НЕ слать `mO`/`mU` — конфликт с
-/// входом в канал. `docs/CLIENT_PROTOCOL_GAPS.md` §3.
-pub fn send_channel_list(
+/// Список каналов (`Cmen`): `mL` + `mN`
+pub async fn send_channel_list(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -189,6 +168,7 @@ pub fn send_channel_list(
         let clan_name = state
             .db
             .get_clan(cid)
+            .await
             .ok()
             .flatten()
             .map(|c| c.name)
@@ -196,13 +176,14 @@ pub fn send_channel_list(
         let preview = state
             .db
             .get_recent_chat_messages(&format!("CLAN_{cid}"), 1)
+            .await
             .ok()
             .and_then(|m| m.first().map(|(_, n, t, ..)| format!("{n}: {t}")))
             .unwrap_or_default();
         entries.push(("CLAN".to_string(), false, clan_name, preview));
     }
 
-    if let Ok(tags) = state.db.private_chat_tags(my_id) {
+    if let Ok(tags) = state.db.private_chat_tags(my_id).await {
         for t in tags {
             let Some((a, b)) = parse_private_tag(&t) else {
                 continue;
@@ -211,6 +192,7 @@ pub fn send_channel_list(
             let oname = state
                 .db
                 .get_player_by_id(other)
+                .await
                 .ok()
                 .flatten()
                 .map(|p| p.name)
@@ -218,6 +200,7 @@ pub fn send_channel_list(
             let preview = state
                 .db
                 .get_recent_chat_messages(&t, 1)
+                .await
                 .ok()
                 .and_then(|m| m.first().map(|(_, n, t, ..)| format!("{n}: {t}")))
                 .unwrap_or_default();

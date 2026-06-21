@@ -52,7 +52,7 @@ pub fn handle_auto_dig_set(
 }
 
 /// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в `server_reference`.
-pub fn handle_prog_ty(
+pub async fn handle_prog_ty(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -63,7 +63,7 @@ pub fn handle_prog_ty(
         "PROG" => {
             let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
             if let Some((prog_id, source)) = decoded {
-                if let Err(e) = state.db.save_program(pid, prog_id, &source) {
+                if let Err(e) = state.db.save_program(pid, prog_id, &source).await {
                     tracing::warn!("[PROG] DB save failed pid={pid} prog_id={prog_id}: {e:#}");
                 }
 
@@ -88,6 +88,7 @@ pub fn handle_prog_ty(
                 let name = state
                     .db
                     .get_program(prog_id)
+                    .await
                     .ok()
                     .flatten()
                     .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
@@ -132,6 +133,7 @@ pub fn handle_prog_ty(
                 let name = state
                     .db
                     .get_program(prog_id)
+                    .await
                     .ok()
                     .flatten()
                     .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
@@ -148,7 +150,7 @@ pub fn handle_prog_ty(
         "PDEL" => {
             if let Ok(id_str) = std::str::from_utf8(payload) {
                 if let Ok(prog_id) = id_str.trim().parse::<i32>() {
-                    if let Err(e) = state.db.delete_program_owned(pid, prog_id) {
+                    if let Err(e) = state.db.delete_program_owned(pid, prog_id).await {
                         tracing::warn!("[PDEL] DB delete failed pid={pid} id={prog_id}: {e:#}");
                     }
                     state.modify_player(pid, |ecs, entity| {
@@ -281,20 +283,22 @@ pub fn handle_sett_ty(
     });
 }
 
-pub fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
-    let parts: Vec<String> = ids
-        .iter()
-        .map(|&id| {
-            let name = state
-                .query_player(id, |ecs: &bevy_ecs::prelude::World, entity| {
-                    ecs.get::<crate::game::player::PlayerMetadata>(entity)
-                        .map(|m| m.name.clone())
-                })
-                .flatten()
-                .or_else(|| state.db.get_player_by_id(id).ok().flatten().map(|p| p.name))
-                .unwrap_or_default();
-            format!("{id}:{name}")
-        })
-        .collect();
+pub async fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
+    let mut parts = Vec::new();
+    for &id in ids {
+        let mut name_opt = state
+            .query_player(id, |ecs: &bevy_ecs::prelude::World, entity| {
+                ecs.get::<crate::game::player::PlayerMetadata>(entity)
+                    .map(|m| m.name.clone())
+            })
+            .flatten();
+        if name_opt.is_none() {
+            if let Ok(Some(p)) = state.db.get_player_by_id(id).await {
+                name_opt = Some(p.name);
+            }
+        }
+        let name = name_opt.unwrap_or_default();
+        parts.push(format!("{id}:{name}"));
+    }
     send_u_packet(tx, "NL", parts.join(",").as_bytes());
 }

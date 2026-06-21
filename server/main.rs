@@ -73,12 +73,12 @@ async fn main() -> Result<()> {
         cfg.world_chunks_h
     );
 
-    let database = db::Database::open(state_dir.join(DB_FILENAME))?;
+    let database = db::Database::open(state_dir.join(DB_FILENAME)).await?;
     if force_regenerate {
-        let n = database.delete_all_buildings()?;
+        let n = database.delete_all_buildings().await?;
         tracing::info!("World regen: cleared {n} building rows from DB (stale packs vs new map)");
     }
-    bootstrap_grant_admin(&database)?;
+    bootstrap_grant_admin(&database).await?;
     tracing::info!("Database ready");
 
     // Shutdown broadcast: SIGINT/SIGTERM → graceful stop pipeline.
@@ -115,7 +115,8 @@ async fn main() -> Result<()> {
         std::sync::Arc::new(world),
         std::sync::Arc::new(database),
         cfg.clone(),
-    );
+    )
+    .await;
 
     // Cron system.
     cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
@@ -132,13 +133,13 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!("net::run finished with error (process may exit): {e:#}"),
     }
 
-    shutdown_flush(&game_state);
+    shutdown_flush(&game_state).await;
     net_res
 }
 
 /// Финальное сохранение игроков + flush мира при остановке
 /// (вынесено из `main` — лимит строк).
-fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
+async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     tracing::info!("Shutdown: saving all players and flushing world...");
     let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
     for pid in shutdown_pids {
@@ -149,7 +150,7 @@ fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
             .flatten();
 
         if let Some(row) = player_row
-            && let Err(e) = game_state.db.save_player(&row)
+            && let Err(e) = game_state.db.save_player(&row).await
         {
             tracing::error!("Shutdown save failed for player {pid}: {e}");
         }
@@ -160,7 +161,7 @@ fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
 }
 
 /// Выставить роль админа (`role = 2`) по нику из `M3R_GRANT_ADMIN` (через запятую).
-fn bootstrap_grant_admin(database: &db::Database) -> Result<()> {
+async fn bootstrap_grant_admin(database: &db::Database) -> Result<()> {
     let Ok(raw) = env::var("M3R_GRANT_ADMIN") else {
         return Ok(());
     };
@@ -169,8 +170,8 @@ fn bootstrap_grant_admin(database: &db::Database) -> Result<()> {
         if name.is_empty() {
             continue;
         }
-        if let Some(p) = database.get_player_by_name(name)? {
-            if database.set_player_role(p.id, db::Role::Admin)? {
+        if let Some(p) = database.get_player_by_name(name).await? {
+            if database.set_player_role(p.id, db::Role::Admin).await? {
                 tracing::info!("M3R_GRANT_ADMIN: Role::Admin для id={} name={name:?}", p.id);
             }
         } else {

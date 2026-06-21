@@ -29,7 +29,7 @@ pub fn handle_programmator_pope_menu(
 }
 
 /// TY `Blds` → `Player.OpenMyBuildings()` (список построек владельца).
-pub fn handle_my_buildings_list(
+pub async fn handle_my_buildings_list(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -37,6 +37,7 @@ pub fn handle_my_buildings_list(
     let mine: Vec<crate::db::buildings::BuildingRow> = state
         .db
         .load_all_buildings()
+        .await
         .unwrap_or_default()
         .into_iter()
         .filter(|r| r.owner_id == pid)
@@ -114,7 +115,7 @@ pub fn handle_buildings_menu(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_place_building(
+pub async fn handle_place_building(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -181,6 +182,7 @@ pub fn handle_place_building(
     let db_id = match state
         .db
         .insert_building(type_code, bx, by, pid, initial_clan, &extra)
+        .await
     {
         Ok(id) => id,
         Err(_) => {
@@ -279,7 +281,7 @@ pub fn place_building_in_world(
     );
 }
 
-pub fn handle_remove_building(
+pub async fn handle_remove_building(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -317,7 +319,7 @@ pub fn handle_remove_building(
         return;
     }
 
-    if state.db.delete_building(view.id).is_err() {
+    if state.db.delete_building(view.id).await.is_err() {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
         return;
     }
@@ -447,7 +449,12 @@ where
 
     // In current sync mode we might want to save immediately if it's critical
     if let Some(row) = crate::game::buildings::extract_building_row(&ecs, entity) {
-        let _ = state.db.save_building(&row);
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = db.save_building(&row).await {
+                tracing::error!("Failed to save building asynchronously: {e}");
+            }
+        });
     }
 
     Ok(res)
@@ -595,7 +602,7 @@ pub fn spawn_botspot(
 
 /// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.
 /// Возвращает true при успехе.
-pub fn destroy_damagable_building(
+pub async fn destroy_damagable_building(
     state: &Arc<GameState>,
     trigger_pid: Option<PlayerId>,
     bx: i32,
@@ -604,7 +611,7 @@ pub fn destroy_damagable_building(
     let Some(view) = state.get_pack_at(bx, by) else {
         return false;
     };
-    if state.db.delete_building(view.id).is_err() {
+    if state.db.delete_building(view.id).await.is_err() {
         return false;
     }
     // Захват crysinside до despawn (для Box-дропа Storage, C# `Storage.Destroy`).

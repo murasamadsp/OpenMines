@@ -6,28 +6,28 @@ use crate::net::session::outbound::chat_sync::{
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::handle_chat_command;
 
-pub fn handle_local_chat(
+pub async fn handle_local_chat(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     msg: &str,
 ) {
-    handle_chat_text(state, tx, pid, msg);
+    handle_chat_text(state, tx, pid, msg).await;
 }
 
 // TODO: will be used when chat message dispatch is fully wired to session
 #[allow(dead_code)]
-pub fn handle_chat_message(
+pub async fn handle_chat_message(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     payload: &[u8],
 ) {
     let msg = String::from_utf8_lossy(payload).to_string();
-    handle_chat_text(state, tx, pid, &msg);
+    handle_chat_text(state, tx, pid, &msg).await;
 }
 
-fn handle_chat_text(
+async fn handle_chat_text(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -37,13 +37,13 @@ fn handle_chat_text(
     if msg.is_empty() {
         return;
     }
-    if handle_chat_command_if_present(state, tx, pid, msg) {
+    if handle_chat_command_if_present(state, tx, pid, msg).await {
         return;
     }
     broadcast_player_chat(state, pid, msg);
 }
 
-fn handle_chat_command_if_present(
+async fn handle_chat_command_if_present(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -53,7 +53,7 @@ fn handle_chat_command_if_present(
     if !msg.starts_with('/') {
         return false;
     }
-    handle_chat_command(state, tx, pid, msg);
+    handle_chat_command(state, tx, pid, msg).await;
     true
 }
 
@@ -79,7 +79,7 @@ fn broadcast_player_chat(state: &Arc<GameState>, pid: PlayerId, msg: &str) {
     }
 }
 
-pub fn handle_channel_chat(
+pub async fn handle_channel_chat(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -89,7 +89,7 @@ pub fn handle_channel_chat(
     if text.is_empty() {
         return;
     }
-    if handle_chat_command_if_present(state, tx, pid, &text) {
+    if handle_chat_command_if_present(state, tx, pid, &text).await {
         return;
     }
 
@@ -148,7 +148,11 @@ pub fn handle_channel_chat(
     // фиксирует и возвращает `color` (снимок `chat_color` автора) — live,
     // in-mem и история несут ОДИН цвет (реф-баг 1/10: один message → разный
     // цвет live и при перезагрузке). CLIENT_PROTOCOL_GAPS.md §1.
-    let (msg_id, color) = match state.db.add_chat_message(&db_tag, &nickname, &text, my_id) {
+    let (msg_id, color) = match state
+        .db
+        .add_chat_message(&db_tag, &nickname, &text, my_id)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!("[chat] add_chat_message failed tag={db_tag} pid={pid}: {e:#}");
@@ -222,7 +226,7 @@ pub fn extract_channel_message_text(payload: &[u8]) -> String {
 /// - `"1:cur:lasts"` (реконнект) → выставить `current_chat=cur`, `mO` +
 ///   `mU` ТОЛЬКО с `id > lastid[cur]` (инкремент; нет → −1 → полная).
 ///   Доступ к `cur` валидируется (`chat_access`); нет прав → drop.
-pub fn handle_chat_resync(
+pub async fn handle_chat_resync(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -238,7 +242,7 @@ pub fn handle_chat_resync(
         .unwrap_or_else(|| "FED".to_string());
 
     if s.is_empty() || s == "_" {
-        if let Some((_, hist)) = chat_access(state, pid, &cur_default) {
+        if let Some((_, hist)) = chat_access(state, pid, &cur_default).await {
             send_u_packet(tx, "mU", &chat_messages(&cur_default, &hist).1);
         }
         return;
@@ -265,7 +269,7 @@ pub fn handle_chat_resync(
         i += 2;
     }
 
-    let Some((name, hist)) = chat_access(state, pid, cur) else {
+    let Some((name, hist)) = chat_access(state, pid, cur).await else {
         tracing::warn!("[chat] Chin resync denied pid={pid} cur={cur}");
         return;
     };
@@ -282,19 +286,19 @@ pub fn handle_chat_resync(
 
 /// TY `Cmen` (`"_"`) — открыть список каналов. Клиент `ChatManager.cs:67`
 /// `OnMenu`. Ждёт `mL`+`mN`. `docs/CLIENT_PROTOCOL_GAPS.md` §3.
-pub fn handle_chat_menu(
+pub async fn handle_chat_menu(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     _payload: &[u8],
 ) {
-    send_channel_list(state, tx, pid);
+    send_channel_list(state, tx, pid).await;
 }
 
 /// TY `Choo <tag>` — войти/переключить канал. Клиент `ChatManager.cs:176`
 /// (клик по каналу в `mL`). `send_enter_channel` валидирует доступ.
 /// `docs/CLIENT_PROTOCOL_GAPS.md` §4.
-pub fn handle_chat_choose(
+pub async fn handle_chat_choose(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -304,19 +308,19 @@ pub fn handle_chat_choose(
     if tag.is_empty() {
         return;
     }
-    send_enter_channel(state, tx, pid, &tag);
+    send_enter_channel(state, tx, pid, &tag).await;
 }
 
 /// TY `Cset` (`"_"`) — циклически сменить цвет поля ввода чата. Клиент
 /// `ChatManager.cs:60` `OnSettings`, ответ-обработчик `mcHandler`
 /// (`short.Parse`). `docs/CLIENT_PROTOCOL_GAPS.md` §5.
-pub fn handle_chat_settings(
+pub async fn handle_chat_settings(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     _payload: &[u8],
 ) {
-    match state.db.cycle_chat_color(pid) {
+    match state.db.cycle_chat_color(pid).await {
         Ok(code) => send_u_packet(tx, "mC", &chat_color(code).1),
         Err(e) => tracing::warn!("[chat] cycle_chat_color failed pid={pid}: {e:#}"),
     }
@@ -326,7 +330,7 @@ pub fn handle_chat_settings(
 /// (клик по строке сообщения → `message.gid`). Тег `_min_max` стабилен
 /// для пары. Валидация: цель существует, не сам с собой.
 /// `docs/CLIENT_PROTOCOL_GAPS.md` §6.
-pub fn handle_chat_private(
+pub async fn handle_chat_private(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -338,13 +342,13 @@ pub fn handle_chat_private(
     if uid == pid || uid <= 0 {
         return;
     }
-    if !matches!(state.db.get_player_by_id(uid), Ok(Some(_))) {
+    if !matches!(state.db.get_player_by_id(uid).await, Ok(Some(_))) {
         tracing::warn!("[chat] Cpri to unknown uid={uid} by pid={pid}");
         return;
     }
     let (lo, hi) = if pid < uid { (pid, uid) } else { (uid, pid) };
     let tag = format!("_{lo}_{hi}");
-    send_enter_channel(state, tx, pid, &tag);
+    send_enter_channel(state, tx, pid, &tag).await;
 }
 
 fn send_mu_bytes(data: &[u8]) -> Vec<u8> {

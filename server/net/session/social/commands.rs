@@ -73,7 +73,7 @@ fn ensure_admin(
 
 // ─── Main dispatcher ────────────────────────────────────────────────────────
 
-pub fn handle_chat_command(
+pub async fn handle_chat_command(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -89,10 +89,10 @@ pub fn handle_chat_command(
         "/give" => handle_chat_give_command(state, tx, pid, args),
         "/giveall" => handle_chat_giveall_command(state, tx, pid),
         "/money" => handle_chat_money_command(state, tx, pid, args),
-        "/moneyall" => handle_chat_money_all_command(state, tx, pid, args),
+        "/moneyall" => handle_chat_money_all_command(state, tx, pid, args).await,
         "/tp" => handle_chat_teleport_command(state, tx, pid, args),
         "/heal" => handle_chat_heal_command(state, tx, pid),
-        "/clan" => handle_chat_clan_command(state, tx, pid, args),
+        "/clan" => handle_chat_clan_command(state, tx, pid, args).await,
         "/pack" => handle_chat_pack_command(state, tx, pid, args),
         "/admin" | "/adminhelp" => {
             if ensure_admin(tx, state, pid) {
@@ -239,7 +239,7 @@ fn handle_chat_money_command(
 
 // ─── /moneyall ──────────────────────────────────────────────────────────────
 
-fn handle_chat_money_all_command(
+async fn handle_chat_money_all_command(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -252,7 +252,7 @@ fn handle_chat_money_all_command(
         Some(a) => a,
         None => return,
     };
-    if let Ok(count) = state.db.add_money_to_all(amount) {
+    if let Ok(count) = state.db.add_money_to_all(amount).await {
         for entry in &state.active_players {
             state.modify_player(
                 *entry.key(),
@@ -345,7 +345,7 @@ fn handle_chat_heal_command(
 
 // ─── /clan ──────────────────────────────────────────────────────────────────
 
-fn handle_chat_clan_command(
+async fn handle_chat_clan_command(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -356,14 +356,14 @@ fn handle_chat_clan_command(
         return;
     };
     match *sub {
-        "create" => handle_chat_clan_create_command(state, tx, pid, subargs),
-        "leave" => handle_clan_leave(state, tx, pid),
-        "kick" => handle_chat_clan_kick_command(state, tx, pid, subargs),
+        "create" => handle_chat_clan_create_command(state, tx, pid, subargs).await,
+        "leave" => handle_clan_leave(state, tx, pid).await,
+        "kick" => handle_chat_clan_kick_command(state, tx, pid, subargs).await,
         _ => send_ok(tx, "Клан", CMD_USAGE_CLAN),
     }
 }
 
-fn handle_chat_clan_create_command(
+async fn handle_chat_clan_create_command(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -375,10 +375,10 @@ fn handle_chat_clan_create_command(
         send_ok(tx, "Клан", CMD_USAGE_CLAN_CREATE);
         return;
     }
-    handle_clan_create(state, tx, pid, name, tag);
+    handle_clan_create(state, tx, pid, name, tag).await;
 }
 
-fn handle_chat_clan_kick_command(
+async fn handle_chat_clan_kick_command(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -389,7 +389,7 @@ fn handle_chat_clan_kick_command(
         send_ok(tx, "Клан", CMD_USAGE_CLAN_KICK);
         return;
     }
-    handle_clan_kick_by_name(state, tx, pid, target);
+    handle_clan_kick_by_name(state, tx, pid, target).await;
 }
 
 // ─── /pack ──────────────────────────────────────────────────────────────────

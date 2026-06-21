@@ -1,7 +1,6 @@
 use super::Database;
 use anyhow::Result;
-use rusqlite::params;
-
+use sqlx::Row;
 use std::collections::{HashSet, VecDeque};
 
 /// Как `FindEmptyForBox`/смежный выбор в референсе: подобрать координату рядом (BFS).
@@ -26,8 +25,6 @@ where
     q.push_back((x, y));
     visited.insert((x, y));
 
-    // C# FindEmptyForBox searches until it finds an empty spot.
-    // We add a safety limit of 100 iterations just to prevent infinite loops in weird world edge cases.
     let mut iterations = 0;
     while let Some((cx, cy)) = q.pop_front() {
         iterations += 1;
@@ -58,35 +55,32 @@ where
 
 impl Database {
     /// Загрузить ВСЕ боксы (один раз на старте → in-memory `box_index`).
-    /// На hot-path `SQLite` по боксам больше не дёргаем (был фриз: sync `SQLite`
-    /// под `ecs.write()` в `standing_cell_hazard_system` каждые 10ms).
-    pub fn load_all_boxes(&self) -> Result<Vec<(i32, i32, [i64; 6])>> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare("SELECT x, y, ze, cr, si, be, fi, go FROM boxes")?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i32>(0)?,
-                    r.get::<_, i32>(1)?,
+    pub async fn load_all_boxes(&self) -> Result<Vec<(i32, i32, [i64; 6])>> {
+        let rows = sqlx::query("SELECT x, y, ze, cr, si, be, fi, go FROM boxes")
+            .fetch_all(&self.pool)
+            .await?;
+        let box_rows = rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<i32, _>("x"),
+                    r.get::<i32, _>("y"),
                     [
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
+                        r.get::<i64, _>("ze"),
+                        r.get::<i64, _>("cr"),
+                        r.get::<i64, _>("si"),
+                        r.get::<i64, _>("be"),
+                        r.get::<i64, _>("fi"),
+                        r.get::<i64, _>("go"),
                     ],
-                ))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        drop(stmt);
-        drop(conn);
-        Ok(rows)
+                )
+            })
+            .collect();
+        Ok(box_rows)
     }
 
-    pub fn upsert_box(&self, x: i32, y: i32, crystals: &[i64; 6]) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute(
+    pub async fn upsert_box(&self, x: i32, y: i32, crystals: &[i64; 6]) -> Result<()> {
+        sqlx::query(
             "INSERT INTO boxes (x, y, ze, cr, si, be, fi, go, cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(x,y) DO UPDATE SET
@@ -101,26 +95,27 @@ impl Database {
                cry_red=excluded.cry_red,
                cry_violet=excluded.cry_violet,
                cry_white=excluded.cry_white,
-               cry_cyan=excluded.cry_cyan",
-            params![
-                x,
-                y,
-                crystals[0],
-                crystals[1],
-                crystals[2],
-                crystals[3],
-                crystals[4],
-                crystals[5],
-            ],
-        )?;
-        drop(conn);
+               cry_cyan=excluded.cry_cyan"
+        )
+        .bind(x)
+        .bind(y)
+        .bind(crystals[0])
+        .bind(crystals[1])
+        .bind(crystals[2])
+        .bind(crystals[3])
+        .bind(crystals[4])
+        .bind(crystals[5])
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn delete_box_at(&self, x: i32, y: i32) -> Result<()> {
-        let conn = self.conn.lock();
-        conn.execute("DELETE FROM boxes WHERE x=?1 AND y=?2", params![x, y])?;
-        drop(conn);
+    pub async fn delete_box_at(&self, x: i32, y: i32) -> Result<()> {
+        sqlx::query("DELETE FROM boxes WHERE x=?1 AND y=?2")
+            .bind(x)
+            .bind(y)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

@@ -173,7 +173,7 @@ pub struct GameState {
 impl GameState {
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
 
-    pub fn new(world: Arc<World>, database: Arc<Database>, config: Config) -> Arc<Self> {
+    pub async fn new(world: Arc<World>, database: Arc<Database>, config: Config) -> Arc<Self> {
         let mut schedule = Schedule::default();
         schedule.add_systems(sand::sand_physics_system);
         schedule.add_systems(combat::standing_cell_hazard_system);
@@ -195,7 +195,7 @@ impl GameState {
         // `ChatChannel.messages`. Без загрузки FED/DNO теряли бы всю историю
         // после рестарта сервера. `id` сохраняется для дедупа клиента.
         for ch in default_channels.iter_mut().filter(|c| c.global) {
-            if let Ok(rows) = database.get_recent_chat_messages(&ch.tag, 50) {
+            if let Ok(rows) = database.get_recent_chat_messages(&ch.tag, 50).await {
                 for (id, name, text, ts, player_id, color, clan_id) in rows {
                     ch.messages.push_back(chat::ChatMessage {
                         id,
@@ -238,7 +238,7 @@ impl GameState {
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
         // боксам больше не дёргаем).
-        match state.db.load_all_boxes() {
+        match state.db.load_all_boxes().await {
             Ok(rows) => {
                 for (bx, by, crystals) in rows {
                     state.box_index.insert((bx, by), crystals);
@@ -265,13 +265,13 @@ impl GameState {
             ecs.insert_resource(PackResendQueue::default());
         }
 
-        Self::load_buildings_into_ecs(&state);
+        Self::load_buildings_into_ecs(&state).await;
         state
     }
 
     /// Загрузить все здания из БД в ECS (вынесено из `new` — лимит строк).
-    fn load_buildings_into_ecs(state: &Arc<Self>) {
-        let Ok(all_rows) = state.db.load_all_buildings() else {
+    async fn load_buildings_into_ecs(state: &Arc<Self>) {
+        let Ok(all_rows) = state.db.load_all_buildings().await else {
             return;
         };
         let count = all_rows.len();

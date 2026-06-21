@@ -56,7 +56,7 @@ pub async fn handle_auth(
     let result = match &au.auth_type {
         AuAuthType::Regular { user_id, token } => {
             tracing::debug!("[Auth] Regular auth: id={}", user_id);
-            if let Ok(Some(player)) = state.db.get_player_by_id(*user_id) {
+            if let Ok(Some(player)) = state.db.get_player_by_id(*user_id).await {
                 if GameState::token_matches_legacy_auth(token, &player.hash, sid) {
                     Some(player)
                 } else {
@@ -91,7 +91,7 @@ pub async fn handle_auth(
         send_u_packet(tx, gu.0, &gu.1);
 
         // 3. Player.Init() — в `server_reference/Auth.TryToAuth` при токене `AH` не шлётся (только после GUI-пароля / регистрации).
-        let pid = init_player(state, tx, &player);
+        let pid = init_player(state, tx, &player).await;
         *auth_state = crate::net::session::connection::AuthState::Authenticated;
 
         return Ok(Some(pid));

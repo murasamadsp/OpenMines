@@ -21,7 +21,7 @@ use crate::net::session::ui::heal_inventory::{
     handle_heal, handle_inventory_choose, handle_inventory_use, handle_invn_toggle,
 };
 
-pub fn dispatch_ty_packet(
+pub async fn dispatch_ty_packet(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -56,12 +56,12 @@ pub fn dispatch_ty_packet(
         }
         "GUI_" => {
             if let Some(button) = decode_gui_button(&packet.sub_payload) {
-                handle_gui_button(state, tx, pid, &button);
+                handle_gui_button(state, tx, pid, &button).await;
             }
         }
         "Locl" => {
             if let Some(locl) = LoclClient::decode(&packet.sub_payload) {
-                handle_local_chat(state, tx, pid, &locl.message);
+                handle_local_chat(state, tx, pid, &locl.message).await;
             }
         }
         "Xgeo" => {
@@ -74,7 +74,7 @@ pub fn dispatch_ty_packet(
             handle_invn_toggle(state, tx, pid);
         }
         "INUS" => {
-            handle_inventory_use(state, tx, pid);
+            handle_inventory_use(state, tx, pid).await;
         }
         "INCL" => {
             handle_inventory_choose(state, tx, pid, &packet.sub_payload);
@@ -84,10 +84,10 @@ pub fn dispatch_ty_packet(
         }
         "Whoi" => {
             let ids = decode_whoi(&packet.sub_payload);
-            handle_whoi(state, tx, &ids);
+            handle_whoi(state, tx, &ids).await;
         }
         "Chat" => {
-            handle_channel_chat(state, tx, pid, &packet.sub_payload);
+            handle_channel_chat(state, tx, pid, &packet.sub_payload).await;
         }
         "Chin" => {
             // Ресинк чата по `getLasts()` клиента. Реф `Session.Chin` ПУСТ
@@ -96,22 +96,22 @@ pub fn dispatch_ty_packet(
             // (это ломало вход в чат — прежняя итерация). История —
             // здесь, не в login (иначе дубли на реконнекте).
             // docs/CLIENT_PROTOCOL_GAPS.md §2.
-            handle_chat_resync(state, tx, pid, &packet.sub_payload);
+            handle_chat_resync(state, tx, pid, &packet.sub_payload).await;
         }
         // Навигация чата — НЕТ в server_reference (Session.cs только пустой
         // Chin; TYPacket.cs декодит, но `default: //Invalid`). Контракт
         // восстановлен по клиенту. docs/CLIENT_PROTOCOL_GAPS.md §3–6.
         "Cmen" => {
-            handle_chat_menu(state, tx, pid, &packet.sub_payload);
+            handle_chat_menu(state, tx, pid, &packet.sub_payload).await;
         }
         "Choo" => {
-            handle_chat_choose(state, tx, pid, &packet.sub_payload);
+            handle_chat_choose(state, tx, pid, &packet.sub_payload).await;
         }
         "Cset" => {
-            handle_chat_settings(state, tx, pid, &packet.sub_payload);
+            handle_chat_settings(state, tx, pid, &packet.sub_payload).await;
         }
         "Cpri" => {
-            handle_chat_private(state, tx, pid, &packet.sub_payload);
+            handle_chat_private(state, tx, pid, &packet.sub_payload).await;
         }
         "RESP" => {
             handle_death(state, tx, pid);
@@ -120,10 +120,10 @@ pub fn dispatch_ty_packet(
             handle_programmator_pope_menu(state, tx, pid);
         }
         "Blds" => {
-            handle_my_buildings_list(state, tx, pid);
+            handle_my_buildings_list(state, tx, pid).await;
         }
         "Clan" => {
-            handle_clan_menu(state, tx, pid);
+            handle_clan_menu(state, tx, pid).await;
         }
         "Sett" => {
             handle_sett_ty(state, tx, pid, &packet.sub_payload);
@@ -172,7 +172,7 @@ pub fn dispatch_ty_packet(
             handle_dpbx_crystal_box(state, tx, pid);
         }
         "PROG" | "PDEL" | "pRST" | "PREN" => {
-            handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload);
+            handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload).await;
         }
         // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
         // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.

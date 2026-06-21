@@ -9,7 +9,7 @@ use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{broadcast_pack_update, modify_pack_with_db};
 
-pub fn handle_gui_button(
+pub async fn handle_gui_button(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -48,7 +48,7 @@ pub fn handle_gui_button(
 
     if let Some(rest) = button.strip_prefix("clan_view:") {
         if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id);
+            crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id).await;
         }
         return;
     }
@@ -65,22 +65,22 @@ pub fn handle_gui_button(
             );
         }
         "clan_menu" | "clan_back" => {
-            crate::net::session::social::clans::handle_clan_menu(state, tx, pid);
+            crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
         }
         "clan_create_view" => handle_clan_create_view(tx),
         "clan_requests" => {
-            crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid);
+            crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid).await;
         }
         "clan_members" => {
-            crate::net::session::social::clans::handle_clan_members_view(state, tx, pid);
+            crate::net::session::social::clans::handle_clan_members_view(state, tx, pid).await;
         }
         "clan_invite_list" => {
-            crate::net::session::social::clans::handle_clan_invite_list(state, tx, pid);
+            crate::net::session::social::clans::handle_clan_invite_list(state, tx, pid).await;
         }
         "clan_invites_view" => {
-            crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid);
+            crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid).await;
         }
-        "clan_leave" => crate::net::session::social::clans::handle_clan_leave(state, tx, pid),
+        "clan_leave" => crate::net::session::social::clans::handle_clan_leave(state, tx, pid).await,
         // Market tab switching (C# tabs have action strings)
         "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys"),
         "buycrys" => handle_market_tab_switch(state, tx, pid, "buycrys"),
@@ -90,7 +90,7 @@ pub fn handle_gui_button(
         "clancreate" => {
             handle_clan_create_view(tx);
         }
-        _ => handle_complex_button(state, tx, pid, button),
+        _ => handle_complex_button(state, tx, pid, button).await,
     }
 
     // C# ref: after CallWinAction, SendWindow() re-sends the window or closes if null.
@@ -118,7 +118,7 @@ fn handle_clan_create_view(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-fn handle_complex_button(
+async fn handle_complex_button(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -126,24 +126,24 @@ fn handle_complex_button(
 ) {
     if let Some(rest) = button.strip_prefix("clan_request:") {
         if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_join_request(state, tx, pid, id);
+            crate::net::session::social::clans::handle_clan_join_request(state, tx, pid, id).await;
         }
     } else if let Some(rest) = button.strip_prefix("clan_accept:") {
         if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_accept(state, tx, pid, id);
+            crate::net::session::social::clans::handle_clan_accept(state, tx, pid, id).await;
         }
     } else if let Some(rest) = button.strip_prefix("clan_invite_send:") {
         if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_invite_send(state, tx, pid, id);
+            crate::net::session::social::clans::handle_clan_invite_send(state, tx, pid, id).await;
         }
     } else if let Some(rest) = button.strip_prefix("clan_invite_accept:") {
         if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id);
+            crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id).await;
         }
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
-        crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest);
+        crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
-        handle_pack_operation(state, tx, pid, rest);
+        handle_pack_operation(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("transfer:") {
         handle_storage_transfer(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_recipe:") {
@@ -197,7 +197,7 @@ fn handle_complex_button(
     }
 }
 
-fn handle_pack_operation(
+async fn handle_pack_operation(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -248,7 +248,8 @@ fn handle_pack_operation(
         "take_money" => handle_pack_take_money(state, tx, pid, &view),
         "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
         "remove" => {
-            crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y);
+            crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y)
+                .await;
         }
         _ => {}
     }

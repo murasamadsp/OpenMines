@@ -100,7 +100,7 @@ fn is_exempt_item(sel: i32) -> bool {
     sel == 40 || (10..17).contains(&sel) || sel == 34 || sel == 42 || sel == 43 || sel == 46
 }
 
-pub fn handle_inventory_use(
+pub async fn handle_inventory_use(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -146,18 +146,18 @@ pub fn handle_inventory_use(
 
     let used = match sel {
         10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, sel),
-        0 => place_building_from_item(state, tx, pid, "T"),
-        1 => place_building_from_item(state, tx, pid, "R"),
-        2 => place_building_from_item(state, tx, pid, "U"),
-        3 => place_building_from_item(state, tx, pid, "M"),
+        0 => place_building_from_item(state, tx, pid, "T").await,
+        1 => place_building_from_item(state, tx, pid, "R").await,
+        2 => place_building_from_item(state, tx, pid, "U").await,
+        3 => place_building_from_item(state, tx, pid, "M").await,
         4 => true,
-        24 => place_building_from_item(state, tx, pid, "F"),
-        26 => place_building_from_item(state, tx, pid, "G"),
-        27 => use_gate_item(state, tx, pid),
-        29 => place_building_from_item(state, tx, pid, "L"),
+        24 => place_building_from_item(state, tx, pid, "F").await,
+        26 => place_building_from_item(state, tx, pid, "G").await,
+        27 => use_gate_item(state, tx, pid).await,
+        29 => place_building_from_item(state, tx, pid, "L").await,
         5 => use_boom(state, pid),
         6 => use_protector(state, pid),
-        7 => use_razryadka(state, pid),
+        7 => use_razryadka(state, pid).await,
         35 => use_poli(state, pid),
         40 => use_c190(state, pid),
         _ => false,
@@ -341,7 +341,7 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
 /// C# Inventory item 27 (Gate): `if (p.clan != null && c.access && c.anygun)`.
 /// Только в клане, без вражеской заряженной пушки рядом (access) и при наличии
 /// любой пушки в радиусе (anygun). Иначе ворота не ставятся.
-fn use_gate_item(
+async fn use_gate_item(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -365,10 +365,10 @@ fn use_gate_item(
     if !access || !anygun {
         return false;
     }
-    place_building_from_item(state, tx, pid, "N")
+    place_building_from_item(state, tx, pid, "N").await
 }
 
-pub fn place_building_from_item(
+pub async fn place_building_from_item(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -392,7 +392,11 @@ pub fn place_building_from_item(
         return false;
     }
     let extra = building_extra_for_pack_type(pack_type);
-    let id = state.db.insert_building(code, bx, by, pid, 0, &extra).ok();
+    let id = state
+        .db
+        .insert_building(code, bx, by, pid, 0, &extra)
+        .await
+        .ok();
     if let Some(db_id) = id {
         let entity = state
             .ecs
@@ -732,7 +736,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
 }
 
 /// D16: Razryadka — C# `ShitClass.Raz` parity.
-pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
+pub async fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             let p = ecs.get::<PlayerPosition>(entity)?;
@@ -779,7 +783,7 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
 
     // Destroy buildings that reached CanDestroy (release ECS lock first to avoid deadlock).
     for (bx, by) in to_destroy {
-        destroy_damagable_building(state, Some(pid), bx, by);
+        destroy_damagable_building(state, Some(pid), bx, by).await;
     }
 
     // Resend HB O for buildings whose charge hit 0 from damage.

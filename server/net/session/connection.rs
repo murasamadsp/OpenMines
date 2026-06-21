@@ -212,7 +212,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = pid {
-        on_disconnect(&state, id);
+        on_disconnect(&state, id).await;
     }
     Ok(())
 }

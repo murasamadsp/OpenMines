@@ -15,7 +15,6 @@ pub async fn handle_gui_auth_flow(
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
-    // C# ref: `if (text.StartsWith("exit")) { reset to default window }`
     if button.starts_with("exit") {
         *step = GuiAuthStep::MainMenu;
         send_default_auth_window(tx);
@@ -23,15 +22,15 @@ pub async fn handle_gui_auth_flow(
     }
 
     match step {
-        GuiAuthStep::MainMenu => handle_main_menu(state, tx, button, step),
+        GuiAuthStep::MainMenu => handle_main_menu(state, tx, button, step).await,
         GuiAuthStep::LoginPassword { nick } => {
             let nick = nick.clone();
-            handle_login_password(state, tx, button, &nick, step)
+            handle_login_password(state, tx, button, &nick, step).await
         }
-        GuiAuthStep::RegisterNick => handle_register_nick(state, tx, button, step),
+        GuiAuthStep::RegisterNick => handle_register_nick(state, tx, button, step).await,
         GuiAuthStep::RegisterPassword { nick } => {
             let nick = nick.clone();
-            handle_register_password(state, tx, button, &nick, step)
+            handle_register_password(state, tx, button, &nick, step).await
         }
     }
 }
@@ -54,7 +53,7 @@ fn send_default_auth_window(tx: &mpsc::UnboundedSender<Vec<u8>>) {
 }
 
 /// Handle buttons on the main auth menu.
-fn handle_main_menu(
+async fn handle_main_menu(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
@@ -62,7 +61,6 @@ fn handle_main_menu(
 ) -> Result<Option<PlayerId>> {
     let _ = state;
     if button == "newakk" {
-        // C# ref: `CreateNew()` — open nick prompt for new account.
         *step = GuiAuthStep::RegisterNick;
         let gui = json!({
             "title": "НОВЫЙ ИГРОК",
@@ -76,17 +74,15 @@ fn handle_main_menu(
         return Ok(None);
     }
 
-    // `nick:SomeName` — client substitutes %I% with input text.
     if let Some(name) = button.strip_prefix("nick:") {
-        return handle_find_by_nick(state, tx, name.trim(), step);
+        return handle_find_by_nick(state, tx, name.trim(), step).await;
     }
 
-    // Unknown button in main menu — ignore.
     Ok(None)
 }
 
 /// C# ref: `TryToFindByNick` — look up player by name.
-fn handle_find_by_nick(
+async fn handle_find_by_nick(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     name: &str,
@@ -98,9 +94,8 @@ fn handle_find_by_nick(
         return Ok(None);
     }
 
-    let player = state.db.get_player_by_name(name)?;
+    let player = state.db.get_player_by_name(name).await?;
     if let Some(player) = player {
-        // Player found — ask for password.
         *step = GuiAuthStep::LoginPassword { nick: player.name };
         let gui = json!({
             "title": "ВХОД",
@@ -112,7 +107,6 @@ fn handle_find_by_nick(
         });
         send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
     } else {
-        // C# ref: `SendU(new OKPacket("auth", "Игрок не найден"))`
         send_u_packet(tx, "OK", &ok_message("auth", "Игрок не найден").1);
         send_default_auth_window(tx);
     }
@@ -120,7 +114,7 @@ fn handle_find_by_nick(
 }
 
 /// Handle password input for existing player login.
-fn handle_login_password(
+async fn handle_login_password(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
@@ -129,7 +123,7 @@ fn handle_login_password(
 ) -> Result<Option<PlayerId>> {
     let passwd = button.strip_prefix("passwd:").unwrap_or(button);
 
-    let player = state.db.get_player_by_name(nick)?;
+    let player = state.db.get_player_by_name(nick).await?;
     let Some(player) = player else {
         send_u_packet(tx, "OK", &ok_message("auth", "Игрок не найден").1);
         *step = GuiAuthStep::MainMenu;
@@ -138,11 +132,9 @@ fn handle_login_password(
     };
 
     if player.passwd == passwd {
-        // C# ref: `TryToAuthByPlayer` success path.
-        return finalize_auth(state, tx, &player, step);
+        return finalize_auth(state, tx, &player, step).await;
     }
 
-    // Wrong password — C# ref: `SendU(new OKPacket("auth", "Не верный пароль"))` + resend window.
     send_u_packet(tx, "OK", &ok_message("auth", "Не верный пароль").1);
     let gui = json!({
         "title": "ВХОД",
@@ -157,7 +149,7 @@ fn handle_login_password(
 }
 
 /// Handle nick input for new account registration.
-fn handle_register_nick(
+async fn handle_register_nick(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
@@ -170,10 +162,8 @@ fn handle_register_nick(
         return Ok(None);
     }
 
-    // C# ref: check if name is taken.
-    if state.db.player_name_exists(nick)? {
+    if state.db.player_name_exists(nick).await? {
         send_u_packet(tx, "OK", &ok_message("auth", "Ник занят").1);
-        // Re-show nick input (C# ref: `CreateNew()` again).
         let gui = json!({
             "title": "НОВЫЙ ИГРОК",
             "text": "Ник",
@@ -186,8 +176,6 @@ fn handle_register_nick(
         return Ok(None);
     }
 
-    // Nick available — ask for password.
-    // C# ref: `SetPasswdForNew(args.Input!)`
     *step = GuiAuthStep::RegisterPassword {
         nick: nick.to_owned(),
     };
@@ -204,7 +192,7 @@ fn handle_register_nick(
 }
 
 /// Handle password input for new account — creates the player.
-fn handle_register_password(
+async fn handle_register_password(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
@@ -218,43 +206,37 @@ fn handle_register_password(
         return Ok(None);
     }
 
-    // C# ref: `EndCreateAndInit` — create player in DB.
     let hash = GameState::generate_hash();
-    let player = state.db.create_player(nick, passwd, &hash)?;
+    let player = state.db.create_player(nick, passwd, &hash).await?;
     tracing::info!(
         "[Auth GUI] New player registered: {} (id={})",
         player.name,
         player.id
     );
 
-    finalize_auth(state, tx, &player, step)
+    finalize_auth(state, tx, &player, step).await
 }
 
 /// Shared finalization: send AH, cf, Gu, `init_player`.
-/// C# ref: `SendU(new AHPacket(temp.id, temp.hash))` then `player.Init()`.
-fn finalize_auth(
+async fn finalize_auth(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &crate::db::players::PlayerRow,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
-    // 1. AH packet — client stores hash for future reconnection.
     let ah = auth_hash(player.id, &player.hash);
     send_u_packet(tx, ah.0, &ah.1);
 
-    // 2. WorldInfo (cf) — must come before Init so client registers handlers.
     let w = state.world.cells_width();
     let h = state.world.cells_height();
     let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
     send_u_packet(tx, world.0, &world.1);
 
-    // 3. Close auth window.
     let gu = gu_close();
     send_u_packet(tx, gu.0, &gu.1);
 
-    // 4. Player.Init() — full init sequence.
-    let pid = init_player(state, tx, player);
+    let pid = init_player(state, tx, player).await;
 
-    *step = GuiAuthStep::MainMenu; // Reset (won't be used, session transitions to Authenticated).
+    *step = GuiAuthStep::MainMenu;
     Ok(Some(pid))
 }

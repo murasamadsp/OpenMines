@@ -15,7 +15,7 @@ use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 
 #[allow(clippy::similar_names)]
-pub fn init_player(
+pub async fn init_player(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &PlayerRow,
@@ -145,11 +145,11 @@ pub fn init_player(
         Some(())
     });
 
-    send_initial_sync(state, tx, player);
+    send_initial_sync(state, tx, player).await;
     pid
 }
 
-pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
+pub async fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
     let Some((_, p)) = state.active_players.remove(&pid) else {
         return;
     };
@@ -170,7 +170,7 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
         (chunk.0, chunk.1, row)
     }; // ecs.read() освобождён здесь.
     if let Some(row) = row {
-        if let Err(e) = state.db.save_player(&row) {
+        if let Err(e) = state.db.save_player(&row).await {
             tracing::error!("Failed to save player {pid} on disconnect: {e}");
         }
     }
@@ -189,7 +189,7 @@ pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
 #[allow(clippy::similar_names)]
-fn send_initial_sync(
+async fn send_initial_sync(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &PlayerRow,
@@ -287,7 +287,7 @@ fn send_initial_sync(
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
     }
     // 15. SendChat — как `Player.SendChat()` в server_reference: только `mO` и при наличии — `mU`.
-    send_chat_login_per_reference(state, tx, pid);
+    send_chat_login_per_reference(state, tx, pid).await;
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
     // 17. UpdateProg (#p) — C# ref: if programsData.selected != null → UpdateProg()
@@ -298,7 +298,7 @@ fn send_initial_sync(
         })
         .flatten();
     if let Some((prog_id, prog_running)) = prog_data {
-        if let Ok(Some(prog)) = state.db.get_program(prog_id) {
+        if let Ok(Some(prog)) = state.db.get_program(prog_id).await {
             send_u_packet(
                 tx,
                 "#p",

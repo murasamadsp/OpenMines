@@ -4,16 +4,16 @@ use crate::net::session::prelude::*;
 
 // ─── Clans ─────────────────────────────────────────────────────────────
 
-pub fn handle_clan_menu(
+pub async fn handle_clan_menu(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
     let clan_id = player_clan_id(state, pid);
     if let Some(cid) = clan_id {
-        handle_clan_info_view(state, tx, pid, cid);
+        handle_clan_info_view(state, tx, pid, cid).await;
     } else {
-        let invites = state.db.get_player_invites(pid).unwrap_or_default();
+        let invites = state.db.get_player_invites(pid).await.unwrap_or_default();
         let mut buttons: Vec<serde_json::Value> = Vec::new();
 
         if !invites.is_empty() {
@@ -26,9 +26,9 @@ pub fn handle_clan_menu(
 
         buttons.push(serde_json::Value::String("Создать клан (1000 кр.)".into()));
         buttons.push(serde_json::Value::String("clan_create".into()));
-        let clans = state.db.list_clans().unwrap_or_default();
+        let clans = state.db.list_clans().await.unwrap_or_default();
         for clan in &clans {
-            let members = state.db.get_clan_members(clan.id).unwrap_or_default();
+            let members = state.db.get_clan_members(clan.id).await.unwrap_or_default();
             let label = format!("{} [{}] ({} чел.)", clan.name, clan.abr, members.len());
             buttons.push(serde_json::Value::String(label));
             buttons.push(serde_json::Value::String(format!("clan_view:{}", clan.id)));
@@ -44,20 +44,20 @@ pub fn handle_clan_menu(
     }
 }
 
-pub fn handle_clan_info_view(
+pub async fn handle_clan_info_view(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     clan_id: i32,
 ) {
-    let clan = match state.db.get_clan(clan_id) {
+    let clan = match state.db.get_clan(clan_id).await {
         Ok(Some(c)) => c,
         _ => {
             send_clan_ok(tx, "Ошибка", "Клан не найден");
             return;
         }
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -84,7 +84,11 @@ pub fn handle_clan_info_view(
     buttons.push(serde_json::json!("clan_members"));
 
     if player_rank >= crate::db::ClanRank::Officer {
-        let requests = state.db.get_clan_requests(clan_id).unwrap_or_default();
+        let requests = state
+            .db
+            .get_clan_requests(clan_id)
+            .await
+            .unwrap_or_default();
         let req_label = format!("Заявки ({})", requests.len());
         buttons.push(serde_json::json!(req_label));
         buttons.push(serde_json::json!("clan_requests"));
@@ -105,20 +109,20 @@ pub fn handle_clan_info_view(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_preview(
+pub async fn handle_clan_preview(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     clan_id: i32,
 ) {
-    let clan = match state.db.get_clan(clan_id) {
+    let clan = match state.db.get_clan(clan_id).await {
         Ok(Some(c)) => c,
         _ => {
             send_clan_ok(tx, "Ошибка", "Клан не найден");
             return;
         }
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let owner_name = members
         .iter()
         .find(|(id, _, _)| *id == clan.owner_id)
@@ -152,7 +156,7 @@ pub fn handle_clan_preview(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_create(
+pub async fn handle_clan_create(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -180,10 +184,10 @@ pub fn handle_clan_create(
         return;
     }
 
-    let used_ids = state.db.get_used_clan_ids().unwrap_or_default();
+    let used_ids = state.db.get_used_clan_ids().await.unwrap_or_default();
     let new_id = used_ids.iter().max().map_or(1, |&id| id + 1);
 
-    match state.db.create_clan(new_id, name, tag, pid) {
+    match state.db.create_clan(new_id, name, tag, pid).await {
         Ok(()) => {
             state.modify_player(pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -196,7 +200,7 @@ pub fn handle_clan_create(
             let cs = clan_show(new_id);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
-            handle_clan_info_view(state, tx, pid, new_id);
+            handle_clan_info_view(state, tx, pid, new_id).await;
         }
         Err(e) => {
             tracing::error!("create_clan error: {e}");
@@ -209,7 +213,7 @@ pub fn handle_clan_create(
     }
 }
 
-pub fn handle_clan_leave(
+pub async fn handle_clan_leave(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -219,8 +223,8 @@ pub fn handle_clan_leave(
         None => return,
     };
 
-    if is_clan_owner(state, clan_id, pid) {
-        match state.db.delete_clan(clan_id) {
+    if is_clan_owner(state, clan_id, pid).await {
+        match state.db.delete_clan(clan_id).await {
             Ok(()) => {
                 for entry in &state.active_players {
                     let target_pid = *entry.key();
@@ -237,7 +241,7 @@ pub fn handle_clan_leave(
                     });
                 }
                 send_clan_ok(tx, "Клан", "Клан расформирован");
-                handle_clan_menu(state, tx, pid);
+                handle_clan_menu(state, tx, pid).await;
             }
             Err(e) => {
                 tracing::error!("delete_clan error: {e}");
@@ -245,7 +249,7 @@ pub fn handle_clan_leave(
             }
         }
     } else {
-        match state.db.leave_clan(pid) {
+        match state.db.leave_clan(pid).await {
             Ok(()) => {
                 state.modify_player(pid, |ecs, entity| {
                     let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -256,7 +260,7 @@ pub fn handle_clan_leave(
                 let ch = clan_hide();
                 send_u_packet(tx, ch.0, &ch.1);
                 send_clan_ok(tx, "Клан", "Вы покинули клан");
-                handle_clan_menu(state, tx, pid);
+                handle_clan_menu(state, tx, pid).await;
             }
             Err(e) => {
                 tracing::error!("leave_clan error: {e}");
@@ -266,7 +270,7 @@ pub fn handle_clan_leave(
     }
 }
 
-pub fn handle_clan_join_request(
+pub async fn handle_clan_join_request(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -277,7 +281,7 @@ pub fn handle_clan_join_request(
         return;
     }
 
-    match state.db.add_clan_request(clan_id, pid) {
+    match state.db.add_clan_request(clan_id, pid).await {
         Ok(()) => {
             send_clan_ok(tx, "Клан", "Заявка отправлена");
         }
@@ -288,7 +292,7 @@ pub fn handle_clan_join_request(
     }
 }
 
-pub fn handle_clan_members_view(
+pub async fn handle_clan_members_view(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -297,7 +301,7 @@ pub fn handle_clan_members_view(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -336,7 +340,7 @@ pub fn handle_clan_members_view(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_invite_list(
+pub async fn handle_clan_invite_list(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -345,7 +349,7 @@ pub fn handle_clan_invite_list(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -409,7 +413,7 @@ pub fn handle_clan_invite_list(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_invite_send(
+pub async fn handle_clan_invite_send(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -419,7 +423,7 @@ pub fn handle_clan_invite_send(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -431,7 +435,7 @@ pub fn handle_clan_invite_send(
         return;
     }
 
-    match state.db.add_clan_invite(clan_id, target_pid) {
+    match state.db.add_clan_invite(clan_id, target_pid).await {
         Ok(()) => {
             send_clan_ok(tx, "Клан", "Приглашение отправлено");
             state.query_player(target_pid, |ecs, entity| {
@@ -450,12 +454,12 @@ pub fn handle_clan_invite_send(
     }
 }
 
-pub fn handle_clan_invites_view(
+pub async fn handle_clan_invites_view(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let invites = state.db.get_player_invites(pid).unwrap_or_default();
+    let invites = state.db.get_player_invites(pid).await.unwrap_or_default();
     let mut buttons: Vec<serde_json::Value> = Vec::new();
 
     for (clan_id, clan_name) in &invites {
@@ -481,7 +485,7 @@ pub fn handle_clan_invites_view(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_invite_accept(
+pub async fn handle_clan_invite_accept(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -492,7 +496,7 @@ pub fn handle_clan_invite_accept(
         return;
     }
 
-    match state.db.accept_clan_invite(clan_id, pid) {
+    match state.db.accept_clan_invite(clan_id, pid).await {
         Ok(()) => {
             state.modify_player(pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -511,17 +515,17 @@ pub fn handle_clan_invite_accept(
     }
 }
 
-pub fn handle_clan_invite_decline(
+pub async fn handle_clan_invite_decline(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     clan_id: i32,
 ) {
-    let _ = state.db.decline_clan_invite(clan_id, pid);
-    handle_clan_invites_view(state, tx, pid);
+    let _ = state.db.decline_clan_invite(clan_id, pid).await;
+    handle_clan_invites_view(state, tx, pid).await;
 }
 
-pub fn handle_clan_promote(
+pub async fn handle_clan_promote(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -531,7 +535,7 @@ pub fn handle_clan_promote(
         Some(id) => id,
         None => return,
     };
-    if !is_clan_owner(state, clan_id, pid) {
+    if !is_clan_owner(state, clan_id, pid).await {
         send_clan_no_rights(tx);
         return;
     }
@@ -539,6 +543,7 @@ pub fn handle_clan_promote(
     match state
         .db
         .set_clan_rank(target_pid, crate::db::ClanRank::Officer)
+        .await
     {
         Ok(()) => {
             state.modify_player(target_pid, |ecs, entity| {
@@ -547,7 +552,7 @@ pub fn handle_clan_promote(
                 Some(())
             });
             send_clan_ok(tx, "Клан", "Игрок повышен до Офицера");
-            handle_clan_members_view(state, tx, pid);
+            handle_clan_members_view(state, tx, pid).await;
         }
         Err(e) => {
             tracing::error!("set_clan_rank error: {e}");
@@ -556,7 +561,7 @@ pub fn handle_clan_promote(
     }
 }
 
-pub fn handle_clan_requests_view(
+pub async fn handle_clan_requests_view(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -565,7 +570,7 @@ pub fn handle_clan_requests_view(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -576,7 +581,11 @@ pub fn handle_clan_requests_view(
         send_clan_no_rights(tx);
         return;
     }
-    let requests = state.db.get_clan_requests(clan_id).unwrap_or_default();
+    let requests = state
+        .db
+        .get_clan_requests(clan_id)
+        .await
+        .unwrap_or_default();
     let mut buttons: Vec<serde_json::Value> = Vec::new();
     for (req_pid, req_name) in &requests {
         buttons.push(serde_json::Value::String(format!("{req_name} - Принять")));
@@ -596,7 +605,7 @@ pub fn handle_clan_requests_view(
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
 }
 
-pub fn handle_clan_accept(
+pub async fn handle_clan_accept(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -606,7 +615,7 @@ pub fn handle_clan_accept(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -617,7 +626,7 @@ pub fn handle_clan_accept(
         send_clan_no_rights(tx);
         return;
     }
-    match state.db.accept_clan_request(clan_id, target_pid) {
+    match state.db.accept_clan_request(clan_id, target_pid).await {
         Ok(()) => {
             state.modify_player(target_pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -629,7 +638,7 @@ pub fn handle_clan_accept(
                 }
                 Some(())
             });
-            handle_clan_requests_view(state, tx, pid);
+            handle_clan_requests_view(state, tx, pid).await;
         }
         Err(e) => {
             tracing::error!("accept_clan_request error: {e}");
@@ -638,7 +647,7 @@ pub fn handle_clan_accept(
     }
 }
 
-pub fn handle_clan_decline(
+pub async fn handle_clan_decline(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -648,7 +657,7 @@ pub fn handle_clan_decline(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -659,11 +668,11 @@ pub fn handle_clan_decline(
         send_clan_no_rights(tx);
         return;
     }
-    let _ = state.db.decline_clan_request(clan_id, target_pid);
-    handle_clan_requests_view(state, tx, pid);
+    let _ = state.db.decline_clan_request(clan_id, target_pid).await;
+    handle_clan_requests_view(state, tx, pid).await;
 }
 
-pub fn handle_clan_kick(
+pub async fn handle_clan_kick(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -673,7 +682,7 @@ pub fn handle_clan_kick(
         Some(id) => id,
         None => return,
     };
-    let members = state.db.get_clan_members(clan_id).unwrap_or_default();
+    let members = state.db.get_clan_members(clan_id).await.unwrap_or_default();
     let player_rank = members
         .iter()
         .find(|(id, _, _)| *id == pid)
@@ -696,7 +705,7 @@ pub fn handle_clan_kick(
         return;
     }
 
-    let _ = state.db.kick_from_clan(target_pid);
+    let _ = state.db.kick_from_clan(target_pid).await;
     state.modify_player(target_pid, |ecs, entity| {
         let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
         s.clan_id = None;
@@ -708,23 +717,23 @@ pub fn handle_clan_kick(
         Some(())
     });
     send_clan_ok(tx, "Клан", "Игрок исключён из клана");
-    handle_clan_members_view(state, tx, pid);
+    handle_clan_members_view(state, tx, pid).await;
 }
 
-pub fn handle_clan_kick_by_name(
+pub async fn handle_clan_kick_by_name(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     target_name: &str,
 ) {
-    let target = match state.db.get_player_by_name(target_name) {
+    let target = match state.db.get_player_by_name(target_name).await {
         Ok(Some(p)) => p,
         _ => {
             send_clan_ok(tx, "Ошибка", "Игрок не найден");
             return;
         }
     };
-    handle_clan_kick(state, tx, pid, target.id);
+    handle_clan_kick(state, tx, pid, target.id).await;
 }
 
 fn player_clan_id(state: &Arc<GameState>, pid: PlayerId) -> Option<i32> {
@@ -736,8 +745,8 @@ fn player_clan_id(state: &Arc<GameState>, pid: PlayerId) -> Option<i32> {
         .flatten()
 }
 
-fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> bool {
-    match state.db.get_clan(clan_id) {
+async fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> bool {
+    match state.db.get_clan(clan_id).await {
         Ok(Some(clan)) => clan.owner_id == pid,
         _ => false,
     }

@@ -1,6 +1,6 @@
 use super::Database;
 use anyhow::Result;
-use rusqlite::params;
+use sqlx::Row;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -64,24 +64,26 @@ const fn default_hp() -> i32 {
 }
 
 impl Database {
-    pub fn load_all_buildings(&self) -> Result<Vec<BuildingRow>> {
-        let rows = self
-            .conn
-            .lock()
-            .prepare("SELECT id, type_code, x, y, owner_id, clan_id, data FROM buildings")?
-            .query_map([], |r| {
-                let data_str: Option<String> = r.get(6).ok();
+    pub async fn load_all_buildings(&self) -> Result<Vec<BuildingRow>> {
+        let rows =
+            sqlx::query("SELECT id, type_code, x, y, owner_id, clan_id, data FROM buildings")
+                .fetch_all(&self.pool)
+                .await?;
+        let res = rows
+            .into_iter()
+            .map(|r| {
+                let data_str: Option<String> = r.get("data");
                 let extra: BuildingExtra = data_str
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default();
-                Ok(BuildingRow {
-                    id: r.get(0)?,
-                    type_code: r.get(1)?,
-                    x: r.get(2)?,
-                    y: r.get(3)?,
-                    owner_id: r.get(4)?,
-                    clan_id: r.get(5)?,
+                BuildingRow {
+                    id: r.get("id"),
+                    type_code: r.get("type_code"),
+                    x: r.get("x"),
+                    y: r.get("y"),
+                    owner_id: r.get("owner_id"),
+                    clan_id: r.get("clan_id"),
                     charge: extra.charge,
                     max_charge: extra.max_charge,
                     cost: extra.cost,
@@ -93,13 +95,13 @@ impl Database {
                     craft_recipe_id: extra.craft_recipe_id,
                     craft_num: extra.craft_num,
                     craft_end_ts: extra.craft_end_ts,
-                })
-            })?
-            .collect::<Result<Vec<_>, rusqlite::Error>>()?;
-        Ok(rows)
+                }
+            })
+            .collect();
+        Ok(res)
     }
 
-    pub fn insert_building(
+    pub async fn insert_building(
         &self,
         type_code: &str,
         x: i32,
@@ -109,43 +111,51 @@ impl Database {
         extra: &BuildingExtra,
     ) -> Result<i32> {
         let data_json = serde_json::to_string(extra)?;
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO buildings (type_code, x, y, owner_id, clan_id, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![type_code, x, y, owner_id, clan_id, data_json],
-        )?;
-        let id = conn.last_insert_rowid();
-        drop(conn);
+        let result = sqlx::query(
+            "INSERT INTO buildings (type_code, x, y, owner_id, clan_id, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+        )
+        .bind(type_code)
+        .bind(x)
+        .bind(y)
+        .bind(owner_id)
+        .bind(clan_id)
+        .bind(data_json)
+        .execute(&self.pool)
+        .await?;
+        let id = result.last_insert_rowid();
         i32::try_from(id).map_err(|_| anyhow::anyhow!("building id overflow"))
     }
 
-    pub fn delete_building(&self, building_id: i32) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("DELETE FROM buildings WHERE id = ?1", params![building_id])?;
+    pub async fn delete_building(&self, building_id: i32) -> Result<()> {
+        sqlx::query("DELETE FROM buildings WHERE id = ?1")
+            .bind(building_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     /// Полная очистка зданий (при смене мира / `--regen`), чтобы старые якоря не накладывались на новую карту.
-    pub fn delete_all_buildings(&self) -> Result<u64> {
-        let n = self.conn.lock().execute("DELETE FROM buildings", [])?;
-        Ok(u64::try_from(n).unwrap_or(u64::MAX))
+    pub async fn delete_all_buildings(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM buildings")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
-    // TODO: will be used when building patch/update feature is fully connected
     #[allow(dead_code)]
-    pub fn update_building_extra(&self, id: i32, extra: &BuildingExtra) -> Result<()> {
+    pub async fn update_building_extra(&self, id: i32, extra: &BuildingExtra) -> Result<()> {
         let data_json = serde_json::to_string(extra)?;
-        self.conn.lock().execute(
-            "UPDATE buildings SET data = ?1 WHERE id = ?2",
-            params![data_json, id],
-        )?;
+        sqlx::query("UPDATE buildings SET data = ?1 WHERE id = ?2")
+            .bind(data_json)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     /// Смена координат/типа/владельца здания (см. `update_pack_with_world_sync`).
     #[allow(clippy::too_many_arguments)]
-    pub fn update_building_state(
+    pub async fn update_building_state(
         &self,
         id: i32,
         type_code: u8,
@@ -157,14 +167,22 @@ impl Database {
     ) -> Result<()> {
         let data_json = serde_json::to_string(extra)?;
         let type_code_str = char::from(type_code).to_string();
-        self.conn.lock().execute(
-            "UPDATE buildings SET type_code = ?1, x = ?2, y = ?3, owner_id = ?4, clan_id = ?5, data = ?6 WHERE id = ?7",
-            params![type_code_str.as_str(), x, y, owner_id, clan_id, data_json, id],
-        )?;
+        sqlx::query(
+            "UPDATE buildings SET type_code = ?1, x = ?2, y = ?3, owner_id = ?4, clan_id = ?5, data = ?6 WHERE id = ?7"
+        )
+        .bind(type_code_str)
+        .bind(x)
+        .bind(y)
+        .bind(owner_id)
+        .bind(clan_id)
+        .bind(data_json)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub fn save_building(&self, row: &BuildingRow) -> Result<()> {
+    pub async fn save_building(&self, row: &BuildingRow) -> Result<()> {
         let extra = BuildingExtra {
             charge: row.charge,
             max_charge: row.max_charge,
@@ -188,5 +206,6 @@ impl Database {
             row.clan_id,
             &extra,
         )
+        .await
     }
 }

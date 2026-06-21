@@ -1,15 +1,8 @@
 use crate::game::GameState;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tokio::time::{self, Duration, Interval, MissedTickBehavior};
-use tracing::info;
-
-/// Описание одной задачи
-pub struct CronJob {
-    pub name: &'static str,
-    pub interval: Duration,
-    pub run: Box<dyn Fn(Arc<GameState>) + Send + Sync>,
-}
+use tokio_cron_scheduler::{Job, JobScheduler};
+use tracing::{error, info};
 
 pub struct CronManager {
     game_state: Arc<GameState>,
@@ -30,68 +23,53 @@ impl CronManager {
         let mut shutdown_rx = self.shutdown.subscribe();
         let config = state.config.clone();
 
-        // Реестр задач
-        let mut jobs: Vec<CronJob> = Vec::new();
-
-        // 1. Добавляем нашу "заглушку" из конфига
-        if config.cron.hourly_log_enabled {
-            jobs.push(CronJob {
-                name: "HourlyHeartbeat",
-                // Для теста можно поставить 10 секунд, но по ТЗ - час.
-                // Оставим час (3600с), чтобы не спамить.
-                interval: Duration::from_secs(3600),
-                run: Box::new(|state| {
-                    let online = state.active_players.len();
-                    info!("[Cron] Hourly Heartbeat. Online players: {}", online);
-                }),
-            });
-        }
-
         tokio::spawn(async move {
-            info!("Cron system started ({} jobs registered)", jobs.len());
+            let mut sched = match JobScheduler::new().await {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to create JobScheduler: {e}");
+                    return;
+                }
+            };
 
-            // Подготавливаем интервалы (в реальной MMORPG их может быть много)
-            // Используем MissedTickBehavior::Skip, чтобы если сервер "залагал",
-            // задачи не запускались пачкой друг за другом.
-            let mut min_interval = Self::create_interval(60);
-            let mut hour_interval = Self::create_interval(3600);
+            // Добавляем ежечасный лог игроков
+            if config.cron.hourly_log_enabled {
+                let state_clone = Arc::clone(&state);
+                // "0 0 * * * *" - выполняется каждую минуту 00, секунду 00 каждого часа.
+                let job = Job::new_async("0 0 * * * *", move |_uuid, _lock| {
+                    let st = Arc::clone(&state_clone);
+                    Box::pin(async move {
+                        let online = st.active_players.len();
+                        info!("[Cron] Hourly Heartbeat. Online players: {}", online);
+                    })
+                });
 
-            loop {
-                tokio::select! {
-                    _ = min_interval.tick() => {
-                        Self::run_tick(&state, &jobs, Duration::from_secs(60));
+                match job {
+                    Ok(j) => {
+                        if let Err(e) = sched.add(j).await {
+                            error!("Failed to add HourlyHeartbeat job to scheduler: {e}");
+                        } else {
+                            info!("HourlyHeartbeat job registered in cron");
+                        }
                     }
-                    _ = hour_interval.tick() => {
-                        Self::run_tick(&state, &jobs, Duration::from_secs(3600));
-                    }
-                    _ = shutdown_rx.recv() => {
-                        info!("Cron system shutting down...");
-                        break;
+                    Err(e) => {
+                        error!("Failed to create HourlyHeartbeat job: {e}");
                     }
                 }
             }
-        });
-    }
 
-    fn create_interval(secs: u64) -> Interval {
-        let mut interval = time::interval(Duration::from_secs(secs));
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        interval
-    }
-
-    fn run_tick(state: &Arc<GameState>, jobs: &[CronJob], current_interval: Duration) {
-        for job in jobs {
-            if job.interval == current_interval {
-                let state_clone = Arc::clone(state);
-                info!("Cron executing job: {}", job.name);
-
-                // В MMORPG инфраструктуре задачи обычно выполняются в пуле потоков
-                // или как отдельные таски, чтобы одна тяжелая задача (например, бэкап)
-                // не вешала весь цикл планировщика.
-                let name = job.name;
-                (job.run)(state_clone);
-                info!("Cron job finished: {}", name);
+            if let Err(e) = sched.start().await {
+                error!("Failed to start JobScheduler: {e}");
+                return;
             }
-        }
+            info!("Cron system started (tokio-cron-scheduler)");
+
+            // Ожидаем сигнала выключения
+            let _ = shutdown_rx.recv().await;
+            info!("Cron system shutting down...");
+            if let Err(e) = sched.shutdown().await {
+                error!("Error shutting down cron scheduler: {e}");
+            }
+        });
     }
 }
