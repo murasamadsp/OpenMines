@@ -253,6 +253,9 @@ pub struct ProgrammatorState {
     pub flip_state: bool,
     pub startpoint: (String, usize),
     pub goto_death: Option<String>,
+    /// C# `ProgrammatorData.temp` — состояние `MacrosMine` между тиками: направление,
+    /// в котором бот сейчас копает (fast-path), либо None (нужен скан 4 направлений).
+    pub macros_template: Option<i32>,
 }
 
 impl ProgrammatorState {
@@ -272,6 +275,7 @@ impl ProgrammatorState {
             flip_state: false,
             startpoint: (String::new(), 0),
             goto_death: None,
+            macros_template: None,
         }
     }
 
@@ -1187,20 +1191,43 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::MacrosMine => {
-            // Simplified: dig in current direction if crystal
-            let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
-            let tx = pos.x + dx;
-            let ty = pos.y + dy;
-            let cell = state.world.get_cell(tx, ty);
-            if crate::world::cells::is_crystal(cell) {
-                *delay_ms = 200;
-                prog_q.0.push(ProgrammatorAction::Dig {
-                    pid: meta.id,
-                    tx: conn.tx.clone(),
-                    dir: pos.dir,
-                });
-                return ExecResult::BoolResult(true);
+            // dirz: dir→offset (C# {0:(0,1),1:(-1,0),2:(0,-1),3:(1,0)}).
+            const DIRZ: [(i32, (i32, i32)); 4] =
+                [(0, (0, 1)), (1, (-1, 0)), (2, (0, -1)), (3, (1, 0))];
+            // C# PAction.cs:90-121. Fast-path: если уже копаем в направлении (template)
+            // и там всё ещё кристалл — копаем дальше.
+            if prog.macros_template.is_some() {
+                let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
+                if crate::world::cells::is_crystal(state.world.get_cell(pos.x + dx, pos.y + dy)) {
+                    *delay_ms = 200;
+                    prog_q.0.push(ProgrammatorAction::Dig {
+                        pid: meta.id,
+                        tx: conn.tx.clone(),
+                        dir: pos.dir,
+                    });
+                    return ExecResult::BoolResult(true);
+                }
             }
+            // Скан 4 направлений. Первый кристалл: если смотрим на него — копаем
+            // (и фиксируем template), иначе поворачиваемся к нему.
+            for (dir_key, (dx, dy)) in DIRZ {
+                if crate::world::cells::is_crystal(state.world.get_cell(pos.x + dx, pos.y + dy)) {
+                    if pos.dir == dir_key {
+                        *delay_ms = 200;
+                        prog.macros_template = Some(dir_key);
+                        prog_q.0.push(ProgrammatorAction::Dig {
+                            pid: meta.id,
+                            tx: conn.tx.clone(),
+                            dir: pos.dir,
+                        });
+                    } else {
+                        *delay_ms = speed_pause(skills, on_road);
+                        push_move(prog_q, meta, conn, pos.x, pos.y, dir_key);
+                    }
+                    return ExecResult::BoolResult(true);
+                }
+            }
+            prog.macros_template = None;
             ExecResult::None
         }
 
