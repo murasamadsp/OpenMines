@@ -12,6 +12,9 @@ pub struct DeathBroadcasts {
     pub money: i64,
     pub creds: i64,
     pub resp_used: bool,
+    /// Программа была запущена и остановлена смертью (не `RespawnOnProg`-продолжение).
+    /// C# шлёт `ProgrammatorPacket(false)` (@P) только в этом случае (Player.cs:935).
+    pub prog_stopped: bool,
 }
 
 /// Мутации ECS как в `Player.Death()` (`Player.cs`).
@@ -39,6 +42,7 @@ pub fn apply_player_death_core(
         money: 0,
         creds: 0,
         resp_used: false,
+        prog_stopped: false,
     };
 
     if cry.iter().sum::<i64>() > 0 {
@@ -168,15 +172,20 @@ pub fn apply_player_death_core(
         if prog.running {
             if let Some(label) = prog.goto_death.clone().filter(|_| is_free_resp) {
                 if prog.current_prog.contains_key(&label) {
-                    prog.current_function = label.clone();
-                    if let Some(f) = prog.current_prog.get_mut(&label) {
+                    // C# ProgrammatorData.OnDeath(): current.Reset() (уходящая функция),
+                    // затем cFunction = GotoDeath. GotoDeath НЕ ресетится (продолжается).
+                    let departing = prog.current_function.clone();
+                    if let Some(f) = prog.current_prog.get_mut(&departing) {
                         f.reset();
                     }
+                    prog.current_function = label;
                 } else {
                     prog.running = false;
+                    bcast.prog_stopped = true;
                 }
             } else {
                 prog.running = false;
+                bcast.prog_stopped = true;
             }
         }
     }
@@ -258,7 +267,11 @@ pub fn send_respawn_after_death(
     if bcast.resp_used {
         send_u_packet(tx, "P$", &money(bcast.money, bcast.creds).1);
     }
-    send_u_packet(tx, "@P", &programmator_status(false).1);
+    // C# Player.cs:935: @P(false) только при остановке программы смертью.
+    // RespawnOnProg-продолжение и not-running — @P НЕ шлётся.
+    if bcast.prog_stopped {
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+    }
 }
 
 /// `RESP` / очередь после пушки: `ecs.write()` для мутаций, broadcast'ы снаружи.

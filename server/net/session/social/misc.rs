@@ -90,6 +90,7 @@ pub fn handle_prog_ty(
                     .get_program(prog_id)
                     .ok()
                     .flatten()
+                    .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
                     .map(|p| p.name)
                     .unwrap_or_default();
                 send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
@@ -133,6 +134,7 @@ pub fn handle_prog_ty(
                     .get_program(prog_id)
                     .ok()
                     .flatten()
+                    .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
                     .map(|p| p.name)
                     .unwrap_or_default();
                 send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
