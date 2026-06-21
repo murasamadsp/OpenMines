@@ -61,6 +61,13 @@
 
 **Правило:** Запрещается использовать команды git, изменяющие состояние рабочей директории (например, `git clean`, `git restore`, `git reset`, `git checkout`), без явного прямого разрешения пользователя. Git можно использовать только для чтения (например, `git status`, `git diff`, `git log`).
 
+## Claude Code инструменты (`.claude/`)
+
+- **`skills/port-cs-reference/`** — skill для портирования C#→Rust. Вызывать перед анализом любого C# файла из `server_reference/`.
+- **`agents/port-verifier.md`** — субагент для аудита паритета Rust↔C# после портирования фичи.
+- **`settings.json`** — hooks: PostToolUse clippy на `.rs`-файлы, Stop hook записывает метку в `.remember/now.md`.
+- **`.git/hooks/pre-commit`** — блокирует коммит при ошибках `cargo fmt --check` или `cargo clippy`.
+
 ## Контекстные CLAUDE.md
 
 В подпапках `server/` лежат локальные CLAUDE.md с описанием конкретных модулей. **Читай их перед работой с модулем** — это быстрее чем разбирать код целиком.
@@ -81,6 +88,8 @@ OpenMines — MMORPG sandbox-майнинг игра. Rust-сервер реал
 cargo build --release
 cargo run --release
 cargo test --all-targets --all-features
+cargo test <test_name> -- --nocapture          # один тест
+cargo test protocol::wire_tests::              # все тесты модуля
 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 cargo fmt --all
 ```
@@ -281,8 +290,9 @@ cargo fmt --all
 - **`game/`** — игровая логика на Bevy ECS
   - `mod.rs` — `GameState` (центральный Arc-объект), ECS-системы, очереди broadcast/programmator
   - `player.rs` — ECS-компоненты игрока (12+: Position, Stats, Inventory, Skills, Cooldowns, Connection и др.)
-  - `buildings.rs` — ECS-компоненты зданий, `PackType` enum (15 вариантов)
-  - `combat.rs` — `standing_cell_hazard_system`, `gun_firing_system`
+  - `buildings.rs` — ECS-компоненты зданий, `PackType` enum (15 вариантов), `PackResendQueue` для HB-ресенда
+  - `building_damage.rs` — IDamagable система: `brokentimer`, hourly tick, `NeedEffect` FX, разрушение с дропом кристаллов
+  - `combat.rs` — `standing_cell_hazard_system`, `gun_firing_system`, charge-depleted HB resend
   - `sand.rs` — `sand_physics_system` (гравитация песка)
   - `programmator.rs` — `programmator_system` (парсер + исполнение)
   - `skills.rs` — 58 типов навыков
@@ -381,7 +391,7 @@ GameState {
 
 | Компонент | Статус | Что не хватает |
 |-----------|--------|----------------|
-| Здания | ~40% | Placement/removal + Gun firing + Gate blocking работают. Нет: Teleport GUI/action, Up skill GUI, Market buy/sell, Storage deposit, Crafter execution, Resp fill GUI |
+| Здания | ~55% | Placement/removal + Gun firing + Gate blocking + Gun GUI fill + IDamagable + Razryadka работают. Нет: Teleport GUI/action, Up skill GUI, Market buy/sell, Storage deposit, Crafter execution, Resp fill GUI |
 | Скиллы | ~80% | Дерево + формулы + @S/@LV + exp gain при dig/build/heal — всё 1:1. Нет: Up GUI (install/delete/slot management) |
 | Настройки | stub | Упрощённый GUI, полный RichList не портирован |
 | GUI регистрация | stub | `handle_gui_auth_flow()` — TODO |
