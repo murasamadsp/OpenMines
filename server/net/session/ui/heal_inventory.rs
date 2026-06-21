@@ -180,7 +180,7 @@ pub async fn handle_inventory_use(
         29 => place_building_from_item(state, tx, pid, "L").await,
         5 => use_boom(state, pid),
         6 => use_protector(state, pid),
-        7 => use_razryadka(state, pid).await,
+        7 => use_razryadka(state, pid),
         35 => use_poli(state, pid),
         40 => use_c190(state, pid),
         _ => false,
@@ -604,7 +604,31 @@ fn aoe_damage_players(
     killed
 }
 
+/// C# `Chunk.SendPack('B', x, y, 0, off)` — transient pack-спрайт расходника:
+/// HB 'O' с одним pack type 'B' (клиент PackSprite.cs: off 0=Boom/1=Prot/2=Raz).
+fn send_consumable_pack(state: &Arc<GameState>, x: i32, y: i32, off: u8) {
+    let Some(block_pos) = state.pack_block_pos(x, y) else {
+        return;
+    };
+    let pack = (b'B', net_u16_nonneg(x), net_u16_nonneg(y), 0u8, off);
+    let sub = hb_packs(block_pos, std::slice::from_ref(&pack));
+    let (cx, cy) = World::chunk_pos(x, y);
+    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[sub]).1), None);
+}
+
+/// C# `Chunk.ClearPack(x, y)` — HB 'O' с пустым списком pack'ов (стирает спрайт).
+fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
+    let Some(block_pos) = state.pack_block_pos(x, y) else {
+        return;
+    };
+    let sub = hb_packs(block_pos, &[]);
+    let (cx, cy) = World::chunk_pos(x, y);
+    state.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(&[sub]).1), None);
+}
+
 /// D14: Boom — C# `ShitClass.Boom` parity.
+/// C#: `AccessGun`-гейт → `SendPack`('B', off=0) → `AsyncAction`(1s) → детонация + `ClearPack`.
+/// Предмет тратится сразу (return true), урон отложен на 1 секунду.
 pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
@@ -627,6 +651,19 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
         return false;
     }
 
+    send_consumable_pack(state, cx, cy, 0);
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        boom_detonate(&st, pid, cx, cy);
+        clear_consumable_pack(&st, cx, cy);
+    });
+    true
+}
+
+/// Детонация Boom через 1с (тело C# `AsyncAction`): `AoE` r=3.5 — разрушение клеток
+/// + 40 HP игрокам + FX.
+fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // AoE: radius 3.5 centered on facing cell
     for ddx in -4..=4 {
         for ddy in -4..=4 {
@@ -680,10 +717,10 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
         &encode_hb_bundle(&hb_bundle(&[fx]).1),
         None,
     );
-    true
 }
 
 /// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
+/// C#: `AccessGun`-гейт → `SendPack`('B', off=1) → `AsyncAction`(2s) → детонация + `ClearPack`.
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
@@ -706,6 +743,19 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
         return false;
     }
 
+    send_consumable_pack(state, cx, cy, 1);
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        prot_detonate(&st, pid, cx, cy);
+        clear_consumable_pack(&st, cx, cy);
+    });
+    true
+}
+
+/// Детонация Protector через 2с (тело C# `AsyncAction`): `AoE` 3x3 — снос гейтов +
+/// разрушение клеток + 50 HP игрокам + FX.
+fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
     for ddx in -1..=1 {
         for ddy in -1..=1 {
@@ -771,11 +821,11 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
         &encode_hb_bundle(&hb_bundle(&[fx]).1),
         None,
     );
-    true
 }
 
 /// D16: Razryadka — C# `ShitClass.Raz` parity.
-pub async fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
+/// C#: `SendPack`('B', off=2) → `AsyncAction`(5s) → детонация + `ClearPack`. Без `AccessGun`.
+pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let pos = state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             let p = ecs.get::<PlayerPosition>(entity)?;
@@ -788,6 +838,19 @@ pub async fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let (dx, dy) = dir_offset(pdir);
     let (cx, cy) = (px + dx, py + dy);
 
+    send_consumable_pack(state, cx, cy, 2);
+    let st = state.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        raz_detonate(&st, pid, cx, cy).await;
+        clear_consumable_pack(&st, cx, cy);
+    });
+    true
+}
+
+/// Детонация Razryadka через 5с (тело C# `AsyncAction`): `IDamagable`-здания в r=9.5
+/// (Destroy при `CanDestroy`, иначе Damage 10) + 500 HP всем игрокам + FX.
+async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // Collect IDamagable buildings in radius 9.5 and apply damage (C# ShitClass.Raz).
     let mut to_destroy: Vec<(i32, i32)> = Vec::new();
     let mut resend_charge_zero: Vec<(i32, i32)> = Vec::new();
@@ -853,7 +916,6 @@ pub async fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
         &encode_hb_bundle(&hb_bundle(&[fx]).1),
         None,
     );
-    true
 }
 
 /// D17: C190 — C# `ShitClass.C190Shot` parity.
