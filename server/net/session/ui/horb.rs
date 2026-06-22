@@ -263,11 +263,18 @@ impl Horb {
             obj.insert("canvas".into(), flat.into());
         }
         if !self.buttons.is_empty() {
-            let flat: Vec<String> = self
+            let mut flat: Vec<String> = self
                 .buttons
                 .iter()
                 .flat_map(|b| [b.label.clone(), b.action.clone()])
                 .collect();
+            // Escape (клиент `PopupManager.cs:1827/1835`) кликает ПОСЛЕДНЮЮ кнопку.
+            // Гарантируем, что это `exit`, чтобы Escape всегда закрывал окно
+            // (иначе Escape жмёт «назад»/«ок» и окно не закрыть быстро).
+            if flat.last().map(String::as_str) != Some("exit") {
+                flat.push("ВЫЙТИ".into());
+                flat.push("exit".into());
+            }
             obj.insert("buttons".into(), flat.into());
         }
         if !self.tabs.is_empty() {
@@ -396,6 +403,29 @@ mod tests {
         assert!(json.get("buttons").is_none());
         assert!(json.get("canvas").is_none());
         assert!(json.get("css").is_none());
+    }
+
+    /// Escape кликает ПОСЛЕДНЮЮ кнопку (клиент `PopupManager.cs:1835`). Builder
+    /// гарантирует, что последняя кнопка — `exit`, иначе авто-добавляет её
+    /// (но не дублирует, если `close_button` уже её поставил).
+    #[test]
+    fn exit_is_always_the_last_button() {
+        // Окно без явного close → exit авто-добавлен последним.
+        let json = Horb::new("X")
+            .button(Button::new("Назад", "back"))
+            .to_json();
+        let b = arr(&json, "buttons");
+        assert_eq!(b[b.len() - 1], "exit");
+        assert_eq!(b.len(), 4); // [Назад, back, ВЫЙТИ, exit]
+
+        // close_button уже даёт exit последним → не дублируется.
+        let json2 = Horb::new("X")
+            .button(Button::new("Назад", "back"))
+            .close_button()
+            .to_json();
+        let b2 = arr(&json2, "buttons");
+        assert_eq!(b2.len(), 4); // дубля exit нет
+        assert_eq!(b2[b2.len() - 1], "exit");
     }
 
     /// Canvas-rect кодируется как `"X{x}Y{y}w{w}h{h}=R%{color}"` (клиент `ShowHORB`

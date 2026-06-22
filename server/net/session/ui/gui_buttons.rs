@@ -114,13 +114,13 @@ pub async fn handle_gui_button(
 }
 
 fn handle_clan_create_view(tx: &mpsc::UnboundedSender<Vec<u8>>) {
-    let gui = serde_json::json!({
-        "title": "СОЗДАНИЕ КЛАНА",
-        "text": "Введите название и тег (3 симв.) через пробел в чат после нажатия кнопки 'ВВОД'",
-        "buttons": ["ВВОД", "clan_create_input", "Назад", "clan_back"],
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    use super::horb::{Button, Horb};
+    // exit добавится builder-гарантией последним → Escape закроет окно.
+    Horb::new("СОЗДАНИЕ КЛАНА")
+        .text("Введите название и тег (3 симв.) через пробел в чат после нажатия кнопки 'ВВОД'")
+        .button(Button::new("ВВОД", "clan_create_input"))
+        .button(Button::new("Назад", "clan_back"))
+        .send_untracked(tx);
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).
