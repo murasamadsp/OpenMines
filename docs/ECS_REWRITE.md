@@ -72,10 +72,28 @@ P1 «command-bus» из первой версии плана ОТМЕНЕНА: `
 - **P2 (теперь первая реальная фаза) — убрать ecs-доступ из conn-тасков.**
   login/init + `send_initial_sync` + on_disconnect (`player/init.rs`,
   `outbound/chat_sync.rs`) сейчас лочат `ecs` в conn-таске, конкурируя с tick'ом
-  (C-4 фриз). Перевести их на исполнение в tick-таске: либо отдельная
-  lifecycle-очередь (`Connect/Disconnect` — это НЕ TY, в `incoming_actions` не
-  лезут), либо снапшот-чтения для read-only частей. Цель: 0 `ecs.*lock()` вне
-  tick-таска → `RwLock` почти без контеншна.
+  (C-4 фриз). Цель: 0 `ecs.*lock()` вне tick-таска → `RwLock` почти без контеншна.
+
+  БЛОКЕР (важно): и login, и disconnect ПЕРЕПЛЕТАЮТ async-DB с ecs-операциями:
+  - `send_initial_sync`: awaitит `send_chat_login_per_reference` и
+    `db.get_program` МЕЖДУ ecs-чтениями и отправкой Init-пакетов (порядок 1:1 C#).
+  - `on_disconnect`: `db.save_player().await` рядом с ecs-read/despawn.
+  Наивный «перенос в tick» заморозит perf-critical 10ms-цикл на DB-await. НЕЛЬЗЯ.
+
+  ДИЗАЙН (декомпозиция DB ↔ ecs):
+  1. lifecycle-очередь `LifeCmd::{Connect{row, programs, chat_hist, tx},
+     Disconnect{pid}}` на `GameState`, дренится в tick-ЛОКАЛЬНО (до/после action-
+     drain), как `incoming_actions`. Connect ДОЛЖЕН примениться раньше TY этого pid.
+  2. conn-таск (login): загружает ВСЮ async-DB (row + programs + chat history)
+     ДО enqueue — pre-fetch. cf/Gu шлёт сам (как сейчас). Затем enqueue Connect.
+  3. tick: spawn entity + set компонентов + `send_initial_sync_pure` (БЕЗ await,
+     строит Init-пакеты из ecs-снапшота + pre-fetched данных, шлёт в tx). Порядок
+     пакетов 1:1 сохранить дословно.
+  4. conn-таск (disconnect): enqueue Disconnect → tick: extract row (ecs read) +
+     despawn + broadcast hb_bot_del; извлечённый row → отдельный async-таск
+     `db.save_player` (НЕ в tick).
+  ВЕРИФИКАЦИЯ: обязателен коннект живым клиентом (порядок Init/auth — критичен).
+  Делать сфокусированно, НЕ в хвосте марафон-сессии (урок отката P1).
 - **P3 — Tickrate-бакеты + interest-replication.** Мультирейтный планировщик
   (сейчас всё на 10ms) + дельта-репликация по interest-set (`chunk_players`).
 - **P4 — Опциональный пространственный шардинг.** Несколько sim-тасков по зонам.
