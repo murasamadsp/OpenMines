@@ -1,5 +1,5 @@
 use crate::game::player::PlayerPosition;
-use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
+use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use crate::world::cells::is_boulder;
@@ -15,8 +15,8 @@ const fn is_building_background_cell(cell: u8) -> bool {
 }
 
 /// Combined empty check for physics: cell must be empty AND not a building background.
-fn is_physics_empty(state: &crate::game::GameState, x: i32, y: i32) -> bool {
-    state.world.is_empty(x, y) && !is_building_background_cell(state.world.get_cell(x, y))
+fn is_physics_empty(world: &crate::world::World, x: i32, y: i32) -> bool {
+    world.is_empty(x, y) && !is_building_background_cell(world.get_cell(x, y))
 }
 
 #[derive(Resource)]
@@ -30,7 +30,7 @@ impl Default for SandTickTimer {
 
 #[allow(clippy::needless_pass_by_value)]
 pub fn sand_physics_system(
-    state_res: Res<GameStateResource>,
+    world_res: Res<WorldResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut timer: ResMut<SandTickTimer>,
     query: Query<&PlayerPosition>,
@@ -41,8 +41,8 @@ pub fn sand_physics_system(
     }
     timer.0 = std::time::Instant::now();
 
-    let state = &state_res.0;
-    let cell_defs = state.world.cell_defs();
+    let world = &world_res.0;
+    let cell_defs = world.cell_defs();
     let mut rng = rand::rng();
 
     // (src_x, src_y, dest_x, dest_y, cell)
@@ -57,11 +57,11 @@ pub fn sand_physics_system(
                 let sx = player_x + dx;
                 let sy = player_y + dy;
 
-                if !state.world.valid_coord(sx, sy) {
+                if !world.valid_coord(sx, sy) {
                     continue;
                 }
 
-                let cell = state.world.get_cell(sx, sy);
+                let cell = world.get_cell(sx, sy);
                 let is_s = cell_defs.get(cell).is_sand();
                 let is_b = is_boulder(cell);
 
@@ -73,19 +73,19 @@ pub fn sand_physics_system(
                 let two_below_y = sy + 2;
 
                 // Common logic for straight fall
-                if state.world.valid_coord(sx, below_y) {
-                    let below_gate = state.world.get_cell(sx, below_y) == cell_type::GATE;
+                if world.valid_coord(sx, below_y) {
+                    let below_gate = world.get_cell(sx, below_y) == cell_type::GATE;
 
                     if below_gate
-                        && state.world.valid_coord(sx, two_below_y)
-                        && is_physics_empty(state, sx, two_below_y)
+                        && world.valid_coord(sx, two_below_y)
+                        && is_physics_empty(world, sx, two_below_y)
                     {
                         // Gate pass-through
                         tasks.push((sx, sy, sx, two_below_y, cell));
                         continue;
                     }
 
-                    if is_physics_empty(state, sx, below_y) {
+                    if is_physics_empty(world, sx, below_y) {
                         // Straight down
                         tasks.push((sx, sy, sx, below_y, cell));
                         continue;
@@ -93,8 +93,8 @@ pub fn sand_physics_system(
                 }
 
                 // Diagonal slide logic
-                if state.world.valid_coord(sx, below_y) {
-                    let below_cell = state.world.get_cell(sx, below_y);
+                if world.valid_coord(sx, below_y) {
+                    let below_cell = world.get_cell(sx, below_y);
                     let below_is_solid =
                         cell_defs.get(below_cell).is_sand() || is_boulder(below_cell);
 
@@ -104,10 +104,10 @@ pub fn sand_physics_system(
 
                         if is_s {
                             // Sand diagonal slide
-                            let left_ok = state.world.valid_coord(left_x, below_y)
-                                && is_physics_empty(state, left_x, below_y);
-                            let right_ok = state.world.valid_coord(right_x, below_y)
-                                && is_physics_empty(state, right_x, below_y);
+                            let left_ok = world.valid_coord(left_x, below_y)
+                                && is_physics_empty(world, left_x, below_y);
+                            let right_ok = world.valid_coord(right_x, below_y)
+                                && is_physics_empty(world, right_x, below_y);
 
                             if left_ok && right_ok {
                                 if rng.random_bool(0.5) {
@@ -122,14 +122,14 @@ pub fn sand_physics_system(
                             }
                         } else {
                             // Boulder diagonal slide (requires side cell empty too)
-                            let right_ok = state.world.valid_coord(right_x, below_y)
-                                && is_physics_empty(state, right_x, below_y)
-                                && state.world.valid_coord(right_x, sy)
-                                && is_physics_empty(state, right_x, sy);
-                            let left_ok = state.world.valid_coord(left_x, below_y)
-                                && is_physics_empty(state, left_x, below_y)
-                                && state.world.valid_coord(left_x, sy)
-                                && is_physics_empty(state, left_x, sy);
+                            let right_ok = world.valid_coord(right_x, below_y)
+                                && is_physics_empty(world, right_x, below_y)
+                                && world.valid_coord(right_x, sy)
+                                && is_physics_empty(world, right_x, sy);
+                            let left_ok = world.valid_coord(left_x, below_y)
+                                && is_physics_empty(world, left_x, below_y)
+                                && world.valid_coord(left_x, sy)
+                                && is_physics_empty(world, left_x, sy);
 
                             if rng.random_bool(0.5) && right_ok {
                                 tasks.push((sx, sy, right_x, below_y, cell));
@@ -148,14 +148,14 @@ pub fn sand_physics_system(
     tasks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
 
     for (sx, sy, dest_x, dest_y, cell) in tasks {
-        if is_physics_empty(state, dest_x, dest_y) {
+        if is_physics_empty(world, dest_x, dest_y) {
             // 1:1 C# `World.MoveCell` (Physics): durability ПЕРЕНОСИТСЯ. `set_cell`
             // сбрасывает её на дефолт типа → без переноса недокопанный валун «лечится»
             // до полной при падении. Читаем durability ДО очистки источника.
-            let dur = state.world.get_durability(sx, sy);
-            state.world.set_cell(sx, sy, cell_type::EMPTY);
-            state.world.set_cell(dest_x, dest_y, cell);
-            state.world.set_durability(dest_x, dest_y, dur);
+            let dur = world.get_durability(sx, sy);
+            world.set_cell(sx, sy, cell_type::EMPTY);
+            world.set_cell(dest_x, dest_y, cell);
+            world.set_durability(dest_x, dest_y, dur);
 
             bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));
             bcast_q.0.push(BroadcastEffect::CellUpdate(dest_x, dest_y));

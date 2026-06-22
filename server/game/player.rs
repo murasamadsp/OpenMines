@@ -26,6 +26,8 @@ pub struct PlayerStats {
     pub clan_rank: i32,
     /// Дробный аккумулятор кристаллов (как `cb` в C# `Player.Mine()`).
     pub crystal_carry: f32,
+    /// Время последнего клейма ежедневного бонуса (`GDon`), unix-секунды; 0 = ни разу.
+    pub last_bonus_at: i64,
 }
 
 #[derive(Component, Clone)]
@@ -189,5 +191,6 @@ pub fn extract_player_row(
         skills: skills.states.clone(),
         role: stats.role,
         clan_rank: stats.clan_rank,
+        last_bonus_at: stats.last_bonus_at,
     })
 }

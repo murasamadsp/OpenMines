@@ -313,9 +313,16 @@ pub fn handle_resp_bind(
     }
 
     state.modify_player(pid, |ecs, entity| {
-        let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
-        meta.resp_x = Some(pack_x);
-        meta.resp_y = Some(pack_y);
+        {
+            let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
+            meta.resp_x = Some(pack_x);
+            meta.resp_y = Some(pack_y);
+        }
+        // 1:1 C# `SetResp` + `SaveChanges`: помечаем dirty, иначе flush
+        // (dirty-gated) не сохранит привязку и она теряется при релоге.
+        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            f.dirty = true;
+        }
         Some(())
     });
 

@@ -169,6 +169,11 @@ pub async fn dispatch_ty_packet(
         "DPBX" => {
             handle_dpbx_crystal_box(state, tx, pid);
         }
+        // `GDon` — кнопка БОНУСЫ (донат в C# = заглушка; перепрофилировано в
+        // ежедневный бонус по требованию пользователя). См. `play::bonus`.
+        "GDon" => {
+            crate::net::session::play::bonus::handle_bonus_claim(state, tx, pid);
+        }
         "PROG" | "PDEL" | "pRST" | "PREN" => {
             handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload).await;
         }

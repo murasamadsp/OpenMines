@@ -2,7 +2,7 @@ use crate::game::player::{
     PlayerConnection, PlayerMetadata, PlayerPosition, PlayerSkills, PlayerStats,
 };
 use crate::game::skills::{SkillType, get_player_skill_effect};
-use crate::game::{GameStateResource, ProgrammatorAction, ProgrammatorQueue};
+use crate::game::{ProgrammatorAction, ProgrammatorQueue, WorldResource};
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut};
 use std::collections::HashMap;
@@ -548,7 +548,7 @@ fn check_cell(
     clippy::cognitive_complexity
 )]
 pub fn programmator_system(
-    state_res: Res<GameStateResource>,
+    world_res: Res<WorldResource>,
     mut prog_q: ResMut<ProgrammatorQueue>,
     mut query: Query<(
         &PlayerMetadata,
@@ -612,7 +612,7 @@ pub fn programmator_system(
             pos,
             stats,
             skills,
-            &state_res.0,
+            &world_res.0,
             meta,
             conn,
             &mut prog_q,
@@ -653,7 +653,7 @@ fn execute_action(
     pos: &PlayerPosition,
     stats: &PlayerStats,
     skills: &PlayerSkills,
-    state: &std::sync::Arc<crate::game::GameState>,
+    world: &crate::world::World,
     meta: &PlayerMetadata,
     conn: &PlayerConnection,
     prog_q: &mut ProgrammatorQueue,
@@ -661,33 +661,33 @@ fn execute_action(
     geo_count: usize,
 ) -> ExecResult {
     // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
-    let on_road = crate::world::cells::is_road(state.world.get_cell(pos.x, pos.y));
+    let on_road = crate::world::cells::is_road(world.get_cell(pos.x, pos.y));
     match action.action_type {
         // ─── Movement ────────────────────────────────────────────────────
         ActionType::MoveDown => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x, pos.y + 1);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y + 1);
             push_move(prog_q, meta, conn, pos.x, pos.y + 1, 0);
             ExecResult::None
         }
         ActionType::MoveUp => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x, pos.y - 1);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y - 1);
             push_move(prog_q, meta, conn, pos.x, pos.y - 1, 2);
             ExecResult::None
         }
         ActionType::MoveRight => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x + 1, pos.y);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x + 1, pos.y);
             push_move(prog_q, meta, conn, pos.x + 1, pos.y, 3);
             ExecResult::None
         }
         ActionType::MoveLeft => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(state, pos.x - 1, pos.y);
+            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x - 1, pos.y);
             push_move(prog_q, meta, conn, pos.x - 1, pos.y, 1);
             ExecResult::None
         }
         ActionType::MoveForward => {
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
             *delay_ms =
-                speed_pause(skills, on_road) + move_block_penalty(state, pos.x + dx, pos.y + dy);
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + dx, pos.y + dy);
             push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, pos.dir);
             ExecResult::None
         }
@@ -922,44 +922,44 @@ fn execute_action(
 
         // ─── Cell condition checks ──────────────────────────────────────
         ActionType::IsEmpty => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.cell_defs().get(w.get_cell(x, y)).cell_is_empty()
             });
             ExecResult::None
         }
         ActionType::IsNotEmpty => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 !w.cell_defs().get(w.get_cell(x, y)).cell_is_empty()
             });
             ExecResult::None
         }
         ActionType::IsCrystal => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 let cell = w.get_cell(x, y);
                 crate::world::cells::is_crystal(cell)
             });
             ExecResult::None
         }
         ActionType::IsBoulder => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.cell_defs().get(w.get_cell(x, y)).nature.is_boulder
             });
             ExecResult::None
         }
         ActionType::IsSand => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.cell_defs().get(w.get_cell(x, y)).is_sand()
             });
             ExecResult::None
         }
         ActionType::IsBreakableRock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.cell_defs().get(w.get_cell(x, y)).is_diggable()
             });
             ExecResult::None
         }
         ActionType::IsUnbreakable => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 let defs = w.cell_defs();
                 let def = defs.get(w.get_cell(x, y));
                 !def.cell_is_empty() && !def.is_diggable()
@@ -967,7 +967,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::IsFalling => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 let defs = w.cell_defs();
                 let def = defs.get(w.get_cell(x, y));
                 def.is_sand() || def.nature.is_boulder
@@ -975,61 +975,59 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::IsRoad => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
-                w.get_road_cell(x, y) != 0
-            });
+            check_cell(&mut *prog, pos, world, |x, y, w| w.get_road_cell(x, y) != 0);
             ExecResult::None
         }
         ActionType::IsBox => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::BOX
             });
             ExecResult::None
         }
         ActionType::IsGreenBlock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::GREEN_BLOCK
             });
             ExecResult::None
         }
         ActionType::IsYellowBlock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::YELLOW_BLOCK
             });
             ExecResult::None
         }
         ActionType::IsRedBlock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::RED_BLOCK
             });
             ExecResult::None
         }
         ActionType::IsPillar => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::SUPPORT
             });
             ExecResult::None
         }
         ActionType::IsQuadBlock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::QUAD_BLOCK
             });
             ExecResult::None
         }
         ActionType::IsRedRock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::RED_ROCK
             });
             ExecResult::None
         }
         ActionType::IsBlackRock => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 w.get_cell(x, y) == crate::world::cells::cell_type::BLACK_ROCK
             });
             ExecResult::None
         }
         ActionType::IsAcid => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 let c = w.get_cell(x, y);
                 // C# IsAcid: GrayAcid(66), PurpleAcid(67), PassiveAcid(86),
                 // LivingActiveAcid(95), CorrosiveActiveAcid(96), AcidRock(118)
@@ -1038,7 +1036,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::IsLivingCrystal => {
-            check_cell(&mut *prog, pos, &state.world, |x, y, w| {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
                 let c = w.get_cell(x, y);
                 // C# isAlive: AliveCyan(50)..AliveRainbow(55), AliveBlue(116)
                 matches!(c, 50..=55 | 116)
@@ -1163,11 +1161,7 @@ fn execute_action(
             let tx = pos.x + dx;
             let ty = pos.y + dy;
             {
-                let diggable = state
-                    .world
-                    .cell_defs()
-                    .get(state.world.get_cell(tx, ty))
-                    .is_diggable();
+                let diggable = world.cell_defs().get(world.get_cell(tx, ty)).is_diggable();
                 if diggable {
                     *delay_ms = 200;
                     prog_q.0.push(ProgrammatorAction::Dig {
@@ -1201,7 +1195,7 @@ fn execute_action(
             // и там всё ещё кристалл — копаем дальше.
             if prog.macros_template.is_some() {
                 let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
-                if crate::world::cells::is_crystal(state.world.get_cell(pos.x + dx, pos.y + dy)) {
+                if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
                     *delay_ms = 200;
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
@@ -1214,7 +1208,7 @@ fn execute_action(
             // Скан 4 направлений. Первый кристалл: если смотрим на него — копаем
             // (и фиксируем template), иначе поворачиваемся к нему.
             for (dir_key, (dx, dy)) in DIRZ {
-                if crate::world::cells::is_crystal(state.world.get_cell(pos.x + dx, pos.y + dy)) {
+                if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
                     if pos.dir == dir_key {
                         *delay_ms = 200;
                         prog.macros_template = Some(dir_key);
@@ -1256,7 +1250,7 @@ fn execute_action(
             // C# Execute: if (res != null) { Check(p, (_,_) => res); return res; }
             // Check пишет father.state с учётом And/Or — иначе RunIfTrue/False ломаются.
             if let Some(r) = res {
-                check_cell(prog, pos, &state.world, |_, _, _| r);
+                check_cell(prog, pos, world, |_, _, _| r);
                 return ExecResult::BoolResult(r);
             }
             ExecResult::None
@@ -1515,8 +1509,8 @@ fn push_move(
 /// непустой клеткой (ветка `dir==-1`, PAction.cs:143-176). Это чистый read-only
 /// предикат от состояния целевой клетки — мутацию делает очередь хода, дублировать
 /// её не нужно. Клетка ворот (тип 30) пустая → штрафа нет (как и C# `return false`).
-fn move_block_penalty(state: &std::sync::Arc<crate::game::GameState>, tx: i32, ty: i32) -> u64 {
-    if state.world.valid_coord(tx, ty) && !state.world.is_empty(tx, ty) {
+fn move_block_penalty(world: &crate::world::World, tx: i32, ty: i32) -> u64 {
+    if world.valid_coord(tx, ty) && !world.is_empty(tx, ty) {
         200
     } else {
         0

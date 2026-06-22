@@ -33,10 +33,21 @@ pub use player::{
     ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
 };
 
-// ─── ECS Resources ──────────────────────────────────────────────────────────
+// ─── ECS Resources (вместо Arc<GameState> для ECS-систем) ───────────────────
 
+/// Мир (карта/клетки) — выделен из `GameState`, чтобы ECS-системы не зависели
+/// от всего `GameState`. Каждая система берёт только то, что реально использует.
 #[derive(Resource)]
-pub struct GameStateResource(pub Arc<GameState>);
+pub struct WorldResource(pub Arc<crate::world::World>);
+
+/// Индекс боксов (crystal loot на земле) — lock-free `DashMap`, общий с `GameState`
+/// для консистентности между ECS-системами и async-хендлерами.
+#[derive(Resource, Clone)]
+pub struct BoxIndexResource(pub Arc<DashMap<(i32, i32), [i64; 6]>>);
+
+/// Очередь персистенции боксов — общая с `GameState`.
+#[derive(Resource, Clone)]
+pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
 
 #[derive(Resource, Default)]
 pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
@@ -185,10 +196,10 @@ pub struct GameState {
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
     /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
-    pub box_index: DashMap<(i32, i32), [i64; 6]>,
+    pub box_index: Arc<DashMap<(i32, i32), [i64; 6]>>,
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
-    /// Дренится в game-tick ВНЕ `ecs.write()` → `spawn_blocking` (`SQLite`).
-    pub box_persist_q: Mutex<Vec<BoxPersist>>,
+    /// Arc — общий с ECS-ресурсами, чтобы не расходились.
+    pub box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
 }
@@ -256,8 +267,8 @@ impl GameState {
             life_queue: Mutex::new(Vec::new()),
             session_token_seq: std::sync::atomic::AtomicU64::new(1),
             player_sessions: DashMap::new(),
-            box_index: DashMap::new(),
-            box_persist_q: Mutex::new(Vec::new()),
+            box_index: Arc::new(DashMap::new()),
+            box_persist_q: Arc::new(Mutex::new(Vec::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
         });
 
@@ -278,7 +289,9 @@ impl GameState {
 
         {
             let mut ecs = state.ecs.write();
-            ecs.insert_resource(GameStateResource(state.clone()));
+            ecs.insert_resource(WorldResource(state.world.clone()));
+            ecs.insert_resource(BoxIndexResource(state.box_index.clone()));
+            ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
             ecs.insert_resource(combat::DeathQueue::default());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
@@ -707,7 +720,9 @@ impl GameState {
         self.box_persist_q.lock().push(((x, y), Some(crystals)));
     }
 
-    /// Слить очередь персистенции боксов (вызывать ВНЕ `ecs.write()`).
+    /// Слить очередь персистенции боксов (больше не используется —
+    /// `BoxPersistQueue` дренится внутри `ecs.write()` в lifecycle.rs).
+    #[allow(dead_code)]
     pub fn drain_box_persist(&self) -> Vec<BoxPersist> {
         let mut q = self.box_persist_q.lock();
         std::mem::take(&mut *q)

@@ -243,6 +243,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 prog_actions,
                 cell_conversions,
                 pack_resends,
+                box_ops,
                 sched_lock_wait,
                 sched_run,
             ) = {
@@ -259,6 +260,9 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
                 let pa =
                     std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
+                let bp = std::mem::take(
+                    &mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock(),
+                );
                 // Отложенные конвертации клеток (StupidAction 1:1 с C#).
                 let convs = std::mem::take(
                     &mut ecs.resource_mut::<crate::game::PendingCellConversions>().0,
@@ -266,7 +270,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
                 drop(ecs);
                 drop(schedule);
-                (p, bc, pa, convs, pr, lw, rn)
+                (p, bc, pa, convs, pr, bp, lw, rn)
             };
             let dt_schedule = sched_t0.elapsed();
             if dt_schedule > std::time::Duration::from_millis(50) {
@@ -307,9 +311,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 }
             }
 
-            // Персистенция боксов ВНЕ `ecs.write()` (фикс C-1/C-2/H-1: SQLite
-            // по боксам больше не на hot-path). DB-запись — в spawn_blocking.
-            let box_ops = state.drain_box_persist();
+            // Персистенция боксов (BoxPersistQueue уже дренирован внутри ecs.write).
             if !box_ops.is_empty() {
                 let db = state.db.clone();
                 tokio::spawn(async move {

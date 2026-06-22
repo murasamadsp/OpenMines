@@ -6,7 +6,10 @@ use crate::game::player::{
     PlayerSkills as PlayerSkillsCom, PlayerStats,
 };
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
-use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource, PackResendQueue};
+use crate::game::{
+    BoxIndexResource, BoxPersistQueue, BroadcastEffect, BroadcastQueue, PackResendQueue,
+    WorldResource,
+};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
@@ -18,7 +21,9 @@ pub struct DeathQueue(pub Vec<PlayerId>);
 /// `Player.Update`: стоя на непустой клетке — `Hurt(fall_damage)`; далее ящик 90 / `is_destructible` (как `Player.cs` при `!isEmpty`).
 #[allow(clippy::needless_pass_by_value)]
 pub fn standing_cell_hazard_system(
-    state_res: Res<GameStateResource>,
+    world_res: Res<WorldResource>,
+    box_index: Res<BoxIndexResource>,
+    box_persist: Res<BoxPersistQueue>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut q: Query<(
@@ -31,7 +36,7 @@ pub fn standing_cell_hazard_system(
         &mut PlayerCooldowns,
     )>,
 ) {
-    let state = &state_res.0;
+    let world = &world_res.0;
 
     for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
@@ -43,12 +48,12 @@ pub fn standing_cell_hazard_system(
             cooldowns.last_c190_hit = Some(std::time::Instant::now());
         }
         let (px, py) = (pos.x, pos.y);
-        if !state.world.valid_coord(px, py) {
+        if !world.valid_coord(px, py) {
             continue;
         }
-        let cell = state.world.get_cell(px, py);
+        let cell = world.get_cell(px, py);
         let pdef = {
-            let defs = state.world.cell_defs();
+            let defs = world.cell_defs();
             defs.get(cell).clone()
         };
         if pdef.cell_is_empty() {
@@ -104,7 +109,8 @@ pub fn standing_cell_hazard_system(
             // (get_box_at/delete_box_at тут фризили весь сервер каждые 10ms при
             // игроке на BOX). Поведение 1:1 (`PEntity.GetBox`: всегда удаляет,
             // кристаллы могут быть 0); персистенция отложена (box_persist_q).
-            if let Some(crys) = state.box_take(px, py) {
+            if let Some(crys) = box_index.0.remove(&(px, py)).map(|(_, v)| v) {
+                box_persist.0.lock().push(((px, py), None));
                 for (i, &c) in crys.iter().enumerate() {
                     stats.crystals[i] = stats.crystals[i].saturating_add(c);
                 }
@@ -114,10 +120,10 @@ pub fn standing_cell_hazard_system(
                     &crate::protocol::packets::basket(&stats.crystals, 1).1,
                 ));
             }
-            let _ = state.world.damage_cell(px, py, 1.0);
+            let _ = world.damage_cell(px, py, 1.0);
             bcast_q.0.push(BroadcastEffect::CellUpdate(px, py));
         } else if pdef.physical.is_destructible {
-            state.world.destroy(px, py);
+            world.destroy(px, py);
             bcast_q.0.push(BroadcastEffect::CellUpdate(px, py));
         }
     }
@@ -141,7 +147,6 @@ const GUN_FIRE_INTERVAL_MS: u128 = 500;
 /// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → `AntiGun`.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
-    _state_res: Res<GameStateResource>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut pack_resend_q: ResMut<PackResendQueue>,

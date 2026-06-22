@@ -118,11 +118,6 @@ async fn main() -> Result<()> {
     // Cron system.
     cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
 
-    {
-        let mut ecs = game_state.ecs.write();
-        ecs.insert_resource(game::GameStateResource(game_state.clone()));
-    }
-
     // Run TCP server until shutdown signal.
     let net_res = net::run(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).await;
     match &net_res {

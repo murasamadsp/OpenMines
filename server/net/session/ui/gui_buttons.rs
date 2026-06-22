@@ -348,6 +348,14 @@ pub fn open_pack_gui(
         super::up_building::open_up_gui(state, tx, pid, view);
         return;
     }
+    if view.pack_type == PackType::Resp {
+        // Респ: визитёрский GUI с кнопкой «ПРИВЯЗАТЬ» (1:1 C# `Resp.GUIWin`).
+        // Без этой ветки респ падал в generic GUI без bind → «невозможно
+        // привязаться» (репорт). `handle_pack_action` (был dead code) этот тип
+        // обрабатывал, но реальный путь открытия — `open_pack_gui`.
+        crate::net::session::play::packs::open_resp_gui(state, tx, pid, view);
+        return;
+    }
     if view.pack_type == PackType::Gun {
         crate::net::session::play::packs::open_gun_gui(state, tx, pid, view.x, view.y);
         return;

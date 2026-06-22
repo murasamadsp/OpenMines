@@ -9,7 +9,7 @@
 //! Ticks every 3 seconds, scans radius 16 around players (same pattern as alive.rs).
 
 use crate::game::player::PlayerPosition;
-use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
+use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
@@ -54,7 +54,7 @@ struct AcidAction {
 
 #[allow(clippy::needless_pass_by_value)]
 pub fn acid_physics_system(
-    state_res: Res<GameStateResource>,
+    world_res: Res<WorldResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut timer: ResMut<AcidTickTimer>,
     query: Query<&PlayerPosition>,
@@ -65,8 +65,8 @@ pub fn acid_physics_system(
     }
     timer.last_tick = Instant::now();
 
-    let state = &state_res.0;
-    let cell_defs = state.world.cell_defs();
+    let world = &world_res.0;
+    let cell_defs = world.cell_defs();
 
     // Collect active acid cells near players (radius 16).
     let mut acid_cells: Vec<(i32, i32, u8)> = Vec::new();
@@ -77,10 +77,10 @@ pub fn acid_physics_system(
             for dx in -16..=16_i32 {
                 let x = pos.x + dx;
                 let y = pos.y + dy;
-                if !state.world.valid_coord(x, y) || !seen.insert((x, y)) {
+                if !world.valid_coord(x, y) || !seen.insert((x, y)) {
                     continue;
                 }
-                let cell = state.world.get_cell(x, y);
+                let cell = world.get_cell(x, y);
                 if is_active_acid(cell) {
                     acid_cells.push((x, y, cell));
                 }
@@ -102,11 +102,11 @@ pub fn acid_physics_system(
             let nx = x + dx;
             let ny = y + dy;
 
-            if !state.world.valid_coord(nx, ny) {
+            if !world.valid_coord(nx, ny) {
                 continue;
             }
 
-            let neighbor = state.world.get_cell(nx, ny);
+            let neighbor = world.get_cell(nx, ny);
             let ndef = cell_defs.get(neighbor);
 
             // Skip empty cells, non-diggable, non-destructible, other acids, and borders.
@@ -126,7 +126,7 @@ pub fn acid_physics_system(
                 continue;
             }
 
-            let current_dur = state.world.get_durability(nx, ny);
+            let current_dur = world.get_durability(nx, ny);
             let new_dur = current_dur - ACID_DAMAGE_PER_TICK;
 
             if new_dur <= 0.0 {
@@ -148,16 +148,16 @@ pub fn acid_physics_system(
                 });
             } else {
                 // Reduce durability only (cell type stays).
-                state.world.set_durability(nx, ny, new_dur);
+                world.set_durability(nx, ny, new_dur);
             }
         }
     }
 
     // Apply actions.
     for action in &actions {
-        state.world.set_cell(action.x, action.y, action.cell);
+        world.set_cell(action.x, action.y, action.cell);
         if let Some(dur) = action.durability {
-            state.world.set_durability(action.x, action.y, dur);
+            world.set_durability(action.x, action.y, dur);
         }
         bcast_q
             .0

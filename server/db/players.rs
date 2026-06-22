@@ -172,6 +172,8 @@ pub struct PlayerRow {
     pub skills: SkillSlots,
     pub role: i32,
     pub clan_rank: i32,
+    /// Время последнего клейма ежедневного бонуса (`GDon`), unix-секунды; 0 = ни разу.
+    pub last_bonus_at: i64,
 }
 
 #[allow(dead_code)]
@@ -227,6 +229,7 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> PlayerRow {
         resp_y: r.try_get("resp_y").unwrap_or(None),
         role: r.try_get("role").unwrap_or(0),
         clan_rank: r.try_get("clan_rank").unwrap_or(0),
+        last_bonus_at: r.try_get("last_bonus_at").unwrap_or(0),
     }
 }
 
@@ -272,6 +275,7 @@ impl Database {
             inventory: HashMap::new(),
             skills: default_skills(),
             role: 0,
+            last_bonus_at: 0,
         })
     }
 
@@ -288,7 +292,7 @@ impl Database {
         let row = sqlx::query(
             "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
-                    inventory, skills, resp_x, resp_y, role, clan_rank
+                    inventory, skills, resp_x, resp_y, role, clan_rank, last_bonus_at
              FROM players WHERE id = ?1"
         )
         .bind(id)
@@ -305,7 +309,7 @@ impl Database {
         let row = sqlx::query(
             "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
-                    inventory, skills, resp_x, resp_y, role, clan_rank
+                    inventory, skills, resp_x, resp_y, role, clan_rank, last_bonus_at
              FROM players WHERE lower(trim(name)) = lower(?1) ORDER BY id LIMIT 1"
         )
         .bind(name)
@@ -321,7 +325,7 @@ impl Database {
             "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
              skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
              cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
-             resp_x=?21, resp_y=?22, clan_rank=?23
+             resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24
              WHERE id=?20",
         )
         .bind(p.x)
@@ -347,6 +351,7 @@ impl Database {
         .bind(p.resp_x)
         .bind(p.resp_y)
         .bind(p.clan_rank)
+        .bind(p.last_bonus_at)
         .execute(&self.pool)
         .await?;
         Ok(())

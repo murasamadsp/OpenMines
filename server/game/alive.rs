@@ -4,7 +4,7 @@
 //! Each alive cell type has unique spreading/colony behavior.
 
 use crate::game::player::PlayerPosition;
-use crate::game::{BroadcastEffect, BroadcastQueue, GameStateResource};
+use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
@@ -63,7 +63,7 @@ struct AliveAction {
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn alive_physics_system(
-    state_res: Res<GameStateResource>,
+    world_res: Res<WorldResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut timer: ResMut<AliveTickTimer>,
     query: Query<&PlayerPosition>,
@@ -74,8 +74,8 @@ pub fn alive_physics_system(
     }
     timer.last_tick = Instant::now();
 
-    let state = &state_res.0;
-    let cell_defs = state.world.cell_defs();
+    let world = &world_res.0;
+    let cell_defs = world.cell_defs();
 
     // Collect all player positions for occupancy check.
     let players = PlayerPositions {
@@ -91,10 +91,10 @@ pub fn alive_physics_system(
             for dx in -16..=16_i32 {
                 let x = pos.x + dx;
                 let y = pos.y + dy;
-                if !state.world.valid_coord(x, y) || !seen.insert((x, y)) {
+                if !world.valid_coord(x, y) || !seen.insert((x, y)) {
                     continue;
                 }
-                let cell = state.world.get_cell(x, y);
+                let cell = world.get_cell(x, y);
                 if is_alive(cell) {
                     alive_cells.push((x, y, cell));
                 }
@@ -112,8 +112,8 @@ pub fn alive_physics_system(
         // Calculate modifier from adjacent HypnoRock (119) — C# reference.
         let mut modif = 1;
         for &(dx, dy) in &DIRS {
-            if state.world.valid_coord(x + dx, y + dy)
-                && state.world.get_cell(x + dx, y + dy) == cell_type::HYPNO_ROCK
+            if world.valid_coord(x + dx, y + dy)
+                && world.get_cell(x + dx, y + dy) == cell_type::HYPNO_ROCK
             {
                 modif += 2;
             }
@@ -124,20 +124,20 @@ pub fn alive_physics_system(
 
         match cell {
             cell_type::ALIVE_CYAN => {
-                alive_cyan(x, y, modif, state, &players, &mut actions);
+                alive_cyan(x, y, modif, world, &players, &mut actions);
             }
             cell_type::ALIVE_RED => {
-                alive_red(x, y, modif, state, &players, &mut actions);
+                alive_red(x, y, modif, world, &players, &mut actions);
             }
             cell_type::ALIVE_VIOL => {
-                alive_viol(x, y, modif, state, &players, &mut actions);
+                alive_viol(x, y, modif, world, &players, &mut actions);
             }
             cell_type::ALIVE_BLACK => {
                 alive_black(
                     x,
                     y,
                     modif,
-                    state,
+                    world,
                     &players,
                     &mut actions,
                     &mut clears,
@@ -149,7 +149,7 @@ pub fn alive_physics_system(
                     x,
                     y,
                     modif,
-                    state,
+                    world,
                     &players,
                     &mut actions,
                     &cell_defs,
@@ -161,7 +161,7 @@ pub fn alive_physics_system(
                     x,
                     y,
                     modif,
-                    state,
+                    world,
                     &players,
                     &mut actions,
                     &mut clears,
@@ -169,7 +169,7 @@ pub fn alive_physics_system(
                 );
             }
             cell_type::ALIVE_RAINBOW => {
-                alive_rainbow(x, y, modif, state, &players, &mut actions, &cell_defs);
+                alive_rainbow(x, y, modif, world, &players, &mut actions, &cell_defs);
             }
             _ => {}
         }
@@ -177,15 +177,15 @@ pub fn alive_physics_system(
 
     // Apply clears first (e.g., AliveWhite destroying sand above).
     for (cx, cy) in &clears {
-        state.world.set_cell(*cx, *cy, cell_type::EMPTY);
+        world.set_cell(*cx, *cy, cell_type::EMPTY);
         bcast_q.0.push(BroadcastEffect::CellUpdate(*cx, *cy));
     }
 
     // Apply actions.
     for action in &actions {
-        state.world.set_cell(action.x, action.y, action.cell);
+        world.set_cell(action.x, action.y, action.cell);
         if let Some(dur) = action.durability {
-            state.world.set_durability(action.x, action.y, dur);
+            world.set_durability(action.x, action.y, dur);
         }
         bcast_q
             .0
@@ -198,17 +198,14 @@ fn alive_cyan(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
 ) {
     for &(dx, dy) in &DIRS {
         let nx = x + dx;
         let ny = y + dy;
-        if state.world.valid_coord(nx, ny)
-            && state.world.is_empty(nx, ny)
-            && !players.has_player_at(nx, ny)
-        {
+        if world.valid_coord(nx, ny) && world.is_empty(nx, ny) && !players.has_player_at(nx, ny) {
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
@@ -224,7 +221,7 @@ fn alive_red(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
 ) {
@@ -232,8 +229,8 @@ fn alive_red(
     let mut has_black_rock = false;
     for cx in -1..=1 {
         for cy in -1..=1 {
-            if state.world.valid_coord(x + cx, y + cy)
-                && state.world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
+            if world.valid_coord(x + cx, y + cy)
+                && world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
             {
                 has_black_rock = true;
             }
@@ -246,10 +243,7 @@ fn alive_red(
     for &(dx, dy) in &DIRS {
         let nx = x + dx;
         let ny = y + dy;
-        if state.world.valid_coord(nx, ny)
-            && state.world.is_empty(nx, ny)
-            && !players.has_player_at(nx, ny)
-        {
+        if world.valid_coord(nx, ny) && world.is_empty(nx, ny) && !players.has_player_at(nx, ny) {
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
@@ -265,15 +259,15 @@ fn alive_viol(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
 ) {
     let mut has_black_rock = false;
     for cx in -1..=1 {
         for cy in -1..=1 {
-            if state.world.valid_coord(x + cx, y + cy)
-                && state.world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
+            if world.valid_coord(x + cx, y + cy)
+                && world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
             {
                 has_black_rock = true;
             }
@@ -286,10 +280,7 @@ fn alive_viol(
     for &(dx, dy) in &DIRS {
         let nx = x + dx;
         let ny = y + dy;
-        if state.world.valid_coord(nx, ny)
-            && state.world.is_empty(nx, ny)
-            && !players.has_player_at(nx, ny)
-        {
+        if world.valid_coord(nx, ny) && world.is_empty(nx, ny) && !players.has_player_at(nx, ny) {
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
@@ -307,7 +298,7 @@ fn alive_black(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
     clears: &mut Vec<(i32, i32)>,
@@ -317,8 +308,8 @@ fn alive_black(
     let mut count = 0;
     for ax in -1..=1 {
         for ay in -1..=1 {
-            if state.world.valid_coord(x + ax, y + ay)
-                && state.world.get_cell(x + ax, y + ay) == cell_type::ALIVE_BLACK
+            if world.valid_coord(x + ax, y + ay)
+                && world.get_cell(x + ax, y + ay) == cell_type::ALIVE_BLACK
             {
                 count += 1;
             }
@@ -342,14 +333,12 @@ fn alive_black(
         for &(dx, dy) in &DIRS {
             let nx = x + dx;
             let ny = y + dy;
-            if state.world.valid_coord(nx, ny)
-                && state.world.get_cell(nx, ny) == cell_type::ALIVE_BLACK
-            {
+            if world.valid_coord(nx, ny) && world.get_cell(nx, ny) == cell_type::ALIVE_BLACK {
                 // Opposite direction.
                 let ox = x - dx;
                 let oy = y - dy;
-                if state.world.valid_coord(ox, oy)
-                    && state.world.is_empty(ox, oy)
+                if world.valid_coord(ox, oy)
+                    && world.is_empty(ox, oy)
                     && !players.has_player_at(ox, oy)
                 {
                     if rng.random_range(1..=100) > 50 {
@@ -384,17 +373,17 @@ fn alive_white(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
     cell_defs: &crate::world::cells::CellDefs,
     rng: &mut impl Rng,
 ) {
     // Check if cell above is sand.
-    if !state.world.valid_coord(x, y - 1) {
+    if !world.valid_coord(x, y - 1) {
         return;
     }
-    let above = state.world.get_cell(x, y - 1);
+    let above = world.get_cell(x, y - 1);
     if !cell_defs.get(above).is_sand() {
         return;
     }
@@ -404,9 +393,7 @@ fn alive_white(
         for wy in -1..=1 {
             let nx = x + wx;
             let ny = y + wy;
-            if state.world.valid_coord(nx, ny)
-                && state.world.is_empty(nx, ny)
-                && !players.has_player_at(nx, ny)
+            if world.valid_coord(nx, ny) && world.is_empty(nx, ny) && !players.has_player_at(nx, ny)
             {
                 actions.push(AliveAction {
                     x: nx,
@@ -440,7 +427,7 @@ fn alive_blue(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
     clears: &mut Vec<(i32, i32)>,
@@ -450,8 +437,8 @@ fn alive_blue(
         let nx = x + dx;
         let ny = y + dy;
         if rng.random_range(1..=100) < 20
-            && state.world.valid_coord(nx, ny)
-            && state.world.is_empty(nx, ny)
+            && world.valid_coord(nx, ny)
+            && world.is_empty(nx, ny)
             && !players.has_player_at(nx, ny)
         {
             // Move alive cell to new position.
@@ -479,7 +466,7 @@ fn alive_rainbow(
     x: i32,
     y: i32,
     modif: i32,
-    state: &crate::game::GameState,
+    world: &crate::world::World,
     players: &PlayerPositions,
     actions: &mut Vec<AliveAction>,
     cell_defs: &crate::world::cells::CellDefs,
@@ -491,15 +478,15 @@ fn alive_rainbow(
         let ox = x - dx;
         let oy = y - dy;
 
-        if !state.world.valid_coord(nx, ny) || !state.world.valid_coord(ox, oy) {
+        if !world.valid_coord(nx, ny) || !world.valid_coord(ox, oy) {
             continue;
         }
 
-        if !state.world.is_empty(nx, ny) || players.has_player_at(nx, ny) {
+        if !world.is_empty(nx, ny) || players.has_player_at(nx, ny) {
             continue;
         }
 
-        let opposite_cell = state.world.get_cell(ox, oy);
+        let opposite_cell = world.get_cell(ox, oy);
         let odef = cell_defs.get(opposite_cell);
 
         // C# conditions: not alive, not empty, is_diggable, is_destructible.

@@ -118,6 +118,7 @@ pub fn connect_in_tick(
                 clan_id: player.clan_id,
                 clan_rank: player.clan_rank,
                 crystal_carry: 0.0,
+                last_bonus_at: player.last_bonus_at,
             },
             PlayerInventory {
                 items: player.inventory.clone(),
@@ -358,6 +359,14 @@ fn send_initial_sync(
     // `selected_id`=None, из БД не гидрируется ⇒ if-ветка `#p` не берётся.
     // C# ref эквивалент: при `selected==null` шлётся только `@P false`.
     send_u_packet(tx, "@P", &programmator_status(false).1);
+    // 18. DR — индикатор ежедневного бонуса (мигание кнопки БОНУСЫ): "1" если
+    // доступен (прошло ≥ кулдауна с последнего клейма), иначе "0".
+    let dr = if crate::net::session::play::bonus::bonus_available(player.last_bonus_at) {
+        "1"
+    } else {
+        "0"
+    };
+    send_u_packet(tx, "DR", dr.as_bytes());
 }
 
 #[cfg(test)]
@@ -417,6 +426,7 @@ mod tests {
             },
             role: 0,
             clan_rank: 0,
+            last_bonus_at: 0,
         };
 
         // Scenario 1: MILITARY_BLOCK
@@ -494,6 +504,7 @@ mod tests {
             },
             role: 0,
             clan_rank: 0,
+            last_bonus_at: 0,
         }; // временная система
 
         connect_in_tick(&state, &tx, &player, 123);
