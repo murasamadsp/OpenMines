@@ -112,7 +112,7 @@ pub fn check_chunk_changed(
         }
 
         // Затем отправляем постройки
-        for (code, px, py, cid, off) in state.get_packs_in_chunk_area(ncx, ncy) {
+        for (code, px, py, cid, off) in state.get_packs_in_single_chunk(ncx, ncy) {
             if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
                 sub_packets.push(hb_packs(block_pos, &[(code, px, py, cid, off)]));
                 sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
@@ -160,7 +160,7 @@ pub fn check_chunk_changed(
         }
 
         // Notify buildings removal
-        for (_, px, py, _, _) in state.get_packs_in_chunk_area(ocx, ocy) {
+        for (_, px, py, _, _) in state.get_packs_in_single_chunk(ocx, ocy) {
             if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
                 sub_packets.push(hb_packs(block_pos, &[]));
                 sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());

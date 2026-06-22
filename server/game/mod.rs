@@ -598,6 +598,39 @@ impl GameState {
         Self::access_gun_with(&ecs, &self.chunk_buildings, x, y, player_clan_id)
     }
 
+    /// Паки (HB-оверлей) ровно в ОДНОМ чанке `(cx, cy)`. В отличие от
+    /// `get_packs_in_chunk_area` (5×5 область), не захватывает соседние чанки —
+    /// нужно при per-чанковой отправке/очистке HB (`chunks.rs`), иначе очистка
+    /// ушедшего чанка затирала бы оверлеи паков в ещё видимых соседних чанках
+    /// (баг «паки мерцают/пропадают на границе чанка»).
+    pub fn get_packs_in_single_chunk(&self, cx: u32, cy: u32) -> Vec<PackOverlay> {
+        let mut results = Vec::new();
+        let ecs = self.ecs.read();
+        if let Some(entities) = self.chunk_buildings.get(&(cx, cy)) {
+            let ents = entities.value().clone();
+            drop(entities);
+            for entity in ents {
+                let pos = ecs.get::<GridPosition>(entity);
+                let meta = ecs.get::<BuildingMetadata>(entity);
+                let own = ecs.get::<BuildingOwnership>(entity);
+                let stats = ecs.get::<BuildingStats>(entity);
+                if let (Some(pos), Some(meta), Some(own), Some(stats)) = (pos, meta, own, stats)
+                    && meta.pack_type.included_in_hb_overlay()
+                {
+                    results.push((
+                        meta.pack_type.code(),
+                        u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
+                        u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
+                        u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
+                        u8::from(stats.charge > 0.0),
+                    ));
+                }
+            }
+        }
+        drop(ecs);
+        results
+    }
+
     pub fn get_packs_in_chunk_area(&self, cx: u32, cy: u32) -> Vec<PackOverlay> {
         let mut results = Vec::new();
         let ecs = self.ecs.read();
