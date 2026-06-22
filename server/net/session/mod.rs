@@ -21,7 +21,7 @@
 
 mod constants;
 pub mod dispatch;
-mod outbound;
+pub mod outbound;
 mod prelude;
 pub mod util;
 pub mod wire;

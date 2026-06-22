@@ -1,3 +1,4 @@
+mod auction;
 mod lifecycle;
 pub mod session;
 
@@ -17,6 +18,7 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
     lifecycle::spawn_player_dirty_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_building_dirty_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_game_tick_loop(state.clone(), shutdown.subscribe());
+    auction::spawn_auction_finalize_loop(state.clone(), shutdown.subscribe());
 
     let mut shutdown_rx = shutdown.subscribe();
     loop {

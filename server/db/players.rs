@@ -388,4 +388,37 @@ impl Database {
             .await?;
         Ok(usize::try_from(result.rows_affected()).unwrap_or(usize::MAX))
     }
+
+    /// Начислить деньги офлайн-игроку напрямую в БД (online — через ECS).
+    /// Используется финализацией аукциона (`net::auction`).
+    pub async fn add_player_money(&self, id: i32, amount: i64) -> Result<()> {
+        sqlx::query("UPDATE players SET money = money + ?1 WHERE id = ?2")
+            .bind(amount)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Добавить предмет в инвентарь офлайн-игрока (read-modify-write JSON,
+    /// формат 1:1 с online-сохранением: `HashMap<i32,i32>`). Online — через ECS.
+    pub async fn add_player_inventory_item(&self, id: i32, item_id: i32, count: i32) -> Result<()> {
+        let Some(row) = sqlx::query("SELECT inventory FROM players WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(());
+        };
+        let inv_str: String = row.try_get("inventory").unwrap_or_default();
+        let mut inv: HashMap<i32, i32> = serde_json::from_str(&inv_str).unwrap_or_default();
+        *inv.entry(item_id).or_insert(0) += count;
+        let new_str = serde_json::to_string(&inv)?;
+        sqlx::query("UPDATE players SET inventory = ?1 WHERE id = ?2")
+            .bind(new_str)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
