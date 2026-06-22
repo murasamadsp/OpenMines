@@ -196,7 +196,9 @@ pub async fn handle_clan_create(
                 Some(())
             });
             send_u_packet(tx, "P$", &money(p_money, p_creds - 1000).1);
-            let cs = clan_show(new_id);
+            // cS = номер иконки (клиент: ClanSprite.sprites[icon-1], 1..=218),
+            // а НЕ clan_id. Иконка уже выбрана выше (pick_clan_icon).
+            let cs = clan_show(icon);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
             handle_clan_info_view(state, tx, pid, new_id).await;
@@ -556,7 +558,15 @@ pub async fn handle_clan_invite_accept(
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 Some(())
             });
-            let cs = clan_show(clan_id);
+            // cS = номер иконки (клиент: ClanSprite.sprites[icon-1]), не clan_id.
+            let icon = state
+                .db
+                .get_clan(clan_id)
+                .await
+                .ok()
+                .flatten()
+                .map_or(1, |c| c.icon);
+            let cs = clan_show(icon);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Вы вступили в клан!");
         }

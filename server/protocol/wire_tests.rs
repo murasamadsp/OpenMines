@@ -124,7 +124,9 @@ fn config_packet_is_raw_string() {
 }
 
 #[test]
-fn clan_show_is_clan_id() {
+fn clan_show_is_icon_index_not_clan_id() {
+    // cS несёт НОМЕР ИКОНКИ (клиент: ClanSprite.sprites[icon-1], 1..=218),
+    // а не clan_id. Вызывающая сторона обязана слать icon, не id клана.
     let (event, payload) = clan_show(77);
     assert_eq!(event, "cS");
     assert_eq!(payload, b"77");
