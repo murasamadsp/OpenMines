@@ -182,10 +182,12 @@ impl CanvasRect {
         }
     }
 
-    /// Кодировка элемента canvas: `"X{x}Y{y}w{w}h{h}=R%{color}"`.
+    /// Кодировка элемента canvas: `"{x}X{y}Y{w}w{h}h=R%{color}"`. ВАЖНО: клиент
+    /// аккумулирует ЦИФРЫ, затем применяет БУКВУ (`-18X` → num6=-18), поэтому
+    /// число идёт ПЕРЕД буквой-командой, а тип `=R` — последним перед `%`.
     fn encode(&self) -> String {
         format!(
-            "X{}Y{}w{}h{}=R%{}",
+            "{}X{}Y{}w{}h=R%{}",
             self.x, self.y, self.w, self.h, self.color
         )
     }
@@ -506,7 +508,7 @@ mod tests {
             .to_json();
         let canvas = arr(&json, "canvas");
         assert_eq!(canvas.len(), 1);
-        assert_eq!(canvas[0], "X-18Y36w18h18=R%6495ed");
+        assert_eq!(canvas[0], "-18X36Y18w18h=R%6495ed");
         assert_eq!(json["css"], "canv-w=360;canv-h=360");
     }
 }
