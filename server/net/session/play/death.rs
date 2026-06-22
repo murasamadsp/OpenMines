@@ -12,6 +12,9 @@ pub struct DeathBroadcasts {
     pub money: i64,
     pub creds: i64,
     pub resp_used: bool,
+    /// Корзина была непустой и очищена при смерти. C# шлёт `@B` (`SendCrys`)
+    /// только при `AllCry > 0` (Basket.ClearCrys → Changed) — иначе @B не шлётся.
+    pub basket_cleared: bool,
     /// Программа была запущена и остановлена смертью (не `RespawnOnProg`-продолжение).
     /// C# шлёт `ProgrammatorPacket(false)` (@P) только в этом случае (Player.cs:935).
     pub prog_stopped: bool,
@@ -43,6 +46,7 @@ pub fn apply_player_death_core(
         money: 0,
         creds: 0,
         resp_used: false,
+        basket_cleared: false,
         prog_stopped: false,
         cleared_spawn_cell: None, // временная система
     };
@@ -83,6 +87,9 @@ pub fn apply_player_death_core(
             }
         });
         bcast.box_cell = box_placed;
+        // C# Basket: @B шлётся при AllCry>0 (корзина очищена) — независимо от
+        // того, удалось ли поставить бокс.
+        bcast.basket_cleared = true;
         // fx_death уже выставлен безусловно при создании bcast (см. выше).
     }
 
@@ -276,15 +283,18 @@ pub fn send_respawn_after_death(
     bcast: &DeathBroadcasts,
 ) {
     tracing::warn!("[Respawn] @T pid={pid} to=({rx},{ry}) mh={mh}");
-    // C# ref Death(): win=null → SendWindow() → tp → SendHealth()
+    // C# ref Death(): win=null → SendWindow() → SendMoney → tp → SendHealth().
     send_u_packet(tx, "Gu", &gu_close().1);
-    send_u_packet(tx, "@T", &tp(rx, ry).1);
-    send_u_packet(tx, "@L", &health(mh, mh).1);
-    send_u_packet(tx, "@B", &basket(&[0; 6], 1).1);
-    // C# ref: Resp.OnRespawn calls p.SendMoney() after cost deduction
+    // C# Basket: @B (SendCrys) только если корзина была очищена (AllCry>0).
+    if bcast.basket_cleared {
+        send_u_packet(tx, "@B", &basket(&[0; 6], 1).1);
+    }
+    // C# Resp.OnRespawn → p.SendMoney() ДО tp (P$ перед @T).
     if bcast.resp_used {
         send_u_packet(tx, "P$", &money(bcast.money, bcast.creds).1);
     }
+    send_u_packet(tx, "@T", &tp(rx, ry).1);
+    send_u_packet(tx, "@L", &health(mh, mh).1);
     // C# Player.cs:935: @P(false) только при остановке программы смертью.
     // RespawnOnProg-продолжение и not-running — @P НЕ шлётся.
     if bcast.prog_stopped {
