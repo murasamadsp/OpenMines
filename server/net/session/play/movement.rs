@@ -30,6 +30,10 @@ pub fn handle_move(
     target_y: i32,
     dir: i32,
 ) {
+    // C# `Player.cs:414-415`: Ctrl-move шлёт `(dir+10)` — снять флаг (клиент
+    // `ClientController.cs:1022`). `dir==-1` (autoDig-в-стену) проходит без изменений.
+    let dir = if dir > 9 { dir - 10 } else { dir };
+
     let tp_back = |reason: &str,
                    txc: &mpsc::UnboundedSender<Vec<u8>>,
                    from_x: i32,
@@ -237,7 +241,13 @@ pub fn handle_move(
         crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
         // Feature 1: ref Player.cs:462-467 — auto-open pack GUI when landing on a building cell.
-        if let Some(view) = state.get_pack_at(nx, ny) {
+        // C# `ContainsPack` footprint-aware: посадка на ЛЮБУЮ клетку футпринта открывает
+        // GUI. `get_pack_at(nx,ny)` origin-only → окно не открывалось на не-угловой
+        // клетке многоклеточного здания. Ищем origin покрывающего пака (как gate-чек).
+        if let Some(view) = state
+            .find_pack_covering(nx, ny)
+            .and_then(|(ox, oy)| state.get_pack_at(ox, oy))
+        {
             if view.pack_type != PackType::Gate && (view.clan_id == 0 || view.clan_id == clan) {
                 let prog_running = state
                     .query_player(pid, |ecs, entity| {
