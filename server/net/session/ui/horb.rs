@@ -256,6 +256,11 @@ impl Horb {
         serde_json::Value::Object(obj)
     }
 
+    /// Сериализовать в GU-payload (`"horb:{json}"`) и отправить.
+    fn emit(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
+        send_u_packet(tx, "GU", format!("horb:{}", self.to_json()).as_bytes());
+    }
+
     /// Отправить окно игроку и записать `current_window = window_tag`
     /// (формат `"{kind}:{x}:{y}"` или `"{kind}"`, как ждут хендлеры кнопок).
     pub fn send(
@@ -265,7 +270,7 @@ impl Horb {
         pid: PlayerId,
         window_tag: impl Into<String>,
     ) {
-        send_u_packet(tx, "GU", format!("horb:{}", self.to_json()).as_bytes());
+        self.emit(tx);
         let tag = window_tag.into();
         state.modify_player(pid, |ecs, entity| {
             if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
@@ -273,6 +278,13 @@ impl Horb {
             }
             Some(())
         });
+    }
+
+    /// Отправить окно БЕЗ записи `current_window`. Для окон, чьи кнопки
+    /// self-contained и не резолвят координаты из `current_window` (clan-меню) —
+    /// сохраняет прежнее поведение (clan-окна его не трекали).
+    pub fn send_untracked(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
+        self.emit(tx);
     }
 }
 

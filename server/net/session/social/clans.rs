@@ -1,6 +1,7 @@
 //! Меню и действия клана.
 #![allow(dead_code, clippy::uninlined_format_args)]
 use crate::net::session::prelude::*;
+use crate::net::session::ui::horb::{Button, Horb};
 
 // ─── Clans ─────────────────────────────────────────────────────────────
 
@@ -14,33 +15,23 @@ pub async fn handle_clan_menu(
         handle_clan_info_view(state, tx, pid, cid).await;
     } else {
         let invites = state.db.get_player_invites(pid).await.unwrap_or_default();
-        let mut buttons: Vec<serde_json::Value> = Vec::new();
+        let mut win = Horb::new("КЛАНЫ").text("Выберите клан или создайте свой");
 
         if !invites.is_empty() {
-            buttons.push(serde_json::json!(format!(
-                "Приглашения ({})",
-                invites.len()
-            )));
-            buttons.push(serde_json::json!("clan_invites_view"));
+            win = win.button(Button::new(
+                format!("Приглашения ({})", invites.len()),
+                "clan_invites_view",
+            ));
         }
 
-        buttons.push(serde_json::Value::String("Создать клан (1000 кр.)".into()));
-        buttons.push(serde_json::Value::String("clan_create".into()));
+        win = win.button(Button::new("Создать клан (1000 кр.)", "clan_create"));
         let clans = state.db.list_clans().await.unwrap_or_default();
         for clan in &clans {
             let members = state.db.get_clan_members(clan.id).await.unwrap_or_default();
             let label = format!("{} [{}] ({} чел.)", clan.name, clan.abr, members.len());
-            buttons.push(serde_json::Value::String(label));
-            buttons.push(serde_json::Value::String(format!("clan_view:{}", clan.id)));
+            win = win.button(Button::new(label, format!("clan_view:{}", clan.id)));
         }
-        append_close_buttons(&mut buttons);
-        let gui = serde_json::json!({
-            "title": "КЛАНЫ",
-            "text": "Выберите клан или создайте свой",
-            "buttons": buttons,
-            "back": false
-        });
-        send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+        win.close_button().send_untracked(tx);
     }
 }
 
@@ -78,10 +69,9 @@ pub async fn handle_clan_info_view(
         owner_name,
         player_rank
     );
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
-
-    buttons.push(serde_json::json!("Участники"));
-    buttons.push(serde_json::json!("clan_members"));
+    let mut win = Horb::new(clan.name.clone())
+        .text(text)
+        .button(Button::new("Участники", "clan_members"));
 
     if player_rank >= crate::db::ClanRank::Officer {
         let requests = state
@@ -89,24 +79,17 @@ pub async fn handle_clan_info_view(
             .get_clan_requests(clan_id)
             .await
             .unwrap_or_default();
-        let req_label = format!("Заявки ({})", requests.len());
-        buttons.push(serde_json::json!(req_label));
-        buttons.push(serde_json::json!("clan_requests"));
-
-        buttons.push(serde_json::json!("Пригласить игрока"));
-        buttons.push(serde_json::json!("clan_invite_list"));
+        win = win
+            .button(Button::new(
+                format!("Заявки ({})", requests.len()),
+                "clan_requests",
+            ))
+            .button(Button::new("Пригласить игрока", "clan_invite_list"));
     }
 
-    buttons.push(serde_json::Value::String("Покинуть клан".into()));
-    buttons.push(serde_json::Value::String("clan_leave".into()));
-    append_close_buttons(&mut buttons);
-    let gui = serde_json::json!({
-        "title": clan.name,
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.button(Button::new("Покинуть клан", "clan_leave"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_preview(
@@ -136,24 +119,18 @@ pub async fn handle_clan_preview(
         members.len(),
         owner_name
     );
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    let mut win = Horb::new(clan.name.clone()).text(text);
 
     if player_clan_id(state, pid).is_none() {
-        buttons.push(serde_json::json!("Подать заявку"));
-        buttons.push(serde_json::json!(format!("clan_request:{}", clan_id)));
+        win = win.button(Button::new(
+            "Подать заявку",
+            format!("clan_request:{}", clan_id),
+        ));
     }
 
-    buttons.push(serde_json::json!("Назад"));
-    buttons.push(serde_json::json!("clan_back"));
-    append_close_buttons(&mut buttons);
-
-    let gui = serde_json::json!({
-        "title": clan.name,
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.button(Button::new("Назад", "clan_back"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_create(
@@ -364,7 +341,7 @@ pub async fn handle_clan_members_view(
         .map(|(_, _, r)| crate::db::ClanRank::from_db(*r))
         .unwrap_or(crate::db::ClanRank::None);
 
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    let mut win = Horb::new("Участники");
     let mut text = String::from("Участники клана:\n");
 
     for (m_pid, m_name, m_rank_raw) in &members {
@@ -373,27 +350,24 @@ pub async fn handle_clan_members_view(
 
         if *m_pid != pid {
             if player_rank == crate::db::ClanRank::Leader && m_rank == crate::db::ClanRank::Member {
-                buttons.push(serde_json::json!(format!("Повысить {}", m_name)));
-                buttons.push(serde_json::json!(format!("clan_promote:{}", m_pid)));
+                win = win.button(Button::new(
+                    format!("Повысить {}", m_name),
+                    format!("clan_promote:{}", m_pid),
+                ));
             }
             if player_rank > m_rank {
-                buttons.push(serde_json::json!(format!("Исключить {}", m_name)));
-                buttons.push(serde_json::json!(format!("clan_kick_id:{}", m_pid)));
+                win = win.button(Button::new(
+                    format!("Исключить {}", m_name),
+                    format!("clan_kick_id:{}", m_pid),
+                ));
             }
         }
     }
 
-    buttons.push(serde_json::json!("Назад"));
-    buttons.push(serde_json::json!("clan_back"));
-    append_close_buttons(&mut buttons);
-
-    let gui = serde_json::json!({
-        "title": "Участники",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.text(text)
+        .button(Button::new("Назад", "clan_back"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_invite_list(
@@ -417,7 +391,7 @@ pub async fn handle_clan_invite_list(
         return;
     }
 
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    let mut win = Horb::new("Пригласить").text("Выберите игрока для приглашения в клан:");
     let mut count = 0;
 
     for entry in &state.active_players {
@@ -437,11 +411,10 @@ pub async fn handle_clan_invite_list(
         });
 
         if let Some(name) = target_data {
-            buttons.push(serde_json::json!(format!("Пригласить {}", name)));
-            buttons.push(serde_json::json!(format!(
-                "clan_invite_send:{}",
-                target_pid
-            )));
+            win = win.button(Button::new(
+                format!("Пригласить {}", name),
+                format!("clan_invite_send:{}", target_pid),
+            ));
             count += 1;
         }
         if count >= 20 {
@@ -450,21 +423,12 @@ pub async fn handle_clan_invite_list(
     }
 
     if count == 0 {
-        buttons.push(serde_json::json!("Никого нет рядом без клана"));
-        buttons.push(serde_json::json!("noop"));
+        win = win.button(Button::new("Никого нет рядом без клана", "noop"));
     }
 
-    buttons.push(serde_json::json!("Назад"));
-    buttons.push(serde_json::json!("clan_back"));
-    append_close_buttons(&mut buttons);
-
-    let gui = serde_json::json!({
-        "title": "Пригласить",
-        "text": "Выберите игрока для приглашения в клан:",
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.button(Button::new("Назад", "clan_back"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_invite_send(
@@ -514,29 +478,23 @@ pub async fn handle_clan_invites_view(
     pid: PlayerId,
 ) {
     let invites = state.db.get_player_invites(pid).await.unwrap_or_default();
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    let mut win = Horb::new("Приглашения").text("Вас пригласили в следующие кланы:");
 
     for (clan_id, clan_name) in &invites {
-        buttons.push(serde_json::json!(format!("Принять {}", clan_name)));
-        buttons.push(serde_json::json!(format!("clan_invite_accept:{}", clan_id)));
-        buttons.push(serde_json::json!(format!("Отклонить {}", clan_name)));
-        buttons.push(serde_json::json!(format!(
-            "clan_invite_decline:{}",
-            clan_id
-        )));
+        win = win
+            .button(Button::new(
+                format!("Принять {}", clan_name),
+                format!("clan_invite_accept:{}", clan_id),
+            ))
+            .button(Button::new(
+                format!("Отклонить {}", clan_name),
+                format!("clan_invite_decline:{}", clan_id),
+            ));
     }
 
-    buttons.push(serde_json::json!("Назад"));
-    buttons.push(serde_json::json!("clan_back"));
-    append_close_buttons(&mut buttons);
-
-    let gui = serde_json::json!({
-        "title": "Приглашения",
-        "text": "Вас пригласили в следующие кланы:",
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.button(Button::new("Назад", "clan_back"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_invite_accept(
@@ -648,23 +606,21 @@ pub async fn handle_clan_requests_view(
         .get_clan_requests(clan_id)
         .await
         .unwrap_or_default();
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    let mut win = Horb::new("Заявки").text("Заявки в клан:");
     for (req_pid, req_name) in &requests {
-        buttons.push(serde_json::Value::String(format!("{req_name} - Принять")));
-        buttons.push(serde_json::Value::String(format!("clan_accept:{req_pid}")));
-        buttons.push(serde_json::Value::String(format!("{req_name} - Отклонить")));
-        buttons.push(serde_json::Value::String(format!("clan_decline:{req_pid}")));
+        win = win
+            .button(Button::new(
+                format!("{req_name} - Принять"),
+                format!("clan_accept:{req_pid}"),
+            ))
+            .button(Button::new(
+                format!("{req_name} - Отклонить"),
+                format!("clan_decline:{req_pid}"),
+            ));
     }
-    buttons.push(serde_json::Value::String("Назад".into()));
-    buttons.push(serde_json::Value::String("clan_back".into()));
-    append_close_buttons(&mut buttons);
-    let gui = serde_json::json!({
-        "title": "Заявки",
-        "text": "Заявки в клан:",
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.button(Button::new("Назад", "clan_back"))
+        .close_button()
+        .send_untracked(tx);
 }
 
 pub async fn handle_clan_accept(
@@ -825,12 +781,4 @@ fn send_clan_no_rights(tx: &mpsc::UnboundedSender<Vec<u8>>) {
 
 fn send_clan_ok(tx: &mpsc::UnboundedSender<Vec<u8>>, title: &str, text: &str) {
     send_u_packet(tx, "OK", &ok_message(title, text).1);
-}
-
-fn append_close_buttons(buttons: &mut Vec<serde_json::Value>) {
-    buttons.extend(
-        CLOSE_WINDOW_BUTTON_LABELS
-            .iter()
-            .map(|label| serde_json::Value::String(label.to_string())),
-    );
 }
