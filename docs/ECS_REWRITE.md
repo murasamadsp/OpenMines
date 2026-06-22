@@ -94,6 +94,24 @@ P1 «command-bus» из первой версии плана ОТМЕНЕНА: `
      `db.save_player` (НЕ в tick).
   ВЕРИФИКАЦИЯ: обязателен коннект живым клиентом (порядок Init/auth — критичен).
   Делать сфокусированно, НЕ в хвосте марафон-сессии (урок отката P1).
+
+  ТРАССИРОВКА ЗАВИСИМОСТЕЙ (готова — следующий заход быстрый):
+  - `send_initial_sync` (init.rs:193) — единственный реальный async-DB на логине:
+    `send_chat_login_per_reference` → `chat_access`/`load_db_history` (история чата
+    из БД). Это ПРЕД-ЗАГРУЗИТЬ в conn-таске и передать в Connect.
+  - Блок программы (#p/@P, init.rs:292-305) на свежем логине МЁРТВ:
+    `ProgrammatorState::new()` при spawn (init.rs:116) → `selected_id = None`, из БД
+    не грузится. `db.get_program` не вызывается. Префетч не нужен.
+  - После префетча `send_initial_sync` становится ПОЛНОСТЬЮ sync (ecs-reads + sends,
+    без await) → переносится в tick дословно (порядок пакетов байт-в-байт).
+  - RECONNECT-ГОНКА решается entity-guard: `LifeCmd::Disconnect{pid, entity}`; в tick
+    despawn ТОЛЬКО если `active_players[pid].ecs_entity == entity` (иначе уже
+    переподключился — skip). Поэтому connect/disconnect МОЖНО двигать раздельно.
+  - `on_disconnect`: `db.save_player().await` → в tick извлечь row (ecs read) +
+    despawn + broadcast, а `db.save_player` отдать в `tokio::spawn` (НЕ в tick).
+  - ВАЖНО: disconnect-в-одиночку почти не даёт выигрыша (login всё ещё держит ecs
+    в conn-таске → RwLock остаётся контендженным). Ценность только когда ОБА
+    (connect+disconnect) вне conn-таска. Делать вместе.
 - **P3 — Tickrate-бакеты + interest-replication.** Мультирейтный планировщик
   (сейчас всё на 10ms) + дельта-репликация по interest-set (`chunk_players`).
 - **P4 — Опциональный пространственный шардинг.** Несколько sim-тасков по зонам.
