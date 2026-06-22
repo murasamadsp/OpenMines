@@ -31,7 +31,7 @@ pub async fn handle_clan_menu(
             let label = format!("{} [{}] ({} чел.)", clan.name, clan.abr, members.len());
             win = win.button(Button::new(label, format!("clan_view:{}", clan.id)));
         }
-        win.close_button().send_untracked(tx);
+        win.close_button().send(state, tx, pid, "clan");
     }
 }
 
@@ -89,7 +89,7 @@ pub async fn handle_clan_info_view(
 
     win.button(Button::new("Покинуть клан", "clan_leave"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_preview(
@@ -130,7 +130,7 @@ pub async fn handle_clan_preview(
 
     win.button(Button::new("Назад", "clan_back"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_create(
@@ -367,7 +367,7 @@ pub async fn handle_clan_members_view(
     win.text(text)
         .button(Button::new("Назад", "clan_back"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_invite_list(
@@ -428,7 +428,7 @@ pub async fn handle_clan_invite_list(
 
     win.button(Button::new("Назад", "clan_back"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_invite_send(
@@ -494,7 +494,7 @@ pub async fn handle_clan_invites_view(
 
     win.button(Button::new("Назад", "clan_back"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_invite_accept(
@@ -620,7 +620,7 @@ pub async fn handle_clan_requests_view(
     }
     win.button(Button::new("Назад", "clan_back"))
         .close_button()
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 pub async fn handle_clan_accept(

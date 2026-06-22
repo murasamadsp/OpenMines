@@ -67,7 +67,7 @@ pub async fn handle_gui_button(
         "clan_menu" | "clan_back" => {
             crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
         }
-        "clan_create_view" => handle_clan_create_view(tx),
+        "clan_create_view" => handle_clan_create_view(state, tx, pid),
         "clan_requests" => {
             crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid).await;
         }
@@ -88,7 +88,7 @@ pub async fn handle_gui_button(
         "sellall" => handle_market_sellall(state, tx, pid),
         "getprofit" => handle_market_getprofit(state, tx, pid),
         "clancreate" | "clan_create" => {
-            handle_clan_create_view(tx);
+            handle_clan_create_view(state, tx, pid);
         }
         "clan_create_input" => {
             crate::net::session::social::commands::send_ok(
@@ -114,14 +114,18 @@ pub async fn handle_gui_button(
     }
 }
 
-fn handle_clan_create_view(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn handle_clan_create_view(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) {
     use super::horb::{Button, Horb};
     // exit добавится builder-гарантией последним → Escape закроет окно.
     Horb::new("СОЗДАНИЕ КЛАНА")
         .text("Введите название и тег (3 симв.) через пробел в чат после нажатия кнопки 'ВВОД'")
         .button(Button::new("ВВОД", "clan_create_input"))
         .button(Button::new("Назад", "clan_back"))
-        .send_untracked(tx);
+        .send(state, tx, pid, "clan");
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).

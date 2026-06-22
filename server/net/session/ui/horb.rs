@@ -393,13 +393,6 @@ impl Horb {
             Some(())
         });
     }
-
-    /// Отправить окно БЕЗ записи `current_window`. Для окон, чьи кнопки
-    /// self-contained и не резолвят координаты из `current_window` (clan-меню) —
-    /// сохраняет прежнее поведение (clan-окна его не трекали).
-    pub fn send_untracked(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
-        self.emit(tx);
-    }
 }
 
 #[cfg(test)]
