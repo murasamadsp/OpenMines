@@ -1,5 +1,9 @@
 //! Подгрузка и синхронизация чанков вокруг игрока.
 use crate::net::session::prelude::*;
+use std::collections::HashMap;
+
+/// HB-оверлей пака: `(code, x, y, clan, charged)` (как `PackOverlay` в `game`).
+type PackEntry = (u8, u16, u16, u8, u8);
 
 pub fn check_chunk_changed(
     state: &Arc<GameState>,
@@ -111,13 +115,10 @@ pub fn check_chunk_changed(
             }
         }
 
-        // Затем отправляем постройки
-        for (code, px, py, cid, off) in state.get_packs_in_single_chunk(ncx, ncy) {
-            if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
-                sub_packets.push(hb_packs(block_pos, &[(code, px, py, cid, off)]));
-                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-            }
-        }
+        // Постройки шлём ПОСЛЕ всех чанков, сгруппированными по block_pos
+        // (см. ниже): клиент `RemoveObjectInBlock` чистит ВЕСЬ block_pos, а
+        // `PACKPOS=x+y*chunks_w` коллизит (клетки ~8 апарт делят block_pos) —
+        // отправка по одному паку затирала бы соседние («паки пропадают»).
 
         if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
             || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES
@@ -182,6 +183,36 @@ pub fn check_chunk_changed(
         let we_del = hb_bot_del(net_u16_nonneg(pid));
         let we_del_data = encode_hb_bundle(&hb_bundle(&[we_del]).1);
         state.broadcast_to_nearby_specific_chunk(ocx, ocy, &we_del_data, Some(pid));
+    }
+
+    // Постройки: группируем ВСЕ видимые паки по block_pos и шлём каждый block_pos
+    // ОДНИМ `hb_packs` со всеми его паками. Клиент `RemoveObjectInBlock(block_pos)`
+    // чистит весь блок перед добавлением, а `PACKPOS=x+y*chunks_w` коллизит
+    // (клетки ~8 апарт делят block_pos) — отправка по одному паку затирала бы
+    // соседние («паки пропадают»). Идёт ПОСЛЕ clears ушедших чанков, чтобы
+    // перекрыть ошибочную очистку видимого пака с совпавшим block_pos.
+    let mut by_block: HashMap<i32, Vec<PackEntry>> = HashMap::new();
+    for (vcx, vcy) in new_visible.iter().copied() {
+        for pack in state.get_packs_in_single_chunk(vcx, vcy) {
+            if let Some(bp) = state.pack_block_pos(i32::from(pack.1), i32::from(pack.2)) {
+                by_block.entry(bp).or_default().push(pack);
+            }
+        }
+    }
+    for (bp, packs) in by_block {
+        sub_packets.push(hb_packs(bp, &packs));
+        sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+        if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
+            || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES
+        {
+            flush_sub_packets(
+                &mut sub_packets,
+                &mut sent_batches,
+                &mut sub_batch_bytes,
+                tx,
+                pid,
+            );
+        }
     }
 
     if !sub_packets.is_empty() {

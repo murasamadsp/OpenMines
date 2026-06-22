@@ -42,6 +42,9 @@ tokio-cron-scheduler = "0.13.0"
 binrw = "0.14.0"
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 strum = { version = "0.28.0", features = ["derive"] }
+dotnet-rng = "1.0.5"
+clap = { version = "4.5.31", features = ["derive"] }
+
 
 
 [profile.release]

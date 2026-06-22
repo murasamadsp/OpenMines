@@ -30,7 +30,7 @@
 )]
 
 use super::anl::{BasisType, FractalType, ImplicitFractal, InterpolationType};
-use super::dotnet_random::DotNetRandom;
+use dotnet_rng::DotnetRng;
 
 const BLACK_ROCK: u8 = 114;
 const RED_ROCK: u8 = 117;
@@ -57,7 +57,7 @@ struct Sectors {
     value: Vec<f32>,
     mid: f32,
     /// Общий RNG (как `Sectors.r`) — используется только пост-обработкой.
-    r: DotNetRandom,
+    r: DotnetRng,
 }
 
 #[inline]
@@ -73,7 +73,7 @@ impl Sectors {
             seed,
             value: vec![0.0; width * height],
             mid: 0.0,
-            r: DotNetRandom::new(seed),
+            r: DotnetRng::new(seed),
         }
     }
 

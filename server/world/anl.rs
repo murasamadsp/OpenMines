@@ -35,7 +35,7 @@
     dead_code
 )]
 
-use super::dotnet_random::DotNetRandom;
+use dotnet_rng::DotnetRng;
 use std::f64::consts::PI;
 
 const MAX_SOURCES: usize = 20;
@@ -343,17 +343,17 @@ impl ImplicitBasisFunction {
 
     fn set_seed(&mut self, value: i32) {
         self.seed = value;
-        let mut random = DotNetRandom::new(value);
+        let mut random = DotnetRng::new(value);
 
-        let ax = random.next_double();
-        let ay = random.next_double();
-        let az = random.next_double();
+        let ax = random.next_f64();
+        let ay = random.next_f64();
+        let az = random.next_f64();
         let _len = (ax * ax + ay * ay + az * az).sqrt();
         // SetRotationAngle использует 4-й NextDouble (3D-матрица) — в 2D не нужен,
         // но обязан продвинуть состояние RNG, чтобы 5-й вызов совпал с C#.
-        let _angle3d = random.next_double() * PI * 2.0;
+        let _angle3d = random.next_f64() * PI * 2.0;
         // 5-й NextDouble — угол поворота координат для 2D.
-        let angle = random.next_double() * PI * 2.0;
+        let angle = random.next_f64() * PI * 2.0;
         self.cos2d = angle.cos();
         self.sin2d = angle.sin();
     }

@@ -31,9 +31,9 @@
 )]
 
 use super::anl::{BasisType, FractalType, ImplicitFractal, InterpolationType};
-use super::dotnet_random::DotNetRandom;
 use super::sector_palette;
 use super::sectors_gen;
+use dotnet_rng::DotnetRng;
 use rayon::prelude::*;
 use std::collections::VecDeque;
 
@@ -62,7 +62,7 @@ const fn cell_index_in_map(x: u32, y: u32, chunks_w: u32, chunks_h: u32) -> usiz
 
 /// `Sector.GenerateInsides()` — 1:1. Внутренний `gig` (20%) определяет:
 /// только кристаллы, либо случайное подмножество types + crys.
-fn generate_insides(tier: usize, rng: &mut DotNetRandom) -> Vec<u8> {
+fn generate_insides(tier: usize, rng: &mut DotnetRng) -> Vec<u8> {
     // var gig = r.Next(1, 101) >= 80
     let gig = rng.next_range(1, 101) >= 80;
     let types = sector_palette::types_palette(tier);
@@ -116,7 +116,7 @@ fn generate_insides(tier: usize, rng: &mut DotNetRandom) -> Vec<u8> {
 /// сидится `DateTime.Now.Ticks` — недетерминированно); мы засеваем фрактал
 /// одним дополнительным `next()`-вызовом ради детерминированного разнообразия
 /// шума между секторами.
-fn not_typed_noise(rng: &mut DotNetRandom) -> ImplicitFractal {
+fn not_typed_noise(rng: &mut DotnetRng) -> ImplicitFractal {
     let ftype = rng.next_range(0, 5);
     let basis = rng.next_range(0, 4);
     let interp = rng.next_range(0, 4);
@@ -139,13 +139,13 @@ fn not_typed_noise(rng: &mut DotNetRandom) -> ImplicitFractal {
 
 /// `RandomSizedParts(args)` — 1:1. Делит [0,~2] на сегменты `(start, end)`,
 /// хранимые НЕсортированно; проверка пересечения `s <= end && e >= start`.
-fn random_sized_parts(rng: &mut DotNetRandom, args: &[u8]) -> Vec<(u8, f32, f32)> {
+fn random_sized_parts(rng: &mut DotnetRng, args: &[u8]) -> Vec<(u8, f32, f32)> {
     let mut parts: Vec<(u8, f32, f32)> = Vec::new();
     for &d in args {
         let mut guard = 0u32;
         loop {
-            let start = rng.next_double() as f32;
-            let end = start + rng.next_double() as f32;
+            let start = rng.next_f64() as f32;
+            let end = start + rng.next_f64() as f32;
             let overlap = parts.iter().any(|&(_, s, e)| s <= end && e >= start);
             if !overlap {
                 parts.push((d, start, end));
@@ -167,7 +167,7 @@ fn random_sized_parts(rng: &mut DotNetRandom, args: &[u8]) -> Vec<(u8, f32, f32)
 /// Возвращает `(значения, min, max)`. NaN-проверка в C# мертва (`v==NaN` всегда
 /// false), реально цикл срабатывает только на `v==0`.
 fn fill_noise_to_sector(
-    rng: &mut DotNetRandom,
+    rng: &mut DotnetRng,
     comp: &[(u32, u32)],
     s_width: i32,
     s_height: i32,
@@ -181,8 +181,8 @@ fn fill_noise_to_sector(
     let mut max = g0;
     let mut min = g0;
 
-    let mut local_off_x = rng.next_double();
-    let mut local_off_y = rng.next_double();
+    let mut local_off_x = rng.next_f64();
+    let mut local_off_y = rng.next_f64();
 
     let mut vals = Vec::with_capacity(comp.len());
     for &(px, py) in comp {
@@ -193,8 +193,8 @@ fn fill_noise_to_sector(
         let mut guard = 0u32;
         // while (v == 0)  (NaN-ветка в C# недостижима)
         while v == 0.0 {
-            local_off_x += rng.next_double();
-            local_off_y += rng.next_double();
+            local_off_x += rng.next_f64();
+            local_off_y += rng.next_f64();
             if local_off_x > x as f64 {
                 local_off_x = 0.0;
             }
@@ -226,7 +226,7 @@ fn fill_noise_to_sector(
 /// - счётчик инкрементится НА КАЖДУЮ итерацию по parts (а не на клетку).
 /// Мутирует `values` (нормализует) и `types`; возвращает `(тип, счётчик)`.
 fn sample_and_find_types(
-    rng: &mut DotNetRandom,
+    rng: &mut DotnetRng,
     values: &mut [f32],
     types: &mut [u8],
     parts: &[(u8, f32, f32)],
@@ -279,7 +279,7 @@ fn fill_sector(
     sector_seed: u32,
     cell_dur: &[f32; 256],
 ) {
-    let mut rng = DotNetRandom::new(sector_seed as i32);
+    let mut rng = DotnetRng::new(sector_seed as i32);
 
     // args = s.GenerateInsides() — вычисляется до CreateFillForCells.
     let args = generate_insides(tier, &mut rng);

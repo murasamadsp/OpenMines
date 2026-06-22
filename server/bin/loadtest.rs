@@ -299,23 +299,129 @@ fn drain_frames(
         buf.drain(..len);
     }
 }
+use clap::Parser;
+
+#[derive(Parser, Debug, Clone)]
+#[command(name = "loadtest", about = "Нагрузочный замер OpenMines")]
+struct Args {
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    #[arg(long, default_value_t = 8090)]
+    port: u16,
+
+    #[arg(long, default_value_t = 500)]
+    clients: u32,
+
+    #[arg(long, default_value_t = 30)]
+    secs: u64,
+
+    #[arg(long, default_value_t = 200)]
+    move_ms: u64,
+
+    #[arg(long, default_value_t = 3)]
+    ramp_ms: u64,
+
+    #[arg(long, default_value = "data/openmines.db")]
+    db: String,
+}
 
 fn parse_args() -> Config {
-    let args: Vec<String> = std::env::args().collect();
-    let get = |flag: &str, default: &str| -> String {
-        args.iter()
-            .position(|a| a == flag)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-            .unwrap_or_else(|| default.to_string())
-    };
+    let parsed = Args::parse();
     Config {
-        host: get("--host", "127.0.0.1"),
-        port: get("--port", "8090").parse().unwrap_or(8090),
-        clients: get("--clients", "500").parse().unwrap_or(500),
-        secs: get("--secs", "30").parse().unwrap_or(30),
-        move_ms: get("--move-ms", "200").parse().unwrap_or(200),
-        ramp_ms: get("--ramp-ms", "3").parse().unwrap_or(3),
-        db: get("--db", "data/openmines.db"),
+        host: parsed.host,
+        port: parsed.port,
+        clients: parsed.clients,
+        secs: parsed.secs,
+        move_ms: parsed.move_ms,
+        ramp_ms: parsed.ramp_ms,
+        db: parsed.db,
+    }
+}
+
+#[cfg(test)]
+fn parse_args_from<I, S>(args: I) -> Result<Config, clap::Error>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString> + Clone,
+{
+    let mut os_args = vec![std::ffi::OsString::from("loadtest")];
+    os_args.extend(args.into_iter().map(Into::into));
+    let parsed = Args::try_parse_from(os_args)?;
+    Ok(Config {
+        host: parsed.host,
+        port: parsed.port,
+        clients: parsed.clients,
+        secs: parsed.secs,
+        move_ms: parsed.move_ms,
+        ramp_ms: parsed.ramp_ms,
+        db: parsed.db,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_args_defaults() {
+        let args: [&str; 0] = [];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.host, "127.0.0.1");
+        assert_eq!(cfg.port, 8090);
+        assert_eq!(cfg.clients, 500);
+        assert_eq!(cfg.secs, 30);
+        assert_eq!(cfg.move_ms, 200);
+        assert_eq!(cfg.ramp_ms, 3);
+        assert_eq!(cfg.db, "data/openmines.db");
+    }
+
+    #[test]
+    fn test_parse_args_custom() {
+        let args = [
+            "--host",
+            "10.0.0.2",
+            "--port",
+            "9999",
+            "--clients",
+            "123",
+            "--secs",
+            "45",
+            "--move-ms",
+            "150",
+            "--ramp-ms",
+            "12",
+            "--db",
+            "custom.db",
+        ];
+        let cfg = parse_args_from(args).unwrap();
+        assert_eq!(cfg.host, "10.0.0.2");
+        assert_eq!(cfg.port, 9999);
+        assert_eq!(cfg.clients, 123);
+        assert_eq!(cfg.secs, 45);
+        assert_eq!(cfg.move_ms, 150);
+        assert_eq!(cfg.ramp_ms, 12);
+        assert_eq!(cfg.db, "custom.db");
+    }
+
+    #[test]
+    fn test_parse_args_invalid() {
+        let args = ["--port", "abc"];
+        let res = parse_args_from(args);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_args_missing_value() {
+        let args = ["--port"];
+        let res = parse_args_from(args);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_args_duplicate_flags() {
+        let args = ["--clients", "100", "--clients", "200"];
+        let res = parse_args_from(args);
+        assert!(res.is_err());
     }
 }

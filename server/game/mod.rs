@@ -751,20 +751,12 @@ impl GameState {
     }
 
     pub fn generate_hash() -> String {
-        use rand::Rng;
         const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let mut rng = rand::rng();
-        (0..12)
-            .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
-            .collect()
+        generate_random_string(12, CHARSET)
     }
     pub fn generate_session_id() -> String {
-        use rand::Rng;
         const CHARSET: &[u8] = b"abcdefghijklmnoprtsuxyz0123456789";
-        let mut rng = rand::rng();
-        (0..5)
-            .map(|_| CHARSET[rng.random_range(0..CHARSET.len())] as char)
-            .collect()
+        generate_random_string(5, CHARSET)
     }
 
     pub fn auth_token_hash_md5(hash: &str, sid: &str) -> String {
@@ -793,4 +785,12 @@ pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
         state.world.get_cell(x, y),
     );
     state.broadcast_hb_at(x, y, &[sub], None);
+}
+
+fn generate_random_string(len: usize, charset: &[u8]) -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    (0..len)
+        .map(|_| charset[rng.random_range(0..charset.len())] as char)
+        .collect()
 }

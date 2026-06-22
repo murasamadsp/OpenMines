@@ -1,7 +1,10 @@
 //! Геология (Xgeo) — pickup/place блоков.
 use crate::game::broadcast_cell_update;
-use crate::game::player::{PlayerCooldowns, PlayerGeoStack, PlayerPosition, PlayerStats};
+use crate::game::player::{
+    PlayerCooldowns, PlayerGeoStack, PlayerPosition, PlayerSkills, PlayerStats,
+};
 use crate::game::programmator::ProgrammatorState;
+use crate::game::skills::SkillType;
 use crate::net::session::prelude::*;
 use rand::Rng;
 
@@ -20,6 +23,19 @@ pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
                 if cd.last_geo.elapsed() < Duration::from_millis(200) {
                     return None;
                 }
+            }
+
+            // НАМЕРЕННАЯ ДЕВИАЦИЯ от C# по ПРЯМОМУ ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ:
+            // геология работает ТОЛЬКО при УСТАНОВЛЕННОМ в слот скилле Geology.
+            // В эталоне (`PEntity.Geo`) гейта нет — гео доступно без скилла; юзер
+            // явно указал требовать установленный скилл. `find(code)` = в слоте
+            // (НЕ `get_player_skill_effect`, который для неустановленного даёт
+            // эффект уровня 0 и может быть >0).
+            let geology_installed = ecs
+                .get::<PlayerSkills>(entity)
+                .is_some_and(|sk| sk.states.find(SkillType::Geology.code()).is_some());
+            if !geology_installed {
+                return None;
             }
 
             let (px, py, dir) = {

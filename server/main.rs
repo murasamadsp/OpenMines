@@ -37,12 +37,8 @@ async fn main() -> Result<()> {
     migrate_mines3_db_to_openmines(&state_dir);
     tracing::info!("Runtime state directory: {}", state_dir.display());
 
-    let force_regenerate = env::args()
-        .any(|arg| matches!(arg.as_str(), "--regen" | "--regen-world"))
-        || env::var("M3R_REGEN_WORLD").ok().is_some_and(|s| {
-            let t = s.trim().to_ascii_lowercase();
-            matches!(t.as_str(), "1" | "true" | "yes" | "on")
-        });
+    let force_regenerate = parse_regen_flag_from(env::args(), env::var("M3R_REGEN_WORLD").ok())
+        .unwrap_or_else(|e| e.exit());
     if force_regenerate {
         remove_world_files(&cfg.world_name, &state_dir);
     }
@@ -261,5 +257,63 @@ fn remove_world_files(world_name: &str, state_dir: &Path) {
         } else {
             tracing::info!("Removed {} for full world regeneration", path.display());
         }
+    }
+}
+
+fn parse_regen_flag_from<I, S>(args: I, env_val: Option<String>) -> Result<bool, clap::Error>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString> + Clone,
+{
+    use clap::Parser;
+
+    #[derive(Parser, Debug, Clone)]
+    #[command(name = "openmines-server", about = "OpenMines — игровой сервер (Rust)")]
+    struct Args {
+        /// Force regeneration of the world map on startup
+        #[arg(long, aliases = ["regen-world"])]
+        regen: bool,
+    }
+
+    let mut os_args = vec![std::ffi::OsString::from("openmines-server")];
+    os_args.extend(args.into_iter().map(Into::into));
+
+    let parsed = Args::try_parse_from(os_args)?;
+
+    let force_regen = parsed.regen
+        || env_val.is_some_and(|s| {
+            let t = s.trim().to_ascii_lowercase();
+            matches!(t.as_str(), "1" | "true" | "yes" | "on")
+        });
+
+    Ok(force_regen)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_regen_flag_args() {
+        assert!(parse_regen_flag_from(["--regen"], None).unwrap());
+        assert!(parse_regen_flag_from(["--regen-world"], None).unwrap());
+        assert!(parse_regen_flag_from(["--regen"], Some("0".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], None).unwrap());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_env() {
+        assert!(parse_regen_flag_from([] as [&str; 0], Some("1".to_string())).unwrap());
+        assert!(parse_regen_flag_from([] as [&str; 0], Some("true".to_string())).unwrap());
+        assert!(parse_regen_flag_from([] as [&str; 0], Some("YES".to_string())).unwrap());
+        assert!(parse_regen_flag_from([] as [&str; 0], Some(" on ".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], Some("0".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], Some("false".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], None).unwrap());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_invalid_arg() {
+        assert!(parse_regen_flag_from(["--unknown-flag"], None).is_err());
     }
 }
