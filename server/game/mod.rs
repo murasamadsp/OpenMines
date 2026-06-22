@@ -202,6 +202,10 @@ pub struct GameState {
     pub box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
+    /// Oneshot-каналы для принудительного кика: `remove` → drop sender → connection-таск
+    /// выходит из select!-loop. Также разрешает зомби-соединения при reconnect (новый
+    /// insert вытесняет старый sender → старая connection-задача чисто завершается).
+    pub kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
 }
 
 impl GameState {
@@ -270,6 +274,7 @@ impl GameState {
             box_index: Arc::new(DashMap::new()),
             box_persist_q: Arc::new(Mutex::new(Vec::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
+            kick_channels: DashMap::new(),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по

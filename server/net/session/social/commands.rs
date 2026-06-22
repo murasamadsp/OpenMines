@@ -1,5 +1,6 @@
-//! Слэш-команды чата: /give, /money, /tp, /heal, /clan, /pack, /admin.
-use crate::game::player::PlayerInventory;
+//! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
+use crate::db::players::Role;
+use crate::game::player::{PlayerInventory, PlayerStats};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
@@ -12,16 +13,17 @@ const ADMIN_COMMAND_HELP: &str = concat!(
     "Админские команды:\n",
     "/give ITEM_ID AMOUNT — выдать предмет\n",
     "/giveall — выдать все предметы (по 10 шт.)\n",
-    "/money AMOUNT — добавить денег игроку\n",
+    "/money AMOUNT — добавить денег\n",
     "/moneyall AMOUNT — добавить денег всем игрокам\n",
     "/tp X Y — телепортироваться\n",
     "/heal — восстановить HP\n",
+    "/kick ИМЯ — кикнуть игрока\n",
+    "/role ИМЯ admin|mod|player — установить роль\n",
     "/pack owner X Y OWNER_ID — сменить владельца здания\n",
     "/pack clan X Y CLAN_ID — изменить клан здания\n",
     "/pack move X Y NX NY — переместить здание\n",
     "/pack type X Y TYPE — сменить тип здания (T/R/G/M/U/L/F/O)\n",
-    "/admin — показать справку по админ-командам\n",
-    "/adminhelp — показать справку по админ-командам",
+    "/admin — показать справку по админ-командам",
 );
 
 const CMD_USAGE_GIVE: &str = "Использование: /give ITEM_ID AMOUNT";
@@ -33,6 +35,8 @@ const CMD_USAGE_PACK_CLAN: &str = "Использование: /pack clan X Y CL
 const CMD_USAGE_PACK_MOVE: &str = "Использование: /pack move X Y NX NY";
 const CMD_USAGE_PACK_TYPE: &str = "Использование: /pack type X Y TYPE (T/R/G/M/U/L/F/O)";
 const CMD_USAGE_PACK: &str = "Команды: /pack owner X Y OWNER_ID | /pack clan X Y CLAN_ID | /pack move X Y NX NY | /pack type X Y TYPE";
+const CMD_USAGE_KICK: &str = "Использование: /kick ИМЯ";
+const CMD_USAGE_ROLE: &str = "Использование: /role ИМЯ admin|mod|player";
 const CMD_USAGE_CLAN_CREATE: &str = "Использование: /clan create ИМЯ ТЕГ";
 const CMD_USAGE_CLAN_KICK: &str = "Использование: /clan kick ИМЯ";
 const CMD_USAGE_CLAN: &str = "Команды: /clan create ИМЯ ТЕГ | /clan leave | /clan kick ИМЯ";
@@ -92,6 +96,8 @@ pub async fn handle_chat_command(
         "/moneyall" => handle_chat_money_all_command(state, tx, pid, args).await,
         "/tp" => handle_chat_teleport_command(state, tx, pid, args),
         "/heal" => handle_chat_heal_command(state, tx, pid),
+        "/kick" => handle_chat_kick_command(state, tx, pid, args),
+        "/role" => handle_chat_role_command(state, tx, pid, args).await,
         "/clan" => handle_chat_clan_command(state, tx, pid, args).await,
         "/pack" => handle_chat_pack_command(state, tx, pid, args),
         "/admin" | "/adminhelp" => {
@@ -116,7 +122,9 @@ fn handle_chat_giveall_command(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
     // All known item IDs: buildings (0-4,24,26,27,29), consumables (5-7,35,40), geopacks (10-16,34,42,43,46)
     let items: &[(i32, i32)] = &[
         (0, 10),
@@ -189,7 +197,9 @@ fn handle_chat_give_command(
     pid: PlayerId,
     args: &[&str],
 ) {
-    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
     let item_id = match parse_required_arg::<i32>(tx, args, 0, CMD_USAGE_GIVE) {
         Some(id) => id,
         None => return,
@@ -220,7 +230,9 @@ fn handle_chat_money_command(
     pid: PlayerId,
     args: &[&str],
 ) {
-    // Доступно ВСЕМ (sandbox-бутстрап по просьбе) — без админ-гейта.
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
     let amount = match parse_required_arg::<i64>(tx, args, 0, CMD_USAGE_MONEY) {
         Some(a) => a,
         None => return,
@@ -540,6 +552,95 @@ fn handle_pack_type_command(
         } else {
             send_ok(tx, "Ошибка", "Здание не найдено");
         }
+    }
+}
+
+// ─── /kick ──────────────────────────────────────────────────────────────────
+
+fn handle_chat_kick_command(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    args: &[&str],
+) {
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
+    let Some(&target_name) = args.first() else {
+        send_ok(tx, "Кик", CMD_USAGE_KICK);
+        return;
+    };
+    let target_pid = state.active_players.iter().find_map(|entry| {
+        let tid = *entry.key();
+        state
+            .query_player(tid, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerMetadata>(entity)
+                    .filter(|m| m.name.eq_ignore_ascii_case(target_name))
+                    .map(|_| tid)
+            })
+            .flatten()
+    });
+    match target_pid {
+        Some(tid) => {
+            if state.kick_channels.remove(&tid).is_some() {
+                send_ok(tx, "Кик", &format!("Игрок {target_name} кикнут"));
+            } else {
+                send_ok(tx, "Ошибка", "Не удалось кикнуть игрока");
+            }
+        }
+        None => send_ok(tx, "Ошибка", &format!("Игрок '{target_name}' не в сети")),
+    }
+}
+
+// ─── /role ──────────────────────────────────────────────────────────────────
+
+async fn handle_chat_role_command(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    args: &[&str],
+) {
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
+    let (Some(&target_name), Some(&role_arg)) = (args.first(), args.get(1)) else {
+        send_ok(tx, "Роль", CMD_USAGE_ROLE);
+        return;
+    };
+    let role = match role_arg {
+        "admin" => Role::Admin,
+        "mod" | "moderator" => Role::Moderator,
+        "player" => Role::Player,
+        _ => {
+            send_ok(tx, "Ошибка", "Роль: admin|mod|player");
+            return;
+        }
+    };
+    match state.db.get_player_by_name(target_name).await {
+        Ok(Some(row)) => match state.db.set_player_role(row.id, role).await {
+            Ok(true) => {
+                state.modify_player(row.id, |ecs, entity| {
+                    if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
+                        s.role = role as i32;
+                    }
+                    Some(())
+                });
+                let role_name = match role {
+                    Role::Admin => "Admin",
+                    Role::Moderator => "Mod",
+                    Role::Player => "Player",
+                };
+                send_ok(
+                    tx,
+                    "Роль",
+                    &format!("Игроку {} установлена роль {}", row.name, role_name),
+                );
+            }
+            Ok(false) => send_ok(tx, "Ошибка", "Игрок не найден в БД"),
+            Err(e) => send_ok(tx, "Ошибка", &e.to_string()),
+        },
+        Ok(None) => send_ok(tx, "Ошибка", &format!("Игрок '{target_name}' не найден")),
+        Err(e) => send_ok(tx, "Ошибка", &e.to_string()),
     }
 }
 

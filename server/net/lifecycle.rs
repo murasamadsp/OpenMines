@@ -400,6 +400,30 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                 }
             }
 
+            // Периодический BotsRender (1:1 C# `Player.BotsRender`, каждые 4с):
+            // заново шлёт `X` всех видимых ботов каждому игроку. Без этого
+            // клиентский `RobotsGarbageCollector` (6с без пинга) удаляет
+            // простаивающих ботов — они мигают при ходьбе и исчезают в покое.
+            // Таймер per-player в `ActivePlayer`; due-список собираем заранее и
+            // отпускаем шард `active_players` ДО рендера (он берёт `ecs.read()`).
+            {
+                let now_render = Instant::now();
+                let mut due: Vec<crate::game::player::PlayerId> = Vec::new();
+                for mut e in state.active_players.iter_mut() {
+                    if now_render.duration_since(e.value().last_bots_render)
+                        >= std::time::Duration::from_secs(4)
+                    {
+                        e.value_mut().last_bots_render = now_render;
+                        due.push(*e.key());
+                    }
+                }
+                for pid in due {
+                    if let Some(tx) = state.player_sessions.get(&pid).map(|t| t.clone()) {
+                        crate::net::session::play::chunks::bots_render(&state, &tx, pid);
+                    }
+                }
+            }
+
             // ── Stage 0: агрегация и throttled-вывод (target=tickprof) ──
             let dt_side = side_t0.elapsed();
             let dt_total = tick_t0.elapsed();

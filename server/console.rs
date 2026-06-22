@@ -1,16 +1,30 @@
+use crate::db::players::Role;
 use crate::game::GameState;
-use crate::game::player::PlayerId;
+use crate::game::player::{PlayerId, PlayerMetadata, PlayerStats};
 use crate::net::session::wire::make_u_packet_bytes;
 use crate::world::WorldProvider;
 use std::sync::Arc;
 use tokio::io::{self, AsyncBufReadExt, BufReader};
 use tokio::sync::broadcast;
 
+// ─── Arg-parsing helpers ─────────────────────────────────────────────────────
+
+fn flag_value<'a>(args: &[&'a str], long: &str, short: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|w| w[0] == long || (!short.is_empty() && w[0] == short))
+        .map(|w| w[1])
+}
+
+fn parse_flag<T: std::str::FromStr>(args: &[&str], long: &str, short: &str) -> Option<T> {
+    flag_value(args, long, short)?.parse().ok()
+}
+
+// ─── REPL ────────────────────────────────────────────────────────────────────
+
 #[allow(clippy::too_many_lines)]
 pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>) -> io::Result<()> {
     let mut reader = BufReader::new(io::stdin()).lines();
 
-    // Print welcome message
     println!(">>> Interactive admin console ready. Type 'help' or '?' for commands.");
 
     while let Some(line) = reader.next_line().await? {
@@ -26,21 +40,28 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
         match cmd {
             "help" | "?" => {
                 println!("Available commands:");
-                println!("  stop | shutdown                        Stop the server gracefully");
-                println!("  online                                 Show online player list");
                 println!(
-                    "  announce <message>                     Announce status notification to all players"
+                    "  stop | shutdown                              Stop the server gracefully"
                 );
-                println!("  give --player <ID> --item <ID> [amount] Give an item to a player");
-                println!("  money --player <ID> --amount <N>       Add money to a player");
-                println!("  tp --player <ID> --x <X> --y <Y>       Teleport a player");
-                println!("  heal --player <ID>                     Heal player health to maximum");
+                println!("  online                                       Show online player list");
                 println!(
-                    "  save                                   Save all players and flush the world"
+                    "  find <name>                                  Find player by name (online + DB)"
                 );
-                println!("  kill --player <ID>                     Kill a player instantly");
                 println!(
-                    "  info --player <ID>                     Show detailed player information"
+                    "  announce <message>                           Broadcast status notification"
+                );
+                println!("  give   -p <ID> -i <ID> [-a <N>]             Give item to player");
+                println!("  money  -p <ID> -a <N>                        Add money to player");
+                println!("  tp     -p <ID> -x <X> -y <Y>                Teleport player");
+                println!("  heal   -p <ID>                               Heal player to max HP");
+                println!("  kill   -p <ID>                               Kill player instantly");
+                println!("  kick   -p <ID>                               Force-disconnect player");
+                println!("  role   -p <ID> -r admin|mod|player           Set player role");
+                println!(
+                    "  info   -p <ID>                               Show detailed player info"
+                );
+                println!(
+                    "  save                                         Save all players and flush world"
                 );
             }
             "stop" | "shutdown" => {
@@ -49,28 +70,72 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 break;
             }
             "online" => {
-                let online_players = state
+                let online: Vec<_> = state
                     .active_players
                     .iter()
                     .map(|entry| {
                         let pid = *entry.key();
-                        let name = state
-                            .query_player_opt(pid, |ecs, entity| {
-                                ecs.get::<crate::game::player::PlayerMetadata>(entity)
-                                    .map(|m| m.name.clone())
+                        state
+                            .query_player(pid, |ecs, entity| {
+                                let name = ecs
+                                    .get::<PlayerMetadata>(entity)
+                                    .map_or_else(|| "?".to_string(), |m| m.name.clone());
+                                let role = ecs
+                                    .get::<PlayerStats>(entity)
+                                    .map_or("?", |s| role_str(s.role));
+                                format!("ID:{pid} [{role}] {name}")
                             })
-                            .unwrap_or_else(|| "Unknown".to_string());
-                        format!("ID: {pid} | Nick: {name}")
+                            .unwrap_or_else(|| format!("ID:{pid} [?] Unknown"))
                     })
-                    .collect::<Vec<_>>();
-
-                if online_players.is_empty() {
+                    .collect();
+                if online.is_empty() {
                     println!("No players online.");
                 } else {
-                    println!("Online players ({}):", online_players.len());
-                    for p in online_players {
+                    println!("Online ({}):", online.len());
+                    for p in online {
                         println!("  {p}");
                     }
+                }
+            }
+            "find" => {
+                if args.is_empty() {
+                    println!("Usage: find <name>");
+                    continue;
+                }
+                let name = args[0];
+                match state.db.get_player_by_name(name).await {
+                    Ok(Some(row)) => {
+                        let pid = row.id;
+                        let online = state.active_players.contains_key(&pid);
+                        if online {
+                            let detail = state.query_player_opt(pid, |ecs, entity| {
+                                let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                                let s = ecs.get::<PlayerStats>(entity)?;
+                                Some(format!(
+                                    "ONLINE | Pos:({},{}) | HP:{}/{} | ${}",
+                                    pos.x, pos.y, s.health, s.max_health, s.money
+                                ))
+                            });
+                            println!(
+                                "ID:{} [{}] {} — {}",
+                                pid,
+                                role_str(row.role),
+                                row.name,
+                                detail.unwrap_or_else(|| "ONLINE".to_string())
+                            );
+                        } else {
+                            println!(
+                                "ID:{} [{}] {} — OFFLINE | Last:({},{})",
+                                pid,
+                                role_str(row.role),
+                                row.name,
+                                row.x,
+                                row.y
+                            );
+                        }
+                    }
+                    Ok(None) => println!("Player '{name}' not found."),
+                    Err(e) => println!("DB error: {e}"),
                 }
             }
             "announce" => {
@@ -81,7 +146,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 let msg = args.join(" ");
                 let (event, pkt_body) = crate::protocol::packets::status(&msg);
                 let pkt = make_u_packet_bytes(event, &pkt_body);
-                let mut sent_count = 0;
+                let mut count = 0;
                 for entry in &state.active_players {
                     state.query_player(*entry.key(), |ecs, entity| {
                         if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity)
@@ -89,68 +154,30 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                             let _ = conn.tx.send(pkt.clone());
                         }
                     });
-                    sent_count += 1;
+                    count += 1;
                 }
-                println!("Announced status message to {sent_count} players.");
+                println!("Announced to {count} players.");
             }
             "give" => {
-                let mut player_id: Option<PlayerId> = None;
-                let mut item_id: Option<i32> = None;
-                let mut amount = 1;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        "--item" | "-i" => {
-                            if i + 1 < args.len() {
-                                item_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        other => {
-                            if let Ok(amt) = other.parse() {
-                                amount = amt;
-                                i += 1;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() || item_id.is_none() {
-                    println!("Usage: give --player <ID> --item <ID> [amount]");
+                let pid = parse_flag::<PlayerId>(args, "--player", "-p");
+                let iid = parse_flag::<i32>(args, "--item", "-i");
+                let amount = parse_flag::<i32>(args, "--amount", "-a").unwrap_or(1);
+                let (Some(pid), Some(iid)) = (pid, iid) else {
+                    println!("Usage: give -p <ID> -i <ID> [-a <N>]");
                     continue;
-                }
-                let pid = player_id.unwrap();
-                let iid = item_id.unwrap();
-
+                };
                 let res = state.modify_player(pid, |ecs, entity| {
                     {
                         let mut inv =
                             ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
                         *inv.items.entry(iid).or_insert(0) += amount;
                     }
-                    if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                    {
-                        flags.dirty = true;
+                    if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+                        f.dirty = true;
                     }
                     let conn_tx = ecs
                         .get::<crate::game::player::PlayerConnection>(entity)
-                        .map(|conn| conn.tx.clone());
+                        .map(|c| c.tx.clone());
                     if let Some(tx) = conn_tx {
                         let mut inv =
                             ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
@@ -160,128 +187,50 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                     Some(())
                 });
-
                 if res.flatten().is_some() {
-                    println!("Gave item {iid} (x{amount}) to player {pid}.");
+                    println!("Gave item {iid} x{amount} to player {pid}.");
                 } else {
                     println!("Player {pid} not found/offline.");
                 }
             }
             "money" => {
-                let mut player_id: Option<PlayerId> = None;
-                let mut amount: Option<i64> = None;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        "--amount" | "-a" => {
-                            if i + 1 < args.len() {
-                                amount = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() || amount.is_none() {
-                    println!("Usage: money --player <ID> --amount <N>");
+                let pid = parse_flag::<PlayerId>(args, "--player", "-p");
+                let amount = parse_flag::<i64>(args, "--amount", "-a");
+                let (Some(pid), Some(amount)) = (pid, amount) else {
+                    println!("Usage: money -p <ID> -a <N>");
                     continue;
-                }
-                let pid = player_id.unwrap();
-                let amt = amount.unwrap();
-
+                };
                 let res = state.modify_player(pid, |ecs, entity| {
-                    let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                    s.money = s.money.saturating_add(amt);
+                    let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                    s.money = s.money.saturating_add(amount);
                     let (m, c) = (s.money, s.creds);
                     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
                         f.dirty = true;
                     }
                     if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
                         let pkt = crate::protocol::packets::money(m, c);
-                        let bytes = make_u_packet_bytes(pkt.0, &pkt.1);
-                        let _ = conn.tx.send(bytes);
+                        let _ = conn.tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
                     }
                     Some(())
                 });
-
                 if res.flatten().is_some() {
-                    println!("Added $ {amt} to player {pid}.");
+                    println!("Added ${amount} to player {pid}.");
                 } else {
                     println!("Player {pid} not found/offline.");
                 }
             }
             "tp" => {
-                let mut player_id: Option<PlayerId> = None;
-                let mut target_x: Option<i32> = None;
-                let mut target_y: Option<i32> = None;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        "--x" | "-x" => {
-                            if i + 1 < args.len() {
-                                target_x = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        "--y" | "-y" => {
-                            if i + 1 < args.len() {
-                                target_y = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() || target_x.is_none() || target_y.is_none() {
-                    println!("Usage: tp --player <ID> --x <X> --y <Y>");
+                let pid = parse_flag::<PlayerId>(args, "--player", "-p");
+                let x = parse_flag::<i32>(args, "--x", "-x");
+                let y = parse_flag::<i32>(args, "--y", "-y");
+                let (Some(pid), Some(x), Some(y)) = (pid, x, y) else {
+                    println!("Usage: tp -p <ID> -x <X> -y <Y>");
                     continue;
-                }
-                let pid = player_id.unwrap();
-                let x = target_x.unwrap();
-                let y = target_y.unwrap();
-
+                };
                 if !state.world.valid_coord(x, y) {
-                    println!("Error: Coordinates ({x}, {y}) are out of bounds.");
+                    println!("Coordinates ({x},{y}) are out of bounds.");
                     continue;
                 }
-
                 let res = state.modify_player(pid, |ecs, entity| {
                     let mut pos = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
                     pos.x = x;
@@ -298,51 +247,26 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                     if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
                         let pkt = crate::protocol::packets::tp(x, y);
-                        let bytes = make_u_packet_bytes(pkt.0, &pkt.1);
-                        let _ = conn.tx.send(bytes);
+                        let _ = conn.tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
                         crate::net::session::play::chunks::check_chunk_changed(
                             &state, &conn.tx, pid,
                         );
                     }
                     Some(())
                 });
-
                 if res.flatten().is_some() {
-                    println!("Teleported player {pid} to ({x}, {y}).");
+                    println!("Teleported player {pid} to ({x},{y}).");
                 } else {
                     println!("Player {pid} not found/offline.");
                 }
             }
             "heal" => {
-                let mut player_id: Option<PlayerId> = None;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() {
-                    println!("Usage: heal --player <ID>");
+                let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
+                    println!("Usage: heal -p <ID>");
                     continue;
-                }
-                let pid = player_id.unwrap();
-
+                };
                 let res = state.modify_player(pid, |ecs, entity| {
-                    let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                    let mut s = ecs.get_mut::<PlayerStats>(entity)?;
                     s.health = s.max_health;
                     let (h, mh) = (s.health, s.max_health);
                     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
@@ -350,73 +274,25 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                     if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
                         let pkt = crate::protocol::packets::health(h, mh);
-                        let bytes = make_u_packet_bytes(pkt.0, &pkt.1);
-                        let _ = conn.tx.send(bytes);
+                        let _ = conn.tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
                     }
                     Some(())
                 });
-
                 if res.flatten().is_some() {
                     println!("Healed player {pid}.");
                 } else {
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "save" => {
-                println!("Saving all active players and flushing world...");
-                let pids: Vec<_> = state.active_players.iter().map(|e| *e.key()).collect();
-                let mut saved_count = 0;
-                for pid in pids {
-                    let player_row = state.query_player_opt(pid, |ecs, entity| {
-                        crate::game::player::extract_player_row(ecs, entity)
-                    });
-                    if let Some(row) = player_row {
-                        match state.db.save_player(&row).await {
-                            Ok(()) => saved_count += 1,
-                            Err(e) => println!("Error saving player {pid}: {e}"),
-                        }
-                    }
-                }
-                match state.world.flush() {
-                    Ok(()) => {
-                        println!("Saved {saved_count} players and flushed world successfully.");
-                    }
-                    Err(e) => println!("Error flushing world: {e}"),
-                }
-            }
             "kill" => {
-                let mut player_id: Option<PlayerId> = None;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() {
-                    println!("Usage: kill --player <ID>");
+                let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
+                    println!("Usage: kill -p <ID>");
                     continue;
-                }
-                let pid = player_id.unwrap();
-
+                };
                 let conn_tx = state.query_player_opt(pid, |ecs, entity| {
                     ecs.get::<crate::game::player::PlayerConnection>(entity)
-                        .map(|conn| conn.tx.clone())
+                        .map(|c| c.tx.clone())
                 });
-
                 if let Some(tx) = conn_tx {
                     crate::net::session::play::death::handle_death(&state, &tx, pid);
                     println!("Killed player {pid}.");
@@ -424,57 +300,73 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "info" => {
-                let mut player_id: Option<PlayerId> = None;
-
-                let mut i = 0;
-                let mut ok = true;
-                while i < args.len() {
-                    match args[i] {
-                        "--player" | "-p" => {
-                            if i + 1 < args.len() {
-                                player_id = args[i + 1].parse().ok();
-                                i += 2;
-                            } else {
-                                ok = false;
-                                break;
-                            }
-                        }
-                        _ => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !ok || player_id.is_none() {
-                    println!("Usage: info --player <ID>");
+            "kick" => {
+                let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
+                    println!("Usage: kick -p <ID>");
                     continue;
+                };
+                if state.kick_channels.remove(&pid).is_some() {
+                    println!("Kicked player {pid}.");
+                } else {
+                    println!("Player {pid} not found/offline.");
                 }
-                let pid = player_id.unwrap();
-
+            }
+            "role" => {
+                let pid = parse_flag::<i32>(args, "--player", "-p");
+                let role_arg = flag_value(args, "--role", "-r");
+                let (Some(pid), Some(role_arg)) = (pid, role_arg) else {
+                    println!("Usage: role -p <ID> -r admin|mod|player");
+                    continue;
+                };
+                let role = match role_arg {
+                    "admin" => Role::Admin,
+                    "mod" | "moderator" => Role::Moderator,
+                    "player" => Role::Player,
+                    _ => {
+                        println!("Invalid role '{role_arg}'. Use: admin|mod|player");
+                        continue;
+                    }
+                };
+                match state.db.set_player_role(pid, role).await {
+                    Ok(true) => {
+                        state.modify_player(pid, |ecs, entity| {
+                            if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
+                                s.role = role as i32;
+                            }
+                            Some(())
+                        });
+                        println!("Set role '{role_arg}' for player {pid}.");
+                    }
+                    Ok(false) => println!("Player {pid} not found in DB."),
+                    Err(e) => println!("DB error: {e}"),
+                }
+            }
+            "info" => {
+                let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
+                    println!("Usage: info -p <ID>");
+                    continue;
+                };
                 let details = state.query_player_opt(pid, |ecs, entity| {
                     let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-                    let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
+                    let s = ecs.get::<PlayerStats>(entity)?;
+                    let meta = ecs.get::<PlayerMetadata>(entity)?;
                     let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
                     let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
-
                     Some((
                         meta.name.clone(),
-                        p_stats.role,
+                        s.role,
                         skills.states.lvl_summary(),
                         pos.x,
                         pos.y,
-                        p_stats.health,
-                        p_stats.max_health,
-                        p_stats.money,
-                        p_stats.creds,
-                        p_stats.crystals,
+                        s.health,
+                        s.max_health,
+                        s.money,
+                        s.creds,
+                        s.crystals,
                         prog.running,
                         prog.current_function.clone(),
                     ))
                 });
-
                 if let Some((
                     name,
                     role,
@@ -490,20 +382,15 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     prog_func,
                 )) = details
                 {
-                    let role_str = match role {
-                        2 => "Admin",
-                        1 => "Moderator",
-                        _ => "Player",
-                    };
-                    println!("Player Info for ID {pid}:");
+                    println!("Player {pid}:");
                     println!("  Nickname:  {name}");
-                    println!("  Role:      {role_str}");
+                    println!("  Role:      {}", role_str(role));
                     println!("  Level:     {level}");
-                    println!("  Position:  ({x}, {y})");
+                    println!("  Position:  ({x},{y})");
                     println!("  Health:    {hp}/{max_hp}");
-                    println!("  Money:     {money} | Credits: {creds}");
+                    println!("  Money:     ${money} | Credits: {creds}");
                     println!(
-                        "  Crystals:  Green:{}, Blue:{}, Red:{}, Violet:{}, White:{}, Cyan:{}",
+                        "  Crystals:  G:{} B:{} R:{} V:{} W:{} C:{}",
                         crystals[0],
                         crystals[1],
                         crystals[2],
@@ -511,18 +398,44 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                         crystals[4],
                         crystals[5]
                     );
-                    println!("  Program:   Running: {prog_running} | Current Fn: {prog_func}");
+                    println!("  Program:   running={prog_running} fn={prog_func}");
                 } else {
                     println!("Player {pid} not found/offline.");
                 }
             }
+            "save" => {
+                println!("Saving all active players and flushing world...");
+                let pids: Vec<_> = state.active_players.iter().map(|e| *e.key()).collect();
+                let mut saved = 0;
+                for pid in pids {
+                    let row = state.query_player_opt(pid, |ecs, entity| {
+                        crate::game::player::extract_player_row(ecs, entity)
+                    });
+                    if let Some(row) = row {
+                        match state.db.save_player(&row).await {
+                            Ok(()) => saved += 1,
+                            Err(e) => println!("Error saving player {pid}: {e}"),
+                        }
+                    }
+                }
+                match state.world.flush() {
+                    Ok(()) => println!("Saved {saved} players and flushed world."),
+                    Err(e) => println!("Error flushing world: {e}"),
+                }
+            }
             unknown => {
-                println!(
-                    "Unknown command: '{unknown}'. Type 'help' or '?' for available commands."
-                );
+                println!("Unknown command: '{unknown}'. Type 'help' or '?' for commands.");
             }
         }
     }
 
     Ok(())
+}
+
+const fn role_str(role: i32) -> &'static str {
+    match role {
+        2 => "Admin",
+        1 => "Mod",
+        _ => "Player",
+    }
 }

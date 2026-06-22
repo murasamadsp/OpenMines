@@ -14,6 +14,8 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
         tracing::warn!("set_nodelay failed for {addr}: {err}");
     }
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (kick_tx, mut kick_rx) = tokio::sync::oneshot::channel::<()>();
+    let mut kick_tx_opt = Some(kick_tx);
     let client_ip = addr.ip();
     let mut auth_state = AuthState::PreAuth;
     let mut pid: Option<PlayerId> = None;
@@ -68,6 +70,10 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
         let blocked_remaining = state.auth_blocked_remaining_by_addr(&client_ip, Instant::now());
 
         tokio::select! {
+            _ = &mut kick_rx => {
+                tracing::info!("Player {:?} kicked via admin console", pid);
+                break;
+            }
             _ = heartbeat.tick() => {
                 // Дисконнект мёртвого клиента: нет PO >30s (ref-порог
                 // `Session.CheckDisconnected`). Реальный разрыв также
@@ -137,6 +143,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     if let Some(id) = res {
                                         pid = Some(id);
                                         auth_state = new_auth;
+                                        if let Some(kt) = kick_tx_opt.take() {
+                                            state.kick_channels.insert(id, kt);
+                                        }
                                         tracing::info!("Player {addr} authenticated (id={:?})", pid);
                                     } else {
                                         // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
@@ -158,6 +167,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                             if let Some(id) = res {
                                                 pid = Some(id);
                                                 auth_state = AuthState::Authenticated;
+                                                if let Some(kt) = kick_tx_opt.take() {
+                                                    state.kick_channels.insert(id, kt);
+                                                }
                                                 tracing::info!("Player {addr} registered/logged via GUI (id={:?})", pid);
                                             }
                                         }
@@ -214,6 +226,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = pid {
+        state.kick_channels.remove(&id);
         on_disconnect(&state, id, session_token);
     }
     Ok(())

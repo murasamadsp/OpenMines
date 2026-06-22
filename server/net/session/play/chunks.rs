@@ -245,3 +245,74 @@ pub fn check_chunk_changed(
         state.chunk_players.entry((ncx, ncy)).or_default().push(pid);
     }
 }
+
+/// Периодический ре-рендер ботов вокруг игрока (1:1 C# `Player.BotsRender`).
+/// Шлёт `X` (spawn/update) всех видимых ботов — игроков и `BotSpot` — одним
+/// HB-бандлом. Game-tick вызывает каждые 4с: без этого клиентский
+/// `RobotsGarbageCollector` (6с без пинга) удаляет простаивающих ботов —
+/// они мигают при ходьбе и исчезают в покое. Вызывать ВНЕ `ecs.write()`
+/// (берёт `ecs.read()` сам, как `check_chunk_changed`).
+pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+    let Some((cx, cy)) = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+        Some((pos.chunk_x(), pos.chunk_y()))
+    }) else {
+        return;
+    };
+
+    let mut subs: Vec<Vec<u8>> = Vec::new();
+    for (ncx, ncy) in state.visible_chunks_around(cx, cy) {
+        // Игроки в чанке (кроме самого наблюдателя).
+        if let Some(pids) = state.chunk_players.get(&(ncx, ncy)) {
+            for &opid in pids.iter() {
+                if opid == pid {
+                    continue;
+                }
+                let bot = state.query_player_opt(opid, |ecs, entity| {
+                    let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                    let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    let tail = ecs
+                        .get::<crate::game::programmator::ProgrammatorState>(entity)
+                        .map_or(0, |ps| u8::from(ps.running));
+                    Some(hb_bot(
+                        net_u16_nonneg(opid),
+                        net_u16_nonneg(p.x),
+                        net_u16_nonneg(p.y),
+                        net_u8_clamped(p.dir, 3),
+                        net_u8_clamped(s.skin, 255),
+                        net_u16_nonneg(s.clan_id.unwrap_or(0)),
+                        tail,
+                    ))
+                });
+                if let Some(bot) = bot {
+                    subs.push(bot);
+                }
+            }
+        }
+
+        // BotSpot-сущности (skin/tail константы, id = wrap отрицательного owner).
+        if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy)) {
+            let ecs = state.ecs.read();
+            for &botspot_entity in botspot_entities.iter() {
+                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
+                    subs.push(hb_bot(
+                        data.bot_id as u16,
+                        net_u16_nonneg(data.x),
+                        net_u16_nonneg(data.y),
+                        net_u8_clamped(data.dir, 3),
+                        crate::game::botspot::BotSpotData::SKIN,
+                        net_u16_nonneg(data.clan_id),
+                        crate::game::botspot::BotSpotData::TAIL,
+                    ));
+                }
+            }
+        }
+    }
+
+    // Пустой бандл не шлём (девиация от C#, который шлёт всегда — безвредно:
+    // клиент из пустого HB ничего не извлекает, экономим трафик при 1 игроке).
+    if !subs.is_empty() {
+        let bundle = hb_bundle(subs.as_slice()).1;
+        send_b_packet(tx, "HB", &bundle);
+    }
+}

@@ -145,6 +145,11 @@ pub struct ActivePlayer {
     /// reconnect-гонки: отложенный `Disconnect` старого сеанса сносит entity
     /// только если токен в `active_players` всё ещё его (иначе уже переподключился).
     pub session_token: u64,
+    /// Время последнего периодического `BotsRender` (1:1 C# `lBotsUpdate`).
+    /// Каждые 4с в game-tick игроку заново шлются `X` всех видимых ботов —
+    /// иначе клиентский `RobotsGarbageCollector` (6с без пинга) удаляет
+    /// простаивающих ботов (мигают при ходьбе, исчезают в покое).
+    pub last_bots_render: std::time::Instant,
 }
 
 impl PlayerPosition {

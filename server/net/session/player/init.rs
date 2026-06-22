@@ -162,6 +162,7 @@ pub fn connect_in_tick(
         ActivePlayer {
             ecs_entity: entity,
             session_token: token,
+            last_bots_render: std::time::Instant::now(),
         },
     );
 
