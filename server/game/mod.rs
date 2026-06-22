@@ -113,6 +113,9 @@ pub struct PendingConversion {
     pub required_cell: u8,
     pub durability: f32,
     pub ticks_left: u32,
+    /// Игрок, поставивший блок — для начисления 2-го build-exp при конвертации
+    /// (1:1 C# `Player.Build("V")`: `AddExp` на frame И внутри `StupidAction`-колбэка).
+    pub owner_pid: PlayerId,
 }
 
 // ─── Incoming Actions Queue ──────────────────────────────────────────────────

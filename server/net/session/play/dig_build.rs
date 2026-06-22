@@ -510,6 +510,7 @@ pub fn handle_build(
                         required_cell: cell_type::MILITARY_BLOCK_FRAME,
                         target_cell: cell_type::MILITARY_BLOCK,
                         durability,
+                        owner_pid: pid,
                     });
                 placed_skill = Some(SkillType::BuildWar);
             }

@@ -329,25 +329,52 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
 
             // StupidAction 1:1 с C# `World.W.StupidAction(10, x, y, action)` — отложенная конвертация клеток.
             let mut remaining_conversions: Vec<crate::game::PendingConversion> = Vec::new();
+            let mut converted_owners: Vec<crate::game::player::PlayerId> = Vec::new();
             for mut conv in cell_conversions {
                 if conv.ticks_left > 1 {
                     conv.ticks_left -= 1;
                     remaining_conversions.push(conv);
-                } else {
+                } else if state.world.valid_coord(conv.x, conv.y)
+                    && state.world.get_cell(conv.x, conv.y) == conv.required_cell
+                {
                     // ticks_left == 1: выполняем действие, если guard cell совпадает.
-                    if state.world.valid_coord(conv.x, conv.y)
-                        && state.world.get_cell(conv.x, conv.y) == conv.required_cell
-                    {
-                        state.world.set_cell(conv.x, conv.y, conv.target_cell);
-                        state.world.set_durability(conv.x, conv.y, conv.durability);
-                        crate::game::broadcast_cell_update(&state, conv.x, conv.y);
-                    }
+                    state.world.set_cell(conv.x, conv.y, conv.target_cell);
+                    state.world.set_durability(conv.x, conv.y, conv.durability);
+                    crate::game::broadcast_cell_update(&state, conv.x, conv.y);
+                    converted_owners.push(conv.owner_pid);
                 }
             }
-            // Возвращаем оставшиеся конверсии обратно в ECS Resource.
+            // Возвращаем оставшиеся + начисляем 2-й BuildWar-exp за конвертацию
+            // frame→block (1:1 C# Player.Build("V"): AddExp на frame И в колбэке).
+            let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, Vec<(String, i32)>)> =
+                Vec::new();
             {
                 let mut ecs = state.ecs.write();
                 ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining_conversions;
+                for owner in converted_owners {
+                    let Some(entity) = state.get_player_entity(owner) else {
+                        continue;
+                    };
+                    if let Some(mut skills) =
+                        ecs.get_mut::<crate::game::player::PlayerSkills>(entity)
+                        && crate::game::skills::add_skill_exp(
+                            &mut skills.states,
+                            crate::game::skills::SkillType::BuildWar.code(),
+                            1.0,
+                        )
+                    {
+                        buildwar_pkts.push((
+                            owner,
+                            crate::game::skills::skill_progress_payload(&skills.states),
+                        ));
+                    }
+                }
+            }
+            for (owner, payload) in buildwar_pkts {
+                if let Some(tx) = state.player_sessions.get(&owner).map(|t| t.clone()) {
+                    let sk = crate::protocol::packets::skills_packet(&payload);
+                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                }
             }
 
             // Отложенные команды программатора.
