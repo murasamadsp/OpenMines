@@ -1,20 +1,29 @@
 # ECS / архитектура сервера — переделка на масштабируемую модель
 
-## Зачем (диагноз текущего состояния)
+## Зачем (диагноз текущего состояния — ИСПРАВЛЕН)
 
-Сейчас `bevy_ecs` используется как **глобально-залоченный мешок компонентов**:
+ВАЖНО: первоначальный диагноз был НЕВЕРЕН. Канон «I/O→очередь→единый sim-таск»
+**уже существует**:
+- conn-таск только декодит и пушит TY в очередь: `connection.rs:171`
+  `state.incoming_actions.push(...)` (`IncomingActionsQueue`).
+- единый tick-таск (`spawn_game_tick_loop`, lifecycle.rs:214) дренит очередь и
+  вызывает `dispatch_ty_packet` (lifecycle.rs:244-249), затем `schedule.run`.
+- ВСЕ TY-хендлеры (movement/dig/build/inventory/chat/gui/...) выполняются В ЭТОМ
+  tick-таске. 68 `query_player`/84 `modify_player` в основном исполняются здесь,
+  а НЕ конкурентно из conn-тасков.
 
-- `GameState.ecs: RwLock<EcsWorld>` — один лок на весь мир.
-- ~152 места в net-слое (`query_player`×68 + `modify_player`×84) берут read/write
-  на ВЕСЬ мир ради доступа к одному игроку из per-connection async-тасков.
-- Системы (9 шт) гоняются на тике под `ecs.write()` через `schedule.run()`.
-- Чтобы система не словила вложенный `ecs.write()` → дедлок, мутации отложены в
-  очереди-костыли: `DeathQueue`, `BroadcastQueue`, `ProgrammatorQueue`.
-- Зафиксированные баги от этого: фриз «readers блокировали writer-тик» (C-4),
-  «нельзя вызывать handle_death изнутри schedule.run».
+Что реально остаётся проблемой:
+- **Доступ к ecs ВНЕ tick-таска**: login/init + disconnect в `player/init.rs`
+  (~11 ecs-сайтов: `ecs.write()` spawn + `send_initial_sync` reads + on_disconnect)
+  и `outbound/chat_sync.rs` (из login). Это конкурирует с tick'ом за `RwLock` →
+  источник фриза C-4 («readers блокировали writer-тик»). connection.rs/auth — 0.
+- **Очереди-костыли** (Death/Broadcast/Prog/CellConv/PackResend): следствие того,
+  что системы под `schedule.run` (`ecs.write`) не могут ре-входить в `ecs.write`.
+  Это разумный обход ограничения bevy_ecs, не «кривость».
+- `RwLock<EcsWorld>` нужен ровно из-за п.1 (conn-таск login/disconnect vs tick).
 
-Потолок такой схемы — сотни игроков (контеншн глобального лока), и каждый новый
-кусок логики тащит boilerplate + риск дедлока.
+Вывод: ядро здоровое. Узкое место узкое — убрать ecs-доступ из conn-тасков
+(login/init/disconnect → в tick-таск), тогда `RwLock` почти без контеншна.
 
 ## Целевая архитектура
 
@@ -55,18 +64,24 @@
 каждый владеет регионом (зоной чанков); межзонные переходы — через команды. 10k+
 достигается шардингом + interest management, а не «толще лок».
 
-## Фазы (каждая: компилится + тесты + проверка запуском)
+## Фазы (ИСПРАВЛЕНЫ под реальную архитектуру)
 
-- **P1 — Command-bus + sim-loop скелет (без смены поведения).**
-  Ввести `SessionCommand` + общий inbound mpsc + один sim-таск, который дренит и
-  применяет команды, ВЫЗЫВАЯ существующие хендлеры (пока ещё через ecs-локи).
-  Прогнать через него 1-2 TY-события как пруф. Всё остальное на старом пути.
-- **P2 — Перенос владения World в sim.** Sim — единственный писатель. Net-side
-  `query_player/modify_player` переводятся хендлер-за-хендлером на команды/снапшоты.
-  Убрать `ecs.write()` из conn-тасков. Снять очереди-костыли (Death/Broadcast/Prog).
-- **P3 — Tickrate-бакеты + interest-replication.** Формализовать мультирейтный
-  планировщик и дельта-репликацию по interest-set.
+P1 «command-bus» из первой версии плана ОТМЕНЕНА: `IncomingActionsQueue` уже
+делает ровно это для TY-действий. Не дублируем.
+
+- **P2 (теперь первая реальная фаза) — убрать ecs-доступ из conn-тасков.**
+  login/init + `send_initial_sync` + on_disconnect (`player/init.rs`,
+  `outbound/chat_sync.rs`) сейчас лочат `ecs` в conn-таске, конкурируя с tick'ом
+  (C-4 фриз). Перевести их на исполнение в tick-таске: либо отдельная
+  lifecycle-очередь (`Connect/Disconnect` — это НЕ TY, в `incoming_actions` не
+  лезут), либо снапшот-чтения для read-only частей. Цель: 0 `ecs.*lock()` вне
+  tick-таска → `RwLock` почти без контеншна.
+- **P3 — Tickrate-бакеты + interest-replication.** Мультирейтный планировщик
+  (сейчас всё на 10ms) + дельта-репликация по interest-set (`chunk_players`).
 - **P4 — Опциональный пространственный шардинг.** Несколько sim-тасков по зонам.
+
+Доп. (по желанию, не блокер): свести `spawn_game_tick_loop` + будущую
+lifecycle-очередь в единый sim-таск как единственного писателя `ecs`.
 
 ## Инварианты (нельзя ломать)
 
@@ -76,13 +91,10 @@
 - Тестов мало по рантайму/конкуренции → большие фазы проверять запуском, не только `cargo test`.
 
 ## Статус
-- [~] P1 — Command-bus + sim-loop скелет. СДЕЛАНО частично: `SessionCommand`
-  (`game/command.rs`) + шина `GameState.command_tx/command_rx` +
-  `spawn_command_consumer` (`net/lifecycle.rs`); TY `TADG` рероут через шину как
-  пруф. Boot-проверка: сервер доходит до `TCP listening`, consumer стартует,
-  game-tick здоров (over_budget=0). Осталось в P1: прогнать остальные TY-события
-  через шину; проверить TADG round-trip живым клиентом.
-- [ ] P2 — Владение World в sim, снятие очередей-костылей
+- [x] P1 (command-bus) — ОТМЕНЕНА И ОТКАЧЕНА. Дублировала `IncomingActionsQueue`;
+  рероут TADG в отдельный consumer был регрессией (вынес из единого tick-таска).
+  Урок: читать существующую архитектуру (incoming_actions + tick loop) ДО кода.
+- [ ] P2 — убрать ecs-доступ из conn-тасков (login/init/disconnect → tick-таск)
 - [ ] P3 — Tickrate-бакеты + interest-replication
 - [ ] P4 — Шардинг (опционально)
 
