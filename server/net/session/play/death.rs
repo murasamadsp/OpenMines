@@ -93,57 +93,73 @@ pub fn apply_player_death_core(
         let resp_data = state.building_index.get(&(x, y)).and_then(|ent| {
             let bld_ent = *ent;
             let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent)?;
-            let b_stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
-            if meta.pack_type == crate::game::buildings::PackType::Resp && b_stats.charge > 0.0 {
-                Some((bld_ent, b_stats.cost))
-            } else {
-                None
+            if meta.pack_type != crate::game::buildings::PackType::Resp {
+                return None;
             }
+            let b_stats = ecs.get::<crate::game::buildings::BuildingStats>(bld_ent)?;
+            let owner = ecs.get::<crate::game::buildings::BuildingOwnership>(bld_ent)?;
+            Some((
+                bld_ent,
+                i64::from(b_stats.cost),
+                owner.owner_id,
+                b_stats.charge,
+            ))
         });
-        if let Some((bld_ent, resp_cost)) = resp_data {
+        if let Some((bld_ent, resp_cost, owner_id, charge)) = resp_data {
+            // C# `Resp.OnRespawn`: cost/charge списываются ТОЛЬКО при ownerid>0.
+            // `is_free_resp` — по cost-полю ИСХОДНОГО привязанного респа (C#
+            // `RespawnOnProg => resp.cost==0`), независимо от того, где в итоге спавн.
             if resp_cost == 0 {
                 is_free_resp = true;
             }
-            // Deduct resp cost from player money, add to building storage.
-            let cost = if resp_cost > 0 {
-                i64::from(resp_cost)
+            let money = ecs
+                .get::<crate::game::player::PlayerStats>(entity)
+                .map_or(0, |s| s.money);
+            // Публичный респ (owner==0) — бесплатно. Owned: нужно charge>0 И
+            // money>cost (строгое, как C#). Иначе → ребинд на случайный публичный
+            // (бесплатный) респ — здравый смысл вместо патологической C#-рекурсии
+            // `p.resp = null; p.resp.OnRespawn(p)`.
+            let respawn_here = owner_id == 0 || (charge > 0.0 && money > resp_cost);
+            if respawn_here {
+                if owner_id > 0 {
+                    // Платный owned-респ: списать cost, заряд--, добавить в копилку.
+                    if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
+                        s.money -= resp_cost;
+                    }
+                    if let Some(mut bld_stats) =
+                        ecs.get_mut::<crate::game::buildings::BuildingStats>(bld_ent)
+                    {
+                        bld_stats.charge -= 1.0;
+                    }
+                    if let Some(mut bld_storage) =
+                        ecs.get_mut::<crate::game::buildings::BuildingStorage>(bld_ent)
+                    {
+                        bld_storage.money += resp_cost;
+                    }
+                    if let Some(mut bld_flags) =
+                        ecs.get_mut::<crate::game::buildings::BuildingFlags>(bld_ent)
+                    {
+                        bld_flags.dirty = true;
+                    }
+                    // C# ref: Resp.OnRespawn calls p.SendMoney() — capture for later
+                    if let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity) {
+                        bcast.money = s.money;
+                        bcast.creds = s.creds;
+                        bcast.resp_used = true;
+                    }
+                }
+                use rand::Rng;
+                let mut rng = rand::rng();
+                let ox = rng.random_range(2..5i32);
+                let oy = rng.random_range(-1..3i32);
+                let (cx, cy) = (x + ox, y + oy);
+                if state.world.valid_coord(cx, cy) && state.world.is_empty(cx, cy) {
+                    (cx, cy)
+                } else {
+                    (x + 2, y)
+                }
             } else {
-                10i64
-            };
-            if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
-                s.money -= cost;
-            }
-            if let Some(mut bld_stats) =
-                ecs.get_mut::<crate::game::buildings::BuildingStats>(bld_ent)
-            {
-                bld_stats.charge -= 1.0;
-            }
-            if let Some(mut bld_storage) =
-                ecs.get_mut::<crate::game::buildings::BuildingStorage>(bld_ent)
-            {
-                bld_storage.money += cost;
-            }
-            if let Some(mut bld_flags) =
-                ecs.get_mut::<crate::game::buildings::BuildingFlags>(bld_ent)
-            {
-                bld_flags.dirty = true;
-            }
-            // C# ref: Resp.OnRespawn calls p.SendMoney() — capture for later
-            if let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity) {
-                bcast.money = s.money;
-                bcast.creds = s.creds;
-                bcast.resp_used = true;
-            }
-
-            use rand::Rng;
-            let mut rng = rand::rng();
-            let ox = rng.random_range(2..5i32);
-            let oy = rng.random_range(-1..3i32);
-            let (cx, cy) = (x + ox, y + oy);
-            if state.world.valid_coord(cx, cy) && state.world.is_empty(cx, cy) {
-                (cx, cy)
-            } else {
-                (x + 2, y)
+                find_random_public_resp(state, ecs)
             }
         } else {
             find_random_public_resp(state, ecs)
@@ -285,7 +301,36 @@ pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>,
     if let Some((rx, ry, mh, bcast)) = result {
         run_death_broadcasts(state, &bcast, pid);
         send_respawn_after_death(tx, pid, rx, ry, mh, &bcast);
+        broadcast_self_after_respawn(state, pid, rx, ry);
         check_chunk_changed(state, tx, pid);
+    }
+}
+
+/// C# `tp` → `SendMyMove`: после респавна разослать `hb_bot` СЕБЯ соседям новой
+/// позиции. Иначе воскресший бот невидим соседям до следующего `bots_render`
+/// (~4с), т.к. `run_death_broadcasts` уже удалил его на старой позиции.
+fn broadcast_self_after_respawn(state: &Arc<GameState>, pid: PlayerId, rx: i32, ry: i32) {
+    let attrs = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+        let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        let tail = ecs
+            .get::<crate::game::programmator::ProgrammatorState>(entity)
+            .map_or(0, |ps| u8::from(ps.running));
+        Some((pos.dir, p_stats.skin, p_stats.clan_id.unwrap_or(0), tail))
+    });
+    if let Some((dir, skin, clan, tail)) = attrs {
+        let bot = hb_bot(
+            net_u16_nonneg(pid),
+            net_u16_nonneg(rx),
+            net_u16_nonneg(ry),
+            net_u8_clamped(dir, 3),
+            net_u8_clamped(skin, 255),
+            net_u16_nonneg(clan),
+            tail,
+        );
+        let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
+        let (cx, cy) = crate::world::World::chunk_pos(rx, ry);
+        state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
     }
 }
 
