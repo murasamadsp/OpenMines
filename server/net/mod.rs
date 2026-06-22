@@ -13,6 +13,7 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
     let listener = TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!("TCP server listening on 0.0.0.0:{port}");
 
+    lifecycle::spawn_command_consumer(state.clone(), shutdown.subscribe());
     lifecycle::spawn_world_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_player_dirty_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_building_dirty_flush_loop(state.clone(), shutdown.subscribe());

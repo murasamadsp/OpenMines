@@ -8,6 +8,7 @@ pub mod building_damage;
 pub mod buildings;
 pub mod chat;
 pub mod combat;
+pub mod command;
 pub mod crafting;
 pub mod direction;
 pub mod market;
@@ -168,6 +169,12 @@ pub struct GameState {
     pub box_persist_q: Mutex<Vec<BoxPersist>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
+    /// Командная шина (P1, `docs/ECS_REWRITE.md`): conn-таски пушат намерения,
+    /// единственный consumer применяет их авторитетно. `tx` живёт в `Arc` и
+    /// клонируется отправителями; `rx` забирается consumer'ом один раз (`.take()`).
+    pub command_tx: tokio::sync::mpsc::UnboundedSender<(PlayerId, command::SessionCommand)>,
+    command_rx:
+        Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<(PlayerId, command::SessionCommand)>>>,
 }
 
 impl GameState {
@@ -215,6 +222,8 @@ impl GameState {
             }
         }
 
+        let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
+
         let state = Arc::new(Self {
             world,
             db: database,
@@ -234,6 +243,8 @@ impl GameState {
             box_index: DashMap::new(),
             box_persist_q: Mutex::new(Vec::new()),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
+            command_tx,
+            command_rx: Mutex::new(Some(command_rx)),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
@@ -342,6 +353,13 @@ impl GameState {
         F: FnOnce(&EcsWorld, Entity) -> Option<T>,
     {
         self.query_player(pid, f).flatten()
+    }
+
+    /// Забрать receiver командной шины (один раз — для consumer'а). P1.
+    pub fn take_command_rx(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedReceiver<(PlayerId, command::SessionCommand)>> {
+        self.command_rx.lock().take()
     }
 
     pub fn modify_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>

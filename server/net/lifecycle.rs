@@ -8,6 +8,40 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::broadcast;
 
+/// Consumer командной шины (P1, `docs/ECS_REWRITE.md`): единственный потребитель
+/// `SessionCommand`. Применяет намерения авторитетно, сериализуя мутации в одном
+/// месте вместо доступа из per-connection тасков. Пока делегирует существующим
+/// хендлерам (они сами лочат ECS) — перенос владения миром это P2.
+pub fn spawn_command_consumer(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
+    use crate::game::command::SessionCommand;
+    let Some(mut rx) = state.take_command_rx() else {
+        tracing::error!("command_rx уже забран — consumer не запущен");
+        return;
+    };
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.recv() => break,
+                cmd = rx.recv() => {
+                    let Some((pid, cmd)) = cmd else { break };
+                    // Исходящий tx игрока по pid (P1 делегирует существующим хендлерам).
+                    let Some(tx) = state.player_sessions.get(&pid).map(|e| e.value().clone())
+                    else {
+                        continue;
+                    };
+                    match cmd {
+                        SessionCommand::ToggleAutoDig => {
+                            crate::net::session::social::misc::handle_auto_dig_toggle(
+                                &state, &tx, pid,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 /// Периодический flush mmap-слоёв мира.
 pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {

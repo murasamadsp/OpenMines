@@ -13,9 +13,7 @@ use crate::net::session::social::chat::{
 };
 use crate::net::session::social::clans::handle_clan_menu;
 use crate::net::session::social::commands::{is_admin_command, send_admin_help, send_ok};
-use crate::net::session::social::misc::{
-    handle_auto_dig_toggle, handle_prog_ty, handle_sett_ty, handle_whoi,
-};
+use crate::net::session::social::misc::{handle_prog_ty, handle_sett_ty, handle_whoi};
 use crate::net::session::ui::gui_buttons::handle_gui_button;
 use crate::net::session::ui::heal_inventory::{
     handle_heal, handle_inventory_choose, handle_inventory_use, handle_invn_toggle,
@@ -80,7 +78,10 @@ pub async fn dispatch_ty_packet(
             handle_inventory_choose(state, tx, pid, &packet.sub_payload);
         }
         "TADG" => {
-            handle_auto_dig_toggle(state, tx, pid);
+            // P1 (docs/ECS_REWRITE.md): через командную шину, а не инлайн в conn-таске.
+            let _ = state
+                .command_tx
+                .send((pid, crate::game::command::SessionCommand::ToggleAutoDig));
         }
         "Whoi" => {
             let ids = decode_whoi(&packet.sub_payload);

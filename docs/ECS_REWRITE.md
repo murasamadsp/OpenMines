@@ -41,8 +41,13 @@
 - **Interest-managed replication:** изменения уходят только игрокам, в чьём
   interest-set (соседние чанки) они произошли. `chunk_players` уже есть — оформить
   как явный replication-шаг с дельтами.
-- **ECS-движок: оставляем `bevy_ecs`.** Проблема не в либе, а в модели доступа
-  (shared RwLock). Менять либу — пустая работа. Чиним владение, а не движок.
+- **ECS-движок: оставляем `bevy_ecs`** (решение принято, обосновано ресёрчем).
+  Проблема не в либе, а в модели доступа (shared RwLock из conn-тасков). Сообщество
+  прямо рекомендует канон: один Bevy-app как authoritative-сервер на fixed tick
+  loop + tokio/MPSC декаплинг сети (bevyengine/bevy discussion #21820). 10k+
+  сущностей bevy_ecs итерирует за микросекунды — узкое место не движок, а лок и
+  сетевой I/O. Менять либу (hecs/sparsey быстрее в микробенчах, но теряем
+  параллельный планировщик/change-detection и платим churn'ом) — пустая работа.
 
 ### Путь к масштабу (вширь, не в одном процессе)
 
@@ -71,7 +76,21 @@
 - Тестов мало по рантайму/конкуренции → большие фазы проверять запуском, не только `cargo test`.
 
 ## Статус
-- [ ] P1 — Command-bus + sim-loop скелет
+- [~] P1 — Command-bus + sim-loop скелет. СДЕЛАНО частично: `SessionCommand`
+  (`game/command.rs`) + шина `GameState.command_tx/command_rx` +
+  `spawn_command_consumer` (`net/lifecycle.rs`); TY `TADG` рероут через шину как
+  пруф. Boot-проверка: сервер доходит до `TCP listening`, consumer стартует,
+  game-tick здоров (over_budget=0). Осталось в P1: прогнать остальные TY-события
+  через шину; проверить TADG round-trip живым клиентом.
 - [ ] P2 — Владение World в sim, снятие очередей-костылей
 - [ ] P3 — Tickrate-бакеты + interest-replication
 - [ ] P4 — Шардинг (опционально)
+
+## Смежные задачи (всплыли по ходу — верифицировать отдельно)
+- **Генерация мира медленная/возможно криво портирована** (2048² регенится
+  >50с на старте; юзер: «плохо портирована с оригинала»). Свериться с C#
+  `World.cs`/генератором (`server/world/generator.rs`, `anl.rs`, `sectors_gen.rs`)
+  — и по скорости, и по соответствию 1:1.
+- Крейт-косметика (отдельно от ECS): `indexmap` (programmator function_order),
+  `thiserror` (db/players.rs 16 unwraps), `pretty_assertions` (dev),
+  `building_cells()`→`impl Iterator`. См. аудиты 3 агентов в истории сессии.
