@@ -1195,9 +1195,14 @@ fn open_teleport_gui(
         )
     };
 
-    // Мини-карта (canvas =R, декорация): по rect на чанк вокруг телепорта,
-    // цвет по пустоте центральной клетки (1:1 C# ConvertMapPart: isEmpty →
-    // Green, иначе CornflowerBlue). Выбор ТП — в buttons-списке ниже.
+    // Мини-карта: rect на чанк вокруг телепорта (цвет по пустоте центральной
+    // клетки, 1:1 C# ConvertMapPart) + кликабельные ТП-точки прямо на канвасе
+    // (markers): клик по точке = телепорт (`tp:x:y`). Те же ТП дублируются
+    // кнопками-списком ниже (пользователь хотел и список, и точки на карте).
+    let markers: Vec<(i32, i32, String)> = nearby_tps
+        .iter()
+        .map(|&(tpx, tpy)| (tpx, tpy, format!("tp:{tpx}:{tpy}")))
+        .collect();
     let mut win = Horb::new("Тп").text(text).minimap(
         view.x,
         view.y,
@@ -1209,7 +1214,7 @@ fn open_teleport_gui(
                 None
             }
         },
-        &[], // no additional markers
+        &markers,
     );
 
     for (tpx, tpy) in &nearby_tps {
