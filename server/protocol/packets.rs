@@ -808,12 +808,11 @@ impl<'a> LoclClient<'a> {
             return None;
         }
 
-        if let Some((len_part, message)) = s.split_once(':')
-            && let Ok(length) = len_part.parse()
-        {
-            return Some(Self { length, message });
-        }
-
+        // ВЕСЬ payload = сообщение (1:1 клиент `ServerTime.SendTypicalMessage`:
+        // шлёт сырой `localChatInput.text` через UTF8.GetBytes, БЕЗ `length:`-
+        // префикса; C# `LoclPacket.Decode` тоже не разбирает). Прежняя
+        // colon-эвристика резала сообщения вида «5:hi»→«hi». PROTOCOL.md
+        // «length:message» устарел — клиент эталон.
         Some(Self {
             length: i32::try_from(s.len()).unwrap_or(i32::MAX),
             message: s,

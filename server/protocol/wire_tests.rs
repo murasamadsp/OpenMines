@@ -712,3 +712,13 @@ fn locl_decode_plain_text_keeps_message() {
     let l = LoclClient::decode(b"hello world").unwrap();
     assert_eq!(l.message, "hello world");
 }
+
+#[test]
+fn locl_decode_keeps_leading_number_colon_whole() {
+    // Клиент шлёт сырой текст без `length:`-префикса — сообщение с ведущим
+    // «число:» НЕ должно резаться (прежняя эвристика давала «5:hi»→«hi»).
+    let l = LoclClient::decode(b"5:hi").unwrap();
+    assert_eq!(l.message, "5:hi");
+    let l2 = LoclClient::decode("100: готово".as_bytes()).unwrap();
+    assert_eq!(l2.message, "100: готово");
+}
