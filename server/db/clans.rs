@@ -30,20 +30,52 @@ pub struct ClanRow {
     pub name: String,
     pub abr: String,
     pub owner_id: i32,
+    /// Иконка клана (спрайт 1..=218), уникальна на клан. Клиент: `ClanSprite.sprites[icon-1]`.
+    pub icon: i32,
 }
 
 impl Database {
+    /// Pick a random unused clan icon from 1..=218.
+    pub async fn pick_clan_icon(&self) -> Result<i32> {
+        use rand::Rng;
+        let used: Vec<i32> = sqlx::query("SELECT icon FROM clans")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|r| r.get::<i32, _>("icon"))
+            .collect();
+        let mut rng = rand::rng();
+        for _ in 0..100 {
+            let candidate: i32 = rng.random_range(1..=218);
+            if !used.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        // fallback — unlikely, but safe
+        Ok((used.iter().max().unwrap_or(&0) + 1).clamp(1, 218))
+    }
+
     #[allow(clippy::significant_drop_tightening)]
-    pub async fn create_clan(&self, id: i32, name: &str, abr: &str, owner_id: i32) -> Result<()> {
+    pub async fn create_clan(
+        &self,
+        id: i32,
+        name: &str,
+        abr: &str,
+        owner_id: i32,
+        icon: i32,
+    ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query("INSERT INTO clans (id, name, abr, owner_id) VALUES (?1, ?2, ?3, ?4)")
-            .bind(id)
-            .bind(name)
-            .bind(abr)
-            .bind(owner_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "INSERT INTO clans (id, name, abr, owner_id, icon) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(abr)
+        .bind(owner_id)
+        .bind(icon)
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query("UPDATE players SET clan_id = ?1, clan_rank = ?2 WHERE id = ?3")
             .bind(id)
@@ -57,7 +89,7 @@ impl Database {
     }
 
     pub async fn get_clan(&self, id: i32) -> Result<Option<ClanRow>> {
-        let row = sqlx::query("SELECT id, name, abr, owner_id FROM clans WHERE id = ?1")
+        let row = sqlx::query("SELECT id, name, abr, owner_id, icon FROM clans WHERE id = ?1")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
@@ -66,6 +98,7 @@ impl Database {
             name: r.get("name"),
             abr: r.get("abr"),
             owner_id: r.get("owner_id"),
+            icon: r.get("icon"),
         });
         Ok(clan)
     }
@@ -89,7 +122,7 @@ impl Database {
     }
 
     pub async fn list_clans(&self) -> Result<Vec<ClanRow>> {
-        let rows = sqlx::query("SELECT id, name, abr, owner_id FROM clans")
+        let rows = sqlx::query("SELECT id, name, abr, owner_id, icon FROM clans")
             .fetch_all(&self.pool)
             .await?;
         let clans = rows
@@ -99,6 +132,7 @@ impl Database {
                 name: r.get("name"),
                 abr: r.get("abr"),
                 owner_id: r.get("owner_id"),
+                icon: r.get("icon"),
             })
             .collect();
         Ok(clans)

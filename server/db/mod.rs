@@ -332,6 +332,15 @@ impl Database {
             }
         }
 
+        // Clans: icon column (1..=218 = sprite index for client ClanSprite.sprites[icon-1])
+        if !self.column_exists("clans", "icon").await {
+            sqlx::query("ALTER TABLE clans ADD COLUMN icon INTEGER NOT NULL DEFAULT 1")
+                .execute(&self.pool)
+                .await?;
+            did_migrate = true;
+            tracing::info!("Migrated DB: added clans.icon column");
+        }
+
         if did_migrate {
             tracing::info!("DB migration complete");
         }

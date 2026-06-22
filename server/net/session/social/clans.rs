@@ -184,8 +184,9 @@ pub async fn handle_clan_create(
 
     let used_ids = state.db.get_used_clan_ids().await.unwrap_or_default();
     let new_id = used_ids.iter().max().map_or(1, |&id| id + 1);
+    let icon = state.db.pick_clan_icon().await.unwrap_or(1);
 
-    match state.db.create_clan(new_id, name, tag, pid).await {
+    match state.db.create_clan(new_id, name, tag, pid, icon).await {
         Ok(()) => {
             state.modify_player(pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -238,6 +239,28 @@ pub async fn handle_clan_leave(
                         Some(())
                     });
                 }
+                // Broadcast owner's HB with clan=0 (1:1 C# LeaveClan → SendMyMove).
+                let _ = state.query_player_opt(pid, |ecs, entity| {
+                    let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                    let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    let tail: u8 = ecs
+                        .get::<crate::game::programmator::ProgrammatorState>(entity)
+                        .map_or(0, |p| u8::from(p.running));
+                    let bot = hb_bot(
+                        net_u16_nonneg(pid),
+                        net_u16_nonneg(pos.x),
+                        net_u16_nonneg(pos.y),
+                        net_u8_clamped(pos.dir, 3),
+                        net_u8_clamped(pstats.skin, 255),
+                        0,
+                        tail,
+                    );
+                    let cx = pos.x.div_euclid(32) as u32;
+                    let cy = pos.y.div_euclid(32) as u32;
+                    let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
+                    state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
+                    Some(())
+                });
                 send_clan_ok(tx, "Клан", "Клан расформирован");
                 handle_clan_menu(state, tx, pid).await;
             }
@@ -257,6 +280,28 @@ pub async fn handle_clan_leave(
                 });
                 let ch = clan_hide();
                 send_u_packet(tx, ch.0, &ch.1);
+                // Broadcast HB with clan=0 so nearby players see the icon disappear (1:1 C# SendMyMove).
+                let _ = state.query_player_opt(pid, |ecs, entity| {
+                    let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                    let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    let tail: u8 = ecs
+                        .get::<crate::game::programmator::ProgrammatorState>(entity)
+                        .map_or(0, |p| u8::from(p.running));
+                    let bot = hb_bot(
+                        net_u16_nonneg(pid),
+                        net_u16_nonneg(pos.x),
+                        net_u16_nonneg(pos.y),
+                        net_u8_clamped(pos.dir, 3),
+                        net_u8_clamped(pstats.skin, 255),
+                        0,
+                        tail,
+                    );
+                    let cx = pos.x.div_euclid(32) as u32;
+                    let cy = pos.y.div_euclid(32) as u32;
+                    let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
+                    state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
+                    Some(())
+                });
                 send_clan_ok(tx, "Клан", "Вы покинули клан");
                 handle_clan_menu(state, tx, pid).await;
             }
@@ -276,6 +321,17 @@ pub async fn handle_clan_join_request(
 ) {
     if player_clan_id(state, pid).is_some() {
         send_clan_ok(tx, "Ошибка", "Вы уже в клане");
+        return;
+    }
+
+    // Check for existing pending request (1:1 C# Clan.AddReq: reqs.FirstOrDefault(i => i.player.id == id)).
+    let existing = state
+        .db
+        .get_clan_requests(clan_id)
+        .await
+        .unwrap_or_default();
+    if existing.iter().any(|(req_pid, _)| *req_pid == pid) {
+        send_clan_ok(tx, "Клан", "Заявка уже подана");
         return;
     }
 
@@ -624,12 +680,19 @@ pub async fn handle_clan_accept(
     }
     match state.db.accept_clan_request(clan_id, target_pid).await {
         Ok(()) => {
+            let icon = state
+                .db
+                .get_clan(clan_id)
+                .await
+                .ok()
+                .flatten()
+                .map_or(1, |c| c.icon);
             state.modify_player(target_pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
                 s.clan_id = Some(clan_id);
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let cs = clan_show(clan_id);
+                    let cs = clan_show(icon);
                     let _ = conn.tx.send(make_u_packet_bytes(cs.0, &cs.1));
                 }
                 Some(())

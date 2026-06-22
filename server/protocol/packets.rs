@@ -219,8 +219,10 @@ pub const fn clan_hide() -> (&'static str, Vec<u8>) {
 }
 
 /// Encode a `ClanShow` packet (`ClanShowPacket.packetName` = `"cS"`).
-pub fn clan_show(clan_id: i32) -> (&'static str, Vec<u8>) {
-    ("cS", format!("{clan_id}").into_bytes())
+/// Client uses the value as sprite index: `ClanSprite.sprites[icon - 1]`.
+/// C# reference uses icon ID (1..=218) as the clan identity; Rust stores it separately.
+pub fn clan_show(icon: i32) -> (&'static str, Vec<u8>) {
+    ("cS", format!("{icon}").into_bytes())
 }
 
 // ─── Chat channel packets ────────────────────────────────────────────────────
