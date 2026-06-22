@@ -13,6 +13,10 @@ RUN mkdir -p server && echo "fn main() {}" > server/main.rs && \
 
 COPY server ./server
 COPY config.json cells.json buildings.json ./
+# Каталог миграций нужен на этапе компиляции: `sqlx::migrate!("./migrations")`
+# (db/mod.rs) — compile-time макрос, встраивает миграции в бинарь. Без копии
+# сборка падает: "error canonicalizing migration directory /app/./migrations".
+COPY migrations ./migrations
 
 # Сборка проекта (touch для инвалидации fingerprints после заглушки)
 RUN find server -name '*.rs' -exec touch {} + && \
