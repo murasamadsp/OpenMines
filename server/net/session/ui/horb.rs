@@ -12,11 +12,12 @@
 //!   в `ScrollRect` (`scrollView`) → длинные списки прокручиваются (фикс «за экран»).
 //! - `richList` — 5-кортежи `[label, kind, values, action, value, …]`.
 //!
+//! - `tabs` — пары `[label, action, …]`; активная вкладка имеет пустой action.
+//! - `crys_lines` — крис-секция market/box (ровно 6 строк).
+//!
 //! Раньше каждый хендлер лепил JSON руками (gun GUI вообще слал `tabs:[{объект}]` —
 //! а `HORBConfig.tabs` это `string[]`, `JsonUtility` это не парсит → окно не
 //! открывалось). Этот модуль централизует сборку и устраняет такие расхождения.
-//!
-//! По мере миграции окон сюда добавятся `tabs`/`css`/`back` (нужны для market и пр.).
 
 use crate::net::session::prelude::*;
 
@@ -31,6 +32,33 @@ impl Button {
         Self {
             label: label.into(),
             action: action.into(),
+        }
+    }
+}
+
+/// Вкладка окна `tabs` (плоская пара `[label, action]`). Активная (текущая)
+/// вкладка имеет ПУСТОЙ action — клиент рисует её неактивной без листенера
+/// (`PopupManager.ShowHORB`: `tabs[n+1]==""` → `openedTabPrefab`); остальные
+/// кликабельны и при клике шлют свой action.
+pub struct Tab {
+    label: String,
+    action: String,
+}
+
+impl Tab {
+    /// Кликабельная вкладка: подпись + action перехода.
+    pub fn new(label: impl Into<String>, action: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            action: action.into(),
+        }
+    }
+
+    /// Текущая (активная) вкладка — без action (не кликабельна).
+    pub fn active(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            action: String::new(),
         }
     }
 }
@@ -87,9 +115,16 @@ pub struct Horb {
     title: String,
     text: String,
     buttons: Vec<Button>,
+    tabs: Vec<Tab>,
     list: Vec<ListRow>,
     rich_list: Vec<RichRow>,
     admin: bool,
+    /// Крис-секция (market/box): ровно 6 строк `"left:right:den:value:label"`.
+    crys_lines: Vec<String>,
+    crys_left: String,
+    crys_right: String,
+    /// Режим покупки (`crys_buy`): слайдеры считают цену покупки, не продажи.
+    crys_buy: bool,
 }
 
 impl Horb {
@@ -137,6 +172,30 @@ impl Horb {
         self
     }
 
+    /// Добавить вкладку. Активная — через `Tab::active`, остальные `Tab::new`.
+    #[must_use]
+    pub fn tab(mut self, t: Tab) -> Self {
+        self.tabs.push(t);
+        self
+    }
+
+    /// Крис-секция: подписи слева/справа, режим покупки и ровно 6 строк
+    /// `"left:right:den:value:label"` (клиент требует `crys_lines.Length==6`).
+    #[must_use]
+    pub fn crystals(
+        mut self,
+        left: impl Into<String>,
+        right: impl Into<String>,
+        buy: bool,
+        lines: Vec<String>,
+    ) -> Self {
+        self.crys_left = left.into();
+        self.crys_right = right.into();
+        self.crys_buy = buy;
+        self.crys_lines = lines;
+        self
+    }
+
     /// Сериализовать в плоский `HORBConfig`-JSON. Коллекции разворачиваются в
     /// `string[]`-кортежи ровно как ждёт клиент (чётность `buttons` гарантирована
     /// — каждая кнопка даёт ровно пару).
@@ -153,6 +212,22 @@ impl Horb {
                 .flat_map(|b| [b.label.clone(), b.action.clone()])
                 .collect();
             obj.insert("buttons".into(), flat.into());
+        }
+        if !self.tabs.is_empty() {
+            let flat: Vec<String> = self
+                .tabs
+                .iter()
+                .flat_map(|t| [t.label.clone(), t.action.clone()])
+                .collect();
+            obj.insert("tabs".into(), flat.into());
+        }
+        if !self.crys_lines.is_empty() {
+            obj.insert("crys_left".into(), self.crys_left.clone().into());
+            obj.insert("crys_right".into(), self.crys_right.clone().into());
+            obj.insert("crys_lines".into(), self.crys_lines.clone().into());
+            if self.crys_buy {
+                obj.insert("crys_buy".into(), true.into());
+            }
         }
         if !self.list.is_empty() {
             let flat: Vec<String> = self
@@ -198,5 +273,57 @@ impl Horb {
             }
             Some(())
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Button, Horb, Tab};
+
+    fn arr<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
+        v.get(key)
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("поле `{key}` отсутствует или не массив"))
+    }
+
+    /// `buttons`/`tabs` ОБЯЗАНЫ быть чётными (клиент: action по `[2n+1]`),
+    /// `crys_lines` ровно 6 (клиент требует `Length==6`). Builder это гарантирует.
+    #[test]
+    fn flat_arrays_have_client_required_cardinality() {
+        let lines: Vec<String> = (0..6).map(|i| format!("0:0:{i}:0:lbl")).collect();
+        let json = Horb::new("Market")
+            .tab(Tab::active("ПРОДАЖА"))
+            .tab(Tab::new("Покупка", "buycrys"))
+            .crystals(" ", "цена", true, lines)
+            .button(Button::new("sell", "sell:%M%"))
+            .close_button()
+            .to_json();
+
+        let buttons = arr(&json, "buttons");
+        assert_eq!(
+            buttons.len() % 2,
+            0,
+            "buttons не чётный → NRE PopupManager:222"
+        );
+        assert_eq!(buttons.len(), 4); // sell + ВЫЙТИ = 2 пары
+
+        let tabs = arr(&json, "tabs");
+        assert_eq!(tabs.len() % 2, 0, "tabs не чётный");
+        assert_eq!(tabs[1], ""); // активная вкладка → пустой action
+        assert_eq!(tabs[3], "buycrys");
+
+        assert_eq!(arr(&json, "crys_lines").len(), 6);
+        assert_eq!(json["crys_buy"], true);
+        assert_eq!(json["crys_left"], " ");
+    }
+
+    /// Пустые коллекции не сериализуются (клиент трактует отсутствие как null).
+    #[test]
+    fn empty_collections_are_omitted() {
+        let json = Horb::new("X").to_json();
+        assert!(json.get("tabs").is_none());
+        assert!(json.get("crys_lines").is_none());
+        assert!(json.get("crys_buy").is_none());
+        assert!(json.get("buttons").is_none());
     }
 }

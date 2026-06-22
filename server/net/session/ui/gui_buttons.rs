@@ -1253,28 +1253,41 @@ fn open_market_gui(
         return;
     };
 
-    // Build tabs array: active tab gets empty action, others get their action string
-    let tabs = build_market_tabs(active_tab);
+    // Вкладки: активная получает пустой action, остальные — свой.
+    let tabs = market_tabs(active_tab);
 
-    let (gui_json, window_tag) = match active_tab {
+    let (page, window_tag) = match active_tab {
         "buycrys" => (
-            build_market_buy_page(state, player_money, is_owner, &tabs),
+            build_market_buy_page(state, player_money, is_owner, tabs),
             format!("market:{}:{}:buycrys", view.x, view.y),
         ),
         _ => (
-            build_market_sell_page(state, &player_crys, is_owner, &tabs),
+            build_market_sell_page(state, &player_crys, is_owner, tabs),
             format!("market:{}:{}:sellcrys", view.x, view.y),
         ),
     };
 
-    send_u_packet(tx, "GU", format!("horb:{gui_json}").as_bytes());
+    page.send(state, tx, pid, window_tag);
+}
 
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(window_tag);
+/// Вкладки market как `Vec<Tab>` для `Horb`-builder (auction всё ещё использует
+/// `build_market_tabs` → serde-массив; не трогаем).
+fn market_tabs(active_tab: &str) -> Vec<super::horb::Tab> {
+    use super::horb::Tab;
+    [
+        ("ПРОДАЖА", "sellcrys"),
+        ("Покупка", "buycrys"),
+        ("Auc", "auc"),
+    ]
+    .into_iter()
+    .map(|(label, action)| {
+        if active_tab == action {
+            Tab::active(label)
+        } else {
+            Tab::new(label, action)
         }
-        Some(())
-    });
+    })
+    .collect()
 }
 
 /// Build the tabs JSON array for Market.
@@ -1300,43 +1313,27 @@ fn build_market_sell_page(
     state: &Arc<GameState>,
     player_crys: &[i64; 6],
     is_owner: bool,
-    tabs: &serde_json::Value,
-) -> serde_json::Value {
+    tabs: Vec<super::horb::Tab>,
+) -> super::horb::Horb {
+    use super::horb::{Button, Horb};
     // crys_lines format: "LeftMin:RightMin:Denominator:CurrentValue:Label"
     // C# CrysLine(label, leftMin=0, rightMin=0, denominator=player_crys[i], currentValue=0)
-    let crys_lines: Vec<serde_json::Value> = (0..6)
+    let lines: Vec<String> = (0..6)
         .map(|i| {
             let cost = market::get_crystal_cost(state, i);
             let label = format!("<color=#aaeeaa>{cost}$</color>");
-            serde_json::json!(format!("0:0:{}:0:{}", player_crys[i], label))
+            format!("0:0:{}:0:{}", player_crys[i], label)
         })
         .collect();
 
-    let buttons: Vec<serde_json::Value> = vec![
-        serde_json::json!("sellall"),
-        serde_json::json!("sellall"),
-        serde_json::json!("sell"),
-        serde_json::json!("sell:%M%"),
-        serde_json::json!("ВЫЙТИ"),
-        serde_json::json!("exit"),
-    ];
-
-    let mut gui = serde_json::json!({
-        "title": "Market",
-        "tabs": tabs,
-        "crys_left": " ",
-        "crys_right": "цена",
-        "crys_lines": crys_lines,
-        "text": "Продажа кри",
-        "buttons": buttons,
-        "back": false
-    });
-
-    if is_owner {
-        gui["admin"] = serde_json::json!(true);
-    }
-
-    gui
+    tabs.into_iter()
+        .fold(Horb::new("Market"), Horb::tab)
+        .text("Продажа кри")
+        .crystals(" ", "цена", false, lines)
+        .button(Button::new("sellall", "sellall"))
+        .button(Button::new("sell", "sell:%M%"))
+        .close_button()
+        .admin(is_owner)
 }
 
 /// Build buy tab page JSON.
@@ -1346,9 +1343,10 @@ fn build_market_buy_page(
     state: &Arc<GameState>,
     player_money: i64,
     is_owner: bool,
-    tabs: &serde_json::Value,
-) -> serde_json::Value {
-    let crys_lines: Vec<serde_json::Value> = (0..6)
+    tabs: Vec<super::horb::Tab>,
+) -> super::horb::Horb {
+    use super::horb::{Button, Horb};
+    let lines: Vec<String> = (0..6)
         .map(|i| {
             let buy_price = market::get_crystal_buy_price(state, i);
             let max_can_buy = if buy_price > 0 {
@@ -1357,34 +1355,17 @@ fn build_market_buy_page(
                 0
             };
             let label = format!("<color=#aaeeaa>{buy_price}$</color>");
-            serde_json::json!(format!("0:0:{max_can_buy}:0:{label}"))
+            format!("0:0:{max_can_buy}:0:{label}")
         })
         .collect();
 
-    let buttons: Vec<serde_json::Value> = vec![
-        serde_json::json!("buy"),
-        serde_json::json!("buy:%M%"),
-        serde_json::json!("ВЫЙТИ"),
-        serde_json::json!("exit"),
-    ];
-
-    let mut gui = serde_json::json!({
-        "title": "Market",
-        "tabs": tabs,
-        "crys_left": " ",
-        "crys_right": "цена",
-        "crys_lines": crys_lines,
-        "crys_buy": true,
-        "text": "Покупка",
-        "buttons": buttons,
-        "back": false
-    });
-
-    if is_owner {
-        gui["admin"] = serde_json::json!(true);
-    }
-
-    gui
+    tabs.into_iter()
+        .fold(Horb::new("Market"), Horb::tab)
+        .text("Покупка")
+        .crystals(" ", "цена", true, lines)
+        .button(Button::new("buy", "buy:%M%"))
+        .close_button()
+        .admin(is_owner)
 }
 
 /// Build auction tab page (stub — auction requires DB orders table not yet implemented).
