@@ -2,6 +2,7 @@ pub mod boxes;
 pub mod buildings;
 pub mod chats;
 pub mod clans;
+pub mod orders;
 pub mod players;
 pub mod programs;
 pub mod provider;
