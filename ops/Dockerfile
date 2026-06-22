@@ -6,9 +6,12 @@ WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
 
-# Предварительная сборка зависимостей (deps layer)
-RUN mkdir -p server && echo "fn main() {}" > server/main.rs && \
-    cargo build --release && \
+# Предварительная сборка зависимостей (deps layer). Стабим ОБА bin-таргета
+# (server/main.rs + server/bin/loadtest.rs), иначе Cargo падает на резолве пути
+# loadtest. В образ собираем только сервер (loadtest — dev-тул, не нужен в проде).
+RUN mkdir -p server/bin && echo "fn main() {}" > server/main.rs && \
+    echo "fn main() {}" > server/bin/loadtest.rs && \
+    cargo build --release --bin openmines-server && \
     rm -rf server
 
 COPY server ./server
@@ -18,9 +21,10 @@ COPY config.json cells.json buildings.json ./
 # сборка падает: "error canonicalizing migration directory /app/./migrations".
 COPY migrations ./migrations
 
-# Сборка проекта (touch для инвалидации fingerprints после заглушки)
+# Сборка проекта (touch для инвалидации fingerprints после заглушки).
+# Только сервер — loadtest (dev-тул) в прод-образ не компилируем.
 RUN find server -name '*.rs' -exec touch {} + && \
-    cargo build --release && \
+    cargo build --release --bin openmines-server && \
     cp target/release/openmines-server /usr/local/bin/openmines-server
 
 FROM debian:bookworm-slim AS runtime
