@@ -112,6 +112,18 @@ pub fn handle_dig(
                 send_u_packet(tx, "@B", &basket(&c_data, 1).1);
                 Some(())
             });
+            // C# `Player.GetBox` → `HBChatPacket(0, x, y, "+ " + AllCrys)` — бабл
+            // с суммой кристаллов над боксом, ТОЛЬКО своему соединению (bot_id=0).
+            let total: i64 = bc.iter().sum();
+            let bubble = crate::protocol::packets::hb_chat(
+                0,
+                net_u16_nonneg(tgt_x),
+                net_u16_nonneg(tgt_y),
+                &format!("+ {total}"),
+            );
+            let _ = tx.send(crate::net::session::wire::encode_hb_bundle(
+                &crate::protocol::packets::hb_bundle(&[bubble]).1,
+            ));
         }
         state.world.damage_cell(tgt_x, tgt_y, 1.0);
         broadcast_cell_update(state, tgt_x, tgt_y);
@@ -266,8 +278,13 @@ pub fn handle_dig(
         // Dig exp only on destroy (1:1 with C# OnDestroy → AddExp("d")).
         state.modify_player(pid, |ecs, entity| {
             {
+                // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
+                // на dig-destroy (полоса Digging не обновлялась до след. @S-события).
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                add_skill_exp(&mut skills.states, "d", 1.0);
+                if add_skill_exp(&mut skills.states, "d", 1.0) {
+                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    send_u_packet(tx, sk.0, &sk.1);
+                }
             }
             {
                 let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
@@ -494,8 +511,13 @@ pub fn handle_build(
     // Fix 15: Build skill exp after successful placement.
     if let Some(skill) = placed_skill {
         state.modify_player(pid, |ecs, entity| {
+            // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
+            // на build (полоса Build* не обновлялась до след. @S-события).
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-            add_skill_exp(&mut skills.states, skill.code(), 1.0);
+            if add_skill_exp(&mut skills.states, skill.code(), 1.0) {
+                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                send_u_packet(tx, sk.0, &sk.1);
+            }
             Some(())
         });
     }
