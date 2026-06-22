@@ -30,7 +30,7 @@ const MAX_SLOTS: i32 = 34;
 /// Cost in creds to buy an additional slot.
 const SLOT_COST: i64 = 1000;
 
-// ─── Public API ───────��─────────────────────────────���────────────────────────
+// ─── Public API ─────────────────────────────────────────────────────────────────
 
 /// Open the Up building GUI for a player. Called from `open_pack_gui`.
 pub fn open_up_gui(
@@ -102,7 +102,7 @@ pub fn handle_up_button(
     false
 }
 
-// ─── Internal handlers ────────────────────���──────────────────────────────────
+// ─── Internal handlers ─────────────────────────────────────────────────────────
 
 /// Select a skill slot — re-render the page with the slot selected.
 fn handle_skill_select(
@@ -342,7 +342,7 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
     }
 }
 
-// ─── GUI rendering ──────────���────────────────────────────────────────────────
+// ─── GUI rendering ─────────────────────────────────────────────────────────────
 
 /// Build and send the `UpPage` JSON to the client.
 /// Format: `"up:{json}"` sent via GU event.
@@ -514,7 +514,7 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
     serde_json::Value::Object(obj).to_string()
 }
 
-// ─── Helpers ───────────────────────────────────────────────���─────────────────
+// ─── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Get the selected slot from the player's `current_window` state.
 /// Window format: "`up:{x}:{y}:{selected_slot`}"
@@ -552,7 +552,7 @@ fn is_skill_visible_and_meets_reqs(skills: &SkillSlots, skill: SkillType) -> boo
                     return false;
                 }
             } else {
-                // Requirement skill not installed ��� not visible
+                // Requirement skill not installed  — not visible
                 return false;
             }
         }
@@ -664,7 +664,7 @@ fn build_skill_description(skill_type: SkillType, state: &SkillEntry) -> String 
         SkillType::BuildRed => {
             let dur = lvl as f32;
             format!(
-                "Стройка красных Урове��ь:{lvl}\nExp - {exp_str}\nСтоимость блока: {effect}\nПрочность блока: {dur}"
+                "Стройка красных Уровень:{lvl}\nExp - {exp_str}\nСтоимость блока: {effect}\nПрочность блока: {dur}"
             )
         }
         SkillType::BuildWar => {
@@ -683,13 +683,13 @@ fn build_skill_description(skill_type: SkillType, state: &SkillEntry) -> String 
             format!("Защита от пушек Уровень:{lvl}\nExp - {exp_str}\nСнижение урона: {effect}%")
         }
         SkillType::Repair => {
-            format!("Ремонт Ур��вень:{lvl}\nExp - {exp_str}\nСила лечени��: {effect}")
+            format!("Ремонт Уровень:{lvl}\nExp - {exp_str}\nСила лечения: {effect}")
         }
         SkillType::MineGeneral => {
             format!("Добыча Уровень:{lvl}\nExp - {exp_str}\nМножитель добычи: {effect:.2}")
         }
         SkillType::BuildRoad => {
-            format!("��тройка дорог Уровень:{lvl}\nExp - {exp_str}\nСтоимо��ть блока: {effect}")
+            format!("Стройка дорог Уровень:{lvl}\nExp - {exp_str}\nСтоимость блока: {effect}")
         }
         _ => {
             format!("lvl:{lvl} effect:{effect:.2} exp:{exp_str}")

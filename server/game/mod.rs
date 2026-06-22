@@ -526,8 +526,15 @@ impl GameState {
         if !self.world.valid_coord(x, y) {
             return None;
         }
+        // C# PACKPOS = chunk_x + chunk_y * World.ChunksW (ЧАНКОВЫЕ координаты).
+        // Клиент (PackRenderer.cs:ObjectsGarbageCollector) и gather_block_packs
+        // ожидают именно чанковый block_pos. Клеточные координаты давали
+        // неверный block_pos — GC клиента вычислял огромное расстояние и
+        // удалял все паки при первом же срабатывании (каждые 10 сек).
         let w = self.world.chunks_w().cast_signed();
-        y.checked_mul(w)?.checked_add(x)
+        let cx = x.div_euclid(32);
+        let cy = y.div_euclid(32);
+        cy.checked_mul(w)?.checked_add(cx)
     }
 
     /// C# `World.AccessGun` → `(access, anygun)`. `access`: нет вражеской ЗАРЯЖЕННОЙ
