@@ -8,6 +8,7 @@
 use crate::game::player::{PlayerFlags, PlayerStats};
 use crate::net::auction::now_unix;
 use crate::net::session::prelude::*;
+use crate::net::session::social::commands::send_ok;
 
 /// Кулдаун между клеймами бонуса (7 часов, в секундах).
 const BONUS_COOLDOWN_SECS: i64 = 7 * 3600;
@@ -65,7 +66,7 @@ pub fn handle_bonus_claim(
             send_u_packet(tx, "P$", &money(new_money, creds).1);
             send_u_packet(tx, "DR", b"0");
             let hours = BONUS_COOLDOWN_SECS / 3600;
-            crate::net::session::social::commands::send_ok(
+            send_ok(
                 tx,
                 "Бонус",
                 &format!("Вы получили {BONUS_REWARD}$!\nВозвращайтесь через {hours} часов."),
@@ -74,7 +75,7 @@ pub fn handle_bonus_claim(
         Some(ClaimOutcome::NotReady { remaining }) => {
             let hours = remaining / 3600;
             let mins = (remaining % 3600) / 60;
-            crate::net::session::social::commands::send_ok(
+            send_ok(
                 tx,
                 "Бонус",
                 &format!("Бонус ещё не готов.\nПриходите через {hours}ч {mins}м."),
