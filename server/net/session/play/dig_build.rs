@@ -215,7 +215,11 @@ pub fn handle_dig(
             (amount.min(255)) as u8,
             color_remapped,
         );
-        state.broadcast_hb_at(px, py, &[mine_fx], Some(pid));
+        // C# `SendDFToBots` шлёт через `vChunksAroundEx()` — 5×5 чанков ВКЛЮЧАЯ
+        // свой (Entity.cs:43, центр входит), т.е. сам копающий тоже получает FX
+        // добычи кристаллов. Раньше exclude=Some(pid) → игрок не видел анимацию
+        // «сколько выкопал». Включаем себя (None).
+        state.broadcast_hb_at(px, py, &[mine_fx], None);
 
         amount
     });
