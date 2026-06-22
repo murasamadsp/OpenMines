@@ -145,9 +145,10 @@ pub async fn handle_inventory_use(
     if let Some((px, py, pdir)) = check {
         let (dx, dy) = dir_offset(pdir);
         let (fx, fy) = (px + dx, py + dy);
-        // ContainsPack: OOB либо любая footprint-клетка здания → блок (find_pack_covering
-        // покрывает весь footprint многоклеточных зданий, как C# ch.GetPack).
-        if !state.world.valid_coord(fx, fy) || state.find_pack_covering(fx, fy).is_some() {
+        // C# `ContainsPack` → `Chunk.GetPack`: блок ТОЛЬКО если facing = ORIGIN
+        // здания (SetPack регистрирует Pack лишь в origin-клетке), НЕ footprint-aware.
+        // Раньше был `find_pack_covering` (весь футпринт) → строже C#/клиента.
+        if !state.world.valid_coord(fx, fy) || state.building_index.contains_key(&(fx, fy)) {
             return;
         }
         // can_place_over: обходится только exempt-предметами.
