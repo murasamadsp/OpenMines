@@ -268,15 +268,23 @@ pub fn gun_firing_system(
                 b_stats.charge = 0.0;
             }
 
-            let fx = crate::protocol::packets::hb_fx(
+            // C# `Gun.Update`: `player.SendDFToBots(7, gun.x, gun.y, player.id, 1)` —
+            // directed gun-shot FX (`D`-тег), бродкаст вокруг ЖЕРТВЫ
+            // (`vChunksAroundEx` игрока). Клиент `case 7 → AddGunShot(x, y, bid)`
+            // рисует выстрел пушка(x,y)→жертва(bid). Раньше слался `hb_fx` (`F`-тег,
+            // fx=1) у пушки → клиент `AddFX case 1: break` → выстрел был НЕВИДИМ.
+            let fx = crate::protocol::packets::hb_directed_fx(
+                crate::net::session::util::net_u16_nonneg(p_meta.id),
                 u16::try_from(b_pos.x.rem_euclid(65536)).unwrap_or(0),
                 u16::try_from(b_pos.y.rem_euclid(65536)).unwrap_or(0),
+                7,
                 1,
+                0,
             );
             let data = crate::net::session::wire::encode_hb_bundle(
                 &crate::protocol::packets::hb_bundle(&[fx]).1,
             );
-            let (cx, cy) = crate::world::World::chunk_pos(b_pos.x, b_pos.y);
+            let (cx, cy) = crate::world::World::chunk_pos(p_pos.x, p_pos.y);
             bcast_q.0.push(BroadcastEffect::Nearby {
                 cx,
                 cy,
