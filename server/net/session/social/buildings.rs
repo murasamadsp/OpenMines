@@ -224,6 +224,7 @@ pub async fn handle_place_building(
                 cost: extra.cost,
                 hp: extra.hp,
                 max_hp: extra.max_hp,
+                clanzone: extra.clanzone,
                 broken_timer: None,
             },
             BuildingStorage {
@@ -354,6 +355,7 @@ pub fn building_extra_for_pack_type(pack_type: PackType) -> BuildingExtra {
         craft_recipe_id: None,
         craft_num: 0,
         craft_end_ts: 0,
+        clanzone: 0,
     }
 }
 

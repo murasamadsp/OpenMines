@@ -1511,7 +1511,6 @@ fn build_market_buy_page(
         .admin(is_owner)
 }
 
-/// Build auction tab page (stub — auction requires DB orders table not yet implemented).
 /// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
 pub fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
     state.query_player_opt(pid, |ecs, entity| {

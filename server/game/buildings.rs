@@ -182,6 +182,8 @@ pub struct BuildingStats {
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
+    /// Resp: клановая зона (admin-настройка; хранится, геймплейного эффекта нет — 1:1 C#).
+    pub clanzone: i32,
     /// `IDamagable`: момент когда hp стало 0. None пока здание не сломано.
     pub broken_timer: Option<std::time::Instant>,
 }
@@ -290,6 +292,7 @@ pub fn spawn_building_from_row(ecs: &mut bevy_ecs::prelude::World, row: &Buildin
             cost: row.cost,
             hp: row.hp,
             max_hp: row.max_hp,
+            clanzone: row.clanzone,
             broken_timer: None,
         },
         BuildingStorage {
@@ -331,6 +334,7 @@ pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> O
         cost: stats.cost,
         hp: stats.hp,
         max_hp: stats.max_hp,
+        clanzone: stats.clanzone,
         money_inside: storage.money,
         crystals_inside: storage.crystals,
         items_inside: storage.items.clone(),

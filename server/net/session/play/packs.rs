@@ -152,12 +152,13 @@ pub fn open_resp_admin_gui(
             pk_stats.charge,
             pk_stats.max_charge,
             pk_stats.cost,
+            pk_stats.clanzone,
             storage.money,
             ownership.clan_id,
         ))
     });
 
-    let Some((charge, max_charge, cost, money_inside, clan_id)) = details else {
+    let Some((charge, max_charge, cost, clanzone, money_inside, clan_id)) = details else {
         return;
     };
 
@@ -249,12 +250,11 @@ pub fn open_resp_admin_gui(
         "clan",
         if clan_id > 0 { "1" } else { "0" },
         // Clanzone uint
-        // TODO: clanzone not persisted in ECS — no field yet; hardcoded to 0
         "clanzone",
         "uint",
         "0",
         "clanzone",
-        "0"
+        clanzone.to_string()
     ]);
 
     let buttons = vec![
@@ -476,6 +476,12 @@ pub fn handle_resp_save(
                     if (0..=5000).contains(&c) {
                         pk_stats.cost = c;
                     }
+                }
+            }
+            // Clanzone: 1:1 C# `Resp.AdminSaveChanges` — парсим без range-check.
+            if let Some(cz_str) = fields.get("clanzone") {
+                if let Ok(cz) = cz_str.parse::<i32>() {
+                    pk_stats.clanzone = cz;
                 }
             }
         }

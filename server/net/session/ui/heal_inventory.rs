@@ -446,6 +446,7 @@ pub async fn place_building_from_item(
                     cost: extra.cost,
                     hp: extra.hp,
                     max_hp: extra.max_hp,
+                    clanzone: extra.clanzone,
                     broken_timer: None,
                 },
                 BuildingStorage {

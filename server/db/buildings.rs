@@ -22,6 +22,7 @@ pub struct BuildingRow {
     pub craft_recipe_id: Option<i32>,
     pub craft_num: i32,
     pub craft_end_ts: i64,
+    pub clanzone: i32,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -51,6 +52,9 @@ pub struct BuildingExtra {
     /// Crafter: unix-ts завершения крафта. 0 = простаивает.
     #[serde(default)]
     pub craft_end_ts: i64,
+    /// Resp: клановая зона (admin-настройка; хранится, геймплейного эффекта нет — 1:1 C#).
+    #[serde(default)]
+    pub clanzone: i32,
 }
 
 const fn default_max_charge() -> f32 {
@@ -95,6 +99,7 @@ impl Database {
                     craft_recipe_id: extra.craft_recipe_id,
                     craft_num: extra.craft_num,
                     craft_end_ts: extra.craft_end_ts,
+                    clanzone: extra.clanzone,
                 }
             })
             .collect();
@@ -195,6 +200,7 @@ impl Database {
             craft_recipe_id: row.craft_recipe_id,
             craft_num: row.craft_num,
             craft_end_ts: row.craft_end_ts,
+            clanzone: row.clanzone,
         };
         let type_code = row.type_code.chars().next().map_or(b' ', |c| c as u8);
         self.update_building_state(
