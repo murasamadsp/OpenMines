@@ -424,8 +424,9 @@ fn hb_gun_layout_is_amount_color_x_y_ids() {
 #[test]
 fn hb_packs_layout_is_blockpos_count_then_entries() {
     let bytes = hb_packs(2, &[(80, 3, 4, 5, 6)]);
-    // [tag 'O'][i32 LE block_pos][u16 LE count][code][x LE][y LE][0][clan][off]
-    assert_eq!(bytes, vec![b'O', 2, 0, 0, 0, 1, 0, 80, 3, 0, 4, 0, 0, 5, 6]);
+    // [tag 'O'][i32 LE block_pos][u16 LE count][code][x LE][y LE][clan][0][off]
+    // clan в [5], [6]=0 — 1:1 C# `HBPack.Encode`; клиент читает u16 [5..=6] = clan.
+    assert_eq!(bytes, vec![b'O', 2, 0, 0, 0, 1, 0, 80, 3, 0, 4, 0, 5, 0, 6]);
 }
 
 #[test]

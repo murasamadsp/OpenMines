@@ -381,8 +381,8 @@ struct HbPackItem {
     code: u8,
     x: u16,
     y: u16,
-    zero: u8,
     clan_id: u8,
+    zero: u8,
     off: u8,
 }
 
@@ -398,8 +398,12 @@ struct HbPacks {
 /// HB sub-packet: Pack/building (type "O")
 /// [1B tag 'O'] [i32 LE `block_pos`] [u16 LE count] [packs...]
 ///
-/// В `server_reference` у `HBPack` **Encode и Decode расходятся** (клан пишут в [5], читают с [6]).
-/// На проводе ориентируемся на **`Decode`** — то, что реально читает приёмник: `[6]` clan, `[7]` off, `[5]` не используется.
+/// Раскладка entry эталонируется по **КЛИЕНТУ** (`ServerController.Handlers.cs:1065`):
+/// `clan = ToUInt16(buffer, i+5)` — u16 из байтов `[5..=6]`; `off = buffer[i+7]`.
+/// C# `HBPack.Encode` (то, что реально шлётся клиенту) кладёт `ClanId` в байт `[5]`,
+/// `[6]` остаётся 0 → клиент читает `clan | 0 = clan`. Раньше Rust ошибочно
+/// ориентировался на C# `Decode` (читает `[6]`) и писал clan в `[6]` → клиент видел
+/// `clan << 8` (clan*256, неверный клан/цвет пака). Теперь `[5]` clan, `[6]` 0 — 1:1 `Encode`.
 pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u8, u8)]) -> Vec<u8> {
     let Ok(n) = u16::try_from(packs.len()) else {
         return vec![];
@@ -410,8 +414,8 @@ pub fn hb_packs(block_pos: i32, packs: &[(u8, u16, u16, u8, u8)]) -> Vec<u8> {
             code,
             x,
             y,
-            zero: 0,
             clan_id,
+            zero: 0,
             off,
         })
         .collect();
