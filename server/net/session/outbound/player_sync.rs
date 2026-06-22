@@ -40,13 +40,13 @@ pub fn send_player_skills(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSk
 pub fn send_player_basket(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     stats: &PlayerStats,
-    skills: &PlayerSkillsComponent,
+    _skills: &PlayerSkillsComponent,
 ) {
-    let sk = PlayerSkillsHelper {
-        skills: &skills.states,
-    };
-    let capacity = sk.on_pack_crys_capacity(1000); // 1000 is base
-    send_u_packet(tx, "@B", &basket(&stats.crystals, capacity).1);
+    // C# `BasketPacket` 7-е поле (capacity) = `Buildcap()` = ХАРДКОД 1
+    // (`Basket.cs:81`), НЕ skill-ёмкость. Раньше login слал
+    // `on_pack_crys_capacity(1000)` → клиент показывал «120% бакета»; dig-путь
+    // слал 1 (верно, «1%»). Шлём 1 (1:1 C#).
+    send_u_packet(tx, "@B", &basket(&stats.crystals, 1).1);
 }
 
 pub fn send_all_skill_updates(
