@@ -1174,7 +1174,7 @@ fn open_teleport_gui(
             .collect()
     };
 
-    use super::horb::{Button, CanvasRect, Horb};
+    use super::horb::{Button, Horb};
 
     let pstats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
         let ecs = state.ecs.read();
@@ -1198,32 +1198,19 @@ fn open_teleport_gui(
     // Мини-карта (canvas =R, декорация): по rect на чанк вокруг телепорта,
     // цвет по пустоте центральной клетки (1:1 C# ConvertMapPart: isEmpty →
     // Green, иначе CornflowerBlue). Выбор ТП — в buttons-списке ниже.
-    const R: i32 = 8; // радиус в чанках → (2R+1)² = 289 прямоугольников
-    const PX: i32 = 18; // размер rect, px
-    const EMPTY: &str = "008000"; // Green
-    const SOLID: &str = "6495ed"; // CornflowerBlue
-    let ccx = view.x.div_euclid(32);
-    let ccy = view.y.div_euclid(32);
-
-    let mut win = Horb::new("Тп").text(text).css("canv-w=360;canv-h=360");
-    for dy in -R..=R {
-        for dx in -R..=R {
-            let cell_x = (ccx + dx) * 32 + 16;
-            let cell_y = (ccy + dy) * 32 + 16;
-            if !state.world.valid_coord(cell_x, cell_y) {
-                continue;
-            }
-            let color = if state.world.is_empty(cell_x, cell_y) {
-                EMPTY
+    let mut win = Horb::new("Тп").text(text).minimap(
+        view.x,
+        view.y,
+        8, // radius in chunks
+        |x, y| {
+            if state.world.valid_coord(x, y) {
+                Some(state.world.is_empty(x, y))
             } else {
-                SOLID
-            };
-            // Y инвертируем: карта y-вниз, Unity y-вверх (север сверху).
-            win = win.rect(CanvasRect::new(dx * PX, -dy * PX, PX, PX, color));
-        }
-    }
-    // Маркер «вы здесь» поверх (добавлен последним → верхний слой).
-    win = win.rect(CanvasRect::new(0, 0, PX, PX, "ff3030"));
+                None
+            }
+        },
+        &[], // no additional markers
+    );
 
     for (tpx, tpy) in &nearby_tps {
         win = win.button(Button::new(

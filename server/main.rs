@@ -23,10 +23,15 @@ async fn main() -> Result<()> {
     // До `logging::init` паники не попадали в tracing — ловим в stderr сразу.
     logging::install_early_panic_hook();
     println!("[Main] Process started");
-    let cfg = config::Config::load("config.json").map_err(|e| {
+    let mut cfg = config::Config::load("config.json").map_err(|e| {
         println!("[Main] CRITICAL: Failed to load config.json: {e}");
         e
     })?;
+    if let Ok(p_str) = env::var("M3R_PORT")
+        && let Ok(p) = p_str.trim().parse::<u16>()
+    {
+        cfg.port = p;
+    }
     println!("[Main] Config loaded, initializing logging...");
     let _logging_guard = logging::init(&cfg.logging)?;
     tracing::info!("Config loaded: world={}, port={}", cfg.world_name, cfg.port);

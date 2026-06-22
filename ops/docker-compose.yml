@@ -1,12 +1,23 @@
 services:
+  openmines-proxy:
+    init: true
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/openmines-proxy"]
+    command: ["--bind", "0.0.0.0:8090", "--backend", "openmines-server:8090"]
+    ports:
+      - "8090:8090"
+    depends_on:
+      - openmines-server
+
   openmines-server:
     init: true # стабильный PID 1 в контейнере
     build:
       context: ..
       dockerfile: ops/Dockerfile
     restart: unless-stopped
-    ports:
-      - "8090:8090"
     volumes:
       - openmines_data:/data
 

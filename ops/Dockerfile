@@ -6,12 +6,12 @@ WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
 
-# Предварительная сборка зависимостей (deps layer). Стабим ОБА bin-таргета
-# (server/main.rs + server/bin/loadtest.rs), иначе Cargo падает на резолве пути
-# loadtest. В образ собираем только сервер (loadtest — dev-тул, не нужен в проде).
+# Предварительная сборка зависимостей (deps layer). Стабим ВСЕ bin-таргеты,
+# иначе Cargo падает на резолве путей.
 RUN mkdir -p server/bin && echo "fn main() {}" > server/main.rs && \
     echo "fn main() {}" > server/bin/loadtest.rs && \
-    cargo build --release --bin openmines-server && \
+    echo "fn main() {}" > server/bin/proxy.rs && \
+    cargo build --release --bin openmines-server --bin openmines-proxy && \
     rm -rf server
 
 COPY server ./server
@@ -22,10 +22,10 @@ COPY config.json cells.json buildings.json ./
 COPY migrations ./migrations
 
 # Сборка проекта (touch для инвалидации fingerprints после заглушки).
-# Только сервер — loadtest (dev-тул) в прод-образ не компилируем.
 RUN find server -name '*.rs' -exec touch {} + && \
-    cargo build --release --bin openmines-server && \
-    cp target/release/openmines-server /usr/local/bin/openmines-server
+    cargo build --release --bin openmines-server --bin openmines-proxy && \
+    cp target/release/openmines-server /usr/local/bin/openmines-server && \
+    cp target/release/openmines-proxy /usr/local/bin/openmines-proxy
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -38,11 +38,12 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder /usr/local/bin/openmines-server /usr/local/bin/openmines-server
+COPY --from=builder /usr/local/bin/openmines-proxy /usr/local/bin/openmines-proxy
 COPY --from=builder /app/config.json ./config.json
 COPY --from=builder /app/cells.json ./cells.json
 COPY --from=builder /app/buildings.json ./buildings.json
 
-RUN chmod +x /usr/local/bin/openmines-server
+RUN chmod +x /usr/local/bin/openmines-server /usr/local/bin/openmines-proxy
 
 EXPOSE 8090 8091
 

@@ -18,6 +18,11 @@ path = "server/main.rs"
 name = "loadtest"
 path = "server/bin/loadtest.rs"
 
+# Прокси-сервер для бесшовного обновления
+[[bin]]
+name = "openmines-proxy"
+path = "server/bin/proxy.rs"
+
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 bytes = "1.12.0"
@@ -43,7 +48,7 @@ binrw = "0.14.0"
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 strum = { version = "0.28.0", features = ["derive"] }
 dotnet-rng = "1.0.5"
-clap = { version = "4.5.31", features = ["derive"] }
+clap = { version = "4.5.31", features = ["derive", "env"] }
 
 
 

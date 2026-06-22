@@ -159,37 +159,36 @@ impl RichRow {
     }
 }
 
-/// Прямоугольник `canvas` (мини-карта). Клиент (`ShowHORB`, тип `=R`) рисует
-/// его в `canvasGUI` по локальным координатам `(X, Y)` от центра, размером `w×h`,
-/// цветом `color` (RRGGBB hex, альфа по умолчанию 255). `X`/`Y` (заглавные) —
-/// per-element абсолютные (сбрасываются), в отличие от накапливающегося `x`/`y`.
-pub struct CanvasRect {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    color: String,
+/// Элемент `canvas` в локальных координатах `(x, y)` от центра `canvasGUI`.
+/// Это НИЗКИЙ уровень — обычно не трогается напрямую, его генерит `minimap()`.
+/// Клиент (`ShowHORB`) аккумулирует ЦИФРЫ, потом применяет БУКВУ-команду
+/// (`-18X` → x=-18), поэтому число идёт ПЕРЕД буквой, тип — последним перед `%`.
+enum CanvasEl {
+    /// Прямоугольник `=R`: позиция, размер, цвет `RRGGBB`.
+    Rect {
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        color: String,
+    },
+    /// Кликабельная точка-ТП `=t` (маркер). `action` уходит серверу при клике
+    /// (для телепорта — `"tp:x:y"`). Кодируется ДВУМЯ элементами массива.
+    Tp { x: i32, y: i32, action: String },
 }
 
-impl CanvasRect {
-    pub fn new(x: i32, y: i32, w: i32, h: i32, color: impl Into<String>) -> Self {
-        Self {
-            x,
-            y,
-            w,
-            h,
-            color: color.into(),
+impl CanvasEl {
+    /// Развернуть в плоские строки `canvas` (Tp даёт пару: команда + action).
+    fn push_to(&self, out: &mut Vec<String>) {
+        match self {
+            Self::Rect { x, y, w, h, color } => {
+                out.push(format!("{x}X{y}Y{w}w{h}h=R%{color}"));
+            }
+            Self::Tp { x, y, action } => {
+                out.push(format!("{x}X{y}Y=t"));
+                out.push(action.clone());
+            }
         }
-    }
-
-    /// Кодировка элемента canvas: `"{x}X{y}Y{w}w{h}h=R%{color}"`. ВАЖНО: клиент
-    /// аккумулирует ЦИФРЫ, затем применяет БУКВУ (`-18X` → num6=-18), поэтому
-    /// число идёт ПЕРЕД буквой-командой, а тип `=R` — последним перед `%`.
-    fn encode(&self) -> String {
-        format!(
-            "{}X{}Y{}w{}h=R%{}",
-            self.x, self.y, self.w, self.h, self.color
-        )
     }
 }
 
@@ -209,9 +208,9 @@ pub struct Horb {
     crys_right: String,
     /// Режим покупки (`crys_buy`): слайдеры считают цену покупки, не продажи.
     crys_buy: bool,
-    /// Прямоугольники `canvas` (мини-карта телепорта).
-    canvas_rects: Vec<CanvasRect>,
-    /// CSS сайзинга (`"canv-w=…;canv-h=…"` и т.п.).
+    /// Элементы `canvas` (мини-карта). Заполняется `minimap()`.
+    canvas: Vec<CanvasEl>,
+    /// CSS сайзинга (`"canv-w=…;canv-h=…"`). Ставится `minimap()`.
     css: String,
 }
 
@@ -284,17 +283,65 @@ impl Horb {
         self
     }
 
-    /// Добавить прямоугольник на canvas (мини-карта).
+    /// УМНАЯ мини-карта одним вызовом — БЕЗ ручной пиксельной математики.
+    /// Разработчик задаёт намерение в МИРОВЫХ клетках, движок считает пиксели:
+    /// - `center_x/y` — центр карты (клетки мира, обычно позиция здания);
+    /// - `radius` — радиус в ЧАНКАХ (карта = `(2r+1)²` плиток);
+    /// - `cell_empty(x,y)` — цвет клетки: `Some(true)`=пусто (зелёный),
+    ///   `Some(false)`=порода (синий), `None`=вне мира (пропуск). 1:1 C# `ConvertMapPart`;
+    /// - `markers` — кликабельные точки в МИРОВЫХ координатах `(x, y, action)`;
+    ///   те, что попадают на карту, авто-позиционируются (`action` напр. `"tp:x:y"`).
+    ///
+    /// Сам ставит размер canvas (`css`) и маркер «вы здесь» в центре.
     #[must_use]
-    pub fn rect(mut self, r: CanvasRect) -> Self {
-        self.canvas_rects.push(r);
-        self
-    }
-
-    /// CSS сайзинга canvas (`"canv-w=360;canv-h=360"`).
-    #[must_use]
-    pub fn css(mut self, css: impl Into<String>) -> Self {
-        self.css = css.into();
+    pub fn minimap(
+        mut self,
+        center_x: i32,
+        center_y: i32,
+        radius: i32,
+        cell_empty: impl Fn(i32, i32) -> Option<bool>,
+        markers: &[(i32, i32, String)],
+    ) -> Self {
+        const PX: i32 = 18; // пикселей на чанк-плитку
+        let (ccx, ccy) = (center_x.div_euclid(32), center_y.div_euclid(32));
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let (cx, cy) = ((ccx + dx) * 32 + 16, (ccy + dy) * 32 + 16);
+                let Some(empty) = cell_empty(cx, cy) else {
+                    continue;
+                };
+                let color = if empty { "008000" } else { "6495ed" };
+                // Y инвертируем: карта y-вниз, Unity y-вверх (север сверху).
+                self.canvas.push(CanvasEl::Rect {
+                    x: dx * PX,
+                    y: -dy * PX,
+                    w: PX,
+                    h: PX,
+                    color: color.into(),
+                });
+            }
+        }
+        // Маркер «вы здесь» (поверх плиток).
+        self.canvas.push(CanvasEl::Rect {
+            x: 0,
+            y: 0,
+            w: PX,
+            h: PX,
+            color: "ff3030".into(),
+        });
+        // Кликабельные точки в мировых координатах → авто-позиция на карте.
+        for (mx, my, action) in markers {
+            let (dcx, dcy) = (mx.div_euclid(32) - ccx, my.div_euclid(32) - ccy);
+            if dcx.abs() <= radius && dcy.abs() <= radius {
+                self.canvas.push(CanvasEl::Tp {
+                    x: dcx * PX,
+                    y: -dcy * PX,
+                    action: action.clone(),
+                });
+            }
+        }
+        let side = (2 * radius + 1) * PX + PX;
+        self.css = format!("canv-w={side};canv-h={side}");
         self
     }
 
@@ -310,8 +357,11 @@ impl Horb {
         if !self.css.is_empty() {
             obj.insert("css".into(), self.css.clone().into());
         }
-        if !self.canvas_rects.is_empty() {
-            let flat: Vec<String> = self.canvas_rects.iter().map(CanvasRect::encode).collect();
+        if !self.canvas.is_empty() {
+            let mut flat = Vec::new();
+            for el in &self.canvas {
+                el.push_to(&mut flat);
+            }
             obj.insert("canvas".into(), flat.into());
         }
         if !self.buttons.is_empty() {
@@ -399,7 +449,7 @@ impl Horb {
 
 #[cfg(test)]
 mod tests {
-    use super::{Button, CanvasRect, Horb, RichRow, Tab};
+    use super::{Button, Horb, RichRow, Tab};
 
     fn arr<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
         v.get(key)
@@ -498,17 +548,18 @@ mod tests {
         assert_eq!(r[15 + 3], "take_profit");
     }
 
-    /// Canvas-rect кодируется как `"X{x}Y{y}w{w}h{h}=R%{color}"` (клиент `ShowHORB`
-    /// тип `=R`). `=R` ОБЯЗАН быть последним перед `%` (иначе клиент не распознает).
+    /// Canvas кодируется корректно через minimap.
     #[test]
     fn canvas_rect_encodes_for_client_parser() {
         let json = Horb::new("Тп")
-            .css("canv-w=360;canv-h=360")
-            .rect(CanvasRect::new(-18, 36, 18, 18, "6495ed"))
+            .minimap(0, 0, 1, |_x, _y| Some(true), &[(32, 32, "tp:32:32".into())])
             .to_json();
         let canvas = arr(&json, "canvas");
-        assert_eq!(canvas.len(), 1);
-        assert_eq!(canvas[0], "-18X36Y18w18h=R%6495ed");
-        assert_eq!(json["css"], "canv-w=360;canv-h=360");
+        assert_eq!(canvas.len(), 12);
+        assert_eq!(canvas[0], "-18X18Y18w18h=R%008000"); // Empty/Green
+        assert_eq!(canvas[9], "0X0Y18w18h=R%ff3030"); // Center marker
+        assert_eq!(canvas[10], "18X-18Y=t");
+        assert_eq!(canvas[11], "tp:32:32");
+        assert_eq!(json["css"], "canv-w=72;canv-h=72"); // side = (2*1+1)*18+18 = 72
     }
 }
