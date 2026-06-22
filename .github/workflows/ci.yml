@@ -51,3 +51,6 @@ jobs:
 
       - name: test
         run: cargo test --all-targets --all-features
+
+      - name: bench (release, ~5s)
+        run: cargo test --release -- bench_tick --ignored --nocapture

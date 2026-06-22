@@ -348,3 +348,73 @@ mod tests {
         assert!(parse_regen_flag_from(["./openmines-server", "--regen"], None).is_err());
     }
 }
+
+/// Запуск: `cargo test --release bench_tick -- --ignored --nocapture`
+#[cfg(test)]
+mod benchmarks {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    const BENCH_N: u32 = 500;
+
+    fn create_minimal_state() -> Arc<crate::game::GameState> {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = std::env::temp_dir();
+            let db_path = dir.join(format!("bench_db_{}", std::process::id()));
+            let _ = std::fs::remove_file(&db_path);
+            let database = crate::db::Database::open(&db_path).await.unwrap();
+            let cell_defs = crate::world::cells::CellDefs::load("cells.json").unwrap();
+            let world_name = format!("bench_world_{}", std::process::id());
+            let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+            let config = crate::config::Config {
+                world_name: world_name.clone(),
+                port: 8090,
+                world_chunks_w: 2,
+                world_chunks_h: 2,
+                data_dir: dir.to_string_lossy().to_string(),
+                logging: crate::config::LoggingConfig::default(),
+                cron: crate::config::CronConfig::default(),
+            };
+            let state =
+                crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+
+            // Чистим за собой при падении assert
+            let _ = std::fs::remove_file(&db_path);
+            state
+        })
+    }
+
+    #[test]
+    #[ignore = "benchmark — запускать вручную через --ignored"]
+    fn bench_tick_empty_world() {
+        let state = create_minimal_state();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        let start = Instant::now();
+        for _ in 0..BENCH_N {
+            let mut ecs = state.ecs.write();
+            let mut schedule = state.schedule.write();
+            schedule.run(&mut ecs);
+            // drain queues
+            let _bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
+            let _pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
+            let _pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
+            drop(ecs);
+            drop(schedule);
+        }
+        drop(rt);
+        let elapsed = start.elapsed();
+        let per_tick = elapsed / BENCH_N;
+
+        eprintln!(
+            "BENCH: {BENCH_N} ticks = {elapsed:?}  avg={per_tick:?}  ticks/s={:.0}",
+            f64::from(BENCH_N) / elapsed.as_secs_f64()
+        );
+
+        assert!(
+            per_tick < std::time::Duration::from_millis(5),
+            "tick too slow: {per_tick:?} (N={BENCH_N})"
+        );
+    }
+}
