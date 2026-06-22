@@ -754,7 +754,9 @@ fn execute_action(
             });
             ExecResult::None
         }
-        ActionType::BuildBlock | ActionType::MacrosBuild => {
+        // MacrosBuild (id 142) намеренно НЕ здесь: C# `PAction.Execute` не имеет
+        // для него case → no-op (падает в `_ => None`). 1:1 с референсом.
+        ActionType::BuildBlock => {
             *delay_ms = 100;
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
