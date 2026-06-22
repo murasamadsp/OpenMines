@@ -123,6 +123,21 @@ pub fn standing_cell_hazard_system(
     }
 }
 
+/// Таймер залпа пушек. C# зовёт `gun.Update()` каждые 0.5с (`World.Update`
+/// `lastpackeffect >= FromSeconds(0.5)`), НЕ каждый тик. Без троттла пушка била
+/// бы 60 HP каждые 10мс = мгновенная смерть.
+#[derive(Resource)]
+pub struct GunTickTimer(pub std::time::Instant);
+
+impl Default for GunTickTimer {
+    fn default() -> Self {
+        Self(std::time::Instant::now())
+    }
+}
+
+/// Интервал залпа = C# `lastpackeffect` (0.5с).
+const GUN_FIRE_INTERVAL_MS: u128 = 500;
+
 /// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → `AntiGun`.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
@@ -130,6 +145,7 @@ pub fn gun_firing_system(
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut pack_resend_q: ResMut<PackResendQueue>,
+    mut fire_timer: ResMut<GunTickTimer>,
     mut guns_query: Query<(
         &BuildingMetadata,
         &mut BuildingStats,
@@ -148,6 +164,11 @@ pub fn gun_firing_system(
     )>,
 ) {
     let now = std::time::Instant::now();
+    // Залп раз в 0.5с (1:1 C# `lastpackeffect`), а не каждый тик.
+    if fire_timer.0.elapsed().as_millis() < GUN_FIRE_INTERVAL_MS {
+        return;
+    }
+    fire_timer.0 = now;
 
     for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {
         if meta.pack_type != PackType::Gun || b_stats.charge <= 0.0 {
@@ -217,12 +238,19 @@ pub fn gun_firing_system(
                 &crate::protocol::packets::health(stats.health, stats.max_health).1,
             ));
 
-            // Charge cost: 0.5 * (Induction_Effect / 100)
+            // Charge cost: C# `basecrys = 0.5f`, и ТОЛЬКО при наличии у жертвы
+            // скилла Induction домножается на `Effect/100`. Без Induction (у
+            // большинства) charge_cost = 0.5 — иначе `0.5 * 0 = 0` и заряд НЕ
+            // убывал бы вовсе (выглядело как «самоперезарядка»/вечный заряд).
             let induction_effect = crate::game::skills::get_player_skill_effect(
                 &p_sk.states,
                 crate::game::skills::SkillType::Induction,
             );
-            let charge_cost = 0.5 * (induction_effect / 100.0);
+            let charge_cost = if induction_effect > 0.0 {
+                0.5 * (induction_effect / 100.0)
+            } else {
+                0.5
+            };
             if b_stats.charge - charge_cost > 0.0 {
                 b_stats.charge -= charge_cost;
             } else if b_stats.charge > 0.0 {

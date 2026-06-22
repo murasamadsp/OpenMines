@@ -285,6 +285,7 @@ impl GameState {
             ecs.insert_resource(alive::AliveTickTimer::default());
             ecs.insert_resource(acid::AcidTickTimer::default());
             ecs.insert_resource(sand::SandTickTimer::default());
+            ecs.insert_resource(combat::GunTickTimer::default());
             ecs.insert_resource(building_damage::BuildingDamageTimer::default());
             ecs.insert_resource(PendingCellConversions::default());
             ecs.insert_resource(PackResendQueue::default());
