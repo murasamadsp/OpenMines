@@ -57,12 +57,10 @@ pub async fn handle_gui_button(
         "open_buildings" => {
             crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
         }
-        "createprog_stub" => {
-            crate::net::session::social::commands::send_ok(
-                tx,
-                "Программатор",
-                "Создание программы из GUI пока не подключено к БД.",
-            );
+        "createprog" => open_create_prog_dialog(state, tx, pid),
+        "prog" => {
+            crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid)
+                .await;
         }
         "clan_menu" | "clan_back" => {
             crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
@@ -282,6 +280,20 @@ async fn handle_complex_button(
                 } else {
                     super::auction_gui::open_order(state, tx, pid, id).await;
                 }
+            }
+        }
+    } else if let Some(rest) = button.strip_prefix("openprog:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            handle_open_prog(state, tx, pid, id).await;
+        }
+    } else if let Some(name) = button.strip_prefix("createprog:") {
+        handle_create_prog(state, tx, pid, name).await;
+    } else if let Some(rest) = button.strip_prefix("rename:") {
+        // format: "<id>:<name>" (сервер кодирует как `rename:{id}:%I%`, клиент подставляет ввод)
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if let [id_str, name] = parts.as_slice() {
+            if let Ok(id) = id_str.parse::<i32>() {
+                handle_rename_prog(state, tx, pid, id, name).await;
             }
         }
     } else {
@@ -1895,4 +1907,113 @@ fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
         .collect::<Vec<_>>()
         .join("#");
     format!("#{inner}").into_bytes()
+}
+
+// ─── Программатор ────────────────────────────────────────────────────────────
+
+fn open_create_prog_dialog(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) {
+    let json = serde_json::json!({
+        "title": "НОВАЯ ПРОГРАММА",
+        "text": "Введите название программы",
+        "buttons": ["Создать", "createprog:%I%", "ВЫЙТИ", "exit"],
+        "back": false,
+        "input_place": "Название программы...",
+        "input_console": true
+    });
+    send_u_packet(tx, "GU", format!("horb:{json}").as_bytes());
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = Some("createprog".to_string());
+        }
+        Some(())
+    });
+}
+
+async fn handle_open_prog(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    prog_id: i32,
+) {
+    let prog = state.db.get_program(prog_id).await.ok().flatten();
+    let Some(p) = prog else { return };
+    if p.player_id != pid {
+        return;
+    }
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ps) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
+            ps.selected_id = Some(p.id);
+            ps.selected_data = Some(p.code.clone());
+        }
+        Some(())
+    });
+    send_u_packet(
+        tx,
+        "#P",
+        &crate::protocol::packets::open_programmator(p.id, &p.name, &p.code).1,
+    );
+}
+
+async fn handle_create_prog(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    name: &str,
+) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    match state.db.insert_program(pid, name, "").await {
+        Ok(prog_id) => {
+            let prog = state.db.get_program(prog_id).await.ok().flatten();
+            let Some(p) = prog else { return };
+            state.modify_player(pid, |ecs, entity| {
+                if let Some(mut ps) =
+                    ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                {
+                    ps.selected_id = Some(p.id);
+                    ps.selected_data = Some(String::new());
+                }
+                Some(())
+            });
+            send_u_packet(
+                tx,
+                "#P",
+                &crate::protocol::packets::open_programmator(p.id, &p.name, &p.code).1,
+            );
+        }
+        Err(e) => tracing::warn!("[createprog] DB insert failed pid={pid}: {e:#}"),
+    }
+}
+
+async fn handle_rename_prog(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    prog_id: i32,
+    name: &str,
+) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let prog = state.db.get_program(prog_id).await.ok().flatten();
+    let Some(p) = prog else { return };
+    if p.player_id != pid {
+        return;
+    }
+    if let Err(e) = state.db.rename_program(prog_id, name).await {
+        tracing::warn!("[rename] DB rename failed pid={pid} id={prog_id}: {e:#}");
+        return;
+    }
+    send_u_packet(
+        tx,
+        "#p",
+        &crate::protocol::packets::open_programmator(prog_id, name, &p.code).1,
+    );
 }

@@ -14,18 +14,30 @@ use std::collections::HashMap;
 // ─── Buildings ─────────────────────────────────────────────────────────
 
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
-pub fn handle_programmator_pope_menu(
-    _state: &Arc<GameState>,
+/// Показывает список программ игрока из БД (кликабельный) или кнопку создания.
+pub async fn handle_programmator_pope_menu(
+    state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _pid: PlayerId,
+    pid: PlayerId,
 ) {
-    let gui = serde_json::json!({
-        "title": "ПРОГРАММАТОР",
-        "text": "",
-        "buttons": ["СОЗДАТЬ ПРОГРАММУ", "createprog_stub", "ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    use crate::net::session::ui::horb::{Button, Horb, ListRow};
+    let programs = state.db.list_programs(pid).await.unwrap_or_default();
+    let mut win = Horb::new("ПРОГРАММАТОР");
+    if programs.is_empty() {
+        win = win
+            .text("Нет программ")
+            .button(Button::new("СОЗДАТЬ ПРОГРАММУ", "createprog"));
+    } else {
+        for prog in &programs {
+            win = win.list_row(ListRow::new(
+                prog.name.clone(),
+                "ОТКРЫТЬ",
+                format!("openprog:{}", prog.id),
+            ));
+        }
+        win = win.button(Button::new("Создать", "createprog"));
+    }
+    win.send(state, tx, pid, "prog");
 }
 
 /// TY `Blds` → `Player.OpenMyBuildings()` (список построек владельца).
@@ -383,15 +395,32 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
             }
         }
     }
+    // Активные расходники-спрайты (boom/prot/raz) того же блока. ОБЯЗАТЕЛЬНО:
+    // клиентский `O` чистит весь block_pos, поэтому пакет должен нести и здания,
+    // и расходники вместе — иначе апдейт здания стирает бумы, а бум — здания.
+    for entry in &state.consumable_packs {
+        let &(cx, cy) = entry.key();
+        if state.pack_block_pos(cx, cy) == Some(block_pos) {
+            let (typ, off) = *entry.value();
+            out.push((typ, net_u16_nonneg(cx), net_u16_nonneg(cy), 0, off));
+        }
+    }
     out
 }
 
 pub fn broadcast_pack_update(state: &Arc<GameState>, view: &PackView) {
-    if let Some(block_pos) = state.pack_block_pos(view.x, view.y) {
+    broadcast_block_at(state, view.x, view.y);
+}
+
+/// Ре-бродкаст ВСЕГО `block_pos` клетки `(x,y)`: здания + активные расходники
+/// (см. `gather_block_packs`). Единственный путь эмиссии `O` вне `check_chunk_changed`
+/// — держит инвариант «один `O` несёт весь блок».
+pub fn broadcast_block_at(state: &Arc<GameState>, x: i32, y: i32) {
+    if let Some(block_pos) = state.pack_block_pos(x, y) {
         let packs = gather_block_packs(state, block_pos);
         let sub = hb_packs(block_pos, &packs);
         let data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-        let (cx, cy) = World::chunk_pos(view.x, view.y);
+        let (cx, cy) = World::chunk_pos(x, y);
         state.broadcast_to_nearby(cx, cy, &data, None);
     }
 }

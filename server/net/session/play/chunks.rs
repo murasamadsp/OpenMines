@@ -188,6 +188,11 @@ pub fn check_chunk_changed(
     // (клетки ~8 апарт делят block_pos) — отправка по одному паку затирала бы
     // соседние («паки пропадают»). Идёт ПОСЛЕ clears ушедших чанков, чтобы
     // перекрыть ошибочную очистку видимого пака с совпавшим block_pos.
+    // ВНИМАНИЕ: здесь группируются ТОЛЬКО здания (`get_packs_in_single_chunk`),
+    // БЕЗ активных расходников (`consumable_packs`). Это намеренно: пересечение
+    // границы чанка сотрёт чужие transient-бумы на клиенте этого игрока, но они
+    // живут 1–2с и самовосстановятся. НЕ добавлять сюда частичный сенд расходников
+    // — инвариант «один `O` несёт весь блок» держит `gather_block_packs`.
     let mut by_block: HashMap<i32, Vec<PackEntry>> = HashMap::new();
     for (vcx, vcy) in new_visible.iter().copied() {
         for pack in state.get_packs_in_single_chunk(vcx, vcy) {

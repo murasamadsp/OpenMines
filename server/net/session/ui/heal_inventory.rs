@@ -593,24 +593,23 @@ fn aoe_damage_players(
     killed
 }
 
-/// C# `Chunk.SendPack('B', x, y, 0, off)` — transient pack-спрайт расходника:
-/// HB 'O' с одним pack type 'B' (клиент PackSprite.cs: off 0=Boom/1=Prot/2=Raz).
+/// Поставить transient pack-спрайт расходника (off 0=Boom/1=Prot/2=Raz, тип `B`).
+/// C# `Chunk.SendPack('B', …)` шлёт ОДИН пак с cell-based PACKPOS; здесь `block_pos`
+/// чанковый (клиент-truth, 77033c5) — клиентский `O` чистит весь блок, поэтому
+/// регистрируем расходник и ре-бродкастим ВЕСЬ блок (здания + все расходники),
+/// иначе спрайт стирает соседние здания и другие бумы.
 fn send_consumable_pack(state: &Arc<GameState>, x: i32, y: i32, off: u8) {
-    let Some(block_pos) = state.pack_block_pos(x, y) else {
+    if state.pack_block_pos(x, y).is_none() {
         return;
-    };
-    let pack = (b'B', net_u16_nonneg(x), net_u16_nonneg(y), 0u8, off);
-    let sub = hb_packs(block_pos, std::slice::from_ref(&pack));
-    state.broadcast_hb_at(x, y, &[sub], None);
+    }
+    state.consumable_packs.insert((x, y), (b'B', off));
+    crate::net::session::social::buildings::broadcast_block_at(state, x, y);
 }
 
-/// C# `Chunk.ClearPack(x, y)` — HB 'O' с пустым списком pack'ов (стирает спрайт).
+/// Снять спрайт расходника: удалить из реестра и ре-бродкастить остаток блока.
 fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
-    let Some(block_pos) = state.pack_block_pos(x, y) else {
-        return;
-    };
-    let sub = hb_packs(block_pos, &[]);
-    state.broadcast_hb_at(x, y, &[sub], None);
+    state.consumable_packs.remove(&(x, y));
+    crate::net::session::social::buildings::broadcast_block_at(state, x, y);
 }
 
 /// D14: Boom — C# `ShitClass.Boom` parity.

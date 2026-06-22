@@ -172,13 +172,36 @@ pub async fn handle_prog_ty(
             // безопасность (wire-невидим), сам @P убран для паритета.
         }
         "PREN" => {
-            let running = state
-                .query_player(pid, |ecs, entity| {
-                    ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                        .is_some_and(|ps| ps.running)
-                })
-                .unwrap_or(false);
-            send_u_packet(tx, "@P", &programmator_status(running).1);
+            // C# ref Session.cs:150 `StaticGUI.Rename(player, pren.Id)` — открывает
+            // диалог переименования с полем ввода. pren.Id — ID программы из payload.
+            let prog_id = std::str::from_utf8(payload)
+                .ok()
+                .and_then(|s| s.trim().parse::<i32>().ok());
+            if let Some(id) = prog_id {
+                let json = serde_json::json!({
+                    "title": "ПЕРЕИМЕНОВАТЬ",
+                    "text": "Введите новое название программы",
+                    "buttons": ["OK", format!("rename:{id}:%I%"), "ВЫЙТИ", "exit"],
+                    "back": false,
+                    "input_place": "Название программы...",
+                    "input_console": true
+                });
+                send_u_packet(tx, "GU", format!("horb:{json}").as_bytes());
+                state.modify_player(pid, |ecs, entity| {
+                    if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                        ui.current_window = Some(format!("pren:{id}"));
+                    }
+                    Some(())
+                });
+            } else {
+                let running = state
+                    .query_player(pid, |ecs, entity| {
+                        ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                            .is_some_and(|ps| ps.running)
+                    })
+                    .unwrap_or(false);
+                send_u_packet(tx, "@P", &programmator_status(running).1);
+            }
         }
         _ => {}
     }

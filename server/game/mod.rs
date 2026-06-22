@@ -206,6 +206,12 @@ pub struct GameState {
     /// выходит из select!-loop. Также разрешает зомби-соединения при reconnect (новый
     /// insert вытесняет старый sender → старая connection-задача чисто завершается).
     pub kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
+    /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `(x,y)` →
+    /// `(type, off)`. Клиентский `O`-пакет авторитетен для ВСЕГО чанк-`block_pos`
+    /// (`RemoveObjectInBlock` чистит блок целиком), поэтому каждый `O` обязан нести
+    /// и здания, и все активные расходники блока — иначе один бум стирает здания и
+    /// другие бумы. `gather_block_packs` читает этот реестр. В памяти, transient.
+    pub consumable_packs: DashMap<(i32, i32), (u8, u8)>,
 }
 
 impl GameState {
@@ -275,6 +281,7 @@ impl GameState {
             box_persist_q: Arc::new(Mutex::new(Vec::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
             kick_channels: DashMap::new(),
+            consumable_packs: DashMap::new(),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по

@@ -117,7 +117,7 @@ pub async fn dispatch_ty_packet(
             handle_death(state, tx, pid);
         }
         "Pope" => {
-            handle_programmator_pope_menu(state, tx, pid);
+            handle_programmator_pope_menu(state, tx, pid).await;
         }
         "Blds" => {
             handle_my_buildings_list(state, tx, pid).await;
