@@ -1,11 +1,11 @@
 use crate::db::players::PlayerRow;
+use crate::game::LifeCmd;
 use crate::game::player::{
     ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
     PlayerInventory, PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats,
     PlayerUI, PlayerView,
 };
 use crate::game::programmator::ProgrammatorState;
-use crate::net::session::outbound::chat_sync::send_chat_login_per_reference;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
@@ -14,12 +14,38 @@ use crate::net::session::outbound::player_sync::{
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 
-#[allow(clippy::similar_names)]
-pub async fn init_player(
+/// Conn-таск: ставит вход игрока в lifecycle-очередь. Сам ecs не трогает —
+/// spawn entity + Init-пакеты выполняет game-tick (`connect_in_tick`), чтобы
+/// `ecs`-`RwLock` не контендился между conn-тасками и тиком. cf/Gu (и AH при
+/// регистрации) уже отправлены вызывающим до этой точки — порядок в tx сохранён.
+pub fn init_player(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &PlayerRow,
+    token: u64,
 ) -> PlayerId {
+    state.enqueue_life(LifeCmd::Connect {
+        row: Box::new(player.clone()),
+        tx: tx.clone(),
+        token,
+    });
+    player.id
+}
+
+/// Conn-таск: ставит выход игрока в lifecycle-очередь (см. `init_player`).
+pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId, token: u64) {
+    state.enqueue_life(LifeCmd::Disconnect { pid, token });
+}
+
+/// game-tick: спавн entity + Init-пакеты (1:1 порядок с `Player.Init()`).
+/// Выполняется в tick-таске (единственный писатель `ecs`).
+#[allow(clippy::similar_names)]
+pub fn connect_in_tick(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    player: &PlayerRow,
+    token: u64,
+) {
     let pid = player.id;
 
     // BUG 1: Reconnect entity leak — clean up any existing session for this pid before spawning a new one.
@@ -122,9 +148,13 @@ pub async fn init_player(
         ))
         .id();
 
-    state
-        .active_players
-        .insert(pid, ActivePlayer { ecs_entity: entity });
+    state.active_players.insert(
+        pid,
+        ActivePlayer {
+            ecs_entity: entity,
+            session_token: token,
+        },
+    );
 
     state.player_sessions.insert(pid, tx.clone());
 
@@ -146,21 +176,28 @@ pub async fn init_player(
         Some(())
     });
 
-    send_initial_sync(state, tx, player).await;
-    pid
+    send_initial_sync(state, tx, player);
 }
 
-pub async fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
-    let Some((_, p)) = state.active_players.remove(&pid) else {
+/// game-tick: despawn entity + сохранение в БД. Token-guard от reconnect-гонки:
+/// сносим только если `active_players[pid]` всё ещё этот сеанс.
+pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
+    // Guard: если токен в active_players не совпадает — игрок уже переподключился
+    // (новый сеанс владеет entity), этот Disconnect устарел → ничего не делаем.
+    let Some(p) = state
+        .active_players
+        .get(&pid)
+        .filter(|p| p.session_token == token)
+        .map(|p| p.ecs_entity)
+    else {
         return;
     };
+    state.active_players.remove(&pid);
     state.player_sessions.remove(&pid);
-    let entity = p.ecs_entity;
+    let entity = p;
 
-    // После `remove` `modify_player(pid, …)` уже не найдёт сущность — берём
-    // чанк и row из ECS, ОТПУСКАЕМ `ecs.read()`, и только потом sync
-    // `save_player` (C-4 фикс: readers блокировали writer-тик → фриз на
-    // каждый disconnect, объясняло «реконнект→снова фриз»).
+    // Берём чанк и row из ECS (sync), затем save_player отдаём в отдельный
+    // таск — БД НЕ должна блокировать 10ms tick-цикл.
     let (cx, cy, row) = {
         let ecs = state.ecs.read();
         let chunk = ecs
@@ -169,11 +206,14 @@ pub async fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
             .unwrap_or((0, 0));
         let row = crate::game::player::extract_player_row(&ecs, entity);
         (chunk.0, chunk.1, row)
-    }; // ecs.read() освобождён здесь.
+    };
     if let Some(row) = row {
-        if let Err(e) = state.db.save_player(&row).await {
-            tracing::error!("Failed to save player {pid} on disconnect: {e}");
-        }
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = db.save_player(&row).await {
+                tracing::error!("Failed to save player {pid} on disconnect: {e}");
+            }
+        });
     }
 
     if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy)) {
@@ -189,8 +229,10 @@ pub async fn on_disconnect(state: &Arc<GameState>, pid: PlayerId) {
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
+/// Полностью синхронна: на логине нет async-DB (`current_chat`=="FED" резолвится
+/// из in-memory `chat_channels`; блок программы мёртв — `selected_id`=None).
 #[allow(clippy::similar_names)]
-async fn send_initial_sync(
+fn send_initial_sync(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &PlayerRow,
@@ -285,25 +327,27 @@ async fn send_initial_sync(
         let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
     }
-    // 15. SendChat — как `Player.SendChat()` в server_reference: только `mO` и при наличии — `mU`.
-    send_chat_login_per_reference(state, tx, pid).await;
+    // 15. SendChat (login) — как `Player.SendChat()`: только `mO`. На логине
+    // `current_chat`=="FED", `chat_access` резолвит FED из in-memory
+    // `chat_channels` (без БД) → инлайн-sync, wire-идентично.
+    let chat_mo = state
+        .query_player_opt(pid, |ecs, e| {
+            ecs.get::<PlayerUI>(e).map(|u| u.current_chat.clone())
+        })
+        .and_then(|tag| {
+            let channels = state.chat_channels.read();
+            channels
+                .iter()
+                .find(|c| c.tag == tag)
+                .map(|c| (tag, c.name.clone()))
+        });
+    if let Some((tag, name)) = chat_mo {
+        send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
+    }
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    // 17. UpdateProg (#p) — C# ref: if programsData.selected != null → UpdateProg()
-    let prog_data = state.query_player_opt(pid, |ecs, entity| {
-        let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
-        ps.selected_id.map(|id| (id, ps.running))
-    });
-    if let Some((prog_id, prog_running)) = prog_data {
-        if let Ok(Some(prog)) = state.db.get_program(prog_id).await {
-            send_u_packet(
-                tx,
-                "#p",
-                &crate::protocol::packets::open_programmator(prog_id, &prog.name, &prog.code).1,
-            );
-        }
-        send_u_packet(tx, "@P", &programmator_status(prog_running).1);
-    } else {
-        send_u_packet(tx, "@P", &programmator_status(false).1);
-    }
+    // 17. UpdateProg (#p) — на свежем логине `ProgrammatorState::new()` ⇒
+    // `selected_id`=None, из БД не гидрируется ⇒ if-ветка `#p` не берётся.
+    // C# ref эквивалент: при `selected==null` шлётся только `@P false`.
+    send_u_packet(tx, "@P", &programmator_status(false).1);
 }

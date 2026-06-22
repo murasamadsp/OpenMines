@@ -2,23 +2,6 @@ use crate::game::player::PlayerStats;
 use crate::net::session::prelude::*;
 use std::sync::Arc;
 
-/// После логина — ТОЛЬКО `mO`
-pub async fn send_chat_login_per_reference(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
-    let tag = state
-        .query_player_opt(pid, |ecs, e| {
-            ecs.get::<crate::game::player::PlayerUI>(e)
-                .map(|u| u.current_chat.clone())
-        })
-        .unwrap_or_else(|| "FED".to_string());
-    if let Some((name, _history)) = chat_access(state, pid, &tag).await {
-        send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
-    }
-}
-
 /// Разбор тега приватного канала `_a_b` → `(a, b)` (id игроков, i32).
 pub fn parse_private_tag(tag: &str) -> Option<(i32, i32)> {
     let rest = tag.strip_prefix('_')?;

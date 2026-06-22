@@ -49,6 +49,7 @@ pub async fn handle_auth(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     au: &AuClientPacket,
     sid: &str,
+    session_token: u64,
     auth_state: &mut crate::net::session::connection::AuthState,
 ) -> Result<Option<PlayerId>> {
     tracing::debug!("[Auth] Attempting auth for uniq={}", au.client_uniq());
@@ -91,7 +92,7 @@ pub async fn handle_auth(
         send_u_packet(tx, gu.0, &gu.1);
 
         // 3. Player.Init() — в `server_reference/Auth.TryToAuth` при токене `AH` не шлётся (только после GUI-пароля / регистрации).
-        let pid = init_player(state, tx, &player).await;
+        let pid = init_player(state, tx, &player, session_token);
         *auth_state = crate::net::session::connection::AuthState::Authenticated;
 
         return Ok(Some(pid));

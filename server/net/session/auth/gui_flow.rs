@@ -13,6 +13,7 @@ pub async fn handle_gui_auth_flow(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
+    session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     if button.starts_with("exit") {
@@ -25,12 +26,12 @@ pub async fn handle_gui_auth_flow(
         GuiAuthStep::MainMenu => handle_main_menu(state, tx, button, step).await,
         GuiAuthStep::LoginPassword { nick } => {
             let nick = nick.clone();
-            handle_login_password(state, tx, button, &nick, step).await
+            handle_login_password(state, tx, button, &nick, session_token, step).await
         }
         GuiAuthStep::RegisterNick => handle_register_nick(state, tx, button, step).await,
         GuiAuthStep::RegisterPassword { nick } => {
             let nick = nick.clone();
-            handle_register_password(state, tx, button, &nick, step).await
+            handle_register_password(state, tx, button, &nick, session_token, step).await
         }
     }
 }
@@ -119,6 +120,7 @@ async fn handle_login_password(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
     nick: &str,
+    session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let passwd = button.strip_prefix("passwd:").unwrap_or(button);
@@ -132,7 +134,7 @@ async fn handle_login_password(
     };
 
     if player.passwd == passwd {
-        return finalize_auth(state, tx, &player, step).await;
+        return finalize_auth(state, tx, &player, session_token, step);
     }
 
     send_u_packet(tx, "OK", &ok_message("auth", "Не верный пароль").1);
@@ -197,6 +199,7 @@ async fn handle_register_password(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     button: &str,
     nick: &str,
+    session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let passwd = button.strip_prefix("passwd:").unwrap_or(button);
@@ -214,14 +217,15 @@ async fn handle_register_password(
         player.id
     );
 
-    finalize_auth(state, tx, &player, step).await
+    finalize_auth(state, tx, &player, session_token, step)
 }
 
 /// Shared finalization: send AH, cf, Gu, `init_player`.
-async fn finalize_auth(
+fn finalize_auth(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &crate::db::players::PlayerRow,
+    session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let ah = auth_hash(player.id, &player.hash);
@@ -235,7 +239,7 @@ async fn finalize_auth(
     let gu = gu_close();
     send_u_packet(tx, gu.0, &gu.1);
 
-    let pid = init_player(state, tx, player).await;
+    let pid = init_player(state, tx, player, session_token);
 
     *step = GuiAuthStep::MainMenu;
     Ok(Some(pid))

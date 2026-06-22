@@ -141,6 +141,24 @@ impl IncomingActionsQueue {
     }
 }
 
+// ─── Lifecycle Queue ─────────────────────────────────────────────────────────
+
+/// Команда жизненного цикла сессии — исполняется в game-tick (НЕ через TY).
+/// Переносит ecs-доступ login/disconnect из conn-тасков в единый tick-таск,
+/// чтобы `ecs`-`RwLock` не контендился между conn-тасками и тиком.
+/// `token` идентифицирует конкретный сеанс (guard от reconnect-гонки).
+pub enum LifeCmd {
+    Connect {
+        row: Box<crate::db::players::PlayerRow>,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        token: u64,
+    },
+    Disconnect {
+        pid: PlayerId,
+        token: u64,
+    },
+}
+
 // ─── GameState ───────────────────────────────────────────────────────────────
 
 pub struct GameState {
@@ -158,6 +176,11 @@ pub struct GameState {
     pub schedule: RwLock<Schedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
     pub incoming_actions: IncomingActionsQueue,
+    /// Очередь команд жизненного цикла (Connect/Disconnect). Дренится в
+    /// game-tick ДО `incoming_actions` (entity спавнится раньше своих TY).
+    pub life_queue: Mutex<Vec<LifeCmd>>,
+    /// Монотонный счётчик токенов сеанса (см. `LifeCmd`/`ActivePlayer`).
+    session_token_seq: std::sync::atomic::AtomicU64,
     pub player_sessions: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
@@ -230,6 +253,8 @@ impl GameState {
             schedule: RwLock::new(schedule),
             auth_failures: DashMap::new(),
             incoming_actions: IncomingActionsQueue::new(),
+            life_queue: Mutex::new(Vec::new()),
+            session_token_seq: std::sync::atomic::AtomicU64::new(1),
             player_sessions: DashMap::new(),
             box_index: DashMap::new(),
             box_persist_q: Mutex::new(Vec::new()),
@@ -323,6 +348,22 @@ impl GameState {
 
     pub fn get_player_entity(&self, pid: PlayerId) -> Option<Entity> {
         self.active_players.get(&pid).map(|p| p.ecs_entity)
+    }
+
+    /// Выдать новый токен сеанса (монотонный, уникальный на процесс).
+    pub fn next_session_token(&self) -> u64 {
+        self.session_token_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Поставить команду жизненного цикла в очередь (из conn-таска).
+    pub fn enqueue_life(&self, cmd: LifeCmd) {
+        self.life_queue.lock().push(cmd);
+    }
+
+    /// Забрать все команды жизненного цикла (в game-tick).
+    pub fn drain_life(&self) -> Vec<LifeCmd> {
+        std::mem::take(&mut *self.life_queue.lock())
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>

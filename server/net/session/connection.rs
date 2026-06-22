@@ -17,6 +17,8 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     let client_ip = addr.ip();
     let mut auth_state = AuthState::PreAuth;
     let mut pid: Option<PlayerId> = None;
+    // Токен этого сеанса — guard от reconnect-гонки в lifecycle-очереди.
+    let session_token = state.next_session_token();
     let mut buf = BytesMut::with_capacity(4096);
     let mut last_pong = Instant::now();
     // Серверно-пейсированный PI (фикс PI-шторма ~17/с): сервер сам шлёт
@@ -131,7 +133,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 if let Some(au) = AuClientPacket::decode(&packet.payload) {
                                     let now = Instant::now();
                                     let mut new_auth = auth_state.clone();
-                                    let res = handle_auth(&state, &tx, &au, &sid, &mut new_auth).await?;
+                                    let res = handle_auth(&state, &tx, &au, &sid, session_token, &mut new_auth).await?;
                                     if let Some(id) = res {
                                         pid = Some(id);
                                         auth_state = new_auth;
@@ -152,7 +154,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 if let Some(ty) = TyPacket::decode(&packet.payload) {
                                     if ty.event_str() == "GUI_" {
                                         if let Some(button) = decode_gui_button(&ty.sub_payload) {
-                                            let res = handle_gui_auth_flow(&state, &tx, &button, step).await?;
+                                            let res = handle_gui_auth_flow(&state, &tx, &button, session_token, step).await?;
                                             if let Some(id) = res {
                                                 pid = Some(id);
                                                 auth_state = AuthState::Authenticated;
@@ -212,7 +214,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = pid {
-        on_disconnect(&state, id).await;
+        on_disconnect(&state, id, session_token);
     }
     Ok(())
 }

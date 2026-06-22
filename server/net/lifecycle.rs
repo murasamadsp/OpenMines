@@ -206,6 +206,23 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
             }
             let tick_t0 = Instant::now();
 
+            // 0. Команды жизненного цикла (Connect/Disconnect) — ДО действий,
+            // чтобы entity игрока спавнился раньше своих TY. ВНЕ `ecs.write()`
+            // блока ниже: хендлеры берут `ecs` сами (tick — единственный писатель,
+            // контеншна нет). Убирает ecs-доступ из conn-тасков (C-4 фриз).
+            for cmd in state.drain_life() {
+                match cmd {
+                    crate::game::LifeCmd::Connect { row, tx, token } => {
+                        crate::net::session::player::init::connect_in_tick(
+                            &state, &tx, &row, token,
+                        );
+                    }
+                    crate::game::LifeCmd::Disconnect { pid, token } => {
+                        crate::net::session::player::init::disconnect_in_tick(&state, pid, token);
+                    }
+                }
+            }
+
             // 1. Сначала обрабатываем все входящие пакеты от игроков (Action Queue 1:1 с C#).
             let actions = state.incoming_actions.drain();
             let n_actions = actions.len();

@@ -29,7 +29,7 @@ pub mod wire;
 mod auth;
 mod connection;
 pub mod play;
-mod player;
+pub mod player;
 pub mod social;
 pub mod ui;
 

@@ -139,6 +139,10 @@ pub struct PlayerConnection {
 
 pub struct ActivePlayer {
     pub ecs_entity: bevy_ecs::entity::Entity,
+    /// Токен сеанса — идентифицирует конкретное подключение. Guard от
+    /// reconnect-гонки: отложенный `Disconnect` старого сеанса сносит entity
+    /// только если токен в `active_players` всё ещё его (иначе уже переподключился).
+    pub session_token: u64,
 }
 
 impl PlayerPosition {
