@@ -488,7 +488,7 @@ fn encode_decode_roundtrip_preserves_all_fields() {
     let decoded = Packet::try_decode(&mut buf).unwrap().expect("один фрейм");
     assert_eq!(decoded.data_type, b'B');
     assert_eq!(&decoded.event_name, b"HB");
-    assert_eq!(decoded.payload, vec![9, 8, 7, 6]);
+    assert_eq!(decoded.payload.as_ref(), &[9, 8, 7, 6]);
     assert!(buf.is_empty(), "буфер должен быть осушён");
 }
 
@@ -542,22 +542,22 @@ fn ty_packet_decodes_header_and_subpayload() {
     data.extend_from_slice(&2u32.to_le_bytes());
     data.extend_from_slice(&3u32.to_le_bytes());
     data.push(b'5');
-    let p = TyPacket::decode(&data).unwrap();
+    let p = TyPacket::decode(&bytes::Bytes::from(data)).unwrap();
     assert_eq!(p.event_str(), "Xmov");
     assert_eq!(p.time, 1);
     assert_eq!(p.x, 2);
     assert_eq!(p.y, 3);
-    assert_eq!(p.sub_payload, vec![b'5']);
+    assert_eq!(p.sub_payload.as_ref(), b"5");
 }
 
 #[test]
 fn ty_packet_rejects_short_header() {
-    assert!(TyPacket::decode(&[0u8; 15]).is_none());
+    assert!(TyPacket::decode(&bytes::Bytes::copy_from_slice(&[0u8; 15])).is_none());
 }
 
 #[test]
 fn ty_packet_accepts_empty_subpayload() {
-    let p = TyPacket::decode(&[0u8; 16]).unwrap();
+    let p = TyPacket::decode(&bytes::Bytes::copy_from_slice(&[0u8; 16])).unwrap();
     assert!(p.sub_payload.is_empty());
 }
 
@@ -675,13 +675,16 @@ fn xbld_rejects_empty() {
 fn gui_button_parses_json_b_field() {
     assert_eq!(
         decode_gui_button(br#"{"b":"shop"}"#),
-        Some("shop".to_string())
+        Some(std::borrow::Cow::Owned("shop".to_string()))
     );
 }
 
 #[test]
 fn gui_button_falls_back_to_raw_string() {
-    assert_eq!(decode_gui_button(b"exit"), Some("exit".to_string()));
+    assert_eq!(
+        decode_gui_button(b"exit"),
+        Some(std::borrow::Cow::Borrowed("exit"))
+    );
 }
 
 #[test]

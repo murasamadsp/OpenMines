@@ -369,7 +369,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                     } => {
                         let bld = crate::protocol::packets::XbldClient {
                             direction: dir,
-                            block_type,
+                            block_type: &block_type,
                         };
                         crate::net::session::play::dig_build::handle_build(&state, &tx, pid, &bld);
                     }

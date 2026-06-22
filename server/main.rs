@@ -1,4 +1,5 @@
 mod config;
+mod console;
 mod cron;
 mod db;
 mod game;
@@ -18,6 +19,7 @@ use tokio::sync::broadcast;
 /// Имя файла `SQLite` в каталоге состояния (`data_dir` / `M3R_DATA_DIR`).
 const DB_FILENAME: &str = "openmines.db";
 
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
     // До `logging::init` паники не попадали в tracing — ловим в stderr сразу.
@@ -122,6 +124,15 @@ async fn main() -> Result<()> {
 
     // Cron system.
     cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
+
+    // Spawning console REPL
+    let repl_state = std::sync::Arc::clone(&game_state);
+    let repl_shutdown = shutdown_tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = console::run_repl(repl_state, repl_shutdown).await {
+            tracing::error!("REPL console error: {e}");
+        }
+    });
 
     // Run TCP server until shutdown signal.
     let net_res = net::run(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).await;

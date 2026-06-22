@@ -8,7 +8,7 @@ use serde_json::json;
 fn send_auth_failure(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _au: &AuClientPacket,
+    _au: &AuClientPacket<'_>,
 ) {
     let w = state.world.cells_width();
     let h = state.world.cells_height();
@@ -47,7 +47,7 @@ fn send_auth_failure(
 pub async fn handle_auth(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
-    au: &AuClientPacket,
+    au: &AuClientPacket<'_>,
     sid: &str,
     session_token: u64,
     auth_state: &mut crate::net::session::connection::AuthState,

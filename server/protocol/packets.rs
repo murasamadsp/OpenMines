@@ -1,5 +1,6 @@
-use binrw::{BinRead, BinWrite};
+use binrw::BinWrite;
 use bytes::{BufMut, BytesMut};
+use std::borrow::Cow;
 
 /// Encode a Status packet (ST): UTF-8 string
 pub fn status(msg: &str) -> (/*event*/ &'static str, Vec<u8>) {
@@ -623,21 +624,31 @@ pub fn hb_cell(x: u16, y: u16, cell: u8) -> Vec<u8> {
 // ─── Decode helpers for client→server packets ───────────────────────────────
 
 /// Decode a TY wrapper: [4B `event_name`] [u32 LE time] [u32 LE x] [u32 LE y] [`sub_payload`...]
-#[derive(BinRead)]
-#[br(little)]
 pub struct TyPacket {
     pub event_name: [u8; 4],
     pub time: u32,
     pub x: u32,
     pub y: u32,
-    #[br(parse_with = binrw::helpers::until_eof)]
-    pub sub_payload: Vec<u8>,
+    pub sub_payload: bytes::Bytes,
 }
 
 impl TyPacket {
-    pub fn decode(data: &[u8]) -> Option<Self> {
-        let mut reader = std::io::Cursor::new(data);
-        Self::read(&mut reader).ok()
+    pub fn decode(data: &bytes::Bytes) -> Option<Self> {
+        if data.len() < 16 {
+            return None;
+        }
+        let event_name = [data[0], data[1], data[2], data[3]];
+        let time = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        let x = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        let y = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+        let sub_payload = data.slice(16..);
+        Some(Self {
+            event_name,
+            time,
+            x,
+            y,
+            sub_payload,
+        })
     }
 
     pub fn event_str(&self) -> &str {
@@ -653,23 +664,23 @@ impl TyPacket {
 }
 
 /// Decode an AU packet (client→server): "`uniq_type_token`" or just "sessionid"
-pub struct AuClientPacket {
-    pub uniq: String,
-    pub auth_type: AuAuthType,
+pub struct AuClientPacket<'a> {
+    pub uniq: &'a str,
+    pub auth_type: AuAuthType<'a>,
 }
 
-pub enum AuAuthType {
+pub enum AuAuthType<'a> {
     NoAuth,
-    Regular { user_id: i32, token: String },
+    Regular { user_id: i32, token: &'a str },
 }
 
-impl AuClientPacket {
+impl<'a> AuClientPacket<'a> {
     #[must_use]
     pub const fn client_uniq(&self) -> &str {
-        self.uniq.as_str()
+        self.uniq
     }
 
-    pub fn decode(data: &[u8]) -> Option<Self> {
+    pub fn decode(data: &'a [u8]) -> Option<Self> {
         let s = std::str::from_utf8(data).ok()?.trim();
         if s.is_empty() {
             return None;
@@ -680,16 +691,20 @@ impl AuClientPacket {
                 // Single-segment payload (no underscores) — no valid auth type; deny.
                 None
             }
-            [uniq, kind, rest @ ..] => {
+            [uniq, kind, _rest @ ..] => {
                 if uniq.is_empty() || kind.is_empty() {
                     return None;
                 }
-                let uniq = (*uniq).to_string();
-                let token: String = rest.join("_");
                 let auth_type = match *kind {
                     "NO" | "NO_AUTH" | "NOAUTH" => AuAuthType::NoAuth,
                     _ => {
                         let user_id = (*kind).parse().ok()?;
+                        let token_start = uniq.len() + 1 + kind.len() + 1;
+                        let token = if token_start <= s.len() {
+                            &s[token_start..]
+                        } else {
+                            ""
+                        };
                         AuAuthType::Regular { user_id, token }
                     }
                 };
@@ -729,19 +744,19 @@ pub fn decode_xmov(data: &[u8]) -> Option<i32> {
 
 /// Decode Xbld (inside TY `sub_payload)`: "{direction}{blockType}"
 /// C# decodes as: dir = int.Parse(data[..^1]), blockType = data[^1..]
-pub struct XbldClient {
+pub struct XbldClient<'a> {
     pub direction: i32,
-    pub block_type: String,
+    pub block_type: &'a str,
 }
 
-impl XbldClient {
-    pub fn decode(data: &[u8]) -> Option<Self> {
+impl<'a> XbldClient<'a> {
+    pub fn decode(data: &'a [u8]) -> Option<Self> {
         let s = std::str::from_utf8(data).ok()?;
         if s.is_empty() {
             return None;
         }
         let dir_str = &s[..s.len() - 1];
-        let block_type = s[s.len() - 1..].to_string();
+        let block_type = &s[s.len() - 1..];
         let direction = dir_str.parse().ok()?;
         Some(Self {
             direction,
@@ -761,35 +776,33 @@ fn parse_i32_text(data: &[u8]) -> Option<i32> {
 
 /// Decode GUI_ button press (inside TY `sub_payload`): JSON `{"b":"button_name"}`
 /// Референс `GUI_Packet.Decode`: `JSON.Parse(UTF8.GetString(data))["b"]`
-pub fn decode_gui_button(data: &[u8]) -> Option<String> {
+pub fn decode_gui_button(data: &[u8]) -> Option<Cow<'_, str>> {
     let s = std::str::from_utf8(data).ok()?;
-    // Client sends GUI_ buttons in two formats:
-    // 1. JSON: {"b":"button_name"} — standard HORB buttons
-    // 2. Raw string: "exit" — close/X button, some legacy actions
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
+    if s.starts_with('{')
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
         && let Some(b) = v.get("b").and_then(|b| b.as_str())
     {
-        return Some(b.to_string());
+        return Some(Cow::Owned(b.to_string()));
     }
     // Fallback: treat entire payload as button name (raw string)
     let trimmed = s.trim();
     if trimmed.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(Cow::Borrowed(trimmed))
     }
 }
 
 /// Decode local chat (inside TY `sub_payload`): legacy `length:message` or plain UTF-8 text
-pub struct LoclClient {
+pub struct LoclClient<'a> {
     // TODO: length field is decoded from legacy wire format, will be used for validation
     #[allow(dead_code)]
     pub length: i32,
-    pub message: String,
+    pub message: &'a str,
 }
 
-impl LoclClient {
-    pub fn decode(data: &[u8]) -> Option<Self> {
+impl<'a> LoclClient<'a> {
+    pub fn decode(data: &'a [u8]) -> Option<Self> {
         let s = std::str::from_utf8(data).ok()?;
         if s.is_empty() {
             return None;
@@ -798,15 +811,12 @@ impl LoclClient {
         if let Some((len_part, message)) = s.split_once(':')
             && let Ok(length) = len_part.parse()
         {
-            return Some(Self {
-                length,
-                message: message.to_string(),
-            });
+            return Some(Self { length, message });
         }
 
         Some(Self {
             length: i32::try_from(s.len()).unwrap_or(i32::MAX),
-            message: s.to_string(),
+            message: s,
         })
     }
 }

@@ -56,12 +56,12 @@ pub async fn dispatch_ty_packet(
         }
         "GUI_" => {
             if let Some(button) = decode_gui_button(&packet.sub_payload) {
-                handle_gui_button(state, tx, pid, &button).await;
+                handle_gui_button(state, tx, pid, button.as_ref()).await;
             }
         }
         "Locl" => {
             if let Some(locl) = LoclClient::decode(&packet.sub_payload) {
-                handle_local_chat(state, tx, pid, &locl.message).await;
+                handle_local_chat(state, tx, pid, locl.message).await;
             }
         }
         "Xgeo" => {

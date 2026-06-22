@@ -154,7 +154,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 if let Some(ty) = TyPacket::decode(&packet.payload) {
                                     if ty.event_str() == "GUI_" {
                                         if let Some(button) = decode_gui_button(&ty.sub_payload) {
-                                            let res = handle_gui_auth_flow(&state, &tx, &button, session_token, step).await?;
+                                            let res = handle_gui_auth_flow(&state, &tx, button.as_ref(), session_token, step).await?;
                                             if let Some(id) = res {
                                                 pid = Some(id);
                                                 auth_state = AuthState::Authenticated;

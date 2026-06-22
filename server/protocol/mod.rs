@@ -4,7 +4,7 @@ pub mod packets;
 mod wire_tests;
 
 use anyhow::{Result, bail};
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 
 /// Outer packet: [i32 LE length] [1 byte `data_type`] [2 bytes `event_name`] [payload...]
 /// `data_type`: "U" = user, "B" = hub/world, "J" = ?
@@ -13,11 +13,11 @@ use bytes::{Buf, BufMut, BytesMut};
 pub struct Packet {
     pub data_type: u8,
     pub event_name: [u8; 2],
-    pub payload: Vec<u8>,
+    pub payload: bytes::Bytes,
 }
 
 impl Packet {
-    pub const fn new(data_type: u8, event_name: [u8; 2], payload: Vec<u8>) -> Self {
+    pub const fn new(data_type: u8, event_name: [u8; 2], payload: bytes::Bytes) -> Self {
         Self {
             data_type,
             event_name,
@@ -58,12 +58,10 @@ impl Packet {
         if buf.len() < length {
             return Ok(None);
         }
-        let mut data = buf.split_to(length);
-        data.advance(4); // skip length
-        let data_type = data.get_u8();
-        let event_name = [data[0], data[1]];
-        data.advance(2);
-        let payload = data.to_vec();
+        let data = buf.split_to(length).freeze();
+        let data_type = data[4];
+        let event_name = [data[5], data[6]];
+        let payload = data.slice(7..);
         Ok(Some(Self {
             data_type,
             event_name,
@@ -80,12 +78,12 @@ impl Packet {
 pub fn u_packet(event: &str, payload: &[u8]) -> Packet {
     let mut ev = [0u8; 2];
     ev.copy_from_slice(event.as_bytes());
-    Packet::new(b'U', ev, payload.to_vec())
+    Packet::new(b'U', ev, bytes::Bytes::copy_from_slice(payload))
 }
 
 /// Helper to build a "B" packet
 pub fn b_packet(event: &str, payload: &[u8]) -> Packet {
     let mut ev = [0u8; 2];
     ev.copy_from_slice(event.as_bytes());
-    Packet::new(b'B', ev, payload.to_vec())
+    Packet::new(b'B', ev, bytes::Bytes::copy_from_slice(payload))
 }

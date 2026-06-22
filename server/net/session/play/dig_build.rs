@@ -304,7 +304,7 @@ pub fn handle_build(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
-    bld: &XbldClient,
+    bld: &XbldClient<'_>,
 ) {
     // Fix 11: Extract player data including clan_id, skills, and build cooldown check.
     let (px, py, pdir, clan_id, build_skill_effect, build_skill_hp) = {
@@ -327,7 +327,7 @@ pub fn handle_build(
 
                 // Fix 12: Crystal cost from skill.Effect.
                 // Fix 16: Durability from skill AdditionalEffect (on_bld_hp).
-                let (skill_type, hp_skill_type) = match bld.block_type.as_str() {
+                let (skill_type, hp_skill_type) = match bld.block_type {
                     "G" => (SkillType::BuildGreen, Some(SkillType::BuildGreen)),
                     "R" => (SkillType::BuildRoad, None),
                     "O" => (SkillType::BuildStructure, None),
@@ -391,7 +391,7 @@ pub fn handle_build(
 
     let mut placed_skill: Option<SkillType> = None;
 
-    match bld.block_type.as_str() {
+    match bld.block_type {
         "G" => {
             if prop.cell_is_empty() || prop.is_sand() {
                 if try_spend_crystal(state, tx, pid, 0, cost) {
