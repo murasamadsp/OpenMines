@@ -182,8 +182,10 @@ pub fn gun_firing_system(
         for (_p_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
             &mut players_query
         {
-            // clan immunity (C# `player.cid == cid` → continue)
-            if stats.clan_id == Some(b_ownership.clan_id) {
+            // clan immunity (C# `player.cid == cid` → continue). cid у безкланового
+            // = 0; нормализуем Option→0, иначе `None == Some(0)` ложно и пушка
+            // без клана била бесклановых игроков (баг: «бьют, я у них во врагах»).
+            if stats.clan_id.unwrap_or(0) == b_ownership.clan_id {
                 continue;
             }
             // Protector-скип. ВНИМАНИЕ: в C# `Player.Hurt`/`Gun.Update` проверки
