@@ -633,9 +633,9 @@ fn open_storage_gui(
         })
         .collect();
 
-    // Build buttons: "transfer" with %M% macro, plus remove and exit
+    // Build buttons: "Передать" with %M% macro, plus remove and exit
     let buttons = vec![
-        serde_json::json!("transfer"),
+        serde_json::json!("Передать"),
         serde_json::json!("transfer:%M%"),
         serde_json::json!("Удалить"),
         serde_json::json!(format!("pack_op:remove:{}:{}", view.x, view.y)),
@@ -1459,8 +1459,10 @@ fn build_market_sell_page(
         .fold(Horb::new("Market"), Horb::tab)
         .text("Продажа кри")
         .crystals(" ", "цена", false, lines)
-        .button(Button::new("sellall", "sellall"))
-        .button(Button::new("sell", "sell:%M%"))
+        // Порядок: сначала «Продать», затем «Продать всё» (девиация от C#
+        // референса — явное требование пользователя).
+        .button(Button::new("Продать", "sell:%M%"))
+        .button(Button::new("Продать всё", "sellall"))
         .close_button()
         .admin(is_owner)
 }
@@ -1492,7 +1494,7 @@ fn build_market_buy_page(
         .fold(Horb::new("Market"), Horb::tab)
         .text("Покупка")
         .crystals(" ", "цена", true, lines)
-        .button(Button::new("buy", "buy:%M%"))
+        .button(Button::new("Купить", "buy:%M%"))
         .close_button()
         .admin(is_owner)
 }
