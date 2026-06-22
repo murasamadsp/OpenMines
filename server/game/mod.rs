@@ -539,15 +539,7 @@ impl GameState {
         if !self.world.valid_coord(x, y) {
             return None;
         }
-        // C# PACKPOS = chunk_x + chunk_y * World.ChunksW (ЧАНКОВЫЕ координаты).
-        // Клиент (PackRenderer.cs:ObjectsGarbageCollector) и gather_block_packs
-        // ожидают именно чанковый block_pos. Клеточные координаты давали
-        // неверный block_pos — GC клиента вычислял огромное расстояние и
-        // удалял все паки при первом же срабатывании (каждые 10 сек).
-        let w = self.world.chunks_w().cast_signed();
-        let cx = x.div_euclid(32);
-        let cy = y.div_euclid(32);
-        cy.checked_mul(w)?.checked_add(cx)
+        block_pos_from_cell(x, y, self.world.chunks_w().cast_signed())
     }
 
     /// C# `World.AccessGun` → `(access, anygun)`. `access`: нет вражеской ЗАРЯЖЕННОЙ
@@ -815,4 +807,39 @@ fn generate_random_string(len: usize, charset: &[u8]) -> String {
     (0..len)
         .map(|_| charset[rng.random_range(0..charset.len())] as char)
         .collect()
+}
+
+/// Чанковый `block_pos` для клетки `(x, y)`. C# `PACKPOS = x + y * World.ChunksW`,
+/// но эталон — клиент: `PackRenderer.IsPackOn` ключует `objectsInBlock` как
+/// `(x>>5)+(y>>5)*(width>>5)` = `chunk_x + chunk_y*chunks_w`, и `ObjectsGarbageCollector`
+/// восстанавливает origin чанка тем же образом. Поэтому `block_pos` ОБЯЗАН быть
+/// чанковым, НЕ клеточным (см. 77033c5: клеточные координаты → клиентский GC
+/// считал огромное расстояние и сносил все паки каждые 10 сек).
+fn block_pos_from_cell(x: i32, y: i32, chunks_w: i32) -> Option<i32> {
+    let cx = x.div_euclid(32);
+    let cy = y.div_euclid(32);
+    cy.checked_mul(chunks_w)?.checked_add(cx)
+}
+
+#[cfg(test)]
+mod pack_block_pos_tests {
+    use super::block_pos_from_cell;
+
+    /// Регрессия 77033c5: `block_pos` должен быть чанковым (`chunk_x + chunk_y*chunks_w`),
+    /// совпадая с клиентским ключом `objectsInBlock`. Раньше считался клеточным.
+    #[test]
+    fn block_pos_is_chunk_based_not_cell_based() {
+        let w = 260; // World.ChunksW
+        // Клетка (33, 65) лежит в чанке (1, 2) → 1 + 2*260 = 521.
+        assert_eq!(block_pos_from_cell(33, 65, w), Some(521));
+        // Все клетки одного чанка делят block_pos (origin и дальний угол).
+        assert_eq!(
+            block_pos_from_cell(64, 64, w),
+            block_pos_from_cell(95, 95, w)
+        );
+        // Соседний чанк по X → +1, по Y → +chunks_w.
+        assert_eq!(block_pos_from_cell(0, 0, w), Some(0));
+        assert_eq!(block_pos_from_cell(32, 0, w), Some(1));
+        assert_eq!(block_pos_from_cell(0, 32, w), Some(w));
+    }
 }
