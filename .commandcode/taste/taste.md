@@ -49,7 +49,7 @@ See [workflow/taste.md](workflow/taste.md)
 
 # deployment
 - Use SSH VPS alias for deployment. Confidence: 0.80
-- Always deploy after changes — user verifies via live client play-test. Не спрашивать, деплоить автоматически после каждого изменения. Confidence: 0.85
+- Always deploy after changes — user verifies via live client play-test. Не спрашивать, деплоить автоматически после каждого изменения. User notices when deploy is skipped and asks "деплой прошел?". Confidence: 0.90
 - Docker volumes named "openmines" (not "mines3_server_data" or similar). Confidence: 0.70
 
 # project-management
@@ -79,3 +79,6 @@ See [workflow/taste.md](workflow/taste.md)
 # skills
 - Create project skills via TDD methodology: RED (baseline agent without skill fails) → GREEN (write skill) → REFACTOR (close loopholes). Verified by running test agent. Confidence: 0.70
 - Features present in C# reference: port 1:1. Features absent from C# reference: document in a separate spec and implement from scratch — never invent reference-mimicking code for missing features. Confidence: 0.70
+
+# testing
+- Improve test coverage to prevent regressions — user explicitly wants better coverage after bugs slip through. Confidence: 0.60

@@ -133,6 +133,7 @@ pub fn check_chunk_changed(
         }
     }
 
+    let mut cleared_blocks: HashSet<i32> = HashSet::new();
     for (ocx, ocy) in old_visible {
         if new_visible.contains(&(ocx, ocy)) {
             continue;
@@ -160,21 +161,17 @@ pub fn check_chunk_changed(
             }
         }
 
-        // Notify buildings removal
+        // Notify buildings removal — собираем уникальные block_pos, чтобы не
+        // слать дубликаты и не триггерить преждевременный flush (иначе клиент
+        // снесёт паки в visible-чанках, чей block_pos коллизит, а ре-отправка
+        // окажется в отдельном бандле — «паки пропадают»).
         for (_, px, py, _, _) in state.get_packs_in_single_chunk(ocx, ocy) {
             if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
-                sub_packets.push(hb_packs(block_pos, &[]));
-                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-                if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
-                    || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES
-                {
-                    flush_sub_packets(
-                        &mut sub_packets,
-                        &mut sent_batches,
-                        &mut sub_batch_bytes,
-                        tx,
-                        pid,
-                    );
+                // Dedup: если два пака в уходящем чанке делят block_pos,
+                // слать очистку дважды бессмысленно (и тратит лимит).
+                if cleared_blocks.insert(block_pos) {
+                    sub_packets.push(hb_packs(block_pos, &[]));
+                    sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
                 }
             }
         }
