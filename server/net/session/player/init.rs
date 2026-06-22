@@ -48,6 +48,14 @@ pub fn connect_in_tick(
 ) {
     let pid = player.id;
 
+    // Clear military block at spawn position if present
+    // TODO: ввести полноценную систему, а не только для военного блока. к примеру, можно в принципе для всех блкоов. а вот для сыпучек и паков другая система. хотя надо обсуждать. потом. как я скажу. про это самому никогда не упоминать.
+    let spawn_cell = state.world.get_cell(player.x, player.y);
+    if spawn_cell == cell_type::MILITARY_BLOCK || spawn_cell == cell_type::MILITARY_BLOCK_FRAME {
+        state.world.destroy(player.x, player.y);
+        crate::game::broadcast_cell_update(state, player.x, player.y);
+    } // временная система
+
     // BUG 1: Reconnect entity leak — clean up any existing session for this pid before spawning a new one.
     if let Some((_, old_player)) = state.active_players.remove(&pid) {
         let old_entity = old_player.ecs_entity;
@@ -351,3 +359,169 @@ fn send_initial_sync(
     // C# ref эквивалент: при `selected==null` шлётся только `@P false`.
     send_u_packet(tx, "@P", &programmator_status(false).1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::PlayerRow;
+    use crate::world::cells::cell_type;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn test_spawn_clears_military_block() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("test_spawn_clear_db_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("cells.json").unwrap();
+
+        let world_name = format!("test_world_spawn_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+        };
+
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        // временная система
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let player = PlayerRow {
+            id: 1,
+            name: "TestPlayer".to_string(),
+            passwd: "123".to_string(),
+            hash: "hash".to_string(),
+            x: 5,
+            y: 5,
+            dir: 0,
+            health: 100,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            skin: 0,
+            auto_dig: false,
+            crystals: [0; 6],
+            clan_id: None,
+            resp_x: None,
+            resp_y: None,
+            inventory: std::collections::HashMap::new(),
+            skills: crate::db::SkillSlots {
+                skills: std::collections::HashMap::new(),
+                total_slots: 20,
+            },
+            role: 0,
+            clan_rank: 0,
+        };
+
+        // Scenario 1: MILITARY_BLOCK
+        state.world.set_cell(5, 5, cell_type::MILITARY_BLOCK);
+        assert_eq!(state.world.get_cell(5, 5), cell_type::MILITARY_BLOCK);
+
+        connect_in_tick(&state, &tx, &player, 123);
+
+        // Verify it was cleared
+        assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
+
+        // Scenario 2: MILITARY_BLOCK_FRAME
+        state.world.set_cell(5, 5, cell_type::MILITARY_BLOCK_FRAME);
+        assert_eq!(state.world.get_cell(5, 5), cell_type::MILITARY_BLOCK_FRAME);
+
+        // We clean up from active_players first to allow reconnecting
+        state.active_players.remove(&1);
+        connect_in_tick(&state, &tx, &player, 124);
+
+        assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+    }
+
+    #[tokio::test]
+    async fn test_respawn_clears_military_block() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("test_respawn_clear_db_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("cells.json").unwrap();
+
+        let world_name = format!("test_world_respawn_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+        };
+
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let player = PlayerRow {
+            id: 1,
+            name: "TestPlayer".to_string(),
+            passwd: "123".to_string(),
+            hash: "hash".to_string(),
+            x: 5,
+            y: 5,
+            dir: 0,
+            health: 100,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            skin: 0,
+            auto_dig: false,
+            crystals: [0; 6],
+            clan_id: None,
+            resp_x: Some(10), // Respawn position
+            resp_y: Some(10),
+            inventory: std::collections::HashMap::new(),
+            skills: crate::db::SkillSlots {
+                skills: std::collections::HashMap::new(),
+                total_slots: 20,
+            },
+            role: 0,
+            clan_rank: 0,
+        }; // временная система
+
+        connect_in_tick(&state, &tx, &player, 123);
+
+        // Place military block at (10, 10) and all possible random offsets from (10, 10)
+        state.world.set_cell(10, 10, cell_type::MILITARY_BLOCK);
+        for ox in 2..5 {
+            for oy in -1..3 {
+                state
+                    .world
+                    .set_cell(10 + ox, 10 + oy, cell_type::MILITARY_BLOCK);
+            }
+        }
+
+        let mut ecs = state.ecs.write();
+        let result = crate::net::session::play::death::apply_player_death_core(&state, &mut ecs, 1);
+        assert!(result.is_some());
+        let (rx, ry, _, bcast) = result.unwrap();
+
+        // Verify the block was cleared and the cleared position is tracked in DeathBroadcasts
+        assert_eq!(state.world.get_cell(rx, ry), cell_type::EMPTY);
+        assert_eq!(bcast.cleared_spawn_cell, Some((rx, ry)));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+    }
+}
+
+// временная система

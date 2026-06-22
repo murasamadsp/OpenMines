@@ -15,6 +15,7 @@ pub struct DeathBroadcasts {
     /// Программа была запущена и остановлена смертью (не `RespawnOnProg`-продолжение).
     /// C# шлёт `ProgrammatorPacket(false)` (@P) только в этом случае (Player.cs:935).
     pub prog_stopped: bool,
+    pub cleared_spawn_cell: Option<(i32, i32)>, // временная система
 }
 
 /// Мутации ECS как в `Player.Death()` (`Player.cs`).
@@ -43,6 +44,7 @@ pub fn apply_player_death_core(
         creds: 0,
         resp_used: false,
         prog_stopped: false,
+        cleared_spawn_cell: None, // временная система
     };
 
     if cry.iter().sum::<i64>() > 0 {
@@ -155,6 +157,13 @@ pub fn apply_player_death_core(
         p.x = rx;
         p.y = ry;
     }
+
+    // Clear military block at respawn position if present
+    let spawn_cell = state.world.get_cell(rx, ry);
+    if spawn_cell == cell_type::MILITARY_BLOCK || spawn_cell == cell_type::MILITARY_BLOCK_FRAME {
+        state.world.destroy(rx, ry);
+        bcast.cleared_spawn_cell = Some((rx, ry));
+    } // временная система
     if let Some(mut s) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
         s.health = mh;
     }
@@ -237,6 +246,9 @@ pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid
         let fx = hb_fx(pos_x as u16, pos_y as u16, 2);
         state.broadcast_hb_at(pos_x, pos_y, &[fx], None);
     }
+    if let Some((cx, cy)) = bcast.cleared_spawn_cell {
+        broadcast_cell_update(state, cx, cy);
+    } // временная система
 }
 
 pub fn send_respawn_after_death(
