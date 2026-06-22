@@ -54,6 +54,15 @@ pub fn handle_dig(
                     let mut cd_mut = ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)?;
                     cd_mut.last_dig = std::time::Instant::now();
                 }
+                {
+                    // C# `Move(own, dir)` при distance 0 начисляет Movement exp + @S
+                    // (Player.cs:441-452) — было пропущено, Movement не качался от копания.
+                    let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
+                    if add_skill_exp(&mut skills.states, "M", 1.0) {
+                        let sk = skills_packet(&skill_progress_payload(&skills.states));
+                        send_u_packet(tx, sk.0, &sk.1);
+                    }
+                }
                 Some((px, py, dir, dig_p, m_mult, skin, clan_id, cc))
             })
             .flatten();
