@@ -81,9 +81,9 @@ pub async fn handle_gui_button(
         }
         "clan_leave" => crate::net::session::social::clans::handle_clan_leave(state, tx, pid).await,
         // Market tab switching (C# tabs have action strings)
-        "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys"),
-        "buycrys" => handle_market_tab_switch(state, tx, pid, "buycrys"),
-        "auc" => handle_market_tab_switch(state, tx, pid, "auc"),
+        "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys").await,
+        "buycrys" => handle_market_tab_switch(state, tx, pid, "buycrys").await,
+        "auc" => handle_market_tab_switch(state, tx, pid, "auc").await,
         "sellall" => handle_market_sellall(state, tx, pid),
         "getprofit" => handle_market_getprofit(state, tx, pid),
         "clancreate" => {
@@ -114,6 +114,18 @@ fn handle_clan_create_view(tx: &mpsc::UnboundedSender<Vec<u8>>) {
         "back": false
     });
     send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+}
+
+/// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).
+fn close_player_window(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+    state.modify_player(pid, |ecs, e| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(e) {
+            ui.current_window = None;
+        }
+        Some(())
+    });
+    let g = gu_close();
+    send_u_packet(tx, g.0, &g.1);
 }
 
 async fn handle_complex_button(
@@ -189,6 +201,57 @@ async fn handle_complex_button(
         handle_market_buy(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("save:") {
         handle_settings_save(state, tx, pid, rest);
+    } else if let Some(rest) = button.strip_prefix("choose:") {
+        // Клик item-грида аукциона (клиент хардкодит InvButton="choose").
+        if let Ok(item) = rest.parse::<i32>() {
+            super::auction_gui::open_item_auc(state, tx, pid, item).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("openorder:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            super::auction_gui::open_order(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("auccreate:") {
+        if let Ok(item) = rest.parse::<i32>() {
+            super::auction_gui::open_order_creation(state, tx, pid, item);
+        }
+    } else if let Some(rest) = button.strip_prefix("aucsetcost:") {
+        // aucsetcost:{item}:{cost}; невалидный cost → закрыть окно (1:1 C#).
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if let [item, cost] = parts.as_slice() {
+            match (item.parse::<i32>(), cost.parse::<i64>()) {
+                (Ok(item), Ok(cost)) => {
+                    super::auction_gui::open_order_creation_num(state, tx, pid, item, cost);
+                }
+                _ => close_player_window(state, tx, pid),
+            }
+        }
+    } else if let Some(rest) = button.strip_prefix("aucsetnum:") {
+        // aucsetnum:{item}:{cost}:{num}; невалидный num → закрыть окно (1:1 C#).
+        let parts: Vec<&str> = rest.split(':').collect();
+        if let [item, cost, num] = parts.as_slice() {
+            match (item.parse::<i32>(), cost.parse::<i64>(), num.parse::<i32>()) {
+                (Ok(item), Ok(cost), Ok(num)) => {
+                    super::auction_gui::create_order(state, tx, pid, item, num, cost).await;
+                }
+                _ => close_player_window(state, tx, pid),
+            }
+        }
+    } else if let Some(rest) = button.strip_prefix("aucminbet:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            super::auction_gui::place_minimal_bet(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("aucbet:") {
+        // aucbet:{id}:{amount}; невалидная сумма → просто переоткрыть ордер (1:1 C#).
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if let [id, amount] = parts.as_slice() {
+            if let Ok(id) = id.parse::<i32>() {
+                if let Ok(amount) = amount.parse::<i64>() {
+                    super::auction_gui::place_bet(state, tx, pid, id, amount).await;
+                } else {
+                    super::auction_gui::open_order(state, tx, pid, id).await;
+                }
+            }
+        }
     } else {
         // Up building buttons (skill:N, upgrade, delete:N, install:code#N, buyslot)
         super::up_building::handle_up_button(state, tx, pid, button);
@@ -1173,10 +1236,6 @@ fn open_market_gui(
             build_market_buy_page(state, player_money, is_owner, &tabs),
             format!("market:{}:{}:buycrys", view.x, view.y),
         ),
-        "auc" => (
-            build_market_auc_page(&tabs),
-            format!("market:{}:{}:auc", view.x, view.y),
-        ),
         _ => (
             build_market_sell_page(state, &player_crys, is_owner, &tabs),
             format!("market:{}:{}:sellcrys", view.x, view.y),
@@ -1195,7 +1254,7 @@ fn open_market_gui(
 
 /// Build the tabs JSON array for Market.
 /// C# Window.ToString: active tab = `["Label", ""]`, inactive = `["Label", "action"]`.
-fn build_market_tabs(active_tab: &str) -> serde_json::Value {
+pub fn build_market_tabs(active_tab: &str) -> serde_json::Value {
     let sell_active = active_tab == "sellcrys";
     let buy_active = active_tab == "buycrys";
     let auc_active = active_tab == "auc";
@@ -1304,18 +1363,8 @@ fn build_market_buy_page(
 }
 
 /// Build auction tab page (stub — auction requires DB orders table not yet implemented).
-fn build_market_auc_page(tabs: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "title": "МАРКЕТ",
-        "tabs": tabs,
-        "text": "Аукцион временно недоступен.",
-        "buttons": ["ВЫЙТИ", "exit"],
-        "back": false
-    })
-}
-
 /// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
-fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
+pub fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
     state.query_player_opt(pid, |ecs, entity| {
         let ui = ecs.get::<PlayerUI>(entity)?;
         let window = ui.current_window.as_deref()?;
@@ -1334,7 +1383,7 @@ fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, 
 }
 
 /// Handle Market tab switching.
-fn handle_market_tab_switch(
+async fn handle_market_tab_switch(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
@@ -1349,7 +1398,11 @@ fn handle_market_tab_switch(
     if view.pack_type != PackType::Market {
         return;
     }
-    open_market_gui(state, tx, pid, &view, tab);
+    if tab == "auc" {
+        crate::net::session::ui::auction_gui::open_auc_grid(state, tx, pid, bx, by).await;
+    } else {
+        open_market_gui(state, tx, pid, &view, tab);
+    }
 }
 
 /// Handle "sell:%M%" — sell crystals from sliders.

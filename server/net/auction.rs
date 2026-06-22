@@ -25,7 +25,7 @@ const BET_TIMEOUT_SECS: i64 = 300;
 /// БД-скан реже. Документированное отклонение.
 const CHECK_INTERVAL_SECS: u64 = 5;
 
-fn now_unix() -> i64 {
+pub fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
@@ -81,7 +81,7 @@ async fn finalize_ready_orders(state: &Arc<GameState>) {
 }
 
 /// Деньги игроку: online → ECS + `P$` (как C# `SendMoney`) + dirty; offline → БД.
-async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) {
+pub async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) {
     let tx = state.player_sessions.get(&pid).map(|t| t.clone());
     let applied = state.modify_player(pid, |ecs, e| {
         let pair = {
@@ -104,7 +104,7 @@ async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) {
 }
 
 /// Предмет в инвентарь: online → ECS + `IN` (sync) + dirty; offline → БД.
-async fn credit_inventory(state: &Arc<GameState>, pid: PlayerId, item_id: i32, count: i32) {
+pub async fn credit_inventory(state: &Arc<GameState>, pid: PlayerId, item_id: i32, count: i32) {
     let tx = state.player_sessions.get(&pid).map(|t| t.clone());
     let applied = state.modify_player(pid, |ecs, e| {
         {
