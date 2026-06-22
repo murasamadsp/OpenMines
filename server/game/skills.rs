@@ -389,7 +389,11 @@ impl<'a> OnHealth for PlayerSkills<'a> {
 impl<'a> OnHurt for PlayerSkills<'a> {
     fn on_hurt(&self, current_damage: f32) -> f32 {
         let anti_gun = get_player_skill_effect(self.skills, SkillType::AntiGun);
-        current_damage * (1.0 - anti_gun / 100.0)
+        // C# Player.Hurt: `eff = (int)(num * Effect/100); num -= eff` — усекается
+        // СНИЖЕНИЕ урона (а не итог), всегда в пользу чуть большего урона.
+        // Прежний `dmg*(1-ag/100)` + round в combat давал расхождение ≤1 HP.
+        let reduction = (current_damage * anti_gun / 100.0).trunc();
+        current_damage - reduction
     }
 }
 
@@ -498,10 +502,15 @@ pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {
         .map(|s| {
             let skill_type = SkillType::from_code(&s.code);
             let needed = skill_type.map_or(1.0, |st| exp_needed(st, s.level));
+            // C# `Skill.AddExp`: pct = `(int)(exp*100/Expiriense)` — усечение, БЕЗ
+            // клампа. Клиент `MiniSkill` различает >=100 (стрелка «ап») и >=200
+            // (удвоенная полоса); прежний `clamp(0,100)` делал >=200 недостижимым.
+            // Guard деления на ноль (`needed>0`) сохранён — AntiGun имеет expfunc=0.
             let pct = if needed > 0.0 {
                 #[allow(clippy::cast_possible_truncation)]
-                let ratio = (f64::from(s.exp) * 100.0 / f64::from(needed)).round() as i32;
-                ratio.clamp(0, 100)
+                {
+                    (f64::from(s.exp) * 100.0 / f64::from(needed)) as i32
+                }
             } else {
                 100
             };
