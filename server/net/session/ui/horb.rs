@@ -109,6 +109,38 @@ impl RichRow {
     }
 }
 
+/// Прямоугольник `canvas` (мини-карта). Клиент (`ShowHORB`, тип `=R`) рисует
+/// его в `canvasGUI` по локальным координатам `(X, Y)` от центра, размером `w×h`,
+/// цветом `color` (RRGGBB hex, альфа по умолчанию 255). `X`/`Y` (заглавные) —
+/// per-element абсолютные (сбрасываются), в отличие от накапливающегося `x`/`y`.
+pub struct CanvasRect {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: String,
+}
+
+impl CanvasRect {
+    pub fn new(x: i32, y: i32, w: i32, h: i32, color: impl Into<String>) -> Self {
+        Self {
+            x,
+            y,
+            w,
+            h,
+            color: color.into(),
+        }
+    }
+
+    /// Кодировка элемента canvas: `"X{x}Y{y}w{w}h{h}=R%{color}"`.
+    fn encode(&self) -> String {
+        format!(
+            "X{}Y{}w{}h{}=R%{}",
+            self.x, self.y, self.w, self.h, self.color
+        )
+    }
+}
+
 /// HORB-окно. Гарантирует корректный плоский wire-контракт `HORBConfig`.
 #[derive(Default)]
 pub struct Horb {
@@ -125,6 +157,10 @@ pub struct Horb {
     crys_right: String,
     /// Режим покупки (`crys_buy`): слайдеры считают цену покупки, не продажи.
     crys_buy: bool,
+    /// Прямоугольники `canvas` (мини-карта телепорта).
+    canvas_rects: Vec<CanvasRect>,
+    /// CSS сайзинга (`"canv-w=…;canv-h=…"` и т.п.).
+    css: String,
 }
 
 impl Horb {
@@ -196,6 +232,20 @@ impl Horb {
         self
     }
 
+    /// Добавить прямоугольник на canvas (мини-карта).
+    #[must_use]
+    pub fn rect(mut self, r: CanvasRect) -> Self {
+        self.canvas_rects.push(r);
+        self
+    }
+
+    /// CSS сайзинга canvas (`"canv-w=360;canv-h=360"`).
+    #[must_use]
+    pub fn css(mut self, css: impl Into<String>) -> Self {
+        self.css = css.into();
+        self
+    }
+
     /// Сериализовать в плоский `HORBConfig`-JSON. Коллекции разворачиваются в
     /// `string[]`-кортежи ровно как ждёт клиент (чётность `buttons` гарантирована
     /// — каждая кнопка даёт ровно пару).
@@ -205,6 +255,13 @@ impl Horb {
         obj.insert("text".into(), self.text.clone().into());
         obj.insert("back".into(), false.into());
         obj.insert("admin".into(), self.admin.into());
+        if !self.css.is_empty() {
+            obj.insert("css".into(), self.css.clone().into());
+        }
+        if !self.canvas_rects.is_empty() {
+            let flat: Vec<String> = self.canvas_rects.iter().map(CanvasRect::encode).collect();
+            obj.insert("canvas".into(), flat.into());
+        }
         if !self.buttons.is_empty() {
             let flat: Vec<String> = self
                 .buttons
@@ -290,7 +347,7 @@ impl Horb {
 
 #[cfg(test)]
 mod tests {
-    use super::{Button, Horb, Tab};
+    use super::{Button, CanvasRect, Horb, Tab};
 
     fn arr<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
         v.get(key)
@@ -337,5 +394,21 @@ mod tests {
         assert!(json.get("crys_lines").is_none());
         assert!(json.get("crys_buy").is_none());
         assert!(json.get("buttons").is_none());
+        assert!(json.get("canvas").is_none());
+        assert!(json.get("css").is_none());
+    }
+
+    /// Canvas-rect кодируется как `"X{x}Y{y}w{w}h{h}=R%{color}"` (клиент `ShowHORB`
+    /// тип `=R`). `=R` ОБЯЗАН быть последним перед `%` (иначе клиент не распознает).
+    #[test]
+    fn canvas_rect_encodes_for_client_parser() {
+        let json = Horb::new("Тп")
+            .css("canv-w=360;canv-h=360")
+            .rect(CanvasRect::new(-18, 36, 18, 18, "6495ed"))
+            .to_json();
+        let canvas = arr(&json, "canvas");
+        assert_eq!(canvas.len(), 1);
+        assert_eq!(canvas[0], "X-18Y36w18h18=R%6495ed");
+        assert_eq!(json["css"], "canv-w=360;canv-h=360");
     }
 }

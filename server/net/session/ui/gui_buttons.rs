@@ -1049,31 +1049,7 @@ fn open_teleport_gui(
             .collect()
     };
 
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
-    for (tpx, tpy) in &nearby_tps {
-        buttons.push(serde_json::json!(format!("TP {}:{}", tpx, tpy)));
-        buttons.push(serde_json::json!(format!("tp:{}:{}", tpx, tpy)));
-    }
-    buttons.push(serde_json::json!("Забрать деньги"));
-    buttons.push(serde_json::json!(format!(
-        "pack_op:take_money:{}:{}",
-        view.x, view.y
-    )));
-    buttons.push(serde_json::json!("Забрать кристаллы"));
-    buttons.push(serde_json::json!(format!(
-        "pack_op:take_crys:{}:{}",
-        view.x, view.y
-    )));
-    buttons.push(serde_json::json!("Удалить"));
-    buttons.push(serde_json::json!(format!(
-        "pack_op:remove:{}:{}",
-        view.x, view.y
-    )));
-    buttons.extend(
-        CLOSE_WINDOW_BUTTON_LABELS
-            .iter()
-            .map(|l| serde_json::json!(l)),
-    );
+    use super::horb::{Button, CanvasRect, Horb};
 
     let pstats_info = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
         let ecs = state.ecs.read();
@@ -1094,20 +1070,56 @@ fn open_teleport_gui(
         )
     };
 
-    let gui = serde_json::json!({
-        "title": "Тп",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    // Мини-карта (canvas =R, декорация): по rect на чанк вокруг телепорта,
+    // цвет по пустоте центральной клетки (1:1 C# ConvertMapPart: isEmpty →
+    // Green, иначе CornflowerBlue). Выбор ТП — в buttons-списке ниже.
+    const R: i32 = 8; // радиус в чанках → (2R+1)² = 289 прямоугольников
+    const PX: i32 = 18; // размер rect, px
+    const EMPTY: &str = "008000"; // Green
+    const SOLID: &str = "6495ed"; // CornflowerBlue
+    let ccx = view.x.div_euclid(32);
+    let ccy = view.y.div_euclid(32);
 
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("pack:{}:{}", view.x, view.y));
+    let mut win = Horb::new("Тп").text(text).css("canv-w=360;canv-h=360");
+    for dy in -R..=R {
+        for dx in -R..=R {
+            let cell_x = (ccx + dx) * 32 + 16;
+            let cell_y = (ccy + dy) * 32 + 16;
+            if !state.world.valid_coord(cell_x, cell_y) {
+                continue;
+            }
+            let color = if state.world.is_empty(cell_x, cell_y) {
+                EMPTY
+            } else {
+                SOLID
+            };
+            // Y инвертируем: карта y-вниз, Unity y-вверх (север сверху).
+            win = win.rect(CanvasRect::new(dx * PX, -dy * PX, PX, PX, color));
         }
-        Some(())
-    });
+    }
+    // Маркер «вы здесь» поверх (добавлен последним → верхний слой).
+    win = win.rect(CanvasRect::new(0, 0, PX, PX, "ff3030"));
+
+    for (tpx, tpy) in &nearby_tps {
+        win = win.button(Button::new(
+            format!("TP {tpx}:{tpy}"),
+            format!("tp:{tpx}:{tpy}"),
+        ));
+    }
+    win.button(Button::new(
+        "Забрать деньги",
+        format!("pack_op:take_money:{}:{}", view.x, view.y),
+    ))
+    .button(Button::new(
+        "Забрать кристаллы",
+        format!("pack_op:take_crys:{}:{}", view.x, view.y),
+    ))
+    .button(Button::new(
+        "Удалить",
+        format!("pack_op:remove:{}:{}", view.x, view.y),
+    ))
+    .close_button()
+    .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
 }
 
 /// Handle `tp:{x}:{y}` button — teleport player to destination TP.
