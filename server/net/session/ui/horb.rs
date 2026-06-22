@@ -107,6 +107,56 @@ impl RichRow {
             value: String::new(),
         }
     }
+
+    /// Строка-текст (только подпись, без контролов).
+    pub fn text(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            kind: "text".into(),
+            values: String::new(),
+            action: String::new(),
+            value: String::new(),
+        }
+    }
+
+    /// Чекбокс. `key` — имя поля (уходит в `%R%`-сабмит как `key:0|1`),
+    /// `on` — начальное состояние.
+    pub fn toggle(label: impl Into<String>, key: impl Into<String>, on: bool) -> Self {
+        Self {
+            label: label.into(),
+            kind: "bool".into(),
+            values: String::new(),
+            action: key.into(),
+            value: if on { "1".into() } else { "0".into() },
+        }
+    }
+
+    /// Числовой ввод. `key` — имя поля, `default` — стартовое значение.
+    pub fn uint(label: impl Into<String>, key: impl Into<String>, default: i64) -> Self {
+        Self {
+            label: label.into(),
+            kind: "uint".into(),
+            values: String::new(),
+            action: key.into(),
+            value: default.to_string(),
+        }
+    }
+
+    /// Строка с кнопкой действия. `btn_label` — текст кнопки (пустой → кнопка
+    /// скрыта), `action` — что уходит серверу при клике.
+    pub fn button(
+        label: impl Into<String>,
+        btn_label: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            kind: "button".into(),
+            values: btn_label.into(),
+            action: action.into(),
+            value: String::new(),
+        }
+    }
 }
 
 /// Прямоугольник `canvas` (мини-карта). Клиент (`ShowHORB`, тип `=R`) рисует
@@ -354,7 +404,7 @@ impl Horb {
 
 #[cfg(test)]
 mod tests {
-    use super::{Button, CanvasRect, Horb, Tab};
+    use super::{Button, CanvasRect, Horb, RichRow, Tab};
 
     fn arr<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
         v.get(key)
@@ -426,6 +476,31 @@ mod tests {
         let b2 = arr(&json2, "buttons");
         assert_eq!(b2.len(), 4); // дубля exit нет
         assert_eq!(b2[b2.len() - 1], "exit");
+    }
+
+    /// richList-формы кодируются 5-кортежами `[label, kind, values, key, value]`
+    /// ровно как ждёт клиент `ShowHORB` (toggle=bool, uint, drop, button, text).
+    #[test]
+    fn rich_list_form_kinds_encode_as_five_tuples() {
+        let json = Horb::new("Админка")
+            .rich_row(RichRow::text("Прочность: 1000/1000"))
+            .rich_row(RichRow::toggle("Закланить", "clan_lock", true))
+            .rich_row(RichRow::uint("Стоимость", "cost", 50))
+            .rich_row(RichRow::button("Прибыль: 999", "Забрать", "take_profit"))
+            .to_json();
+        let r = arr(&json, "richList");
+        assert_eq!(r.len(), 20); // 4 строки × 5 полей
+        // toggle row 1 (индексы 5..10): [label, "bool", "", key, "1"]
+        assert_eq!(r[6], "bool");
+        assert_eq!(r[8], "clan_lock");
+        assert_eq!(r[9], "1");
+        // uint row 2: value = default
+        assert_eq!(r[10 + 1], "uint");
+        assert_eq!(r[10 + 4], "50");
+        // button row 3: values = btn label, action = key
+        assert_eq!(r[15 + 1], "button");
+        assert_eq!(r[15 + 2], "Забрать");
+        assert_eq!(r[15 + 3], "take_profit");
     }
 
     /// Canvas-rect кодируется как `"X{x}Y{y}w{w}h{h}=R%{color}"` (клиент `ShowHORB`

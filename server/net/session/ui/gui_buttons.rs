@@ -1,6 +1,7 @@
 //! Обработка нажатий GUI-кнопок игроком.
 use crate::game::buildings::{
-    BuildingCrafting, BuildingMetadata, BuildingStats, BuildingStorage, GridPosition,
+    BuildingCrafting, BuildingMetadata, BuildingOwnership, BuildingStats, BuildingStorage,
+    GridPosition,
 };
 use crate::game::crafting;
 use crate::game::market;
@@ -219,6 +220,9 @@ async fn handle_complex_button(
     } else if let Some(rest) = button.strip_prefix("resp_save:") {
         // RichList data, coordinates resolved from current_window
         crate::net::session::play::packs::handle_resp_save(state, tx, pid, rest);
+    } else if let Some(rest) = button.strip_prefix("pack_save:") {
+        // Единая админ-панель пака: сохранить cost/clan из %R%.
+        handle_pack_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("sell:") {
         handle_market_sell(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("buy:") {
@@ -414,8 +418,125 @@ pub fn open_pack_gui(
             "Удалить",
             format!("pack_op:remove:{}:{}", view.x, view.y),
         ))
+        .admin(view.owner_id == pid) // шестерёнка → open_pack_admin_gui
         .close_button()
         .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
+}
+
+/// Единая админ-панель пака (шестерёнка): прочность/заряд/стоимость/закланить/
+/// прибыль. Открывается по `ADMN` на окне `pack:{x}:{y}`. Сохранение — `pack_save`.
+pub fn open_pack_admin_gui(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    pack_x: i32,
+    pack_y: i32,
+) {
+    use super::horb::{Button, Horb, RichRow};
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return;
+    };
+    if view.owner_id != pid {
+        return;
+    }
+    let details = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let st = ecs.get::<BuildingStats>(*ent)?;
+        let storage = ecs.get::<BuildingStorage>(*ent)?;
+        let own = ecs.get::<BuildingOwnership>(*ent)?;
+        Some((
+            st.hp,
+            st.max_hp,
+            st.charge,
+            st.max_charge,
+            st.cost,
+            storage.money,
+            own.clan_id,
+        ))
+    });
+    let Some((hp, max_hp, charge, max_charge, cost, money, clan_id)) = details else {
+        return;
+    };
+
+    let (profit_btn, profit_act) = if money > 0 {
+        (
+            "Получить".to_string(),
+            format!("pack_op:take_money:{pack_x}:{pack_y}"),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+
+    Horb::new("Управление")
+        .rich_row(RichRow::text(format!("Прочность: {hp}/{max_hp}")))
+        .rich_row(RichRow::text(format!("Заряд: {charge:.0}/{max_charge:.0}")))
+        .rich_row(RichRow::uint("Стоимость", "cost", i64::from(cost)))
+        .rich_row(RichRow::toggle("Закланить", "clan", clan_id != 0))
+        .rich_row(RichRow::button(
+            format!("Прибыль: {money}$"),
+            profit_btn,
+            profit_act,
+        ))
+        .button(Button::new("Сохранить", "pack_save:%R%"))
+        .send(state, tx, pid, format!("pack:{pack_x}:{pack_y}"));
+}
+
+/// `pack_save:{key:value#…}` из админ-панели (`%R%`). Ставит cost/clan,
+/// перерисовывает панель. Зеркало `handle_resp_save`, но для окна `pack:`.
+pub fn handle_pack_save(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    richlist_data: &str,
+) {
+    let coords = state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let rest = ui.current_window.as_deref()?.strip_prefix("pack:")?;
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2 {
+            Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
+        } else {
+            None
+        }
+    });
+    let Some((pack_x, pack_y)) = coords else {
+        return;
+    };
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return;
+    };
+    if view.owner_id != pid {
+        return;
+    }
+
+    let mut fields: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for pair in richlist_data.split('#') {
+        if let Some((k, v)) = pair.split_once(':') {
+            fields.insert(k, v);
+        }
+    }
+    let owner_clan = state
+        .query_player_opt(pid, |ecs, e| {
+            ecs.get::<PlayerStats>(e).and_then(|s| s.clan_id)
+        })
+        .unwrap_or(0);
+
+    let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
+        if let Some(mut st) = ecs.get_mut::<BuildingStats>(entity) {
+            if let Some(c) = fields.get("cost").and_then(|s| s.parse::<i32>().ok()) {
+                if (0..=5000).contains(&c) {
+                    st.cost = c;
+                }
+            }
+        }
+        if let Some(mut own) = ecs.get_mut::<BuildingOwnership>(entity) {
+            if let Some(clan) = fields.get("clan") {
+                own.clan_id = if *clan == "1" { owner_clan } else { 0 };
+            }
+        }
+    });
+
+    open_pack_admin_gui(state, tx, pid, pack_x, pack_y);
 }
 
 fn handle_pack_take_money(

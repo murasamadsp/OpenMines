@@ -159,6 +159,19 @@ pub async fn dispatch_ty_packet(
                         }
                     }
                 }
+                // Generic pack admin: шестерёнка любого пака → единая панель
+                // (прочность/заряд/стоимость/закланить/прибыль).
+                if let Some(rest) = window.strip_prefix("pack:") {
+                    let parts: Vec<&str> = rest.split(':').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                            crate::net::session::ui::gui_buttons::open_pack_admin_gui(
+                                state, tx, pid, x, y,
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
             }
             if is_admin_command(state, pid) {
                 send_admin_help(tx);
