@@ -38,6 +38,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 println!(
                     "  save                                   Save all players and flush the world"
                 );
+                println!("  kill --player <ID>                     Kill a player instantly");
+                println!(
+                    "  info --player <ID>                     Show detailed player information"
+                );
             }
             "stop" | "shutdown" => {
                 println!("Graceful shutdown triggered from console.");
@@ -378,6 +382,138 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                         println!("Saved {saved_count} players and flushed world successfully.");
                     }
                     Err(e) => println!("Error flushing world: {e}"),
+                }
+            }
+            "kill" => {
+                let mut player_id: Option<PlayerId> = None;
+
+                let mut i = 0;
+                let mut ok = true;
+                while i < args.len() {
+                    match args[i] {
+                        "--player" | "-p" => {
+                            if i + 1 < args.len() {
+                                player_id = args[i + 1].parse().ok();
+                                i += 2;
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok || player_id.is_none() {
+                    println!("Usage: kill --player <ID>");
+                    continue;
+                }
+                let pid = player_id.unwrap();
+
+                let conn_tx = state.query_player_opt(pid, |ecs, entity| {
+                    ecs.get::<crate::game::player::PlayerConnection>(entity)
+                        .map(|conn| conn.tx.clone())
+                });
+
+                if let Some(tx) = conn_tx {
+                    crate::net::session::play::death::handle_death(&state, &tx, pid);
+                    println!("Killed player {pid}.");
+                } else {
+                    println!("Player {pid} not found/offline.");
+                }
+            }
+            "info" => {
+                let mut player_id: Option<PlayerId> = None;
+
+                let mut i = 0;
+                let mut ok = true;
+                while i < args.len() {
+                    match args[i] {
+                        "--player" | "-p" => {
+                            if i + 1 < args.len() {
+                                player_id = args[i + 1].parse().ok();
+                                i += 2;
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        _ => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok || player_id.is_none() {
+                    println!("Usage: info --player <ID>");
+                    continue;
+                }
+                let pid = player_id.unwrap();
+
+                let details = state.query_player_opt(pid, |ecs, entity| {
+                    let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                    let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                    let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
+                    let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
+                    let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+
+                    Some((
+                        meta.name.clone(),
+                        p_stats.role,
+                        skills.states.lvl_summary(),
+                        pos.x,
+                        pos.y,
+                        p_stats.health,
+                        p_stats.max_health,
+                        p_stats.money,
+                        p_stats.creds,
+                        p_stats.crystals,
+                        prog.running,
+                        prog.current_function.clone(),
+                    ))
+                });
+
+                if let Some((
+                    name,
+                    role,
+                    level,
+                    x,
+                    y,
+                    hp,
+                    max_hp,
+                    money,
+                    creds,
+                    crystals,
+                    prog_running,
+                    prog_func,
+                )) = details
+                {
+                    let role_str = match role {
+                        2 => "Admin",
+                        1 => "Moderator",
+                        _ => "Player",
+                    };
+                    println!("Player Info for ID {pid}:");
+                    println!("  Nickname:  {name}");
+                    println!("  Role:      {role_str}");
+                    println!("  Level:     {level}");
+                    println!("  Position:  ({x}, {y})");
+                    println!("  Health:    {hp}/{max_hp}");
+                    println!("  Money:     {money} | Credits: {creds}");
+                    println!(
+                        "  Crystals:  Green:{}, Blue:{}, Red:{}, Violet:{}, White:{}, Cyan:{}",
+                        crystals[0],
+                        crystals[1],
+                        crystals[2],
+                        crystals[3],
+                        crystals[4],
+                        crystals[5]
+                    );
+                    println!("  Program:   Running: {prog_running} | Current Fn: {prog_func}");
+                } else {
+                    println!("Player {pid} not found/offline.");
                 }
             }
             unknown => {
