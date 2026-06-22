@@ -86,8 +86,15 @@ pub async fn handle_gui_button(
         "auc" => handle_market_tab_switch(state, tx, pid, "auc").await,
         "sellall" => handle_market_sellall(state, tx, pid),
         "getprofit" => handle_market_getprofit(state, tx, pid),
-        "clancreate" => {
+        "clancreate" | "clan_create" => {
             handle_clan_create_view(tx);
+        }
+        "clan_create_input" => {
+            crate::net::session::social::commands::send_ok(
+                tx,
+                "КЛАНЫ",
+                "Введите /clan create НАЗВАНИЕ ТЕГ в чате",
+            );
         }
         _ => handle_complex_button(state, tx, pid, button).await,
     }
@@ -149,6 +156,23 @@ async fn handle_complex_button(
     } else if let Some(rest) = button.strip_prefix("clan_invite_accept:") {
         if let Ok(id) = rest.parse::<i32>() {
             crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("clan_promote:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            crate::net::session::social::clans::handle_clan_promote(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("clan_kick_id:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            crate::net::session::social::clans::handle_clan_kick(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("clan_decline:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            crate::net::session::social::clans::handle_clan_decline(state, tx, pid, id).await;
+        }
+    } else if let Some(rest) = button.strip_prefix("clan_invite_decline:") {
+        if let Ok(id) = rest.parse::<i32>() {
+            crate::net::session::social::clans::handle_clan_invite_decline(state, tx, pid, id)
+                .await;
         }
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
         crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest).await;
@@ -375,30 +399,23 @@ pub fn open_pack_gui(
         "Здание: {}\nЗаряд: {:.1}\nПрочность: {}/{}",
         title, view.charge, hp, mhp
     );
-    let mut buttons = vec![
-        serde_json::json!("Забрать деньги"),
-        serde_json::json!(format!("pack_op:take_money:{}:{}", view.x, view.y)),
-        serde_json::json!("Забрать кристаллы"),
-        serde_json::json!(format!("pack_op:take_crys:{}:{}", view.x, view.y)),
-        serde_json::json!("Удалить"),
-        serde_json::json!(format!("pack_op:remove:{}:{}", view.x, view.y)),
-    ];
-    buttons.extend(
-        CLOSE_WINDOW_BUTTON_LABELS
-            .iter()
-            .map(|l| serde_json::json!(l)),
-    );
-
-    let gui =
-        serde_json::json!({ "title": title, "text": text, "buttons": buttons, "back": false });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("pack:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
+    use super::horb::{Button, Horb};
+    Horb::new(title)
+        .text(text)
+        .button(Button::new(
+            "Забрать деньги",
+            format!("pack_op:take_money:{}:{}", view.x, view.y),
+        ))
+        .button(Button::new(
+            "Забрать кристаллы",
+            format!("pack_op:take_crys:{}:{}", view.x, view.y),
+        ))
+        .button(Button::new(
+            "Удалить",
+            format!("pack_op:remove:{}:{}", view.x, view.y),
+        ))
+        .close_button()
+        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
 }
 
 fn handle_pack_take_money(

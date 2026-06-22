@@ -114,37 +114,16 @@ pub fn open_resp_gui(
         )
     };
 
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    use crate::net::session::ui::horb::{Button, Horb};
+    let mut win = Horb::new("РЕСП").text(text).admin(is_owner);
     if !is_bound {
-        buttons.push(serde_json::json!("ПРИВЯЗАТЬ"));
-        buttons.push(serde_json::json!(format!(
-            "resp_bind:{}:{}",
-            view.x, view.y
-        )));
+        win = win.button(Button::new(
+            "ПРИВЯЗАТЬ",
+            format!("resp_bind:{}:{}", view.x, view.y),
+        ));
     }
-    buttons.push(serde_json::json!("ВЫЙТИ"));
-    buttons.push(serde_json::json!("exit"));
-
-    let mut gui = serde_json::json!({
-        "title": "РЕСП",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-
-    // Owner gets admin gear icon
-    if is_owner {
-        gui["admin"] = serde_json::json!(true);
-    }
-
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("resp:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
+    win.close_button()
+        .send(state, tx, pid, format!("resp:{}:{}", view.x, view.y));
 }
 
 /// Open Resp admin page with `RichList` (fill sliders, cost, clanzone, profit).
@@ -566,24 +545,14 @@ pub fn open_gun_gui(
         "{percent}#{bar_label}#5#{small_fill_action}#{large_fill_action}#{fill_max_action}"
     );
 
-    let richlist = serde_json::json!([["заряд", "fill", fill_values, "", ""]]);
-    let window = serde_json::json!({
-        "tabs": [{
-            "action": "gun",
-            "label": "хуй",
-            "title": "Пушка",
-            "list": richlist,
-            "buttons": []
-        }]
-    });
-    send_u_packet(tx, "GU", format!("horb:{window}").as_bytes());
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("gun:{pack_x}:{pack_y}"));
-        }
-        Some(())
-    });
+    // Раньше окно слалось как `{"tabs":[{объект}]}` — но `HORBConfig.tabs` это
+    // `string[]`, и `JsonUtility` такой JSON НЕ парсит → окно пушки не открывалось
+    // («у пушек нет гуи»). Через единый builder — плоский корректный контракт.
+    use crate::net::session::ui::horb::{Horb, RichRow};
+    Horb::new("Пушка")
+        .rich_row(RichRow::fill("заряд", fill_values))
+        .close_button()
+        .send(state, tx, pid, format!("gun:{pack_x}:{pack_y}"));
 }
 
 /// Обработать нажатие кнопки заряда пушки (+100, +1000, max).

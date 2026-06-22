@@ -42,21 +42,24 @@ pub async fn handle_my_buildings_list(
         .into_iter()
         .filter(|r| r.owner_id == pid)
         .collect();
-    let text = if mine.is_empty() {
-        "(нет построек)".to_string()
+    // Раньше все постройки сваливались в один `text` → окно росло за экран
+    // (репорт). Теперь каждая — строка `list` (виджет в ScrollRect → ползунок).
+    use crate::net::session::ui::horb::{Horb, ListRow};
+    let mut win = Horb::new("Мои здания");
+    if mine.is_empty() {
+        win = win.text("(нет построек)");
     } else {
-        mine.iter()
-            .map(|r| format!("{} {}:{}", r.type_code, r.x, r.y))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let gui = serde_json::json!({
-        "title": "мои здания да",
-        "text": text,
-        "buttons": ["ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+        for r in &mine {
+            // subtitle="" → клиент скрывает кнопку строки (не-кликабельно),
+            // вся инфа в title (`list[3n]`).
+            win = win.list_row(ListRow::new(
+                format!("{} {}:{}", r.type_code, r.x, r.y),
+                String::new(),
+                String::new(),
+            ));
+        }
+    }
+    win.close_button().send(state, tx, pid, "blds");
 }
 
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
