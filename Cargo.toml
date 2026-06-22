@@ -13,6 +13,11 @@ license = "MIT"
 name = "openmines-server"
 path = "server/main.rs"
 
+# Нагрузочный замер (dev-тул): N синтетических wire-клиентов. См. server/bin/loadtest.rs.
+[[bin]]
+name = "loadtest"
+path = "server/bin/loadtest.rs"
+
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
 bytes = "1.12.0"
