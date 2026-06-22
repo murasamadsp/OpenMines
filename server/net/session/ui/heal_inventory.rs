@@ -401,10 +401,23 @@ pub async fn place_building_from_item(
     };
     let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
-        Some((p.x, p.y, p.dir))
+        let s = ecs.get::<PlayerStats>(entity)?;
+        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
     });
-    let Some((px, py, pdir)) = pos else {
+    let Some((px, py, pdir, player_clan)) = pos else {
         return false;
+    };
+    // C# `Inventory`: ТОЛЬКО Gun ставится с кланом и ТОЛЬКО `if p.clan != null`
+    // (`new Gun(x,y,p.id,p.cid)`); прочие здания clanless. Без клана пушку не
+    // ставим (и предмет не тратим — caller списывает лишь при `true`).
+    if pack_type == PackType::Gun && player_clan == 0 {
+        return false;
+    }
+    // Клан здания: пушке — клан игрока (p.cid), остальным — 0 (1:1 C#).
+    let building_clan = if pack_type == PackType::Gun {
+        player_clan
+    } else {
+        0
     };
     let (dx, dy) = dir_offset(pdir);
     let (bx, by) = (px + dx * 3, py + dy * 3);
@@ -414,7 +427,7 @@ pub async fn place_building_from_item(
     let extra = building_extra_for_pack_type(pack_type);
     let id = state
         .db
-        .insert_building(code, bx, by, pid, 0, &extra)
+        .insert_building(code, bx, by, pid, building_clan, &extra)
         .await
         .ok();
     if let Some(db_id) = id {
@@ -442,7 +455,7 @@ pub async fn place_building_from_item(
                 },
                 BuildingOwnership {
                     owner_id: pid,
-                    clan_id: 0,
+                    clan_id: building_clan,
                 },
                 BuildingCrafting {
                     recipe_id: extra.craft_recipe_id,
