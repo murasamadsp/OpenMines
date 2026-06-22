@@ -5,7 +5,7 @@ use crate::game::buildings::{
 };
 use crate::game::crafting;
 use crate::game::market;
-use crate::game::player::{PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
+use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{broadcast_pack_update, modify_pack_with_db};
@@ -572,6 +572,10 @@ fn handle_pack_take_money(
     {
         if amount > 0 {
             state.modify_player(pid, |ecs, entity| {
+                // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
+                if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
+                    f.dirty = true;
+                }
                 let mut s = ecs.get_mut::<PlayerStats>(entity)?;
                 s.money += amount;
                 send_u_packet(tx, "P$", &money(s.money, s.creds).1);
@@ -598,6 +602,10 @@ fn handle_pack_take_crystals(
     {
         if amount.iter().sum::<i64>() > 0 {
             state.modify_player(pid, |ecs, entity| {
+                // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
+                if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
+                    f.dirty = true;
+                }
                 let mut s = ecs.get_mut::<PlayerStats>(entity)?;
                 for i in 0..6 {
                     s.crystals[i] += amount[i];
@@ -1626,6 +1634,11 @@ fn do_market_sell(
 
     // Deduct crystals from player, compute money earned
     state.modify_player(pid, |ecs, entity| {
+        // B2: пометить dirty — иначе периодический 10s-сейв (только dirty) пропускает
+        // сделку, и при краше до дисконнекта деньги/кристаллы теряются (как auction.rs).
+        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
+            f.dirty = true;
+        }
         let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
         for i in 0..6 {
             let to_sell = sliders[i];
@@ -1692,6 +1705,10 @@ fn handle_market_buy(
     // Buy crystals: deduct money, add crystals
     // C# ref: for each i: if sliders[i] > 0 && player can afford -> deduct money, add crystals
     state.modify_player(pid, |ecs, entity| {
+        // B2: пометить dirty (см. do_market_sell) — иначе сделка теряется при краше.
+        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
+            f.dirty = true;
+        }
         let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
         for i in 0..6 {
             let to_buy = sliders[i];
@@ -1744,6 +1761,10 @@ fn handle_market_getprofit(
 
     if amount > 0 {
         state.modify_player(pid, |ecs, entity| {
+            // B2: пометить dirty (см. do_market_sell).
+            if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
+                f.dirty = true;
+            }
             let mut s = ecs.get_mut::<PlayerStats>(entity)?;
             s.money += amount;
             send_u_packet(tx, "P$", &money(s.money, s.creds).1);
