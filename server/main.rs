@@ -37,8 +37,9 @@ async fn main() -> Result<()> {
     migrate_mines3_db_to_openmines(&state_dir);
     tracing::info!("Runtime state directory: {}", state_dir.display());
 
-    let force_regenerate = parse_regen_flag_from(env::args(), env::var("M3R_REGEN_WORLD").ok())
-        .unwrap_or_else(|e| e.exit());
+    let force_regenerate =
+        parse_regen_flag_from(env::args().skip(1), env::var("M3R_REGEN_WORLD").ok())
+            .unwrap_or_else(|e| e.exit());
     if force_regenerate {
         remove_world_files(&cfg.world_name, &state_dir);
     }
@@ -293,27 +294,57 @@ where
 mod tests {
     use super::*;
 
+    // --- clean args (env::args().skip(1)) ---
+
     #[test]
-    fn test_parse_regen_flag_args() {
-        assert!(parse_regen_flag_from(["--regen"], None).unwrap());
-        assert!(parse_regen_flag_from(["--regen-world"], None).unwrap());
-        assert!(parse_regen_flag_from(["--regen"], Some("0".to_string())).unwrap());
+    fn test_parse_regen_flag_no_args() {
         assert!(!parse_regen_flag_from([] as [&str; 0], None).unwrap());
     }
 
     #[test]
-    fn test_parse_regen_flag_env() {
+    fn test_parse_regen_flag_cli_flag() {
+        assert!(parse_regen_flag_from(["--regen"], None).unwrap());
+        assert!(parse_regen_flag_from(["--regen-world"], None).unwrap());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_env_true() {
         assert!(parse_regen_flag_from([] as [&str; 0], Some("1".to_string())).unwrap());
         assert!(parse_regen_flag_from([] as [&str; 0], Some("true".to_string())).unwrap());
         assert!(parse_regen_flag_from([] as [&str; 0], Some("YES".to_string())).unwrap());
         assert!(parse_regen_flag_from([] as [&str; 0], Some(" on ".to_string())).unwrap());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_env_false() {
         assert!(!parse_regen_flag_from([] as [&str; 0], Some("0".to_string())).unwrap());
         assert!(!parse_regen_flag_from([] as [&str; 0], Some("false".to_string())).unwrap());
         assert!(!parse_regen_flag_from([] as [&str; 0], None).unwrap());
     }
 
     #[test]
-    fn test_parse_regen_flag_invalid_arg() {
+    fn test_parse_regen_flag_cli_overrides_env() {
+        // --regen включает реген, даже если env = false
+        assert!(parse_regen_flag_from(["--regen"], Some("0".to_string())).unwrap());
+    }
+
+    // --- ошибки ---
+
+    #[test]
+    fn test_parse_regen_flag_unknown_flag() {
         assert!(parse_regen_flag_from(["--unknown-flag"], None).is_err());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_argv0_leak_docker() {
+        // Баг-регрессия: env::args() включает argv[0] = путь к бинарю.
+        // Функция сама подставляет "openmines-server" как имя программы,
+        // поэтому лишний argv[0] даёт clap-ошибку.
+        assert!(parse_regen_flag_from(["/usr/local/bin/openmines-server"], None).is_err());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_argv0_leak_relative() {
+        assert!(parse_regen_flag_from(["./openmines-server", "--regen"], None).is_err());
     }
 }
