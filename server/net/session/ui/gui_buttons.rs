@@ -1715,13 +1715,17 @@ fn handle_market_buy(
             if to_buy <= 0 {
                 continue;
             }
-            let cost = to_buy * market::get_crystal_buy_price(state, i);
+            // checked_mul: protect against overflow in release mode (wrapping mul could yield
+            // negative cost, bypassing the affordability check and granting free crystals/money).
+            let Some(cost) = to_buy.checked_mul(market::get_crystal_buy_price(state, i)) else {
+                continue;
+            };
             // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
             if pstats.money < cost {
                 continue;
             }
             pstats.money -= cost;
-            pstats.crystals[i] += to_buy;
+            pstats.crystals[i] = pstats.crystals[i].saturating_add(to_buy);
         }
         send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
         send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
