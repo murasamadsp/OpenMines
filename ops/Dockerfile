@@ -15,7 +15,7 @@ RUN mkdir -p server/bin && echo "fn main() {}" > server/main.rs && \
     rm -rf server
 
 COPY server ./server
-COPY config.json cells.json buildings.json ./
+COPY configs ./configs
 # Каталог миграций нужен на этапе компиляции: `sqlx::migrate!("./migrations")`
 # (db/mod.rs) — compile-time макрос, встраивает миграции в бинарь. Без копии
 # сборка падает: "error canonicalizing migration directory /app/./migrations".
@@ -32,16 +32,14 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-# WORKDIR ОБЯЗАН быть /app, а НЕ /data: configs читаются из рабочего каталога,
-# а /data — смонтированный volume (мир/БД). При WORKDIR=/data volume затеняет
-# запечённые config.json/cells.json/buildings.json. M3R_DATA_DIR=/data в compose.
+# WORKDIR ОБЯЗАН быть /app, а НЕ /data: configs читаются из configs/ в рабочем
+# каталоге, а /data — смонтированный volume (мир/БД). При WORKDIR=/data volume
+# затеняет запечённый configs/. M3R_DATA_DIR=/data в compose.
 WORKDIR /app
 
 COPY --from=builder /usr/local/bin/openmines-server /usr/local/bin/openmines-server
 COPY --from=builder /usr/local/bin/openmines-proxy /usr/local/bin/openmines-proxy
-COPY --from=builder /app/config.json ./config.json
-COPY --from=builder /app/cells.json ./cells.json
-COPY --from=builder /app/buildings.json ./buildings.json
+COPY --from=builder /app/configs ./configs
 
 RUN chmod +x /usr/local/bin/openmines-server /usr/local/bin/openmines-proxy
 

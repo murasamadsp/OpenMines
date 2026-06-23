@@ -9,9 +9,7 @@ on:
       - "server/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "config.json"
-      - "cells.json"
-      - "buildings.json"
+      - "configs/**"
       - "ops/Dockerfile"
       - ".github/workflows/ci.yml"
   pull_request:

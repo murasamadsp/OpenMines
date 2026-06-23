@@ -21,8 +21,8 @@ body:
       label: Шаги для воспроизведения
       description: Опишите последовательность действий от запуска до ошибки
       placeholder: |
-        1. cp config.example.json config.json
-        2. cargo run --release
+        1. cargo run --release  # configs/config.json создаётся с дефолтами
+        2. ...
         3. ...
     validations:
       required: true

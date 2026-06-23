@@ -279,6 +279,15 @@ impl Database {
         })
     }
 
+    pub async fn update_player_passwd(&self, player_id: i32, passwd: &str) -> Result<()> {
+        sqlx::query("UPDATE players SET passwd = ?1 WHERE id = ?2")
+            .bind(passwd)
+            .bind(player_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_player_role(&self, player_id: i32, role: Role) -> Result<bool> {
         let result = sqlx::query("UPDATE players SET role = ?1 WHERE id = ?2")
             .bind(role as i32)

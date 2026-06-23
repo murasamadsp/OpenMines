@@ -562,7 +562,7 @@ pub async fn handle_clan_promote(
 
     match state
         .db
-        .set_clan_rank(target_pid, crate::db::ClanRank::Officer)
+        .set_clan_rank(target_pid, clan_id, crate::db::ClanRank::Officer)
         .await
     {
         Ok(()) => {

@@ -1,5 +1,5 @@
 use super::Database;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use sqlx::Row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -195,12 +195,22 @@ impl Database {
     pub async fn accept_clan_request(&self, clan_id: i32, player_id: i32) -> Result<()> {
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query("UPDATE players SET clan_id = ?1, clan_rank = ?2 WHERE id = ?3")
-            .bind(clan_id)
-            .bind(ClanRank::Member as i32)
-            .bind(player_id)
-            .execute(&mut *tx)
-            .await?;
+        let result = sqlx::query(
+            "UPDATE players SET clan_id = ?1, clan_rank = ?2
+             WHERE id = ?3 AND EXISTS (
+                 SELECT 1 FROM clan_requests WHERE clan_id = ?1 AND player_id = ?3
+             )",
+        )
+        .bind(clan_id)
+        .bind(ClanRank::Member as i32)
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            bail!("no pending request from player {player_id} for clan {clan_id}");
+        }
 
         sqlx::query("DELETE FROM clan_requests WHERE clan_id = ?1 AND player_id = ?2")
             .bind(clan_id)
@@ -265,10 +275,11 @@ impl Database {
         Ok(())
     }
 
-    pub async fn set_clan_rank(&self, player_id: i32, rank: ClanRank) -> Result<()> {
-        sqlx::query("UPDATE players SET clan_rank = ?1 WHERE id = ?2")
+    pub async fn set_clan_rank(&self, player_id: i32, clan_id: i32, rank: ClanRank) -> Result<()> {
+        sqlx::query("UPDATE players SET clan_rank = ?1 WHERE id = ?2 AND clan_id = ?3")
             .bind(rank as i32)
             .bind(player_id)
+            .bind(clan_id)
             .execute(&self.pool)
             .await?;
         Ok(())

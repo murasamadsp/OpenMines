@@ -64,7 +64,7 @@ pub trait DatabaseProvider: Send + Sync {
     async fn get_player_invites(&self, player_id: i32) -> Result<Vec<(i32, String)>>;
     async fn accept_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()>;
     async fn decline_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()>;
-    async fn set_clan_rank(&self, player_id: i32, rank: ClanRank) -> Result<()>;
+    async fn set_clan_rank(&self, player_id: i32, clan_id: i32, rank: ClanRank) -> Result<()>;
     async fn leave_clan(&self, player_id: i32) -> Result<()>;
     async fn kick_from_clan(&self, player_id: i32) -> Result<()>;
     async fn get_used_clan_ids(&self) -> Result<Vec<i32>>;
@@ -77,6 +77,7 @@ pub trait DatabaseProvider: Send + Sync {
     async fn get_player_by_name(&self, name: &str) -> Result<Option<PlayerRow>>;
     async fn save_player(&self, p: &PlayerRow) -> Result<()>;
     async fn player_name_exists(&self, name: &str) -> Result<bool>;
+    async fn update_player_passwd(&self, player_id: i32, passwd: &str) -> Result<()>;
     async fn update_player_resp(
         &self,
         player_id: i32,
@@ -199,8 +200,8 @@ impl DatabaseProvider for Database {
     async fn decline_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()> {
         self.decline_clan_invite(clan_id, player_id).await
     }
-    async fn set_clan_rank(&self, player_id: i32, rank: ClanRank) -> Result<()> {
-        self.set_clan_rank(player_id, rank).await
+    async fn set_clan_rank(&self, player_id: i32, clan_id: i32, rank: ClanRank) -> Result<()> {
+        self.set_clan_rank(player_id, clan_id, rank).await
     }
     async fn leave_clan(&self, player_id: i32) -> Result<()> {
         self.leave_clan(player_id).await
@@ -229,6 +230,9 @@ impl DatabaseProvider for Database {
     }
     async fn player_name_exists(&self, name: &str) -> Result<bool> {
         self.player_name_exists(name).await
+    }
+    async fn update_player_passwd(&self, player_id: i32, passwd: &str) -> Result<()> {
+        self.update_player_passwd(player_id, passwd).await
     }
     async fn update_player_resp(
         &self,

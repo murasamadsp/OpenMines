@@ -7,6 +7,27 @@ use crate::net::session::prelude::*;
 use crate::protocol::packets::auth_hash;
 use serde_json::json;
 
+fn hash_password(passwd: &str, user_hash: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(user_hash.as_bytes());
+    h.update(b":");
+    h.update(passwd.as_bytes());
+    format!("sha256:{:x}", h.finalize())
+}
+
+fn verify_password(passwd: &str, stored: &str, user_hash: &str) -> bool {
+    stored.strip_prefix("sha256:").map_or_else(
+        || stored == passwd,
+        |hex| {
+            hash_password(passwd, user_hash)
+                .strip_prefix("sha256:")
+                .unwrap_or("")
+                == hex
+        },
+    )
+}
+
 /// Called from connection loop when `AuthState::GuiAuth` and a GUI_ button arrives.
 /// Returns `Some(pid)` on successful login/registration (session transitions to Authenticated).
 pub async fn handle_gui_auth_flow(
@@ -133,7 +154,11 @@ async fn handle_login_password(
         return Ok(None);
     };
 
-    if player.passwd == passwd {
+    if verify_password(passwd, &player.passwd, &player.hash) {
+        if !player.passwd.starts_with("sha256:") {
+            let hashed = hash_password(passwd, &player.hash);
+            let _ = state.db.update_player_passwd(player.id, &hashed).await;
+        }
         return finalize_auth(state, tx, &player, session_token, step);
     }
 
@@ -210,7 +235,8 @@ async fn handle_register_password(
     }
 
     let hash = GameState::generate_hash();
-    let player = state.db.create_player(nick, passwd, &hash).await?;
+    let hashed_passwd = hash_password(passwd, &hash);
+    let player = state.db.create_player(nick, &hashed_passwd, &hash).await?;
     tracing::info!(
         "[Auth GUI] New player registered: {} (id={})",
         player.name,

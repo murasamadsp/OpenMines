@@ -25,8 +25,8 @@ async fn main() -> Result<()> {
     // До `logging::init` паники не попадали в tracing — ловим в stderr сразу.
     logging::install_early_panic_hook();
     println!("[Main] Process started");
-    let mut cfg = config::Config::load("config.json").map_err(|e| {
-        println!("[Main] CRITICAL: Failed to load config.json: {e}");
+    let mut cfg = config::Config::load("configs/config.json").map_err(|e| {
+        println!("[Main] CRITICAL: Failed to load configs/config.json: {e}");
         e
     })?;
     if let Ok(p_str) = env::var("M3R_PORT")
@@ -51,11 +51,11 @@ async fn main() -> Result<()> {
         remove_world_files(&cfg.world_name, &state_dir);
     }
 
-    let cell_defs = world::cells::CellDefs::load("cells.json")?;
+    let cell_defs = world::cells::CellDefs::load("configs/cells.json")?;
     tracing::info!("Loaded {} cell definitions", cell_defs.cells.len());
 
-    let buildings_cfg_path = if Path::new("buildings.json").exists() {
-        "buildings.json"
+    let buildings_cfg_path = if Path::new("configs/buildings.json").exists() {
+        "configs/buildings.json"
     } else {
         "data/buildings.json"
     };
@@ -375,7 +375,7 @@ mod benchmarks {
             let db_path = dir.join(format!("bench_db_{}", std::process::id()));
             let _ = std::fs::remove_file(&db_path);
             let database = crate::db::Database::open(&db_path).await.unwrap();
-            let cell_defs = crate::world::cells::CellDefs::load("cells.json").unwrap();
+            let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
             let world_name = format!("bench_world_{}", std::process::id());
             let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
             let config = crate::config::Config {
