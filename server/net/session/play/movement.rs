@@ -240,14 +240,12 @@ pub fn handle_move(
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
         crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
-        // Feature 1: ref Player.cs:462-467 — auto-open pack GUI when landing on a building cell.
-        // C# `ContainsPack` footprint-aware: посадка на ЛЮБУЮ клетку футпринта открывает
-        // GUI. `get_pack_at(nx,ny)` origin-only → окно не открывалось на не-угловой
-        // клетке многоклеточного здания. Ищем origin покрывающего пака (как gate-чек).
-        if let Some(view) = state
-            .find_pack_covering(nx, ny)
-            .and_then(|(ox, oy)| state.get_pack_at(ox, oy))
-        {
+        // Feature 1: ref Player.cs:462-467 — auto-open pack GUI на ORIGIN-клетке пака.
+        // C# `World.AddPack` регистрирует пак ТОЛЬКО в одной клетке (origin, `ch.SetPack(x,y,p)`),
+        // поэтому `ContainsPack`/`GetPack` срабатывает лишь на origin, НЕ на всём футпринте.
+        // Footprint-aware `find_pack_covering` (80967d4) был РЕГРЕССОМ: площадка спавна Resp
+        // (road-клетки футпринта) открывала GUI. Возврат к origin-only = 1:1 C#.
+        if let Some(view) = state.get_pack_at(nx, ny) {
             if view.pack_type != PackType::Gate && (view.clan_id == 0 || view.clan_id == clan) {
                 let prog_running = state
                     .query_player(pid, |ecs, entity| {
