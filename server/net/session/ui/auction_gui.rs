@@ -334,6 +334,17 @@ pub async fn create_order(
     });
     if let Err(e) = state.db.create_order(pid, item, num, cost).await {
         tracing::error!("auction: create_order failed: {e}");
+        // Refund: undo the item deduction so the player doesn't lose their items.
+        state.modify_player(pid, |ecs, e| {
+            let mut inv = ecs.get_mut::<PlayerInventory>(e)?;
+            *inv.items.entry(item).or_insert(0) += num;
+            send_inventory(tx, &mut inv);
+            if let Some(mut f) = ecs.get_mut::<PlayerFlags>(e) {
+                f.dirty = true;
+            }
+            Some(())
+        });
+        return;
     }
 
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
@@ -365,6 +376,10 @@ pub async fn place_minimal_bet(
 
 /// `Order.Bet` — ставка (1:1 C#): мин-проверка, рефанд старому покупателю,
 /// списание у нового. Затем переоткрыть деталь ордера.
+///
+/// CAS-паттерн предотвращает двойной рефанд при одновременных ставках:
+/// обновление БД атомарно проверяет что `buyer_id`/`cost` не изменились с момента
+/// чтения — только один из конкурирующих запросов пройдёт CAS.
 pub async fn place_bet(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -377,32 +392,35 @@ pub async fn place_bet(
         let bidder_money = state
             .query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.money))
             .unwrap_or(0);
-        // C# guard: required > amount ИЛИ bidder.money < cost(старый) → no-op.
-        if required <= amount && bidder_money >= o.cost {
-            // рефанд старому покупателю (может быть офлайн)
-            if o.buyer_id != 0 {
-                credit_money(state, o.buyer_id, o.cost).await;
-            }
-            if let Err(e) = state
+        // C# guard: required > amount ИЛИ bidder.money < amount → no-op.
+        if required <= amount && bidder_money >= amount {
+            // CAS: обновляем ордер ТОЛЬКО если buyer_id и cost не изменились.
+            // Если rows_affected==0 — другой игрок поставил раньше → просто
+            // показать обновлённый ордер (без рефанда и списания).
+            let won = state
                 .db
-                .update_order_bet(order_id, amount, pid, now_unix())
+                .try_update_order_bet_cas(order_id, amount, pid, now_unix(), o.buyer_id, o.cost)
                 .await
-            {
-                tracing::error!("auction: update_order_bet failed: {e}");
-            }
-            // списать у нового покупателя (он online — кликнул) + P$
-            state.modify_player(pid, |ecs, e| {
-                let pair = {
-                    let mut s = ecs.get_mut::<PlayerStats>(e)?;
-                    s.money -= amount;
-                    (s.money, s.creds)
-                };
-                if let Some(mut f) = ecs.get_mut::<PlayerFlags>(e) {
-                    f.dirty = true;
+                .unwrap_or(0);
+            if won > 0 {
+                // Рефанд старому покупателю — только победитель CAS делает это.
+                if o.buyer_id != 0 {
+                    credit_money(state, o.buyer_id, o.cost).await;
                 }
-                send_u_packet(tx, "P$", &money(pair.0, pair.1).1);
-                Some(())
-            });
+                // Списать у нового покупателя (он online — кликнул) + P$.
+                state.modify_player(pid, |ecs, e| {
+                    let pair = {
+                        let mut s = ecs.get_mut::<PlayerStats>(e)?;
+                        s.money -= amount;
+                        (s.money, s.creds)
+                    };
+                    if let Some(mut f) = ecs.get_mut::<PlayerFlags>(e) {
+                        f.dirty = true;
+                    }
+                    send_u_packet(tx, "P$", &money(pair.0, pair.1).1);
+                    Some(())
+                });
+            }
         }
     }
     // C#: OpenOrder(p, orderid) после Bet в любом случае.

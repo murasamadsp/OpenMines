@@ -736,56 +736,41 @@ fn handle_storage_transfer(
         return;
     }
 
-    // Perform the transfer: read storage crystals, compute new values
-    // Get current storage crystals
-    let storage_crys = state
-        .building_index
-        .get(&(bx, by))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let s = ecs.get::<BuildingStorage>(*ent)?;
-            Some(s.crystals)
-        })
-        .unwrap_or([0; 6]);
-
-    // Get current player crystals
-    let player_crys = state
-        .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
-        })
-        .unwrap_or([0; 6]);
-
-    // Validate slider values (C# ref: count - sliders[i] >= 0 && sliders[i] >= 0)
-    let mut new_player = [0i64; 6];
-    let mut new_storage = [0i64; 6];
-    for i in 0..6 {
-        let count = player_crys[i] + storage_crys[i];
-        if sliders[i] < 0 || count - sliders[i] < 0 {
-            return; // Invalid slider value
-        }
-        new_player[i] = count - sliders[i];
-        new_storage[i] = sliders[i];
-    }
-
-    // Apply to storage
-    if modify_pack_with_db(state, bx, by, |ecs, entity| {
-        if let Some(mut s) = ecs.get_mut::<BuildingStorage>(entity) {
-            s.crystals = new_storage;
-        }
-    })
-    .is_err()
-    {
+    // Pre-fetch player entity before acquiring the write lock.
+    let Some(player_entity) = state.get_player_entity(pid) else {
         return;
-    }
+    };
 
-    // Apply to player and send @B update
-    state.modify_player(pid, |ecs, entity| {
-        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-        s.crystals = new_player;
-        send_u_packet(tx, "@B", &basket(&s.crystals, 1).1);
-        Some(())
+    // Atomic read-validate-write: single ecs.write() lock covers both storage and
+    // player — prevents TOCTOU crystal duplication by concurrent clan members.
+    let result = modify_pack_with_db(state, bx, by, |ecs, building_entity| {
+        let storage_crys = ecs.get::<BuildingStorage>(building_entity)?.crystals;
+        let player_crys = ecs.get::<PlayerStats>(player_entity)?.crystals;
+
+        let mut new_player = [0i64; 6];
+        let mut new_storage = [0i64; 6];
+        for i in 0..6 {
+            let count = player_crys[i] + storage_crys[i];
+            if sliders[i] < 0 || count - sliders[i] < 0 {
+                return None;
+            }
+            new_player[i] = count - sliders[i];
+            new_storage[i] = sliders[i];
+        }
+
+        ecs.get_mut::<BuildingStorage>(building_entity)?.crystals = new_storage;
+        ecs.get_mut::<PlayerStats>(player_entity)?.crystals = new_player;
+        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(player_entity) {
+            f.dirty = true;
+        }
+        Some(new_player)
     });
 
+    let Ok(Some(new_player)) = result else {
+        return;
+    };
+
+    send_u_packet(tx, "@B", &basket(&new_player, 1).1);
     // Re-open Storage GUI with updated values (C# ref: p.win = GUIWin(p))
     open_storage_gui(state, tx, pid, &view);
 }

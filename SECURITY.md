@@ -87,3 +87,50 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 **Суть:** Пароли записывались в SQLite сырым текстом, сравнивались прямым `==`.  
 **Фикс:** Новые пароли: `SHA-256(user_hash + ":" + passwd)`. Старые plaintext мигрируются
 автоматически при следующем логине игрока.
+
+### [FIXED] TOCTOU crystal duplication via Storage transfer
+
+**Файл:** `server/net/session/ui/gui_buttons.rs` — `handle_storage_transfer`  
+**Severity:** CRITICAL  
+**Суть:** Два члена клана с синхронными пакетами могли задублировать кристаллы из
+общего Storage. Функция читала кристаллы (ECS read-lock, отпускала), валидировала,
+затем писала (два отдельных write-lock). Оба игрока читали storage=[100,...], оба
+вычисляли new_player=[100,...], оба записывали → 100 кристаллов превращались в 200.  
+**Фикс:** Единый `ecs.write()` lock через `modify_pack_with_db` покрывает
+чтение, валидацию и запись обоих — и storage, и player — атомарно.
+
+### [FIXED] Аукцион: двойной рефанд при одновременных ставках (TOCTOU)
+
+**Файл:** `server/net/session/ui/auction_gui.rs` — `place_bet`  
+**Severity:** HIGH  
+**Суть:** Два игрока одновременно ставили на лот с существующим покупателем.
+Оба читали одинаковый `buyer_id` из БД, оба вызывали `credit_money(old_buyer, cost)` →
+предыдущий покупатель получал двойной рефанд (деньги из воздуха).  
+**Фикс:** CAS-паттерн: `UPDATE orders ... WHERE buyer_id=? AND cost=?` — атомарен
+на уровне SQLite (serialized writes). Только один запрос получает `rows_affected>0`
+и вызывает `credit_money`; проигравший просто обновляет GUI.
+
+### [FIXED] Аукцион: проверка денег при ставке допускала отрицательный баланс
+
+**Файл:** `server/net/session/ui/auction_gui.rs` — `place_bet`  
+**Severity:** HIGH  
+**Суть:** Проверка `bidder_money >= o.cost` (старая цена) вместо `>= amount`
+(новая ставка). При `o.cost=100, required=101, bidder_money=100` проверка
+проходила, а деньги списывались: `100 - 101 = -1` → отрицательный баланс.  
+**Фикс:** Условие изменено на `bidder_money >= amount`.
+
+### [FIXED] Аукцион: потеря предметов при ошибке БД в create_order
+
+**Файл:** `server/net/session/ui/auction_gui.rs` — `create_order`  
+**Severity:** MEDIUM  
+**Суть:** Предметы списывались из инвентаря до вызова `db.create_order`. Если
+INSERT в БД падал — предметы терялись безвозвратно (только `tracing::error!`).  
+**Фикс:** При ошибке БД — возврат предметов обратно в инвентарь + re-sync клиенту.
+
+### [FIXED] Overflow при подборе Box — переполнение кристаллов
+
+**Файл:** `server/net/session/play/dig_build.rs` — box pickup  
+**Severity:** LOW  
+**Суть:** `crystals[i] += bc[i]` без overflow-защиты. Теоретически (очень большой
+box) мог переполнить `i64` и обнулить/инвертировать счётчик кристаллов.  
+**Фикс:** `saturating_add` — переполнение останавливается на `i64::MAX`.

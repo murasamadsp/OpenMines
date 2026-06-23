@@ -115,7 +115,7 @@ pub fn handle_dig(
             state.modify_player(pid, |ecs, entity| {
                 let mut p_stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
                 for i in 0..6 {
-                    p_stats.crystals[i] += bc[i];
+                    p_stats.crystals[i] = p_stats.crystals[i].saturating_add(bc[i]);
                 }
                 let c_data = p_stats.crystals;
                 send_u_packet(tx, "@B", &basket(&c_data, 1).1);

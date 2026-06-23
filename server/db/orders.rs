@@ -117,6 +117,34 @@ impl Database {
         Ok(())
     }
 
+    /// CAS-вариант: обновляет ставку ТОЛЬКО если текущие `buyer_id` и `cost`
+    /// совпадают с ожидаемыми. Возвращает количество затронутых строк (0 = гонка).
+    /// Атомарен на уровне `SQLite` (serialized writes) — предотвращает двойной рефанд
+    /// при одновременных ставках двух игроков на один ордер.
+    pub async fn try_update_order_bet_cas(
+        &self,
+        id: i32,
+        new_cost: i64,
+        new_buyer_id: i32,
+        bet_time: i64,
+        expected_buyer_id: i32,
+        expected_cost: i64,
+    ) -> Result<u64> {
+        let res = sqlx::query(
+            "UPDATE orders SET cost = ?1, buyer_id = ?2, bet_time = ?3 \
+             WHERE id = ?4 AND buyer_id = ?5 AND cost = ?6",
+        )
+        .bind(new_cost)
+        .bind(new_buyer_id)
+        .bind(bet_time)
+        .bind(id)
+        .bind(expected_buyer_id)
+        .bind(expected_cost)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn delete_order(&self, id: i32) -> Result<()> {
         sqlx::query("DELETE FROM orders WHERE id = ?1")
             .bind(id)
