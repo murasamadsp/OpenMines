@@ -176,6 +176,9 @@ pub async fn handle_inventory_use(
         7 => use_razryadka(state, pid),
         35 => use_poli(state, pid),
         40 => use_c190(state, pid),
+        // TODO(user): «пак кланс» (тип D, конфиг "Clans") — пользователь сообщит индекс
+        // предмета позже. Тип здания готов (footprint/placement/GUI). Когда будет N:
+        //   N => place_building_from_item(state, tx, pid, "D").await,
         _ => false,
     };
 

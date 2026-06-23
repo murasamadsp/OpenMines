@@ -65,9 +65,10 @@ pub enum PackType {
     Levi,     // 'W'
     Jobs,     // 'J'
     Zalupa,   // 'Y'
-    /// В референсе отдельное enum-значение; в Rust для ворот используем `Gate` (логика), на wire — пробел как у `None`.
-    #[allow(clippy::upper_case_acronyms)]
-    FLAGBLYAT, // 'D'
+    /// «Пак кланс» (символ `'D'`, в исходниках кодовое имя `FLAGBLYAT`). Клиент
+    /// рендерит как `PackSprite` type `'D'`. Что делает — пока не определено;
+    /// ставится из предмета инвентаря (индекс предмета — TODO от пользователя).
+    Clans, // 'D'
     /// Клановые ворота: в C# `Gate : Pack` с `type => PackType.None` — тот же символ, что у `None`.
     Gate,
 }
@@ -84,6 +85,7 @@ impl PackType {
             Self::Craft => Some("Craft"),
             Self::Spot => Some("Spot"),
             Self::Gate => Some("Gate"),
+            Self::Clans => Some("Clans"),
             _ => None,
         }
     }
@@ -108,7 +110,7 @@ impl PackType {
             Self::Levi => "Levi",
             Self::Jobs => "Jobs",
             Self::Zalupa => "Zalupa",
-            Self::FLAGBLYAT => "FLAGBLYAT",
+            Self::Clans => "Clans",
             Self::Gate => "Gate",
         }
     }
@@ -128,7 +130,7 @@ impl PackType {
             Self::Levi => b'W',
             Self::Jobs => b'J',
             Self::Zalupa => b'Y',
-            Self::FLAGBLYAT => b'D',
+            Self::Clans => b'D',
         }
     }
 
@@ -152,7 +154,7 @@ impl PackType {
             "W" | "Levi" => Some(Self::Levi),
             "J" | "Jobs" => Some(Self::Jobs),
             "Y" | "Zalupa" => Some(Self::Zalupa),
-            "D" | "FLAGBLYAT" => Some(Self::FLAGBLYAT),
+            "D" | "Clans" | "FLAGBLYAT" => Some(Self::Clans),
             _ => None,
         }
     }
