@@ -115,6 +115,12 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx_signal.send(());
     });
 
+    // 1:1 C# CreateSpawns: стартовые здания + площадка золотой дороги при пустой
+    // таблице зданий (fresh / после --regen). На живом мире — no-op. ДО GameState::new,
+    // чтобы вставленные здания подхватились load_buildings_into_ecs, а клетки уже
+    // были в `world` до того как он уйдёт в Arc.
+    create_spawns(&database, &world).await?;
+
     let game_state = game::GameState::new(
         std::sync::Arc::new(world),
         std::sync::Arc::new(database),
@@ -184,6 +190,50 @@ async fn bootstrap_grant_admin(database: &db::Database) -> Result<()> {
             tracing::warn!("M3R_GRANT_ADMIN: нет игрока name={name:?}");
         }
     }
+    Ok(())
+}
+
+/// 1:1 C# `World.CreateSpawns` (`server_reference/WorldSystem/World.cs:97`).
+/// При ПУСТОЙ таблице зданий (fresh world / после `--regen`): площадка 21×21
+/// золотой дороги вокруг спавна (10,10) + стартовые Market/Resp/Up (owner 0).
+/// На живом (непустом) мире — no-op (как C# gate `db.reqs.Count() < 1`).
+///
+/// Клетки пишем напрямую в `world` (load зданий в ECS клетки НЕ ставит, а на
+/// `--regen` `.mapb` пуст). Порядок 1:1 C#: сначала платформа, потом футпринты
+/// (двери/стены перекрывают золотую дорогу). `set_cell` метит chunk dirty → flush.
+async fn create_spawns(database: &db::Database, world: &world::World) -> Result<()> {
+    use crate::game::buildings::PackType;
+    use crate::net::session::social::buildings::building_extra_for_pack_type;
+    use crate::world::WorldProvider as _;
+
+    const SPAWN_X: i32 = 10;
+    const SPAWN_Y: i32 = 10;
+    const GOLDEN_ROAD: u8 = 36;
+
+    if !database.load_all_buildings().await?.is_empty() {
+        return Ok(());
+    }
+
+    for rx in -10..=10 {
+        for ry in -10..=10 {
+            world.set_cell(SPAWN_X + rx, SPAWN_Y + ry, GOLDEN_ROAD);
+        }
+    }
+
+    // Координаты 1:1 C#: Market(x-7,y-4), Resp(x-8,y+7), Up(x,y-4); owner 0, clanless.
+    let spawns = [
+        (PackType::Market, "M", SPAWN_X - 7, SPAWN_Y - 4),
+        (PackType::Resp, "R", SPAWN_X - 8, SPAWN_Y + 7),
+        (PackType::Up, "U", SPAWN_X, SPAWN_Y - 4),
+    ];
+    for (pack_type, code, ox, oy) in spawns {
+        let extra = building_extra_for_pack_type(pack_type);
+        database.insert_building(code, ox, oy, 0, 0, &extra).await?;
+        for (dx, dy, cell) in pack_type.building_cells() {
+            world.set_cell(ox + dx, oy + dy, cell);
+        }
+    }
+    tracing::info!("CreateSpawns: площадка 21×21 + Market/Resp/Up на спавне (10,10)");
     Ok(())
 }
 
@@ -357,6 +407,49 @@ mod tests {
     #[test]
     fn test_parse_regen_flag_argv0_leak_relative() {
         assert!(parse_regen_flag_from(["./openmines-server", "--regen"], None).is_err());
+    }
+
+    // --- CreateSpawns (стартовые здания + площадка) ---
+
+    #[tokio::test]
+    async fn create_spawns_places_buildings_and_platform_then_idempotent() {
+        use crate::world::WorldProvider as _;
+
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("create_spawns_db_{}", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("create_spawns_world_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 4, 4, cell_defs, &dir).unwrap();
+        // Конфиг зданий нужен для building_cells/extra (OnceLock — может быть уже задан).
+        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+
+        // Fresh world → создаёт Market/Resp/Up + площадку.
+        create_spawns(&database, &world).await.unwrap();
+        assert_eq!(
+            database.load_all_buildings().await.unwrap().len(),
+            3,
+            "Market/Resp/Up должны быть созданы на пустом мире"
+        );
+        assert_eq!(
+            world.get_cell(15, 5),
+            36,
+            "клетка площадки = золотая дорога (36)"
+        );
+        assert_eq!(
+            world.get_cell(10, 6),
+            37,
+            "Up origin = дверь (37), футпринт перекрыл площадку"
+        );
+
+        // Непустой мир → no-op (1:1 C# gate), повтор не плодит здания.
+        create_spawns(&database, &world).await.unwrap();
+        assert_eq!(
+            database.load_all_buildings().await.unwrap().len(),
+            3,
+            "повторный вызов на непустом мире не должен создавать здания"
+        );
     }
 }
 
