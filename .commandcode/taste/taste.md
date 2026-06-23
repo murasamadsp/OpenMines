@@ -82,3 +82,9 @@ See [workflow/taste.md](workflow/taste.md)
 
 # testing
 - Improve test coverage to prevent regressions — user explicitly wants better coverage after bugs slip through. Confidence: 0.60
+
+# security
+- For game-economy arithmetic (money, crystals, costs), always use `checked_mul` for multiplication and `saturating_add`/`saturating_sub` for accumulation — overflow in release mode (`overflow-checks = false`) silently wraps and bypasses guards. Confidence: 0.80
+
+# workflow
+- When commit hook fails on pre-commit (clippy/rustfmt), run `cargo fmt --all` first, then re-stage affected files, then re-commit. Repeated recovery pattern. Confidence: 0.70

@@ -411,6 +411,11 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, mut shutdown: broadcast::Rece
                             &state, &tx, pid, enabled,
                         );
                     }
+                    crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
+                        crate::net::session::play::packs::handle_gun_fill_prog(
+                            &state, &tx, pid, x, y,
+                        );
+                    }
                 }
             }
             for (pid, rx, ry, mh, bcast) in pending {

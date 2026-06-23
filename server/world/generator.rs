@@ -140,24 +140,18 @@ fn not_typed_noise(rng: &mut DotnetRng) -> ImplicitFractal {
 /// `RandomSizedParts(args)` — 1:1. Делит [0,~2] на сегменты `(start, end)`,
 /// хранимые НЕсортированно; проверка пересечения `s <= end && e >= start`.
 fn random_sized_parts(rng: &mut DotnetRng, args: &[u8]) -> Vec<(u8, f32, f32)> {
+    // Дословно C# `RandomSizedParts`: розыгрыш initial (start,end), затем `while`
+    // редро ПОКА сегмент пересекается с уже размещёнными. БЕЗ cap — C# цикл тоже
+    // безлимитный и на реальных секторах сходится (зазор всегда находится).
     let mut parts: Vec<(u8, f32, f32)> = Vec::new();
     for &d in args {
-        let mut guard = 0u32;
-        loop {
-            let start = rng.next_f64() as f32;
-            let end = start + rng.next_f64() as f32;
-            let overlap = parts.iter().any(|&(_, s, e)| s <= end && e >= start);
-            if !overlap {
-                parts.push((d, start, end));
-                break;
-            }
-            guard += 1;
-            // C# может зациклиться; cap + принудительная вставка во избежание зависания.
-            if guard >= 1000 {
-                parts.push((d, start, end));
-                break;
-            }
+        let mut start = rng.next_f64() as f32;
+        let mut end = start + rng.next_f64() as f32;
+        while parts.iter().any(|&(_, s, e)| s <= end && e >= start) {
+            start = rng.next_f64() as f32;
+            end = start + rng.next_f64() as f32;
         }
+        parts.push((d, start, end));
     }
     parts
 }
@@ -310,10 +304,9 @@ fn fill_sector(
 
             // refillnoise:
             let (mut vals, min, max) = fill_noise_to_sector(&mut rng, comp, s_width, s_height);
-            // сбрасываем типы перед каждым SampleAndFindTypes (как свежий проход)
-            for t in types.iter_mut() {
-                *t = EMPTY;
-            }
+            // C# НЕ сбрасывает `c.type` между attempt'ами: `c.type = inrange ? key
+            // : c.type` сохраняет тип с прошлого прохода. `types` инициализирован
+            // EMPTY один раз до цикла — НЕ обнуляем здесь (иначе расход с C#).
             let result = sample_and_find_types(&mut rng, &mut vals, &mut types, &parts, min, max);
 
             // if (result.Count < parts.Count)
@@ -406,6 +399,11 @@ fn fill_sectors(
     let mut visited = vec![false; flat_n];
     let mut sector_seq: u32 = 0;
 
+    // C# `ce` (аккумулятор клеток) сбрасывается ТОЛЬКО после залитого сектора ≥50.
+    // Поэтому компоненты <50 копятся сюда до достижения порога; габариты сектора
+    // (swidth/sheight/depth) берутся от ПОСЛЕДНЕГО (= текущего) компонента.
+    let mut acc: Vec<(u32, u32)> = Vec::new();
+
     // C# обходит `for y { for x }` и BFS по пустотам (value==0).
     for y in 0..h {
         for x in 0..w {
@@ -461,20 +459,24 @@ fn fill_sectors(
                 }
             }
 
-            // if (s.seccells.Count < 50) continue;
-            if comp.len() < SECTOR_MIN_CELLS {
+            // C# `ce.Add` за весь BFS == добавить все клетки компонента в аккумулятор.
+            acc.append(&mut comp);
+
+            // if (s.seccells.Count < 50) continue;  (ce НЕ сброшен → копим дальше)
+            if acc.len() < SECTOR_MIN_CELLS {
                 continue;
             }
 
             sector_seq = sector_seq.wrapping_add(1);
+            // depth/swidth/sheight — текущего (последнего) компонента, как C# `s`.
             let tier = sector_palette::depth_tier(depth);
             // count > 40000 → gig=false, иначе gig=true.
-            let gig = comp.len() <= GIG_SIZE_THRESHOLD;
+            let gig = acc.len() <= GIG_SIZE_THRESHOLD;
 
             fill_sector(
                 cells,
                 dur,
-                &comp,
+                &acc,
                 s_width,
                 s_height,
                 chunks_w,
@@ -484,6 +486,7 @@ fn fill_sectors(
                 seed.wrapping_add(sector_seq).wrapping_mul(0x1337),
                 cell_dur,
             );
+            acc.clear(); // C# `ce = new List<SectorCell>()` после залитого сектора.
         }
     }
 }
@@ -679,11 +682,63 @@ mod tests {
         );
     }
 
+    /// Скелет (без spawn-clear) + `fill_sectors` → плоский `x*h+y`, фон 0→32
+    /// (`CellType.Empty`), как C# `Gen.StartGeneration` + `DetectAndFillSectors`.
+    /// Используется golden-тестом ниже и (через env) внешним C#-харнессом сверки.
+    fn full_world_flat(w: u32, h: u32, seed: u32) -> Vec<u8> {
+        let chunks_w = w / CHUNK_SZ;
+        let chunks_h = h / CHUNK_SZ;
+        let total = (w * h) as usize;
+
+        let skel = crate::world::sectors_gen::generate_skeleton(w, h, seed);
+        let mut cells = vec![0u8; total];
+        for x in 0..w {
+            for y in 0..h {
+                cells[cell_index_in_map(x, y, chunks_w, chunks_h)] =
+                    skel.values[(x * h + y) as usize];
+            }
+        }
+        let mut dur = vec![0u8; total * 4];
+        let cell_dur = [1.0f32; 256];
+        fill_sectors(
+            &mut cells, &mut dur, w, h, chunks_w, chunks_h, seed, &cell_dur,
+        );
+
+        let mut flat = vec![0u8; total];
+        for x in 0..w {
+            for y in 0..h {
+                let b = cells[cell_index_in_map(x, y, chunks_w, chunks_h)];
+                flat[(x * h + y) as usize] = if b == 0 { 32 } else { b };
+            }
+        }
+        flat
+    }
+
+    /// Golden-отпечаток ПОЛНОГО мира (скелет + заливка секторов), ПОБАЙТОВО
+    /// сверенного с эталонным C# (`Sectors`+`SectorFiller`+`Sector`, засеянные по
+    /// схеме Rust в standalone-харнессе). Заливка **полностью 1:1**: 0 расхождений
+    /// на 30+ сидах и размерах 64²…224² (после фикса int-overflow `(i+j)` в
+    /// `simplex_noise`, см. `docs/WORLDGEN_PARITY.md`). FNV ловит регресс заливки.
+    #[test]
+    fn full_world_fill_matches_csharp_reference_golden() {
+        let flat = full_world_flat(64, 64, 7);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in &flat {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(
+            h, 0x7914_40a4_206b_e5c4,
+            "полный мир (seed=7, 64×64) разошёлся с C#-эталоном заливки"
+        );
+    }
+
     /// Полная генерация (`World::new` → `generate(seed=42)`) ПОБАЙТОВО детерминирована:
     /// два независимых регена с одними размерами дают идентичные клетки во всех чанках.
-    /// Это «сравни побайтово результаты миров» в единственной достижимой форме —
-    /// C#-эталон НЕ детерминирован (`new Random()` без сида в SectorFiller/Sector),
-    /// поэтому сравнение Rust-vs-живой-C# невозможно; сравниваем Rust сам с собой.
+    /// (Сверка с C#: скелет — побайтово на всём диапазоне сидов, заливка — побайтово
+    /// с засеянным по схеме Rust C#-харнессом, см. golden-тесты выше и
+    /// `docs/WORLDGEN_PARITY.md`. C# боевой недетерминирован — `new Random()` без сида;
+    /// детерминизм даёт фикс-seed Rust + засев харнесса.)
     #[test]
     fn full_world_generation_is_byte_deterministic() {
         use crate::world::cells::CellDefs;

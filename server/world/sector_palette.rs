@@ -186,7 +186,8 @@ pub const fn crys_palette(tier: usize, gig: bool) -> &'static [u8] {
                     cell_type::X_GREEN,
                 ]
             } else {
-                &[cell_type::GREEN, cell_type::BLUE, cell_type::X_BLUE]
+                // C# `< 1000` non-gig crys = [Green, Blue] (без X_BLUE).
+                &[cell_type::GREEN, cell_type::BLUE]
             }
         }
         2 => {

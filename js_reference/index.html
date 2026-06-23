@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="/styles/main.css">
+    <link rel="stylesheet" href="/styles/map.css">
+
+    <title>testG</title>
+</head>
+
+<body>
+    <div id="main_container">
+        <div id="options">
+            <input type="checkbox" value="" name="" id="options_ignore_borders">
+            <label for="options_ignore_borders">Сквозь породы</label>
+            <input type="checkbox" value="" name="" id="options_vectors"><label for="options_vectors">Векторы
+                движения</label>
+            <input type="checkbox" value="" name="" id="options_view_box"><label for="options_view_box">ViewBox</label>
+            <input type="checkbox" value="" name="" id="options_nicknames"><label for="options_nicknames">Ники</label>
+            <input type="range" min="1" max="100" value="80" class="slider" id="options_fps"><label
+                for="options_fps">фпс</label>
+            <input type="range" min="1" max="100" value="2" class="slider" id="options_prog_ticks"><label
+                for="options_prog_ticks">тикер программ</label>
+
+            <input type="button" value="карта" onclick="OpenMap()">
+            <input type="button" value="программатор" onclick="OpenProgrammator()">
+        </div>
+
+        <div id="canv_container">
+            <canvas id="world_canv"></canvas>
+        </div>
+
+        <div id="map_panel_container">
+            <div class="panel_header" id="map_panel_header">
+
+                <div class="left">
+                    <div id="map_coords">Карта</div>
+                </div>
+                <div class="right">
+                    <input type="range" min="-1" max="2" value="1" name="Zoom" id="map_options_zoom"><label
+                        for="map_options_zoom">Zoom</label>
+                    <input type="checkbox" name="options_night" id="map_options_night" checked><label
+                        for="map_options_night">Ночная тема</label>
+                    <input type="checkbox" name="options_opacity" id="map_options_opacity" checked><label
+                        for="map_options_opacity">Прозрачность</label>
+                    <input type="checkbox" name="options_bots" id="map_options_bots" checked><label
+                        for="map_options_bots">Мои железные уроды</label>
+                </div>
+            </div>
+            <div class="map_container" id="map_container">
+                <canvas id="map_canvas"></canvas>
+            </div>
+        </div>
+
+        <iframe id="prog_frame"></iframe>
+    </div>
+
+    <div id="bot_base_info_panel" class="panel_basic botbaseinfo">
+        <div id="base_info_nickname">BotName</div>
+        <div id="base_info_hp" class="castom_bar_container" style="margin-bottom: 20px;"> </div>
+        <div id="base_cry_cargo" class="castom_bar_container"> </div>
+        <div id="base_cry_cargo_g" class="castom_bar_container"></div>
+        <div id="base_cry_cargo_b" class="castom_bar_container"></div>
+        <div id="base_cry_cargo_r" class="castom_bar_container"></div>
+        <div id="base_cry_cargo_w" class="castom_bar_container"></div>
+        <div id="base_cry_cargo_v" class="castom_bar_container"></div>
+        <div id="base_cry_cargo_c" class="castom_bar_container"></div>
+        <div id="base_bot_coordinates" style="margin-top: 20px;"></div>
+    </div>
+
+    <div id="user_console_gui" class="panel_basic panel_center" style="visibility: hidden;">
+        <div id="user_console_panel_header">Консоль</div>
+        <div id="user_console_text_out">Lorem, ipsum dolor sit amet consectetur adipisicing elit. Ab, a! Quis iure maiores sint doloremque doloribus sit tempore soluta necessitatibus suscipit dignissimos laudantium, amet dolorum dolore ad dicta expedita ea?</div>
+        <div>
+            <input type="text" placeholder="Введите сюда команду" name="" id="user_console_input">
+            <div id="user_console_hint"></div>      
+        </div>
+        
+    </div>
+
+    <div id="building_gui_container" class="Build_GUI_Container">
+        <div id="building_gui_panel" class="panel_basic Build_GUI_panel" style="visibility: visible;">
+            <div id="building_gui_header" class="Build_GUI_header">
+                <div id="building_gui_name">Test</div>
+                <input type="button" value="X">
+            </div>
+
+            <div id="building_GUI_body" >
+
+
+                <div id="building_GUI_UP">
+                    <div id="GUI_UP_skill_visual"
+                        style="position:relative; width: 397px;height: 260px;background-image:url(graphics/skills/BotSkillsBackground.png);">
+                    </div>
+                    <div id="GUI_UP_skillist" hidden>
+
+                    </div>
+
+                    <div id="GUI_UP_skill_info">
+                        <div hidden>Выбор скила</div>
+                        <div style="width: max-content;display: inline-block;">
+                            <div id="GUI_UP_current_skill_image" style="width: 73px;height: 73px;background-image: url(graphics/skills/icons/image_part_0.png);"></div>
+                            <div id="GUI_UP_current_skill_buttons">
+                                <input type="button" value="&#128465;" style="background: inherit;filter: invert(1);font-size: x-large; padding: 0px;">
+                                <input type="button" value="&#128275;&#128274;" style="background: inherit;font-size: x-large;padding: 0px;">
+                            </div>
+                        </div>
+                        <div id="GUI_UP_current_skill_info" style="width: fit-content; display: inline-block;">
+                            <div id="GUI_UP_current_name">lorem</div>
+                            <div id="GUI_UP_current_exp">asddasd</div>
+                            <div id="GUI_UP_current_effect_description">asdasdasd</div>
+                            <div id="GUI_UP_current_howtoup">asfgsfasfdf</div>
+                            <div id="GUI_UP_current_effect">dsfsdfsdf</div>
+                            <div id="GUI_UP_current_next_cost">dsfsdfsdfsdffsd</div>
+                        </div>
+   
+                    </div>
+                </div>
+
+
+
+
+
+                <div id="building_GUI_Market" hidden>
+                    <div class="tab" id="GUI_Market_tabs">
+                        <div class="tab_list">
+                          <input class="switch active" type="button" value="Прдать кри" onclick="TabSwitch(event,'GUI_Market_tabs','GUI_Market_sell')">
+                          <input class="switch " type="button" value="Купить кри"onclick="TabSwitch(event,'GUI_Market_tabs','GUI_Market_buy')">
+                          <input class="switch" type="button" value="Рыночек"onclick="TabSwitch(event,'GUI_Market_tabs','GUI_Market_items')">
+                        </div>
+                        <div class="tabs_container">
+                          <div id="GUI_Market_sell" class="panel tab_element">
+                            
+                          </div>
+
+                          <div id="GUI_Market_buy" class="panel tab_element" hidden>
+                           
+                          </div>
+
+                          <div id="GUI_Market_items" class="panel tab_element" hidden>
+                            
+                          </div>
+                          </div>
+                        </div>
+                      </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    </div>
+
+    <div id="programmator_panel" class="panel_basic">
+        <input type="button" value="Программатор"> <input type="button" value="go/stop">
+    </div>
+    <div id="status_bar" class="panel_basic">
+        <div id="botmode_status_autodigg" style="background-color:#fffb00a2;">Автокопа</div>
+        <div id="botmode_status_agr" class="glow" style="background-color:#ff1100a2;">Режим курвы</div>
+        <div id="botmode_status_debug" style="background-color:#0d9e00a2;">Дебуг</div>
+        <div id="botmode_status_hand" style="background-color:#33ff00a2;">Штурвал</div>
+        <div id="botmode_status_roadignore" style="background-color:#00aeffa2;">Улитковое</div>
+        <div id="botmode_status_accuaccelerate" style="background-color:#0000ffa2;">Спиды</div>
+        <div id="botmode_status_overweight" class="glow" style="background-color:#ff0000a2;">Перегруз</div>
+    </div>
+
+    <div id="inventory_container" class="u_inventory_container">
+        <div id="inventory" class="u_inventory">
+        </div>
+        <input id="inventory_syze" class="inventory_syze_button" type="button" value=">">
+    </div>
+
+    <script src="/scripts/tables/MapTables.js"></script>
+    <script src="/scripts/tables/DataTables.js"></script>
+    <script src="/scripts/tables/minestileset.js"></script>
+    <script src="/scripts/tables/items.js"></script>
+    <script src="/scripts/usefuladitions.js"></script>
+    <script src="/scripts/cargo.js"></script>
+
+    <script src="/scripts/entitys/entity.js"></script>
+    <script src="/scripts/entitys/packs.js"></script>
+
+    <script src="/scripts/userGUI/guiControls.js"></script>
+    <script src="/maps/test.js"></script>
+
+    <script src="/scripts/wmap.js"></script>
+    <script src="/scripts/geophys.js"></script>
+
+
+    <script src="/scripts/programmator.js"></script>
+    <script src="/scripts/bot.js"></script>
+    <script src="/scripts/wrenderer.js"></script>
+    <script src="/scripts/userGUI/Inventory.js"></script>
+    <script src="/scripts/userGUI/Skills.js"></script>
+    <script src="/scripts/main.js"></script>
+    <script src="/scripts/controls.js"></script>
+    <script src="/scripts/userGUI/Mapdrawer.js"></script>
+    <script src="/scripts/userGUI/Console.js"></script>
+</body>
+
+</html>

@@ -1,5 +1,5 @@
 {
-  "world_name": "world",
+  "world_name": "test-1",
   "port": 8090,
   "world_chunks_w": 64,
   "world_chunks_h": 64,

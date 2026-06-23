@@ -103,6 +103,12 @@ pub enum ActionType {
     IsBox,
     CheckGun,
     FillGun,
+    IsSlime,
+    IsInGun,
+    HandModeOn,
+    HandModeOff,
+    MacrosGun,
+    MacrosDigAround,
 }
 
 const fn get_action_type(id: u8) -> ActionType {
@@ -193,7 +199,13 @@ const fn get_action_type(id: u8) -> ActionType {
         159 => ActionType::DisableAutoDig,
         160 => ActionType::EnableAgression,
         161 => ActionType::DisableAgression,
+        162 => ActionType::HandModeOn,
+        163 => ActionType::HandModeOff,
+        164 => ActionType::MacrosGun,
+        165 => ActionType::MacrosDigAround,
         166 => ActionType::RunOnRespawn,
+        98 => ActionType::IsSlime,
+        106 => ActionType::IsInGun,
         _ => ActionType::None,
     }
 }
@@ -256,6 +268,9 @@ pub struct ProgrammatorState {
     /// C# `ProgrammatorData.temp` — состояние `MacrosMine` между тиками: направление,
     /// в котором бот сейчас копает (fast-path), либо None (нужен скан 4 направлений).
     pub macros_template: Option<i32>,
+    /// JS ref `HAND_MODE`: когда `true` — программа не блокирует ручное управление
+    /// (ботом можно двигать WASD даже при запущенной программе).
+    pub hand_mode_active: bool,
 }
 
 impl ProgrammatorState {
@@ -276,6 +291,7 @@ impl ProgrammatorState {
             startpoint: (String::new(), 0),
             goto_death: None,
             macros_template: None,
+            hand_mode_active: false,
         }
     }
 
@@ -460,6 +476,7 @@ impl ProgrammatorState {
         self.shift_x = 0;
         self.shift_y = 0;
         self.flip_state = false;
+        self.hand_mode_active = false;
         for f in self.current_prog.values_mut() {
             f.reset();
         }
@@ -1037,6 +1054,23 @@ fn execute_action(
             });
             ExecResult::None
         }
+        ActionType::IsSlime => {
+            check_cell(&mut *prog, pos, world, |x, y, w| {
+                let c = w.get_cell(x, y);
+                // JS ref is_slime: YellowSlime(86), WhiteSlime(66), VioletSlime(67),
+                // Pearl(68), WarSlime(82), AcidRock(118). Server cells: GRAY_ACID(66),
+                // PURPLE_ACID(67), PEARL(68), PASSIVE_ACID(86), LIVING_ACTIVE_ACID(95),
+                // CORROSIVE_ACTIVE_ACID(96), ACID_ROCK(118).
+                matches!(c, 66 | 67 | 68 | 82 | 86 | 95 | 96 | 118)
+            });
+            ExecResult::None
+        }
+        ActionType::IsInGun => {
+            check_cell(&mut *prog, pos, world, |_x, _y, _w| {
+                false // stub: будет подключено через world/game state
+            });
+            ExecResult::None
+        }
         ActionType::IsLivingCrystal => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
                 let c = w.get_cell(x, y);
@@ -1229,6 +1263,53 @@ fn execute_action(
             prog.macros_template = None;
             ExecResult::None
         }
+        ActionType::MacrosGun => {
+            // JS ref MACROS_GUN: charge the gun at facing cell.
+            let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
+            let gx = pos.x + dx;
+            let gy = pos.y + dy;
+            *delay_ms = 200;
+            prog_q.0.push(ProgrammatorAction::FillGun {
+                pid: meta.id,
+                tx: conn.tx.clone(),
+                x: gx,
+                y: gy,
+            });
+            ExecResult::BoolResult(true)
+        }
+        ActionType::MacrosDigAround => {
+            // JS ref MACROS_DIGG_AROUND: save rotation, scan left/right/ahead
+            // for crystals, dig if found. Rotations: left=(d+3)%4, right=(d+1)%4.
+            let left_dir = (pos.dir + 3) % 4;
+            let right_dir = (pos.dir + 1) % 4;
+            let check = [(left_dir, 0), (right_dir, 1), (pos.dir, 2)];
+            let mut found = false;
+            for &(check_dir, _) in &check {
+                let (dx, dy) = crate::game::direction::dir_offset(check_dir);
+                let cx = pos.x + dx;
+                let cy = pos.y + dy;
+                if crate::world::cells::is_crystal(world.get_cell(cx, cy)) {
+                    if pos.dir == check_dir {
+                        *delay_ms = 200;
+                        prog_q.0.push(ProgrammatorAction::Dig {
+                            pid: meta.id,
+                            tx: conn.tx.clone(),
+                            dir: pos.dir,
+                        });
+                    } else {
+                        *delay_ms = speed_pause(skills, on_road);
+                        push_move(prog_q, meta, conn, pos.x, pos.y, check_dir);
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                ExecResult::BoolResult(true)
+            } else {
+                ExecResult::None
+            }
+        }
 
         // ─── Writable state / other ─────────────────────────────────────
         ActionType::WritableState
@@ -1397,7 +1478,11 @@ fn handle_bool_result(action: &PAction, state: bool, prog: &mut ProgrammatorStat
                 }
             }
         }
-        ActionType::MacrosDig | ActionType::MacrosHeal | ActionType::MacrosMine => {
+        ActionType::MacrosDig
+        | ActionType::MacrosHeal
+        | ActionType::MacrosMine
+        | ActionType::MacrosGun
+        | ActionType::MacrosDigAround => {
             // Repeat action: decrement current
             let cf = prog.current_function.clone();
             if state
@@ -1483,6 +1568,12 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
         }
         ActionType::Flip => {
             prog.flip_state = !prog.flip_state;
+        }
+        ActionType::HandModeOn => {
+            prog.hand_mode_active = true;
+        }
+        ActionType::HandModeOff => {
+            prog.hand_mode_active = false;
         }
         _ => {}
     }

@@ -106,6 +106,7 @@ tools/**/obj/
 *.db-shm
 *.db-wal
 *.mapb
+*_v2.map
 /data/
 /mines3.db
 /openmines.db
@@ -186,3 +187,8 @@ fmod_editor.log
 .claude/settings.local.json
 .omc/
 
+
+# Telegram-парсер: сессия = авторизация аккаунта, config = api_hash/телефон — НЕ коммитить
+tools/tg_parser_session.session
+tools/tg_config.json
+tools/tg_state.json

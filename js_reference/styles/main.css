@@ -1,0 +1,391 @@
+:not(input):not(textarea),
+:not(input):not(textarea)::after,
+:not(input):not(textarea)::before {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+    -webkit-font-smoothing: none;
+}
+
+input::-webkit-outer-spin-button,
+input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+}
+
+input,
+button,
+textarea,
+:focus {
+    outline: none;
+    border: none;
+}
+
+html {
+    overflow: hidden;
+}
+
+body {
+    background-color: #444f;
+    margin: 0;
+    padding: 0;
+}
+
+#debug_data {
+    background-color: gray;
+}
+
+#options {
+    display: block;
+    float: none;
+    min-height: 16px;
+    width: fit-content;
+    height: fit-content;
+
+    /*background-color: #000b;*/
+}
+
+#canv_container {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    float: inline-start;
+    image-rendering: pixelated;
+}
+
+#prog_frame {
+    display: none;
+    position: absolute;
+    background: #111a;
+    color: beige;
+    width: 1180px;
+    height: 90%;
+    top: 5%;
+    left: 10%;
+    z-index: 100;
+}
+
+.panel_basic {
+    background: #111a;
+    color: azure;
+    position: fixed;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.panel_center{
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    margin-right: -50%;
+    transform: translate(-50%, -50%)
+}
+
+@keyframes glowing {
+    0% {
+        color: aliceblue;
+    }
+
+    50% {
+        color: yellow;
+    }
+
+    100% {
+        color: aliceblue;
+    }
+}
+
+#status_bar {
+    top: 380px;
+    left: 10px;
+    color: azure;
+}
+
+#status_bar div {
+    height: min-content;
+    width: fit-content;
+    padding: 1px 5px;
+}
+
+#status_bar .glow {
+    animation: glowing 1300ms infinite;
+}
+
+#programmator_panel {
+    top: 520px;
+    left: 10px;
+}
+
+.colorpalette {
+    color: #e0ca03da;
+}
+
+
+.panel_header {
+    width: auto;
+    height: fit-content;
+    background-color: #222;
+    border: 1px solid #353535;
+    color: inherit;
+    font-family: Tahoma;
+}
+
+.panel_header .left {
+    display: block;
+    float: inline-start;
+    width: max-content;
+    justify-content: start;
+}
+
+.panel_header .right {
+    display: block;
+    float: inline-end;
+    width: fit-content;
+}
+
+
+.panel_footer {
+    background-color: #222;
+    border: 1px solid #353535;
+    width: auto;
+    height: min-content;
+    display: inline-flex;
+}
+
+
+
+
+.u_inventory_container {
+    position: fixed;
+    top: 100px;
+    right: 10px;
+    background-color: #111c;
+    width: max-content;
+    height: min-content;
+}
+
+.u_inventory_container * {
+    float: left;
+}
+
+.u_inventory_container .u_inventory {
+    display: inline;
+    width: max-content;
+    height: min-content;
+}
+
+.u_inventory_container .u_inventory .column {
+    display: inline;
+    float: right;
+    width: min-content;
+    height: min-content;
+}
+
+.u_inventory_container .u_inventory .item_count {
+    color: aliceblue;
+    background-color: #222c;
+    text-decoration: solid;
+    display: inline;
+    float: right;
+    font-size: 12px;
+
+    margin: 0px 0px;
+    margin-top: -14px;
+    width: 42px;
+    height: 14px;
+}
+
+.u_inventory_container .u_inventory .item {
+    color: aliceblue;
+    text-decoration: solid;
+    display: inline;
+    float: right;
+    background-color: #fff1;
+
+    margin: 0;
+    width: 42px;
+    height: 42px;
+}
+
+.u_inventory_container .item_place {
+    width: 42px;
+    height: 42px;
+    margin: 2px 2px;
+    background-color: #fff1;
+}
+
+.u_inventory_container input {
+    background-color: #ddd6;
+    display: inline;
+    width: 16px;
+    height: 460px;
+    ;
+    float: right;
+}
+
+
+
+
+.botbaseinfo {
+    contain: inline-size;
+    position: fixed;
+    top: 45px;
+    left: 15px;
+    display: block;
+    width: min-content;
+    height: min-content;
+}
+
+.botbaseinfo div {
+    width: max-content;
+}
+
+.castom_bar_container {
+    display: inline-block;
+    width: max-content;
+    height: min-content;
+}
+
+.castom_bar_container :first-child {
+    display: block;
+    float: inline-start;
+}
+
+.castom_progress_persent {
+    position: absolute;
+    filter: invert(1);
+    width: inherit;
+    height: auto;
+    display: block;
+    text-align: center;
+    z-index: 1;
+}
+
+.Build_GUI_panel {
+    position: absolute;
+    display: flex;
+    min-width: 25px;
+    min-height: 25px;
+    max-width: min-content;
+    max-height: fit-content;
+    flex-wrap: wrap;
+    align-content: stretch;
+    justify-content: space-around;
+    top: 50%;
+    left: 50%;
+    margin-right: -50%;
+    transform: translate(-50%, -50%);
+
+}
+
+.Build_GUI_header {
+    width: 100%;
+    height: min-content;
+    display: inline-flex;
+    flex-wrap: nowrap;
+    justify-content: space-between;
+}
+
+.building_GUI_body {
+    
+}
+
+.GUI_UP_empty_slot {
+    width: 38px;
+    height: 38px;
+    position: absolute;
+    background-image: url("/graphics/skills/icons/slot_empty.png");
+}
+
+.GUI_UP_empty_slot img{
+    width:38px;
+    height:38px;
+}
+
+.GUI_UP_skill_lvl {
+    font-size: 12px;
+    position: absolute;
+    bottom: -6px;
+    background-color: gray;
+    border-radius: 5px;
+    transform: translate(-50%, 0%);
+    margin-left: 50%;
+    z-index: 1;
+}
+
+.tab {
+    display: inline-block;
+    width: min-content;
+    height: min-content;
+    color: inherit;
+}
+
+.tab .tab_list {
+    background-color: #222;
+    border: 1px solid #353535;
+    width: auto;
+    min-width: max-content;
+}
+
+.tabs_container {
+    display: inline-block;
+    width: min-content;
+    height: min-content;
+}
+
+.tab input {
+    background-color: inherit;
+    color: inherit;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    transition: 0.3s;
+}
+
+.tab input:hover {
+    background-color: #555;
+}
+
+.tab input.active {
+    background-color: #353535;
+}
+
+#user_console_gui{
+    width: fit-content;
+    height: fit-content;
+}
+
+#user_console_input {
+    padding: 0px;
+    margin: -1px;
+    width: 100%;
+    max-width: 100%;
+    height: 20px;
+    background-color: inherit;
+    color: inherit;
+    border-color: gray;
+    border-style: solid;
+    border-width: 1px;
+    font-size: 15px;
+    font-family: 'Courier New', Courier, monospace;
+    position: relative;
+    z-index: 1;
+}
+
+#user_console_hint{
+    width: 100%;
+    height: 20px;
+    margin-top: -20px;
+    font-size: 15px;
+    font-family: 'Courier New', Courier, monospace;
+    z-index: 0;
+    color: #3937;
+    position: relative;
+}
+
+#user_console_text_out{
+    width: 500px;
+    height: 450px;
+    overflow-y: auto;
+    overflow-x:hidden;
+    scrollbar-color: inherit;
+    text-overflow: ellipsis;
+}

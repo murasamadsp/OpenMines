@@ -55,7 +55,9 @@ struct Sectors {
     height: usize,
     seed: i32,
     value: Vec<f32>,
-    mid: f32,
+    /// C# `Sectors.mid` — `double` (поле `public double min, mid, max`). Сумма по
+    /// всем клеткам копится в f64; f32 здесь расходился бы с эталоном на краевых сидах.
+    mid: f64,
     /// Общий RNG (как `Sectors.r`) — используется только пост-обработкой.
     r: DotnetRng,
 }
@@ -89,39 +91,45 @@ impl Sectors {
         fr.set_lacunarity(lac);
         fr.set_seed(self.seed);
 
-        let mut max = fr.get(0.0, 0.0) as f32;
-        let mut min = fr.get(0.0, 0.0) as f32;
+        // C# `min/max` — double, но получают (float)-усечённый сэмпл шума.
+        // Воспроизводим дословно: f32-сэмпл, расширенный в f64.
+        let mut max = f64::from(fr.get(0.0, 0.0) as f32);
+        let mut min = f64::from(fr.get(0.0, 0.0) as f32);
 
         for x in 0..w {
             for y in 0..h {
                 let nx = (x as f32 / w as f32) as f64;
                 let ny = (y as f32 / h as f32) as f64;
                 let v = fr.get(nx, ny) as f32;
-                max = if max < v { v } else { max };
-                min = if min < v { min } else { v };
+                let vd = f64::from(v);
+                max = if max < vd { vd } else { max };
+                min = if min < vd { min } else { vd };
                 self.value[x * h + y] = v;
             }
         }
 
-        let mut mid = 0f32;
+        // C#: value = (float)((value - min) / (max - min)); mid (double) += value.
+        let mut mid = 0f64;
         for x in 0..w {
             for y in 0..h {
                 let idx = x * h + y;
-                self.value[idx] = (self.value[idx] - min) / (max - min);
-                mid += self.value[idx];
+                let nv = ((f64::from(self.value[idx]) - min) / (max - min)) as f32;
+                self.value[idx] = nv;
+                mid += f64::from(nv);
             }
         }
-        mid /= (w * h) as f32;
+        mid /= (w * h) as f64;
         self.mid = mid;
 
         self.resample(res);
     }
 
-    /// `resample(res=.45f)`: `value < mid+res → 0`, иначе `→ 1`.
+    /// `resample(res=.45f)`: `value < mid+res → 0`, иначе `→ 1`. Сравнение в f64
+    /// (C# `value` float < `mid` double + `res` float → продвижение к double).
     fn resample(&mut self, res: f32) {
-        let threshold = self.mid + res;
+        let threshold = self.mid + f64::from(res);
         for v in &mut self.value {
-            *v = if *v < threshold { 0.0 } else { 1.0 };
+            *v = if f64::from(*v) < threshold { 0.0 } else { 1.0 };
         }
     }
 
@@ -316,6 +324,32 @@ mod tests {
         assert_eq!(map.values.len(), 64 * 128);
         assert_eq!(map.width, 64);
         assert_eq!(map.height, 128);
+    }
+
+    /// Golden-отпечаток скелета, ПОБАЙТОВО сверенный с эталонным C# `Sectors`
+    /// (standalone-харнесс на дословных `server_reference` + `anl_reference`,
+    /// сид-конструктор `Sectors(seed,(w,h))`). Сверка прошла на сидах
+    /// {-2147483648, -42, -1, 0, 7, 42, 1337, 12345, 999983, 88888888,
+    /// 2147483646, 2147483647} и размерах 64²…256² — везде 0 расхождений
+    /// после фикса `min/mid/max` f32→f64. Этот FNV-1a64 фиксирует результат от
+    /// регресса (любое изменение `generate_skeleton` уронит тест).
+    #[test]
+    fn skeleton_matches_csharp_reference_golden() {
+        let map = generate_skeleton(128, 256, 42);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for &v in &map.values {
+            let b = match v {
+                BLACK_ROCK => 2u8,
+                RED_ROCK => 1u8,
+                _ => 0u8,
+            };
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        assert_eq!(
+            h, 0x5617_4d16_67aa_7649,
+            "скелет (seed=42, 128x256) разошёлся с C#-эталоном"
+        );
     }
 
     #[test]

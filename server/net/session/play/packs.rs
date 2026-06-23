@@ -643,3 +643,30 @@ pub fn handle_gun_fill(
     // Refresh GUI
     open_gun_gui(state, tx, pid, pack_x, pack_y);
 }
+
+/// Programmator `FillGun`: charge gun at (x, y) with a fixed amount.
+/// Simplified version — no crystal deduction, no GUI refresh.
+#[allow(clippy::needless_pass_by_value)]
+pub fn handle_gun_fill_prog(
+    state: &Arc<GameState>,
+    _tx: &mpsc::UnboundedSender<Vec<u8>>,
+    _pid: PlayerId,
+    pack_x: i32,
+    pack_y: i32,
+) {
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return;
+    };
+    if view.pack_type != crate::game::buildings::PackType::Gun {
+        return;
+    }
+    let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
+        if let Some(mut pk_stats) = ecs.get_mut::<crate::game::buildings::BuildingStats>(entity) {
+            let increment = (pk_stats.max_charge * 0.05).max(10.0);
+            pk_stats.charge = (pk_stats.charge + increment).min(pk_stats.max_charge);
+        }
+    });
+    if let Some(updated_view) = state.get_pack_at(pack_x, pack_y) {
+        crate::net::session::social::buildings::broadcast_pack_update(state, &updated_view);
+    }
+}

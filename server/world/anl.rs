@@ -250,9 +250,12 @@ fn simplex_noise(x: f64, y: f64, seed: i32, _ip: InterpolationType) -> f64 {
     let i = fast_floor(x + s);
     let j = fast_floor(y + s);
 
-    // Целочисленные операции — `wrapping`, как unchecked-int в C# (при
-    // вырожденных координатах сектора i/j могут улетать к границам i32).
-    let t = (f64::from(i) + f64::from(j)) * G2;
+    // C# `(i + j) * G2`: `i + j` — INT-сложение, которое ПЕРЕПОЛНЯЕТ i32 при
+    // больших координатах (высокие octaves×freq×lac → inner-coord ~1.5e9, сумма
+    // >i32::MAX → two's-complement wrap), и лишь потом `* G2` (double). Складываем
+    // в i32 через `wrapping_add` ДО конверсии в f64, иначе расход с C# на глубоких
+    // октавах базиса Simplex.
+    let t = f64::from(i.wrapping_add(j)) * G2;
     let xx0 = f64::from(i) - t;
     let yy0 = f64::from(j) - t;
     let x0 = x - xx0;
