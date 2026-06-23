@@ -490,7 +490,10 @@ pub fn handle_build(
                 && try_spend_crystal(state, tx, pid, 0, cost)
             {
                 place_block(state, tgt_x, tgt_y, cell_type::SUPPORT);
-                state.world.set_durability(tgt_x, tgt_y, durability);
+                // D5: опора ломается с первого удара (durability 0, 1:1 C#).
+                // damage_cell рушит при `d - dmg <= 0`, поэтому 0 = разрушение
+                // с любого удара. Не используем build_skill_hp (он делал опоры прочнее).
+                state.world.set_durability(tgt_x, tgt_y, 0.0);
                 placed_skill = Some(SkillType::BuildStructure);
             }
         }
