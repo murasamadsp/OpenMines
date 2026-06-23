@@ -166,7 +166,11 @@ pub async fn handle_inventory_use(
         1 => place_building_from_item(state, tx, pid, "R").await,
         2 => place_building_from_item(state, tx, pid, "U").await,
         3 => place_building_from_item(state, tx, pid, "M").await,
-        4 => true,
+        // Предмет 4 = «пак кланс» (тип D, конфиг "Clans"). В C#-референсе был обрубок
+        // `4 => (p) => true` (потреблялся, ничего не делал → «списывается но не ставится»).
+        // Оригинал ставил здесь пак кланс. Восстановлено по поведению (клиент предмет
+        // локально не списывает → раз «списывается», сервер его потреблял в этой ветке).
+        4 => place_building_from_item(state, tx, pid, "D").await,
         24 => place_building_from_item(state, tx, pid, "F").await,
         26 => place_building_from_item(state, tx, pid, "G").await,
         27 => use_gate_item(state, tx, pid).await,
@@ -176,9 +180,6 @@ pub async fn handle_inventory_use(
         7 => use_razryadka(state, pid),
         35 => use_poli(state, pid),
         40 => use_c190(state, pid),
-        // TODO(user): «пак кланс» (тип D, конфиг "Clans") — пользователь сообщит индекс
-        // предмета позже. Тип здания готов (footprint/placement/GUI). Когда будет N:
-        //   N => place_building_from_item(state, tx, pid, "D").await,
         _ => false,
     };
 
