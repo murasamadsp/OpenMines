@@ -248,16 +248,21 @@ mod physics_repro {
         );
         assert!(column_has_sand, "песок исчез полностью");
 
-        // (2) Живая клетка расползлась (alive работает).
-        let mut alive_n = 0usize;
+        // (2) AliveCyan заливает пустых соседей CYAN-кристаллом (НЕ ALIVE_CYAN!):
+        // источник остаётся, вокруг растут CYAN. Проверяем, что нарост случился.
+        let mut cyan_grown = 0usize;
         for y in 50..90 {
             for x in 50..78 {
-                if world.get_cell(x, y) == cell_type::ALIVE_CYAN {
-                    alive_n += 1;
+                if world.get_cell(x, y) == cell_type::CYAN {
+                    cyan_grown += 1;
                 }
             }
         }
-        println!("alive_cyan cells after spread = {alive_n}");
+        println!("CYAN grown by AliveCyan = {cyan_grown}");
+        assert!(
+            cyan_grown > 0,
+            "alive не разросся — живые клетки не работают"
+        );
 
         // (3) НИ ОДНА клетка во всём мире не должна стать невалидным байтом.
         let cw = world.cells_width().cast_signed();

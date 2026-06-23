@@ -56,6 +56,41 @@ impl SimplePacket {
     }
 }
 
+/// Что делать с пакетом нового бэкенда во время swallow-фазы после reconnect.
+#[derive(Debug, PartialEq, Eq)]
+enum SwallowDecision {
+    /// Это часть `OnConnected` нового бэкенда (ST/AU/PI) — НЕ слать клиенту.
+    Swallow,
+    /// Реальные данные (`cf`/Init/геймплей) — переслать и завершить swallow-фазу.
+    Forward,
+}
+
+/// Один раз глотаем `ST`, `AU`, `PI` (рукопожатие нового бэкенда после рестарта),
+/// всё остальное форвардим клиенту. Повторный `ST`/`AU`/`PI` (флаг уже взведён)
+/// трактуется как геймплей и пересылается — иначе подвисли бы навсегда.
+const fn classify_handshake(
+    ev: [u8; 2],
+    swallowed_st: &mut bool,
+    swallowed_au: &mut bool,
+    swallowed_pi: &mut bool,
+) -> SwallowDecision {
+    match ev {
+        [b'S', b'T'] if !*swallowed_st => {
+            *swallowed_st = true;
+            SwallowDecision::Swallow
+        }
+        [b'A', b'U'] if !*swallowed_au => {
+            *swallowed_au = true;
+            SwallowDecision::Swallow
+        }
+        [b'P', b'I'] if !*swallowed_pi => {
+            *swallowed_pi = true;
+            SwallowDecision::Swallow
+        }
+        _ => SwallowDecision::Forward,
+    }
+}
+
 async fn read_from_backend(
     reader: &mut Option<OwnedReadHalf>,
     buf: &mut BytesMut,
@@ -199,24 +234,26 @@ async fn handle_client(
                     while swallow_handshake && !backend_buf.is_empty() {
                         if let Some(packet) = SimplePacket::try_decode(&mut backend_buf) {
                             let ev = packet.event();
-                            if ev == [b'S', b'T'] && !swallowed_st {
-                                swallowed_st = true;
-                                tracing::debug!("[Session {}] Swallowed ST from new backend", addr);
-                                continue;
+                            match classify_handshake(
+                                ev,
+                                &mut swallowed_st,
+                                &mut swallowed_au,
+                                &mut swallowed_pi,
+                            ) {
+                                SwallowDecision::Swallow => {
+                                    tracing::debug!(
+                                        "[Session {}] Swallowed {}{} from new backend",
+                                        addr,
+                                        ev[0] as char,
+                                        ev[1] as char
+                                    );
+                                }
+                                SwallowDecision::Forward => {
+                                    // Реальные данные — завершаем swallow-фазу.
+                                    swallow_handshake = false;
+                                    to_client_queue.extend_from_slice(&packet.raw);
+                                }
                             }
-                            if ev == [b'A', b'U'] && !swallowed_au {
-                                swallowed_au = true;
-                                tracing::debug!("[Session {}] Swallowed AU from new backend", addr);
-                                continue;
-                            }
-                            if ev == [b'P', b'I'] && !swallowed_pi {
-                                swallowed_pi = true;
-                                tracing::debug!("[Session {}] Swallowed PI from new backend", addr);
-                                continue;
-                            }
-                            // Encountered actual gameplay/init data, stop swallowing
-                            swallow_handshake = false;
-                            to_client_queue.extend_from_slice(&packet.raw);
                         } else {
                             break; // Wait for more backend data
                         }
@@ -317,5 +354,94 @@ async fn main() -> Result<()> {
                 tracing::error!("[Session {}] Error: {e}", addr);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SimplePacket, SwallowDecision, classify_handshake};
+    use bytes::{BufMut, BytesMut};
+
+    /// Собрать wire-кадр: `[len u32 LE (вкл. эти 4B)][type][2B event][payload]`.
+    fn frame(event: [u8; 2], payload: &[u8]) -> Vec<u8> {
+        let len = 4 + 1 + 2 + payload.len();
+        let mut b = BytesMut::new();
+        #[allow(clippy::cast_possible_truncation)]
+        b.put_u32_le(len as u32);
+        b.put_u8(b'U');
+        b.put_slice(&event);
+        b.put_slice(payload);
+        b.to_vec()
+    }
+
+    #[test]
+    fn try_decode_needs_full_length_then_splits() {
+        let pkt = frame(*b"AU", b"hello");
+        let mut buf = BytesMut::from(&pkt[..pkt.len() - 1]); // на 1 байт короче
+        assert!(
+            SimplePacket::try_decode(&mut buf).is_none(),
+            "неполный кадр ждёт"
+        );
+        buf.extend_from_slice(&pkt[pkt.len() - 1..]); // дослали хвост
+        let p = SimplePacket::try_decode(&mut buf).expect("полный кадр декодится");
+        assert_eq!(p.event(), [b'A', b'U']);
+        assert!(buf.is_empty(), "буфер вычерпан ровно на один кадр");
+    }
+
+    #[test]
+    fn try_decode_leaves_trailing_bytes_for_next_packet() {
+        let mut buf = BytesMut::new();
+        buf.extend_from_slice(&frame(*b"ST", b"x"));
+        buf.extend_from_slice(&frame(*b"PI", b"0:0:"));
+        let first = SimplePacket::try_decode(&mut buf).unwrap();
+        assert_eq!(first.event(), [b'S', b'T']);
+        let second = SimplePacket::try_decode(&mut buf).unwrap();
+        assert_eq!(second.event(), [b'P', b'I']);
+        assert!(SimplePacket::try_decode(&mut buf).is_none());
+    }
+
+    #[test]
+    fn try_decode_clears_buffer_on_bogus_length() {
+        let mut buf = BytesMut::new();
+        buf.put_u32_le(3); // < минимума 7
+        buf.put_slice(b"garbage");
+        assert!(SimplePacket::try_decode(&mut buf).is_none());
+        assert!(buf.is_empty(), "битая длина чистит буфер, без зацикливания");
+    }
+
+    #[test]
+    fn handshake_swallows_st_au_pi_once_then_forwards_gameplay() {
+        let (mut st, mut au, mut pi) = (false, false, false);
+        // Новый бэкенд после рестарта: ST, AU, PI глотаем; cf — форвардим.
+        assert_eq!(
+            classify_handshake(*b"ST", &mut st, &mut au, &mut pi),
+            SwallowDecision::Swallow
+        );
+        assert_eq!(
+            classify_handshake(*b"AU", &mut st, &mut au, &mut pi),
+            SwallowDecision::Swallow
+        );
+        assert_eq!(
+            classify_handshake(*b"PI", &mut st, &mut au, &mut pi),
+            SwallowDecision::Swallow
+        );
+        assert_eq!(
+            classify_handshake(*b"cf", &mut st, &mut au, &mut pi),
+            SwallowDecision::Forward
+        );
+    }
+
+    #[test]
+    fn handshake_second_pi_is_forwarded_not_swallowed_forever() {
+        let (mut st, mut au, mut pi) = (false, false, false);
+        assert_eq!(
+            classify_handshake(*b"PI", &mut st, &mut au, &mut pi),
+            SwallowDecision::Swallow
+        );
+        // Второй PI (сервер шлёт PI в ответ на PO) — уже геймплей, не глотать.
+        assert_eq!(
+            classify_handshake(*b"PI", &mut st, &mut au, &mut pi),
+            SwallowDecision::Forward
+        );
     }
 }
