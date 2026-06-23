@@ -6,12 +6,16 @@ use crate::world::cells::is_boulder;
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
-/// Quick check: is this cell type a building background?
-/// These cells have `isEmpty=true` in cells.json but are placed by `Pack.Build()`
-/// as part of building footprints. Sand/boulders must not land on them.
-/// C# ref: `World.PackPart` / `World.TrueEmpty` checks prevent physics overwrites.
+/// Клетки, на которые песок/валуны НЕ должны падать, хотя `isEmpty=true`.
+/// Замена C# `TrueEmpty` (`Physics.cs` берёт `v = World.TrueEmpty`):
+///   `TrueEmpty = isEmpty && !PackPart && cell ∉ {36, 37, 0, 39}`.
+/// У нас нет битмапа `packsprop`, поэтому `PackPart` приближаем по типам клеток
+/// футпринта зданий (`30` ворота, `35` фон-дорога, `38` угол, `106` невидимый
+/// блок). Плюс C#-литералы: `36` золотая дорога, `37` дверь, `39` полимерная
+/// дорога (`0` уже отсекает `is_empty`). `32`(EMPTY/выкопано) — НЕ в списке:
+/// в C# `TrueEmpty(32)=true`, песок туда падает (иначе физика мертва).
 const fn is_building_background_cell(cell: u8) -> bool {
-    matches!(cell, 30 | 32 | 35 | 37 | 38 | 106)
+    matches!(cell, 30 | 35 | 36 | 37 | 38 | 39 | 106)
 }
 
 /// Combined empty check for physics: cell must be empty AND not a building background.
@@ -160,5 +164,124 @@ pub fn sand_physics_system(
             bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));
             bcast_q.0.push(BroadcastEffect::CellUpdate(dest_x, dest_y));
         }
+    }
+}
+
+#[cfg(test)]
+mod physics_repro {
+    //! Изолированный прогон cell-мутирующих систем (sand/acid/alive) без сети:
+    //! реальный `World`, игрок-entity, форс таймеров → проверяем (1) двигает ли
+    //! физика клетки вообще, (2) не плодит ли НЕВАЛИДНЫЕ байты (порча карты).
+    use crate::game::player::PlayerPosition;
+    use crate::game::{BroadcastQueue, WorldResource, acid, alive};
+    use crate::world::cells::{CellDefs, cell_type};
+    use crate::world::{World, WorldProvider};
+    use bevy_ecs::prelude::*;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn past() -> Instant {
+        Instant::now().checked_sub(Duration::from_secs(30)).unwrap()
+    }
+
+    #[test]
+    fn physics_runs_and_makes_no_garbage() {
+        let dir = std::env::temp_dir().join(format!("phys_repro_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let cd = CellDefs::load("configs/cells.json").unwrap();
+        let n_defs = cd.cells.len();
+        let world = Arc::new(World::new("phys", 4, 4, cd, &dir).unwrap());
+
+        // Контролируемая сцена в очищённой области.
+        for y in 50..90 {
+            for x in 50..78 {
+                world.set_cell(x, y, cell_type::EMPTY);
+            }
+        }
+        // Песчинка вверху столбца — должна упасть на дно области.
+        world.set_cell(64, 52, 100); // тёмный песок (is_sand)
+        assert!(world.cell_defs().get(100).is_sand(), "100 must be sand");
+        // Живая клетка — должна расползтись по пустым соседям.
+        world.set_cell(60, 70, cell_type::ALIVE_CYAN);
+
+        let mut w = bevy_ecs::world::World::new();
+        w.insert_resource(WorldResource(Arc::clone(&world)));
+        w.insert_resource(BroadcastQueue::default());
+        w.insert_resource(super::SandTickTimer(past()));
+        w.insert_resource(acid::AcidTickTimer { last_tick: past() });
+        w.insert_resource(alive::AliveTickTimer { last_tick: past() });
+        w.spawn(PlayerPosition {
+            x: 64,
+            y: 65,
+            dir: 0,
+        });
+
+        let mut sched = Schedule::default();
+        sched.add_systems(super::sand_physics_system);
+        sched.add_systems(acid::acid_physics_system);
+        sched.add_systems(alive::alive_physics_system);
+
+        for _ in 0..80 {
+            w.resource_mut::<super::SandTickTimer>().0 = past();
+            w.resource_mut::<acid::AcidTickTimer>().last_tick = past();
+            w.resource_mut::<alive::AliveTickTimer>().last_tick = past();
+            sched.run(&mut w);
+        }
+
+        // (1) Песок реально двигался: верхняя клетка пуста, ниже по столбцу песок.
+        let top = world.get_cell(64, 52);
+        let column_has_sand =
+            (52..90).any(|y| world.cell_defs().get(world.get_cell(64, y)).is_sand());
+        println!(
+            "sand top(64,52)={top} (EMPTY={}), column_has_sand={column_has_sand}",
+            cell_type::EMPTY
+        );
+        assert_eq!(
+            top,
+            cell_type::EMPTY,
+            "песок не упал — физика не двигает клетки"
+        );
+        assert!(column_has_sand, "песок исчез полностью");
+
+        // (2) Живая клетка расползлась (alive работает).
+        let mut alive_n = 0usize;
+        for y in 50..90 {
+            for x in 50..78 {
+                if world.get_cell(x, y) == cell_type::ALIVE_CYAN {
+                    alive_n += 1;
+                }
+            }
+        }
+        println!("alive_cyan cells after spread = {alive_n}");
+
+        // (3) НИ ОДНА клетка во всём мире не должна стать невалидным байтом.
+        let cw = world.cells_width().cast_signed();
+        let ch = world.cells_height().cast_signed();
+        let mut garbage = Vec::new();
+        for y in 0..ch {
+            for x in 0..cw {
+                let c = world.get_cell(x, y);
+                if usize::from(c) >= n_defs || world.cell_defs().get(c).name.is_empty() {
+                    garbage.push((x, y, c));
+                }
+            }
+        }
+        println!(
+            "garbage/unnamed cells = {} (n_defs={n_defs})",
+            garbage.len()
+        );
+        for (x, y, c) in garbage.iter().take(20) {
+            println!("  ({x},{y}) = {c}");
+        }
+        assert!(
+            garbage.is_empty(),
+            "физика создала невалидные/безымянные клетки: {} шт",
+            garbage.len()
+        );
     }
 }
