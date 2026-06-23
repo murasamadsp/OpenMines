@@ -44,14 +44,7 @@ pub trait DatabaseProvider: Send + Sync {
     async fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>>;
 
     // clans
-    async fn create_clan(
-        &self,
-        id: i32,
-        name: &str,
-        abr: &str,
-        owner_id: i32,
-        icon: i32,
-    ) -> Result<()>;
+    async fn create_clan(&self, id: i32, name: &str, abr: &str, owner_id: i32) -> Result<()>;
     async fn get_clan(&self, id: i32) -> Result<Option<ClanRow>>;
     async fn get_clan_members(&self, clan_id: i32) -> Result<Vec<(i32, String, i32)>>;
     async fn list_clans(&self) -> Result<Vec<ClanRow>>;
@@ -154,15 +147,8 @@ impl DatabaseProvider for Database {
         self.get_recent_chat_messages(tag, limit).await
     }
 
-    async fn create_clan(
-        &self,
-        id: i32,
-        name: &str,
-        abr: &str,
-        owner_id: i32,
-        icon: i32,
-    ) -> Result<()> {
-        self.create_clan(id, name, abr, owner_id, icon).await
+    async fn create_clan(&self, id: i32, name: &str, abr: &str, owner_id: i32) -> Result<()> {
+        self.create_clan(id, name, abr, owner_id).await
     }
     async fn get_clan(&self, id: i32) -> Result<Option<ClanRow>> {
         self.get_clan(id).await

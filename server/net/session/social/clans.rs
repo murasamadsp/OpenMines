@@ -159,11 +159,21 @@ pub async fn handle_clan_create(
         return;
     }
 
-    let used_ids = state.db.get_used_clan_ids().await.unwrap_or_default();
-    let new_id = used_ids.iter().max().map_or(1, |&id| id + 1);
-    let icon = state.db.pick_clan_icon().await.unwrap_or(1);
+    // id клана = номер иконки (1..=218), модель C# `Clan.id == icon`. Пул свободных
+    // ограничен 218; при исчерпании — отказ (как C# проверка занятости иконки).
+    let new_id = match state.db.pick_clan_id().await {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            send_clan_ok(tx, "Ошибка", "Достигнут лимит кланов (218)");
+            return;
+        }
+        Err(e) => {
+            tracing::error!("pick_clan_id error: {e}");
+            return;
+        }
+    };
 
-    match state.db.create_clan(new_id, name, tag, pid, icon).await {
+    match state.db.create_clan(new_id, name, tag, pid).await {
         Ok(()) => {
             state.modify_player(pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
@@ -173,9 +183,8 @@ pub async fn handle_clan_create(
                 Some(())
             });
             send_u_packet(tx, "P$", &money(p_money, p_creds - 1000).1);
-            // cS = номер иконки (клиент: ClanSprite.sprites[icon-1], 1..=218),
-            // а НЕ clan_id. Иконка уже выбрана выше (pick_clan_icon).
-            let cs = clan_show(icon);
+            // cS = номер иконки = id клана (клиент: ClanSprite.sprites[id-1], 1..=218).
+            let cs = clan_show(new_id);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
             handle_clan_info_view(state, tx, pid, new_id).await;
@@ -516,15 +525,8 @@ pub async fn handle_clan_invite_accept(
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 Some(())
             });
-            // cS = номер иконки (клиент: ClanSprite.sprites[icon-1]), не clan_id.
-            let icon = state
-                .db
-                .get_clan(clan_id)
-                .await
-                .ok()
-                .flatten()
-                .map_or(1, |c| c.icon);
-            let cs = clan_show(icon);
+            // cS = номер иконки = id клана (клиент: ClanSprite.sprites[id-1]).
+            let cs = clan_show(clan_id);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Вы вступили в клан!");
         }
@@ -646,19 +648,13 @@ pub async fn handle_clan_accept(
     }
     match state.db.accept_clan_request(clan_id, target_pid).await {
         Ok(()) => {
-            let icon = state
-                .db
-                .get_clan(clan_id)
-                .await
-                .ok()
-                .flatten()
-                .map_or(1, |c| c.icon);
+            // cS = номер иконки = id клана (клиент: ClanSprite.sprites[id-1]).
             state.modify_player(target_pid, |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
                 s.clan_id = Some(clan_id);
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let cs = clan_show(icon);
+                    let cs = clan_show(clan_id);
                     let _ = conn.tx.send(make_u_packet_bytes(cs.0, &cs.1));
                 }
                 Some(())
