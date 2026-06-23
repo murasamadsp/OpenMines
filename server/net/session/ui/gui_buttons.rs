@@ -404,6 +404,16 @@ pub fn open_pack_gui(
         crate::net::session::play::packs::open_gun_gui(state, tx, pid, view.x, view.y);
         return;
     }
+    if view.pack_type == PackType::Clans {
+        // Пак кланс открывает меню кланов (вкладка топов и пр.). Меню асинхронное (DB),
+        // а `open_pack_gui` синхронный (зовётся в т.ч. из sync `handle_move`) — спавним
+        // таску; `state`/`tx` клонируемы, `pid` Copy (идиома как в heal_inventory.rs).
+        let (st, txc) = (state.clone(), tx.clone());
+        tokio::spawn(async move {
+            crate::net::session::social::clans::handle_clan_menu(&st, &txc, pid).await;
+        });
+        return;
+    }
 
     let title = view.pack_type.name();
 
