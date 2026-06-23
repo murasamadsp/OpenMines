@@ -18,6 +18,12 @@ services:
       context: ..
       dockerfile: ops/Dockerfile
     restart: unless-stopped
+    # M3R_REGEN_WORLD: по умолчанию 0 (мир сохраняется между рестартами).
+    # ОДНОРАЗОВЫЙ реген на VPS (мир в volume — бэкап делает deploy.yml/Урок 4):
+    #   M3R_REGEN_WORLD=1 docker compose up -d --force-recreate openmines-server
+    # затем без переменной (=0), иначе КАЖДЫЙ рестарт будет стирать мир.
+    environment:
+      - M3R_REGEN_WORLD=${M3R_REGEN_WORLD:-0}
     volumes:
       - openmines_data:/data
 

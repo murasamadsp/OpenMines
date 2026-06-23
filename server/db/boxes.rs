@@ -118,4 +118,11 @@ impl Database {
             .await?;
         Ok(())
     }
+
+    /// Снести все боксы (выпавшие кристаллы) — для полного регена мира: их позиции
+    /// привязаны к старому рельефу. Возвращает число удалённых строк.
+    pub async fn delete_all_boxes(&self) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM boxes").execute(&self.pool).await?;
+        Ok(res.rows_affected())
+    }
 }

@@ -165,4 +165,22 @@ impl Database {
         .await?;
         Ok(rows.iter().map(row_to_order).collect())
     }
+
+    /// Все ордера — для отмены+рефанда при полном регене мира.
+    pub async fn all_orders(&self) -> Result<Vec<OrderRow>> {
+        let rows = sqlx::query(
+            "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time FROM orders",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(row_to_order).collect())
+    }
+
+    /// Снести все ордера. Возвращает число удалённых строк.
+    pub async fn delete_all_orders(&self) -> Result<u64> {
+        let res = sqlx::query("DELETE FROM orders")
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
 }

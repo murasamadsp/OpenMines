@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
         parse_regen_flag_from(env::args().skip(1), env::var("M3R_REGEN_WORLD").ok())
             .unwrap_or_else(|e| e.exit());
     if force_regenerate {
-        remove_world_files(&cfg.world_name, &state_dir);
+        remove_world_files(&state_dir);
     }
 
     let cell_defs = world::cells::CellDefs::load("configs/cells.json")?;
@@ -79,8 +79,7 @@ async fn main() -> Result<()> {
 
     let database = db::Database::open(state_dir.join(DB_FILENAME)).await?;
     if force_regenerate {
-        let n = database.delete_all_buildings().await?;
-        tracing::info!("World regen: cleared {n} building rows from DB (stale packs vs new map)");
+        regen_clear_world_state(&database).await?;
     }
     bootstrap_grant_admin(&database).await?;
     tracing::info!("Database ready");
@@ -300,18 +299,27 @@ fn migrate_mines3_db_to_openmines(state_dir: &Path) {
     }
 }
 
-fn remove_world_files(world_name: &str, state_dir: &Path) {
-    let files = [
-        format!("{world_name}_v2.map"),
-        format!("{world_name}_v2.map.bak"),
-        format!("{world_name}_durability.mapb"),
-        format!("{world_name}_durability.mapb.bak"),
-        // legacy `.mapb`-формат — тоже сносим при полной регенерации
-        format!("{world_name}.mapb"),
-        format!("{world_name}_road.mapb"),
-    ];
-    for file in files {
-        let path = state_dir.join(&file);
+/// Снести ВСЕ слои мира в `state_dir`, name-agnostic по суффиксам. Так смена
+/// `world_name` (напр. `world`→`test-1`) не оставляет осиротевший прежний мир —
+/// удаляются и текущие, и любые прежние `*_v2.map`/`*.mapb` (+ `.bak`). БД
+/// (`.db`/`-wal`/`-shm`) и конфиги не трогаются — другие суффиксы.
+fn remove_world_files(state_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(state_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(name) = fname.to_str() else {
+            continue;
+        };
+        // `_v2.map`(+.bak) = cells/road; `.mapb`(+.bak) = durability/legacy/road.
+        // `contains` (а не `ends_with`) покрывает `.bak`-варианты одним условием.
+        let lower = name.to_ascii_lowercase();
+        let is_world_layer = lower.contains("_v2.map") || lower.contains(".mapb");
+        if !is_world_layer {
+            continue;
+        }
+        let path = entry.path();
         if let Err(err) = std::fs::remove_file(&path) {
             if err.kind() != ErrorKind::NotFound {
                 tracing::warn!("Failed to remove world file {}: {err}", path.display());
@@ -320,6 +328,34 @@ fn remove_world_files(world_name: &str, state_dir: &Path) {
             tracing::info!("Removed {} for full world regeneration", path.display());
         }
     }
+}
+
+/// Полная очистка позиционно-привязанного состояния при регене мира. Чистит то,
+/// что завязано на старый рельеф: здания, боксы, маркет-ордера (с отменой и
+/// рефандом владельцам). НЕ трогает программы и игроков (позиции/аккаунты) — по
+/// решению: игроки и их программы сохраняются.
+async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
+    let n = database.delete_all_buildings().await?;
+    tracing::info!("World regen: cleared {n} building rows from DB (stale packs vs new map)");
+
+    let nb = database.delete_all_boxes().await?;
+    tracing::info!("World regen: cleared {nb} crystal boxes (stale positions)");
+
+    // Маркет-ордера: отменить и вернуть всё владельцам — залоченные предметы
+    // инициатору, текущую ставку покупателю — затем снести.
+    let orders = database.all_orders().await?;
+    for o in &orders {
+        database
+            .add_player_inventory_item(o.initiator_id, o.item_id, o.num)
+            .await?;
+        if o.buyer_id > 0 {
+            database.add_player_money(o.buyer_id, o.cost).await?;
+        }
+    }
+    let no = database.delete_all_orders().await?;
+    tracing::info!("World regen: cancelled+refunded {no} market orders");
+
+    Ok(())
 }
 
 fn parse_regen_flag_from<I, S>(args: I, env_val: Option<String>) -> Result<bool, clap::Error>
@@ -354,6 +390,73 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `regen_clear_world_state`: сносит здания/боксы/ордера и рефандит ордер
+    /// владельцу (предметы инициатору, ставку покупателю). Игроков не сбрасывает.
+    #[tokio::test]
+    async fn regen_clears_world_state_and_refunds_orders() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("regen_clear_db_{}", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+
+        // Инициатор (выставил ордер) + покупатель (сделал ставку).
+        let initiator = database.create_player("init", "p", "h").await.unwrap();
+        let buyer = database.create_player("buyer", "p", "h").await.unwrap();
+        let buyer_money_before = database
+            .get_player_by_id(buyer.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .money;
+
+        // Бокс (выпавшие кристаллы) + ордер с ставкой.
+        database
+            .upsert_box(7, 7, &[1, 2, 3, 0, 0, 0])
+            .await
+            .unwrap();
+        database
+            .create_order(initiator.id, 40, 5, 100)
+            .await
+            .unwrap();
+        // Симулируем ставку: cost=250 (залок покупателя), buyer_id=buyer.
+        let oid = database.all_orders().await.unwrap()[0].id;
+        database
+            .update_order_bet(oid, 250, buyer.id, 0)
+            .await
+            .unwrap();
+
+        regen_clear_world_state(&database).await.unwrap();
+
+        // Всё позиционное снесено.
+        assert!(
+            database.load_all_boxes().await.unwrap().is_empty(),
+            "боксы не очищены"
+        );
+        assert!(
+            database.all_orders().await.unwrap().is_empty(),
+            "ордера не сняты"
+        );
+        // Рефанд: инициатору вернулись 5×item40, покупателю — ставка 250.
+        let init_after = database
+            .get_player_by_id(initiator.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            init_after.inventory.get(&40).copied().unwrap_or(0),
+            5,
+            "предметы не возвращены инициатору"
+        );
+        let buyer_after = database.get_player_by_id(buyer.id).await.unwrap().unwrap();
+        assert_eq!(
+            buyer_after.money,
+            buyer_money_before + 250,
+            "ставка не возвращена покупателю"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+    }
 
     // --- clean args (env::args().skip(1)) ---
 
