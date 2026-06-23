@@ -648,4 +648,69 @@ mod tests {
 
         assert_eq!(run(), run());
     }
+
+    /// Фундамент «1:1»: крейт `dotnet-rng` обязан совпадать с реальным .NET
+    /// `System.Random`. Эталон сгенерирован вживую `dotnet 10` (`new Random(42)`).
+    /// Если этот тест падает — вся генерация расходится с C# на уровне RNG.
+    #[test]
+    fn dotnet_rng_matches_real_dotnet_random_seed_42() {
+        use dotnet_rng::DotnetRng;
+
+        let mut r = DotnetRng::new(42);
+        let next: Vec<i32> = (0..5).map(|_| r.next()).collect();
+        assert_eq!(
+            next,
+            vec![
+                1_434_747_710,
+                302_596_119,
+                269_548_474,
+                1_122_627_734,
+                361_709_742
+            ],
+            "DotnetRng.next() расходится с .NET Random(42).Next()"
+        );
+
+        let mut r2 = DotnetRng::new(42);
+        let ranged: Vec<i32> = (0..5).map(|_| r2.next_range(1, 101)).collect();
+        assert_eq!(
+            ranged,
+            vec![67, 15, 13, 53, 17],
+            "DotnetRng.next_range(1,101) расходится с .NET Random(42).Next(1,101)"
+        );
+    }
+
+    /// Полная генерация (`World::new` → `generate(seed=42)`) ПОБАЙТОВО детерминирована:
+    /// два независимых регена с одними размерами дают идентичные клетки во всех чанках.
+    /// Это «сравни побайтово результаты миров» в единственной достижимой форме —
+    /// C#-эталон НЕ детерминирован (`new Random()` без сида в SectorFiller/Sector),
+    /// поэтому сравнение Rust-vs-живой-C# невозможно; сравниваем Rust сам с собой.
+    #[test]
+    fn full_world_generation_is_byte_deterministic() {
+        use crate::world::cells::CellDefs;
+        use crate::world::{World, WorldProvider as _};
+
+        const CW: u32 = 3;
+        const CH: u32 = 3;
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let mk = |tag: &str| {
+            let name = format!("gendet_{tag}_{pid}");
+            // Гарантируем is_new (чистим leftover) → World::new авто-генерирует seed=42.
+            let _ = std::fs::remove_file(dir.join(format!("{name}_v2.map")));
+            let _ = std::fs::remove_file(dir.join(format!("{name}_durability.mapb")));
+            let cd = CellDefs::load("configs/cells.json").unwrap();
+            World::new(&name, CW, CH, cd, &dir).unwrap()
+        };
+        let a = mk("a");
+        let b = mk("b");
+        for cy in 0..CH {
+            for cx in 0..CW {
+                assert_eq!(
+                    a.read_chunk_cells(cx, cy),
+                    b.read_chunk_cells(cx, cy),
+                    "генерация НЕ детерминирована: чанк ({cx},{cy}) различается между регенами (seed=42 фикс)"
+                );
+            }
+        }
+    }
 }
