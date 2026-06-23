@@ -1,6 +1,19 @@
 # Общие шаги для ci-quality.sh и pre-commit.sh
 # shellcheck shell=bash
 
+# Авто-форматирование ПЕРЕД линтерами: форматируем только застейдженные .rs
+# (чужой незакоммиченный WIP в working tree не трогаем) и ре-стейджим их, чтобы
+# отформатированная версия попала в коммит и rustfmt --check ниже прошёл.
+quality_run_rustfmt_apply_staged() {
+  echo "==> Auto-formatting staged Rust files"
+  local staged
+  staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+  if [ -n "$staged" ]; then
+    echo "$staged" | xargs rustfmt --edition 2024
+    echo "$staged" | xargs git add --
+  fi
+}
+
 quality_run_rustfmt_check() {
   echo "==> Running rustfmt check"
   cargo fmt --all -- --check
