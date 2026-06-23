@@ -125,38 +125,15 @@ fn handle_chat_giveall_command(
     if !ensure_admin(tx, state, pid) {
         return;
     }
-    // All known item IDs: buildings (0-4,24,26,27,29), consumables (5-7,35,40), geopacks (10-16,34,42,43,46)
-    let items: &[(i32, i32)] = &[
-        (0, 10),
-        (1, 10),
-        (2, 10),
-        (3, 10),
-        (4, 10), // T,R,U,M,?
-        (5, 10),
-        (6, 10),
-        (7, 10), // boom, protector, razryadka
-        (10, 5),
-        (11, 5),
-        (12, 5),
-        (13, 5),
-        (14, 5),
-        (15, 5),
-        (16, 5), // geopacks
-        (24, 10),
-        (26, 10),
-        (27, 10),
-        (29, 10), // F,G,N,L buildings
-        (34, 5),
-        (35, 10),
-        (40, 10), // hypno, poli, C190
-        (42, 5),
-        (43, 5),
-        (46, 5), // special geopacks
-    ];
+    // ВСЕ предметы = индексы 0..=50. Это полный список из атласа клиента
+    // (`client/Assets/Resources/inventory/inventory.png` — спрайты inventory_0..50).
+    // Диапазон ровно совпадает с атласом → клиент рисует `sprites[id]` без выхода
+    // за границы (давать 0..=50 безопасно). Часть индексов сервер пока не
+    // обрабатывает в Use(), но предметы существуют и админ должен иметь всё.
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        for &(id, amount) in items {
-            *inv.items.entry(id).or_insert(0) += amount;
+        for id in 0..=50 {
+            *inv.items.entry(id).or_insert(0) += 10;
         }
         // Send full inventory list (not mini) so player sees everything
         inv.minv = false;
