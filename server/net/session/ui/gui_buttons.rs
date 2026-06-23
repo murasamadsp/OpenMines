@@ -1632,12 +1632,16 @@ fn do_market_sell(
             }
             // C# RemoveCrys: only succeeds if player has enough
             if pstats.crystals[i] >= to_sell {
+                let price = market::get_crystal_cost(state, i);
+                let Some(earned) = to_sell.checked_mul(price) else {
+                    continue;
+                };
                 pstats.crystals[i] -= to_sell;
-                total_money += to_sell * market::get_crystal_cost(state, i);
+                total_money = total_money.saturating_add(earned);
             }
         }
         // Add money to player
-        pstats.money += total_money;
+        pstats.money = pstats.money.saturating_add(total_money);
         // Send updates
         send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
         send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
