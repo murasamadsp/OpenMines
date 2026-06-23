@@ -710,11 +710,15 @@ pub async fn handle_clan_kick(
         .map(|(_, _, r)| crate::db::ClanRank::from_db(*r))
         .unwrap_or(crate::db::ClanRank::None);
 
-    let target_rank = members
-        .iter()
-        .find(|(id, _, _)| *id == target_pid)
+    let target_entry = members.iter().find(|(id, _, _)| *id == target_pid);
+    let target_rank = target_entry
         .map(|(_, _, r)| crate::db::ClanRank::from_db(*r))
         .unwrap_or(crate::db::ClanRank::None);
+
+    if target_entry.is_none() {
+        send_clan_ok(tx, "Ошибка", "Игрок не в вашем клане");
+        return;
+    }
 
     if player_rank <= target_rank && player_rank != crate::db::ClanRank::Leader {
         send_clan_no_rights(tx);
