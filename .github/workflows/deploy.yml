@@ -14,6 +14,11 @@ on:
         description: "Commit ref to build & deploy"
         required: false
         default: "main"
+      wipe:
+        description: "ПОЛНЫЙ СНОС мира (down -v) — весь мир/БД стирается!"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -80,6 +85,8 @@ jobs:
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           IMAGE_SHA: ${{ needs.build-push.outputs.sha }}
+          IMAGE: ${{ env.IMAGE }}
+          WIPE: ${{ github.event.inputs.wipe }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -87,7 +94,7 @@ jobs:
           # Пин host-key (анти-MITM). Снять один раз:
           #   ssh-keyscan -t ed25519 <VPS_HOST>
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          envs: IMAGE_SHA
+          envs: IMAGE_SHA,IMAGE,WIPE
           script: |
             set -euo pipefail
             # Инфра-пути — в секретах (репо публичный, не хардкодить).
@@ -115,56 +122,47 @@ jobs:
             # ротация: держим последние 10 бэкапов
             ls -1t "$BACKUP_DIR"/world-*.tgz | tail -n +11 | xargs -r rm -f
 
-            # === Деплой: ТОЛЬКО pull + up -d. НИКОГДА down (Урок 4). ===
             cd "$STACK"
+            # Самодостаточный prod-compose (image-based — VPS не собирает Rust).
+            # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды, сервис
+            # `server`, явное имя volume = openmines_server_data (совпадает с бэкапом
+            # выше; без зависимости от project-префикса). Прокси НЕ включён (task #8
+            # «не скоро»): его нет на VPS, добавлять вслепую = риск даунтайма.
+            echo "[deploy] write docker-compose.yml (server-only, 1337 admin)"
+            cat > docker-compose.yml <<COMPOSE
+            services:
+              server:
+                image: ${IMAGE}:${IMAGE_SHA}
+                init: true
+                restart: unless-stopped
+                environment:
+                  - M3R_GRANT_ADMIN=1337
+                  - M3R_USE_CTRL_C=false
+                volumes:
+                  - server_data:/data
+                ports:
+                  - "8090:8090"
+            volumes:
+              server_data:
+                name: openmines_server_data
+            COMPOSE
+
             echo "[deploy] pull image"
             docker compose pull
 
-            # ZERO-DOWNTIME: катим ТОЛЬКО бэкенд, прокси НЕ трогаем.
-            # Прокси держит клиентский TCP живым; пересоздать его = оборвать всех
-            # игроков (ровно то, что он должен предотвращать). Поэтому:
-            #   1) --no-recreate: поднять недостающее (первый деплой), но НЕ
-            #      пересоздавать уже живой прокси, даже если образ обновился;
-            #   2) --force-recreate --no-deps openmines-server: катнуть ТОЛЬКО
-            #      сервер. Прокси ловит обрыв к старому контейнеру и
-            #      переподключается к новому (docker-DNS) — swallow ST/AU/PI +
-            #      replay AU. Клиентский сокет не рвётся.
-            # Обновить сам прокси (редко, при правке proxy.rs) — вручную:
-            #   docker compose up -d --force-recreate openmines-proxy
-            echo "[deploy] ensure stack up (no-recreate keeps proxy alive)"
-            docker compose up -d --no-recreate
-            echo "[deploy] roll backend only (proxy bridges the gap)"
-            docker compose up -d --no-deps --force-recreate openmines-server
+            # ПОЛНЫЙ СНОС только при ручном WIPE=true (workflow_dispatch). На обычных
+            # пушах НЕ стираем — иначе каждый деплой убивал бы мир. Бэкап сделан выше.
+            if [ "${WIPE:-}" = "true" ]; then
+              echo "[deploy] WIPE=true → ПОЛНЫЙ СНОС мира (down -v + rm volume)"
+              docker compose down -v --remove-orphans || true
+              docker volume rm openmines_server_data 2>/dev/null || true
+            fi
 
-            # === Health-check, слой 1: БЭКЕНД реально поднялся ===
-            # Прокси теперь переживает деплой и держит 8090 открытым НЕЗАВИСИМО
-            # от сервера. Значит проверка «порт 8090 открыт» пройдёт даже если
-            # новый сервер упал на старте (битый конфиг/миграция) — ложно-зелёный
-            # деплой. Поэтому сперва убеждаемся, что контейнер сервера РАБОТАЕТ и
-            # не в крэш-лупе: running + RestartCount==0, стабильно 3 проверки.
-            echo "[deploy] health-check L1: backend container stable"
-            cid=$(docker compose ps -q openmines-server)
-            [ -n "$cid" ] || { echo "[deploy] FAILED: no openmines-server container"; docker compose ps; exit 1; }
-            srv_ok=0; good=0
-            for i in $(seq 1 20); do
-              status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo missing)
-              restarts=$(docker inspect -f '{{.State.RestartCount}}' "$cid" 2>/dev/null || echo 0)
-              if [ "$restarts" != 0 ] || [ "$status" = exited ] || [ "$status" = dead ]; then
-                echo "[deploy] FAILED: backend crashed (status=$status restarts=$restarts)"
-                docker compose logs --tail 80 openmines-server; exit 1
-              fi
-              if [ "$status" = running ]; then
-                good=$((good+1)); echo "[deploy] backend running ($good/3 stable, attempt $i)"
-                [ "$good" -ge 3 ] && { srv_ok=1; break; }
-              else
-                echo "[deploy] backend status=$status ($i/20), wait 3s"
-              fi
-              sleep 3
-            done
-            [ "$srv_ok" -eq 1 ] || { echo "[deploy] FAILED: backend not stable in time"; docker compose logs --tail 80 openmines-server; exit 1; }
+            echo "[deploy] up -d (--remove-orphans чистит старые сервисы)"
+            docker compose up -d --remove-orphans
 
-            # === Health-check, слой 2: user-facing путь через прокси ===
-            echo "[deploy] health-check L2: proxy accepts on 8090"
+            # === Health-check: user-facing порт 8090 (service-agnostic) ===
+            echo "[deploy] health-check: port 8090"
             ok=0
             for i in $(seq 1 10); do
               if timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8090' 2>/dev/null; then
