@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashSet;
 use std::fs;
 
 fn deserialize_name_or_null<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -241,13 +242,24 @@ impl CellDefs {
                     ..Default::default()
                 })
                 .collect();
-            for mut def in parsed {
-                if def.cell_type < 126 {
-                    let idx = def.cell_type as usize;
-                    // Ensure the in-memory slot's type matches its index, even if the JSON was inconsistent.
-                    def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
-                    cells[idx] = def;
+            // Валидация: все типы должны быть 0..125, дубликаты — ошибка.
+            let mut seen = HashSet::new();
+            for def in &parsed {
+                if def.cell_type >= 126 {
+                    anyhow::bail!(
+                        "Cell type {} out of range [0..125] in cells.json",
+                        def.cell_type
+                    );
                 }
+                if !seen.insert(def.cell_type) {
+                    anyhow::bail!("Duplicate cell type {} in cells.json", def.cell_type);
+                }
+            }
+
+            for mut def in parsed {
+                let idx = def.cell_type as usize;
+                def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
+                cells[idx] = def;
             }
             Ok(Self { cells })
         } else {

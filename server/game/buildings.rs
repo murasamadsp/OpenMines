@@ -37,6 +37,36 @@ static BUILDINGS_CONFIG: OnceLock<BuildingsConfig> = OnceLock::new();
 pub fn load_buildings_config(path: &str) -> anyhow::Result<()> {
     let data = fs::read_to_string(path)?;
     let config: BuildingsConfig = serde_json::from_str(&data)?;
+
+    // Валидация: проверяем инварианты зданий на старте (fail-fast).
+    for (key, bld) in &config.buildings {
+        if bld.code.is_empty() {
+            anyhow::bail!("Building '{key}' has empty code");
+        }
+        if bld.cost < 0 {
+            anyhow::bail!("Building '{key}' has negative cost {}", bld.cost);
+        }
+        if bld.charge < 0.0 {
+            anyhow::bail!("Building '{key}' has negative charge {}", bld.charge);
+        }
+        if bld.hp < 0 {
+            anyhow::bail!("Building '{key}' has negative hp {}", bld.hp);
+        }
+        if bld.cells.is_empty() {
+            anyhow::bail!("Building '{key}' has no cells");
+        }
+        for cell in &bld.cells {
+            if cell.cell_type >= 126 {
+                anyhow::bail!(
+                    "Building '{key}' cell ({},{}): cell type {} out of range [0..125]",
+                    cell.dx,
+                    cell.dy,
+                    cell.cell_type
+                );
+            }
+        }
+    }
+
     BUILDINGS_CONFIG
         .set(config)
         .map_err(|_| anyhow::anyhow!("Buildings config already loaded"))?;
