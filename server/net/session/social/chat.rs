@@ -171,7 +171,7 @@ pub async fn handle_channel_chat(
             let mut channels = state.chat_channels.write();
             if let Some(ch) = channels.iter_mut().find(|c| c.tag == channel_tag) {
                 ch.messages.push_back(msg.clone());
-                if ch.messages.len() > 50 {
+                if ch.messages.len() > CHAT_HISTORY_LIMIT {
                     ch.messages.pop_front();
                 }
             }

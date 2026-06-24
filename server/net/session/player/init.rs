@@ -337,22 +337,26 @@ fn send_initial_sync(
         let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
         state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
     }
-    // 15. SendChat (login) — как `Player.SendChat()`: только `mO`. На логине
-    // `current_chat`=="FED", `chat_access` резолвит FED из in-memory
-    // `chat_channels` (без БД) → инлайн-sync, wire-идентично.
+    // 15. SendChat (login): mO + bounded current-chat history. `Chin` may still
+    // arrive later from the client, but client-side mU dedup prevents visual
+    // duplicates while this makes first login independent from that timing.
     let chat_mo = state
         .query_player_opt(pid, |ecs, e| {
             ecs.get::<PlayerUI>(e).map(|u| u.current_chat.clone())
         })
         .and_then(|tag| {
             let channels = state.chat_channels.read();
-            channels
-                .iter()
-                .find(|c| c.tag == tag)
-                .map(|c| (tag, c.name.clone()))
+            channels.iter().find(|c| c.tag == tag).map(|c| {
+                (
+                    tag,
+                    c.name.clone(),
+                    c.messages.iter().cloned().collect::<Vec<_>>(),
+                )
+            })
         });
-    if let Some((tag, name)) = chat_mo {
+    if let Some((tag, name, history)) = chat_mo {
         send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
+        send_u_packet(tx, "mU", &chat_messages(&tag, &history).1);
     }
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
@@ -397,6 +401,7 @@ mod tests {
             data_dir: dir.to_string_lossy().to_string(),
             logging: crate::config::LoggingConfig::default(),
             cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
         };
 
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
@@ -475,6 +480,7 @@ mod tests {
             data_dir: dir.to_string_lossy().to_string(),
             logging: crate::config::LoggingConfig::default(),
             cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
         };
 
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;

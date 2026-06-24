@@ -10,7 +10,7 @@ pub use tokio::sync::mpsc;
 
 pub use crate::db::BuildingExtra;
 pub use crate::game::buildings::{PackType, PackView};
-pub use crate::game::chat::{ChatMessage, dotnet_epoch_minutes};
+pub use crate::game::chat::{CHAT_HISTORY_LIMIT, ChatMessage, dotnet_epoch_minutes};
 pub use crate::game::direction::dir_offset;
 pub use crate::game::skills::skill_progress_payload;
 pub use crate::game::skills::{SkillType, add_skill_exp, get_player_skill_effect};
@@ -29,8 +29,6 @@ pub use crate::world::cells::{
     cell_type, crystal_multiplier, crystal_type, is_boulder, is_crystal,
 };
 pub use crate::world::{World, WorldProvider};
-
-pub const CLOSE_WINDOW_BUTTON_LABELS: [&str; 2] = ["ВЫЙТИ", "exit"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackAccessError {

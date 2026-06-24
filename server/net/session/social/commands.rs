@@ -467,8 +467,10 @@ fn handle_pack_move_command(
     let nx = parts.get(2).and_then(|s| s.parse().ok());
     let ny = parts.get(3).and_then(|s| s.parse().ok());
     if let (Some(nx), Some(ny)) = (nx, ny) {
-        // NOTE: Move requires updating building_index, but modify_pack_with_db doesn't handle it yet.
-        // For now let's just update GridPosition and hope for the best or implement full move logic.
+        // Снимок старого view ДО изменения GridPosition — нужен для переноса клеток
+        // футпринта (иначе клетки остаются на старом месте призраками).
+        let old_view = state.get_pack_at(x, y);
+        // GridPosition + DB-строка обновляются в modify_pack_with_db (save новой x/y).
         if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
             if let Some(mut p) = ecs.get_mut::<crate::game::buildings::GridPosition>(entity) {
                 p.x = nx;
@@ -490,6 +492,11 @@ fn handle_pack_move_command(
                     .entry((ncx, ncy))
                     .or_default()
                     .push(entity);
+            }
+            // Перенос МИРОВЫХ КЛЕТОК футпринта на новую позицию — закрывает
+            // рассинхрон «index/ECS/DB на новом месте, а клетки на старом».
+            if let Some(ov) = old_view {
+                crate::net::session::social::buildings::move_pack_cells(state, &ov, nx, ny);
             }
             send_ok(tx, "Пак", "Позиция обновлена");
         } else {

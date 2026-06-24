@@ -142,6 +142,23 @@ impl RichRow {
         }
     }
 
+    /// Выпадающий список. `values` — клиентский формат `"0:label#1:label#"`,
+    /// `key` — имя поля в `%R%`, `selected` — текущий индекс.
+    pub fn dropdown(
+        label: impl Into<String>,
+        values: impl Into<String>,
+        key: impl Into<String>,
+        selected: i64,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            kind: "drop".into(),
+            values: values.into(),
+            action: key.into(),
+            value: selected.to_string(),
+        }
+    }
+
     /// Строка с кнопкой действия. `btn_label` — текст кнопки (пустой → кнопка
     /// скрыта), `action` — что уходит серверу при клике.
     pub fn button(
@@ -212,6 +229,12 @@ pub struct Horb {
     canvas: Vec<CanvasEl>,
     /// CSS сайзинга (`"canv-w=…;canv-h=…"`). Ставится `minimap()`.
     css: String,
+    /// Карточка предмета/скилла/кристалла (`HORBConfig.card`), например `"i0:TP"`.
+    card: String,
+    /// Инвентарь/предметный грид (`HORBConfig.inv`), клиентский формат `id: top;!bottom`.
+    inv: String,
+    input_place: String,
+    input_console: bool,
 }
 
 impl Horb {
@@ -225,6 +248,25 @@ impl Horb {
     #[must_use]
     pub fn text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
+        self
+    }
+
+    #[must_use]
+    pub fn input(mut self, placeholder: impl Into<String>, focus_console: bool) -> Self {
+        self.input_place = placeholder.into();
+        self.input_console = focus_console;
+        self
+    }
+
+    #[must_use]
+    pub fn card(mut self, card: impl Into<String>) -> Self {
+        self.card = card.into();
+        self
+    }
+
+    #[must_use]
+    pub fn inventory(mut self, inv: impl Into<String>) -> Self {
+        self.inv = inv.into();
         self
     }
 
@@ -357,6 +399,18 @@ impl Horb {
         if !self.css.is_empty() {
             obj.insert("css".into(), self.css.clone().into());
         }
+        if !self.card.is_empty() {
+            obj.insert("card".into(), self.card.clone().into());
+        }
+        if !self.inv.is_empty() {
+            obj.insert("inv".into(), self.inv.clone().into());
+        }
+        if !self.input_place.is_empty() {
+            obj.insert("input_place".into(), self.input_place.clone().into());
+        }
+        if self.input_console {
+            obj.insert("input_console".into(), true.into());
+        }
         if !self.canvas.is_empty() {
             let mut flat = Vec::new();
             for el in &self.canvas {
@@ -425,6 +479,12 @@ impl Horb {
     /// Сериализовать в GU-payload (`"horb:{json}"`) и отправить.
     fn emit(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
         send_u_packet(tx, "GU", format!("horb:{}", self.to_json()).as_bytes());
+    }
+
+    /// Отправить HORB без `PlayerUI.current_window`.
+    /// Нужно для pre-auth окон, где игрок ещё не выбран.
+    pub fn send_raw(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
+        self.emit(tx);
     }
 
     /// Отправить окно игроку и записать `current_window = window_tag`
@@ -498,6 +558,38 @@ mod tests {
         assert!(json.get("buttons").is_none());
         assert!(json.get("canvas").is_none());
         assert!(json.get("css").is_none());
+        assert!(json.get("card").is_none());
+        assert!(json.get("inv").is_none());
+        assert!(json.get("input_place").is_none());
+        assert!(json.get("input_console").is_none());
+    }
+
+    #[test]
+    fn card_and_inventory_are_emitted_unchanged() {
+        let json = Horb::new("Auc")
+            .card("i0:TP")
+            .inventory("0: 2;!100$:1: ;!")
+            .tab(Tab::active("Auc"))
+            .button(Button::new("НАЗАД", "auc"))
+            .to_json();
+
+        assert_eq!(json["card"], "i0:TP");
+        assert_eq!(json["inv"], "0: 2;!100$:1: ;!");
+        assert_eq!(arr(&json, "tabs").len(), 2);
+        assert_eq!(arr(&json, "buttons").len(), 4);
+    }
+
+    #[test]
+    fn input_dialog_fields_are_emitted_only_when_requested() {
+        let json = Horb::new("Input")
+            .text("Введите")
+            .input("Название...", true)
+            .button(Button::new("OK", "ok:%I%"))
+            .to_json();
+
+        assert_eq!(json["input_place"], "Название...");
+        assert_eq!(json["input_console"], true);
+        assert_eq!(arr(&json, "buttons").len(), 4);
     }
 
     /// Escape кликает ПОСЛЕДНЮЮ кнопку (клиент `PopupManager.cs:1835`). Builder
@@ -531,10 +623,11 @@ mod tests {
             .rich_row(RichRow::text("Прочность: 1000/1000"))
             .rich_row(RichRow::toggle("Закланить", "clan_lock", true))
             .rich_row(RichRow::uint("Стоимость", "cost", 50))
+            .rich_row(RichRow::dropdown("Масштаб", "0:мелко#1:КРУПНО#", "isca", 1))
             .rich_row(RichRow::button("Прибыль: 999", "Забрать", "take_profit"))
             .to_json();
         let r = arr(&json, "richList");
-        assert_eq!(r.len(), 20); // 4 строки × 5 полей
+        assert_eq!(r.len(), 25); // 5 строк × 5 полей
         // toggle row 1 (индексы 5..10): [label, "bool", "", key, "1"]
         assert_eq!(r[6], "bool");
         assert_eq!(r[8], "clan_lock");
@@ -542,10 +635,15 @@ mod tests {
         // uint row 2: value = default
         assert_eq!(r[10 + 1], "uint");
         assert_eq!(r[10 + 4], "50");
-        // button row 3: values = btn label, action = key
-        assert_eq!(r[15 + 1], "button");
-        assert_eq!(r[15 + 2], "Забрать");
-        assert_eq!(r[15 + 3], "take_profit");
+        // dropdown row 3: values = option list, action = key, value = selected.
+        assert_eq!(r[15 + 1], "drop");
+        assert_eq!(r[15 + 2], "0:мелко#1:КРУПНО#");
+        assert_eq!(r[15 + 3], "isca");
+        assert_eq!(r[15 + 4], "1");
+        // button row 4: values = btn label, action = key
+        assert_eq!(r[20 + 1], "button");
+        assert_eq!(r[20 + 2], "Забрать");
+        assert_eq!(r[20 + 3], "take_profit");
     }
 
     /// Canvas кодируется корректно через minimap.

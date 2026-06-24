@@ -749,26 +749,32 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
             }
             // Destroy gates in range
             // (Gate buildings are in building_index; check and remove if it's a Gate)
-            if let Some(bld_entity) = state.building_index.get(&(tgt_x, tgt_y)) {
-                let is_gate = state
-                    .ecs
-                    .read()
-                    .get::<BuildingMetadata>(*bld_entity)
-                    .is_some_and(|m| m.pack_type == PackType::Gate);
-                if is_gate {
-                    // Remove gate
-                    state.building_index.remove(&(tgt_x, tgt_y));
-                    let (gcx, gcy) = crate::world::World::chunk_pos(tgt_x, tgt_y);
-                    if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy)) {
-                        e.retain(|&ent| ent != *bld_entity);
-                    }
-                    let ent = *bld_entity;
-                    drop(bld_entity);
-                    state.ecs.write().despawn(ent);
-                    // Clear the gate cell
-                    state.world.set_cell(tgt_x, tgt_y, cell_type::EMPTY);
-                    broadcast_cell_update(state, tgt_x, tgt_y);
+            // Считываем entity + DB-id + is_gate, ОТПУСКАЯ DashMap-ref ДО remove:
+            // раньше `remove` звался при живом `get`-ref на том же ключе → потенциальный
+            // same-shard дедлок. Берём (entity, id) и выходим из ref.
+            let gate = state.building_index.get(&(tgt_x, tgt_y)).and_then(|e| {
+                let ent = *e;
+                let ecs = state.ecs.read();
+                let meta = ecs.get::<BuildingMetadata>(ent)?;
+                (meta.pack_type == PackType::Gate).then_some((ent, meta.id))
+            });
+            if let Some((ent, gate_id)) = gate {
+                state.building_index.remove(&(tgt_x, tgt_y));
+                let (gcx, gcy) = crate::world::World::chunk_pos(tgt_x, tgt_y);
+                if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy)) {
+                    e.retain(|&x| x != ent);
                 }
+                state.ecs.write().despawn(ent);
+                state.world.set_cell(tgt_x, tgt_y, cell_type::EMPTY);
+                broadcast_cell_update(state, tgt_x, tgt_y);
+                // Удалить из БД — иначе гейт ВОСКРЕСАЕТ при рестарте (рассинхрон
+                // слоёв: world/ECS чисты, а DB-строка осталась). Async detached.
+                let db = state.db.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = db.delete_building(gate_id).await {
+                        tracing::error!("gate DB delete failed: {e}");
+                    }
+                });
             }
             // Destroy destructible non-building cells
             let c = state.world.get_cell(tgt_x, tgt_y);

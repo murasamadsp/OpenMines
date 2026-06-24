@@ -21,6 +21,9 @@ pub mod cell_type {
     pub const BUILDING_DOOR: u8 = 37;
     pub const BUILDING_BORDER: u8 = 38;
     pub const POLYMER_ROAD: u8 = 39;
+    /// Невидимый неразрушаемый блок — каркас/стена футпринта здания
+    /// (см. `docs/ITEMS_BUILDINGS_STATUS.md`).
+    pub const INVISIBLE_BLOCK: u8 = 106;
     pub const BLACK_BOULDER1: u8 = 40;
     pub const BLACK_BOULDER2: u8 = 41;
     pub const BLACK_BOULDER3: u8 = 42;
@@ -290,5 +293,25 @@ mod tests {
         assert!(is_road(cell_type::BUILDING_DOOR)); // ранее пропускалось — паритет-фикс
         assert!(!is_road(cell_type::NOTHING));
         assert!(!is_road(cell_type::EMPTY));
+    }
+
+    #[test]
+    fn crystal_classification_round_trips() {
+        // Каждый кристалл-тип → валидный индекс 0..5; не-кристалл → None.
+        for c in [
+            cell_type::X_GREEN,
+            cell_type::GREEN,
+            cell_type::X_CYAN,
+            cell_type::CYAN,
+            cell_type::WHITE,
+        ] {
+            assert!(is_crystal(c), "cell {c} — кристалл");
+            assert!(
+                crystal_type(c).is_some_and(|i| i < 6),
+                "индекс кристалла 0..5"
+            );
+        }
+        assert!(!is_crystal(cell_type::EMPTY));
+        assert!(crystal_type(cell_type::ROCK).is_none());
     }
 }

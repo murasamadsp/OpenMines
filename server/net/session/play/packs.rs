@@ -218,62 +218,23 @@ pub fn open_resp_admin_gui(
         ""
     };
 
-    let rich_list = serde_json::json!([
-        // Fill entry
-        "заряд",
-        "fill",
-        fill_values,
-        "",
-        "",
-        // HP text
-        "hp",
-        "text",
-        "",
-        "",
-        "",
-        // Cost uint
-        "cost",
-        "uint",
-        "0",
-        "cost",
-        cost.to_string(),
-        // Profit button
-        profit_label,
-        "button",
-        profit_btn_label,
-        profit_btn_action,
-        profit_btn_label,
-        // Clan bool
-        "Клановый респ",
-        "bool",
-        "0",
-        "clan",
-        if clan_id > 0 { "1" } else { "0" },
-        // Clanzone uint
-        "clanzone",
-        "uint",
-        "0",
-        "clanzone",
-        clanzone.to_string()
-    ]);
-
-    let buttons = vec![
-        serde_json::json!("СОХРАНИТЬ"),
-        serde_json::json!("resp_save:%R%"),
-        serde_json::json!("ВЫЙТИ"),
-        serde_json::json!("exit"),
-    ];
-
-    let gui = serde_json::json!({
-        "title": "РЕСП",
-        "richList": rich_list,
-        "text": " ",
-        "buttons": buttons,
-        "back": false,
-        "admin": true
-    });
-
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    use crate::net::session::ui::horb::{Button, Horb, RichRow};
+    Horb::new("РЕСП")
+        .text(" ")
+        .rich_row(RichRow::fill("заряд", fill_values))
+        .rich_row(RichRow::text("hp"))
+        .rich_row(RichRow::uint("cost", "cost", i64::from(cost)))
+        .rich_row(RichRow::button(
+            profit_label,
+            profit_btn_label,
+            profit_btn_action,
+        ))
+        .rich_row(RichRow::toggle("Клановый респ", "clan", clan_id > 0))
+        .rich_row(RichRow::uint("clanzone", "clanzone", i64::from(clanzone)))
+        .button(Button::new("СОХРАНИТЬ", "resp_save:%R%"))
+        .admin(true)
+        .close_button()
+        .send(state, tx, pid, format!("resp:{pack_x}:{pack_y}"));
 }
 
 /// Handle resp bind button click.

@@ -23,6 +23,7 @@ use crate::net::session::outbound::player_sync::{
     send_player_level, send_player_skills, send_player_speed,
 };
 use crate::net::session::prelude::*;
+use crate::net::session::social::commands::send_ok;
 
 /// Maximum number of skill slots a player can have.
 const MAX_SLOTS: i32 = 34;
@@ -128,8 +129,8 @@ fn handle_skill_upgrade(
 
     let upgraded = state
         .modify_player(pid, |ecs, entity| {
-            // Read skill code and check upgrade readiness
-            let (skill_type, needed) = {
+            // Read skill code, check exp-readiness и считаем цену апгрейда (деньги).
+            let (skill_type, needed, cost) = {
                 let skills = ecs.get::<PlayerSkillsComp>(entity)?;
                 let entry = skills.states.skills.get(&selected_slot)?;
                 let stype = SkillType::from_code(&entry.code)?;
@@ -137,8 +138,31 @@ fn handle_skill_upgrade(
                 if need > 0.0 && entry.exp < need {
                     return Some(false);
                 }
-                (stype, need)
+                // Цена в деньгах: base * текущий уровень (config-driven). В C#
+                // апгрейд бесплатный — намеренная экономик-девиация (DEVIATIONS.md).
+                let cost =
+                    state.config.gameplay.skills.upgrade_cost_base * i64::from(entry.level).max(1);
+                (stype, need, cost)
             };
+
+            // Не хватает денег → сообщение и стоп (без апгрейда).
+            {
+                let pstats = ecs.get::<PlayerStats>(entity)?;
+                if pstats.money < cost {
+                    send_ok(tx, "Апгрейд", &format!("Недостаточно денег: нужно {cost}"));
+                    return Some(false);
+                }
+            }
+
+            // Списываем деньги + P$ + dirty (иначе списание не сохранится).
+            {
+                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                pstats_mut.money -= cost;
+                send_u_packet(tx, "P$", &money(pstats_mut.money, pstats_mut.creds).1);
+            }
+            if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) {
+                flags.dirty = true;
+            }
 
             // Perform upgrade (mutable borrow) — 1:1 C# `Skill.Up`: exp-=need, lvl+1.
             {

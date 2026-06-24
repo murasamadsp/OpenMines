@@ -1,8 +1,8 @@
 //! Логика авторизации игрока (пакет AU).
 use crate::game::player::PlayerId;
+use crate::net::session::auth::gui_flow::send_default_auth_window;
 use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
-use serde_json::json;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
 fn send_auth_failure(
@@ -28,20 +28,7 @@ fn send_auth_failure(
     send_b_packet(tx, "HB", &bundle);
 
     // 1:1 ref: `authwin = def; initiator.SendWin(authwin.ToString());`
-    // Window.ToString() builds `horb:{...}` with `buttons` as alternating label/action entries.
-    let gui = json!({
-        "title": "ВХОД",
-        "buttons": [
-            "Новый акк", "newakk",
-            "ok", "nick:%I%",
-            "ВЫЙТИ", "exit"
-        ],
-        "back": false,
-        "text": "Авторизация",
-        "input_place": " ",
-        "input_console": true
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    send_default_auth_window(tx);
 }
 
 pub async fn handle_auth(

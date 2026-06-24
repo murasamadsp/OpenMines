@@ -307,8 +307,7 @@ impl ProgrammatorState {
         // Source is UTF-8 after the header + len bytes
         let source_start = 8 + len;
         if source_start > payload.len() {
-            // Source might be empty
-            return Some((id, String::new()));
+            return None;
         }
         let source = String::from_utf8_lossy(&payload[source_start..]).to_string();
         Some((id, source))
@@ -446,13 +445,21 @@ impl ProgrammatorState {
     }
 
     /// Start running a program (equivalent to C# `ProgrammatorData.Run(Program p)`).
-    pub fn run_program(&mut self, data: &str) {
+    pub fn run_program(&mut self, data: &str) -> bool {
+        self.running = false;
+        self.current_prog.clear();
+        self.function_order.clear();
+        self.current_function.clear();
         if let Some((functions, order)) = Self::parse_normal(data) {
             self.current_prog = functions;
             self.function_order = order;
             self.delay = Instant::now();
             self.drop_state();
             self.running = true;
+            true
+        } else {
+            self.drop_state();
+            false
         }
     }
 
@@ -1653,5 +1660,45 @@ mod tests {
         assert_eq!(off, 49);
         assert_eq!(on, 39);
         assert!(on < off, "on-road должно быть быстрее off-road");
+    }
+
+    #[test]
+    fn decode_prog_packet_rejects_truncated_compiled_block() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&10_i32.to_le_bytes());
+        payload.extend_from_slice(&42_i32.to_le_bytes());
+        payload.extend_from_slice(&[1, 2, 3]);
+
+        assert!(ProgrammatorState::decode_prog_packet(&payload).is_none());
+    }
+
+    #[test]
+    fn decode_prog_packet_accepts_empty_source_when_compiled_block_is_complete() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&3_i32.to_le_bytes());
+        payload.extend_from_slice(&42_i32.to_le_bytes());
+        payload.extend_from_slice(&[1, 2, 3]);
+
+        assert_eq!(
+            ProgrammatorState::decode_prog_packet(&payload),
+            Some((42, String::new()))
+        );
+    }
+
+    #[test]
+    fn invalid_program_source_stops_previous_run() {
+        let mut state = ProgrammatorState::new();
+        state.running = true;
+        state
+            .current_prog
+            .insert("stale".to_string(), PFunction::new());
+        state.function_order.push("stale".to_string());
+        state.current_function = "stale".to_string();
+
+        assert!(!state.run_program("not valid base64/lzma"));
+        assert!(!state.running);
+        assert!(state.current_prog.is_empty());
+        assert!(state.function_order.is_empty());
+        assert!(state.current_function.is_empty());
     }
 }

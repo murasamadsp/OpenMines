@@ -102,9 +102,16 @@ async fn read_from_backend(
     }
 }
 
-async fn write_to_backend(writer: &mut Option<OwnedWriteHalf>, data: &[u8]) -> std::io::Result<()> {
+/// Один `write` (НЕ `write_all`): cancellation-safe внутри `select!` — если
+/// победит другая ветка, ни байта не ушло. Возвращает сколько приняла ОС, чтобы
+/// caller вычерпал ровно столько из очереди. `write_all` тут нельзя: при
+/// частичной записи + отмене он бы переслал префикс заново → дубликат байт.
+async fn write_to_backend(
+    writer: &mut Option<OwnedWriteHalf>,
+    data: &[u8],
+) -> std::io::Result<usize> {
     if let Some(w) = writer {
-        w.write_all(data).await
+        w.write(data).await
     } else {
         std::future::pending().await
     }
@@ -207,10 +214,15 @@ async fn handle_client(
                 to_backend_queue.extend_from_slice(&client_buf.split());
             }
 
-            // Write to client
-            res = client_writer.write_all(&to_client_queue), if !to_client_queue.is_empty() => {
-                res?;
-                to_client_queue.clear();
+            // Write to client. `write` (cancel-safe), вычерпываем ровно n байт:
+            // при отмене другой веткой ничего не ушло, дубликата не будет.
+            res = client_writer.write(&to_client_queue), if !to_client_queue.is_empty() => {
+                let n = res?;
+                if n == 0 {
+                    tracing::warn!("[Session {}] Client write returned 0 — closing", addr);
+                    break;
+                }
+                to_client_queue.drain(0..n);
             }
 
             // Read from backend
@@ -266,10 +278,21 @@ async fn handle_client(
                 }
             }
 
-            // Write to backend
+            // Write to backend. Тоже `write`+drain(n). ВНИМАНИЕ: после этого
+            // to_backend_queue = невыписанный ХВОСТ, не обязательно по границе
+            // пакета. Если бэкенд умрёт ровно здесь, при reconnect мы пришлём
+            // [AU][обрывок-хвоста] — новый бэкенд распарсит обрывок как длину и
+            // рассинхронится. Чистого packet-boundary recovery для client→backend
+            // байтов на рестарте нет (старый write_all-вариант вместо этого
+            // двойным-применял уже обработанные пакеты — тоже неверно, просто
+            // иначе). Полный фикс — фрейминг очереди по пакетам, вне scope.
             res = write_to_backend(&mut backend_writer, &to_backend_queue), if backend_writer.is_some() && !to_backend_queue.is_empty() => {
-                res?;
-                to_backend_queue.clear();
+                let n = res?;
+                if n == 0 {
+                    tracing::warn!("[Session {}] Backend write returned 0 — closing", addr);
+                    break;
+                }
+                to_backend_queue.drain(0..n);
             }
 
             // Reconnect future completed

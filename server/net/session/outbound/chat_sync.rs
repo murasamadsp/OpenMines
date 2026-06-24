@@ -17,7 +17,7 @@ pub fn parse_private_tag(tag: &str) -> Option<(i32, i32)> {
 async fn load_db_history(state: &Arc<GameState>, db_tag: &str) -> Vec<ChatMessage> {
     state
         .db
-        .get_recent_chat_messages(db_tag, 50)
+        .get_recent_chat_messages(db_tag, CHAT_HISTORY_LIMIT)
         .await
         .map(|msgs| {
             msgs.into_iter()

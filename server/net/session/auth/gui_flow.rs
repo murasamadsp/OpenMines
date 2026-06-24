@@ -4,8 +4,8 @@ use crate::game::GameState;
 use crate::net::session::connection::GuiAuthStep;
 use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
+use crate::net::session::ui::horb::{Button, Horb};
 use crate::protocol::packets::auth_hash;
-use serde_json::json;
 
 fn hash_password(passwd: &str, user_hash: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -58,20 +58,27 @@ pub async fn handle_gui_auth_flow(
 }
 
 /// C# ref: `def` window — main auth menu with "Новый акк" and "ok" (nick input).
-fn send_default_auth_window(tx: &mpsc::UnboundedSender<Vec<u8>>) {
-    let gui = json!({
-        "title": "ВХОД",
-        "buttons": [
-            "Новый акк", "newakk",
-            "ok", "nick:%I%",
-            "ВЫЙТИ", "exit"
-        ],
-        "back": false,
-        "text": "Авторизация",
-        "input_place": " ",
-        "input_console": true
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+pub fn send_default_auth_window(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    Horb::new("ВХОД")
+        .text("Авторизация")
+        .input(" ", true)
+        .button(Button::new("Новый акк", "newakk"))
+        .button(Button::new("ok", "nick:%I%"))
+        .close_button()
+        .send_raw(tx);
+}
+
+fn send_auth_input_window(
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    title: &str,
+    text: &str,
+    action: &str,
+) {
+    Horb::new(title)
+        .text(text)
+        .input(" ", true)
+        .button(Button::new("OK", action))
+        .send_raw(tx);
 }
 
 /// Handle buttons on the main auth menu.
@@ -84,15 +91,7 @@ async fn handle_main_menu(
     let _ = state;
     if button == "newakk" {
         *step = GuiAuthStep::RegisterNick;
-        let gui = json!({
-            "title": "НОВЫЙ ИГРОК",
-            "text": "Ник",
-            "buttons": ["OK", "newnick:%I%"],
-            "back": false,
-            "input_place": " ",
-            "input_console": true
-        });
-        send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+        send_auth_input_window(tx, "НОВЫЙ ИГРОК", "Ник", "newnick:%I%");
         return Ok(None);
     }
 
@@ -119,15 +118,7 @@ async fn handle_find_by_nick(
     let player = state.db.get_player_by_name(name).await?;
     if let Some(player) = player {
         *step = GuiAuthStep::LoginPassword { nick: player.name };
-        let gui = json!({
-            "title": "ВХОД",
-            "text": "Пароль",
-            "buttons": ["OK", "passwd:%I%"],
-            "back": false,
-            "input_place": " ",
-            "input_console": true
-        });
-        send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+        send_auth_input_window(tx, "ВХОД", "Пароль", "passwd:%I%");
     } else {
         send_u_packet(tx, "OK", &ok_message("auth", "Игрок не найден").1);
         send_default_auth_window(tx);
@@ -163,15 +154,12 @@ async fn handle_login_password(
     }
 
     send_u_packet(tx, "OK", &ok_message("auth", "Не верный пароль").1);
-    let gui = json!({
-        "title": "ВХОД",
-        "text": "Пароль\nВведён не верный пароль. Попробуйте ещё раз.",
-        "buttons": ["OK", "passwd:%I%"],
-        "back": false,
-        "input_place": " ",
-        "input_console": true
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    send_auth_input_window(
+        tx,
+        "ВХОД",
+        "Пароль\nВведён не верный пароль. Попробуйте ещё раз.",
+        "passwd:%I%",
+    );
     Ok(None)
 }
 
@@ -191,30 +179,14 @@ async fn handle_register_nick(
 
     if state.db.player_name_exists(nick).await? {
         send_u_packet(tx, "OK", &ok_message("auth", "Ник занят").1);
-        let gui = json!({
-            "title": "НОВЫЙ ИГРОК",
-            "text": "Ник",
-            "buttons": ["OK", "newnick:%I%"],
-            "back": false,
-            "input_place": " ",
-            "input_console": true
-        });
-        send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+        send_auth_input_window(tx, "НОВЫЙ ИГРОК", "Ник", "newnick:%I%");
         return Ok(None);
     }
 
     *step = GuiAuthStep::RegisterPassword {
         nick: nick.to_owned(),
     };
-    let gui = json!({
-        "title": "НОВЫЙ ИГРОК",
-        "text": "Пароль",
-        "buttons": ["OK", "passwd:%I%"],
-        "back": false,
-        "input_place": " ",
-        "input_console": true
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    send_auth_input_window(tx, "НОВЫЙ ИГРОК", "Пароль", "passwd:%I%");
     Ok(None)
 }
 

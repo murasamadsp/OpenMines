@@ -80,53 +80,45 @@ pub fn handle_dpbx_crystal_box(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
+    use crate::net::session::ui::horb::{Button, Horb, ListRow};
+
     let Some(cry) =
         state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
     else {
         return;
     };
-    let lines: Vec<String> = cry
-        .iter()
-        .enumerate()
-        .map(|(i, n)| format!("тип {i}: {n}"))
-        .collect();
-    let gui = serde_json::json!({
-        "title": "Создание бокса",
-        "text": format!("Кристаллы (как ref OpenBoxGui, без слайдеров):\n{}", lines.join("\n")),
-        "buttons": ["ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    let mut win = Horb::new("Создание бокса").text("Кристаллы");
+    for (i, n) in cry.iter().enumerate() {
+        win = win.list_row(ListRow::new(
+            format!("тип {i}: {n}"),
+            String::new(),
+            String::new(),
+        ));
+    }
+    win.button(Button::new("ВЫЙТИ", "exit"))
+        .send(state, tx, pid, "open_box");
 }
 
 pub fn handle_buildings_menu(
-    _state: &Arc<GameState>,
+    state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _pid: PlayerId,
+    pid: PlayerId,
 ) {
-    let mut buttons = vec![
-        "Респ (5000$)",
-        "bld_place:R",
-        "Телепорт (3000$)",
-        "bld_place:T",
-        "Пушка (8000$)",
-        "bld_place:G",
-        "UP (4000$)",
-        "bld_place:U",
-        "Склад (4000$)",
-        "bld_place:L",
-        "Крафтер (5000$)",
-        "bld_place:F",
-        "Спот (3000$)",
-        "bld_place:O",
-        "Маркет (6000$)",
-        "bld_place:M",
-        "Ворота (2000$)",
-        "bld_place:N",
-    ];
-    buttons.extend(CLOSE_WINDOW_BUTTON_LABELS.iter().copied());
-    let gui = serde_json::json!({ "title": "ПОСТРОЙКИ", "text": "Выберите здание", "buttons": buttons, "back": false });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    use crate::net::session::ui::horb::{Button, Horb};
+
+    Horb::new("ПОСТРОЙКИ")
+        .text("Выберите здание")
+        .button(Button::new("Респ (5000$)", "bld_place:R"))
+        .button(Button::new("Телепорт (3000$)", "bld_place:T"))
+        .button(Button::new("Пушка (8000$)", "bld_place:G"))
+        .button(Button::new("UP (4000$)", "bld_place:U"))
+        .button(Button::new("Склад (4000$)", "bld_place:L"))
+        .button(Button::new("Крафтер (5000$)", "bld_place:F"))
+        .button(Button::new("Спот (3000$)", "bld_place:O"))
+        .button(Button::new("Маркет (6000$)", "bld_place:M"))
+        .button(Button::new("Ворота (2000$)", "bld_place:N"))
+        .close_button()
+        .send(state, tx, pid, "blds");
 }
 
 pub async fn handle_place_building(
@@ -465,15 +457,6 @@ where
     Ok(res)
 }
 
-// TODO: will be used when building placement is fully connected
-#[allow(dead_code)]
-fn place_pack_cells(state: &Arc<GameState>, view: &PackView) {
-    for (dx, dy, cell) in view.pack_type.building_cells() {
-        state.world.set_cell(view.x + dx, view.y + dy, cell);
-        broadcast_cell_update(state, view.x + dx, view.y + dy);
-    }
-}
-
 // TODO: will be used when pack footprint validation is fully connected
 #[allow(dead_code)]
 fn pack_has_cell(
@@ -561,6 +544,21 @@ pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
             .set_cell(view.x + cdx, view.y + cdy, cell_type::EMPTY);
         broadcast_cell_update(state, view.x + cdx, view.y + cdy);
     }
+}
+
+/// Перенос футпринта здания на новую позицию — ЗЕРКАЛО remove+place, чтобы все
+/// слои совпали: клетки мира И O-оверлей пака (иконка). Без оверлей-броадкаста
+/// иконка пака осталась бы на старом месте, хотя клетки/индекс/ECS/БД — на новом.
+pub fn move_pack_cells(state: &Arc<GameState>, old_view: &PackView, nx: i32, ny: i32) {
+    // Старая позиция: очистить клетки + снять O-оверлей.
+    clear_pack_cells(state, old_view);
+    broadcast_pack_clear(state, old_view);
+    // Новая позиция: поставить клетки + O-оверлей (как `place_building_in_world`).
+    let mut new_view = old_view.clone();
+    new_view.x = nx;
+    new_view.y = ny;
+    place_building_cells(state, nx, ny, new_view.pack_type);
+    broadcast_pack_to_nearby(state, &new_view);
 }
 
 // ─── BotSpot spawning/despawning ────────────────────────────────────────────

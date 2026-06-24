@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+/// Maximum chat history entries sent to the Unity client in one `mU` packet.
+pub const CHAT_HISTORY_LIMIT: usize = 50;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// DB rowid (`chat_messages.id`). Клиент читает его как `GCMessage.id`
@@ -28,7 +31,7 @@ impl ChatChannel {
             tag: tag.to_string(),
             name: name.to_string(),
             global,
-            messages: VecDeque::with_capacity(50),
+            messages: VecDeque::with_capacity(CHAT_HISTORY_LIMIT),
         }
     }
 }

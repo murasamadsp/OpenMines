@@ -366,6 +366,7 @@ pub fn open_pack_gui(
 ) {
     // C# ref: Gate.GUIWin() returns null — no window opens
     if view.pack_type == PackType::Gate {
+        close_player_window(state, tx, pid);
         return;
     }
     if view.pack_type == PackType::Storage {
@@ -655,40 +656,24 @@ fn open_storage_gui(
     // Build crys_lines: each line is "LeftMin:RightMin:Denominator:CurrentValue:Label"
     // C# ref: CrysLine("", 0, 0, p.crys.cry[id] + cry, (int)(cry))
     // Serialized as: "{LeftMin}:{RightMin}:{Denominator}:{CurrentValue}:{Label}"
-    let crys_lines: Vec<serde_json::Value> = (0..6)
+    let crys_lines: Vec<String> = (0..6)
         .map(|i| {
             let denominator = player_crys[i] + storage_crys[i];
             let current_value = storage_crys[i];
-            serde_json::json!(format!("0:0:{denominator}:{current_value}:"))
+            format!("0:0:{denominator}:{current_value}:")
         })
         .collect();
 
-    // Build buttons: "Передать" with %M% macro, plus remove and exit
-    let buttons = vec![
-        serde_json::json!("Передать"),
-        serde_json::json!("transfer:%M%"),
-        serde_json::json!("Удалить"),
-        serde_json::json!(format!("pack_op:remove:{}:{}", view.x, view.y)),
-        serde_json::json!("ВЫЙТИ"),
-        serde_json::json!("exit"),
-    ];
-
-    let gui = serde_json::json!({
-        "title": "Склад",
-        "crys_left": " ",
-        "crys_right": " ",
-        "crys_lines": crys_lines,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("pack:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
+    use super::horb::{Button, Horb};
+    Horb::new("Склад")
+        .crystals(" ", " ", false, crys_lines)
+        .button(Button::new("Передать", "transfer:%M%"))
+        .button(Button::new(
+            "Удалить",
+            format!("pack_op:remove:{}:{}", view.x, view.y),
+        ))
+        .close_button()
+        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
 }
 
 /// Handle `transfer:v0:v1:v2:v3:v4:v5` button from Storage GUI sliders.
@@ -868,24 +853,15 @@ fn show_crafter_progress(
 
     let text = format!("Крафт: {recipe_name} x{num}\n\n[{bar}] {progress}%\n{status}");
 
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    use super::horb::{Button, Horb};
+    let mut win = Horb::new("Крафтер").text(text);
     if done {
-        buttons.push(serde_json::json!("Забрать"));
-        buttons.push(serde_json::json!(format!(
-            "craft_claim:{}:{}",
-            view.x, view.y
-        )));
+        win = win.button(Button::new(
+            "Забрать",
+            format!("craft_claim:{}:{}", view.x, view.y),
+        ));
     }
-    buttons.push(serde_json::json!("ВЫЙТИ"));
-    buttons.push(serde_json::json!("exit"));
-
-    let gui = serde_json::json!({
-        "title": "Крафтер",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.close_button().send_raw(tx);
 }
 
 fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
@@ -893,7 +869,8 @@ fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
     let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
 
     let mut text = String::from("Выберите рецепт:\n");
-    let mut buttons: Vec<serde_json::Value> = Vec::new();
+    use super::horb::{Button, Horb};
+    let mut win = Horb::new("Крафтер");
 
     for r in recipes {
         let cost_str: Vec<String> = r
@@ -915,28 +892,19 @@ fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
             r.title, r.result.num, r.time_sec, cost_display
         ));
 
-        buttons.push(serde_json::json!(r.title));
-        buttons.push(serde_json::json!(format!(
-            "craft_recipe:{}:{}:{}",
-            r.id, view.x, view.y
-        )));
+        win = win.button(Button::new(
+            r.title,
+            format!("craft_recipe:{}:{}:{}", r.id, view.x, view.y),
+        ));
     }
 
-    buttons.push(serde_json::json!("Удалить"));
-    buttons.push(serde_json::json!(format!(
-        "pack_op:remove:{}:{}",
-        view.x, view.y
-    )));
-    buttons.push(serde_json::json!("ВЫЙТИ"));
-    buttons.push(serde_json::json!("exit"));
-
-    let gui = serde_json::json!({
-        "title": "Крафтер",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    win.text(text)
+        .button(Button::new(
+            "Удалить",
+            format!("pack_op:remove:{}:{}", view.x, view.y),
+        ))
+        .close_button()
+        .send_raw(tx);
 }
 
 /// Show recipe details + Start button.
@@ -977,20 +945,15 @@ fn handle_craft_recipe_view(
         recipe.title, recipe.result.num, recipe.time_sec, cost_lines
     );
 
-    let buttons = vec![
-        serde_json::json!("Запустить (x1)"),
-        serde_json::json!(format!("craft_start:{}:1:{}:{}", recipe_id, bx, by)),
-        serde_json::json!("ВЫЙТИ"),
-        serde_json::json!("exit"),
-    ];
-
-    let gui = serde_json::json!({
-        "title": "Крафтер",
-        "text": text,
-        "buttons": buttons,
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+    use super::horb::{Button, Horb};
+    Horb::new("Крафтер")
+        .text(text)
+        .button(Button::new(
+            "Запустить (x1)",
+            format!("craft_start:{recipe_id}:1:{bx}:{by}"),
+        ))
+        .close_button()
+        .send_raw(tx);
 }
 
 /// Start crafting: deduct resources, set timer.
@@ -1347,31 +1310,19 @@ fn open_spot_gui(
 ) {
     // C# ref: `if (p.id != ownerid) return null;`
     if view.owner_id != pid {
+        close_player_window(state, tx, pid);
         return;
     }
 
-    // C# ref: `new Window() { Tabs = [] }` — empty-tabs window.
-    // Client interprets this as a minimal panel (spot programmator GUI placeholder).
-    // The HORB format for an empty-tabs window uses "tabs": [] in the JSON.
-    let gui = serde_json::json!({
-        "title": "СПОТ",
-        "text": "",
-        "buttons": [
+    use super::horb::{Button, Horb};
+
+    Horb::new("СПОТ")
+        .button(Button::new(
             "Удалить",
             format!("pack_op:remove:{}:{}", view.x, view.y),
-            "ВЫЙТИ",
-            "exit"
-        ],
-        "back": false
-    });
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("pack:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
+        ))
+        .close_button()
+        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
 }
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
@@ -1414,9 +1365,8 @@ fn open_market_gui(
     page.send(state, tx, pid, window_tag);
 }
 
-/// Вкладки market как `Vec<Tab>` для `Horb`-builder (auction всё ещё использует
-/// `build_market_tabs` → serde-массив; не трогаем).
-fn market_tabs(active_tab: &str) -> Vec<super::horb::Tab> {
+/// Вкладки market как `Vec<Tab>` для `Horb`-builder.
+pub fn market_tabs(active_tab: &str) -> Vec<super::horb::Tab> {
     use super::horb::Tab;
     [
         ("ПРОДАЖА", "sellcrys"),
@@ -1432,23 +1382,6 @@ fn market_tabs(active_tab: &str) -> Vec<super::horb::Tab> {
         }
     })
     .collect()
-}
-
-/// Build the tabs JSON array for Market.
-/// C# Window.ToString: active tab = `["Label", ""]`, inactive = `["Label", "action"]`.
-pub fn build_market_tabs(active_tab: &str) -> serde_json::Value {
-    let sell_active = active_tab == "sellcrys";
-    let buy_active = active_tab == "buycrys";
-    let auc_active = active_tab == "auc";
-
-    serde_json::json!([
-        "ПРОДАЖА",
-        if sell_active { "" } else { "sellcrys" },
-        "Покупка",
-        if buy_active { "" } else { "buycrys" },
-        "Auc",
-        if auc_active { "" } else { "auc" }
-    ])
 }
 
 /// Build sell tab page JSON.
@@ -1807,8 +1740,6 @@ pub fn open_market_admin_gui(
         return;
     };
 
-    // C# ref: RichList with hp text + profit button
-    // RichList format: [label, type, values, action, value] per entry
     let profit_label = format!("прибыль {money_inside}$");
     let profit_btn_label = if money_inside > 0 {
         "Получить"
@@ -1817,38 +1748,17 @@ pub fn open_market_admin_gui(
     };
     let profit_btn_action = if money_inside > 0 { "getprofit" } else { "" };
 
-    let rich_list = serde_json::json!([
-        // HP text entry
-        format!("hp {hp}"),
-        "text",
-        "",
-        "",
-        "",
-        // Profit button entry
-        profit_label,
-        "button",
-        profit_btn_label,
-        profit_btn_action,
-        profit_btn_label
-    ]);
-
-    let gui = serde_json::json!({
-        "title": "Market",
-        "richList": rich_list,
-        "text": " ",
-        "buttons": ["ВЫЙТИ", "exit"],
-        "back": false
-    });
-
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
-
-    // Keep market window tag so getprofit can resolve coordinates
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("market:{pack_x}:{pack_y}:admin"));
-        }
-        Some(())
-    });
+    use super::horb::{Horb, RichRow};
+    Horb::new("Market")
+        .text(" ")
+        .rich_row(RichRow::text(format!("hp {hp}")))
+        .rich_row(RichRow::button(
+            profit_label,
+            profit_btn_label,
+            profit_btn_action,
+        ))
+        .close_button()
+        .send(state, tx, pid, format!("market:{pack_x}:{pack_y}:admin"));
 }
 
 // ─── Settings save ──────────────────────────────────────────────────────
@@ -1939,21 +1849,14 @@ fn open_create_prog_dialog(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let json = serde_json::json!({
-        "title": "НОВАЯ ПРОГРАММА",
-        "text": "Введите название программы",
-        "buttons": ["Создать", "createprog:%I%", "ВЫЙТИ", "exit"],
-        "back": false,
-        "input_place": "Название программы...",
-        "input_console": true
-    });
-    send_u_packet(tx, "GU", format!("horb:{json}").as_bytes());
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some("createprog".to_string());
-        }
-        Some(())
-    });
+    use crate::net::session::ui::horb::{Button, Horb};
+
+    Horb::new("НОВАЯ ПРОГРАММА")
+        .text("Введите название программы")
+        .input("Название программы...", true)
+        .button(Button::new("Создать", "createprog:%I%"))
+        .close_button()
+        .send(state, tx, pid, "createprog");
 }
 
 async fn handle_open_prog(
@@ -2036,7 +1939,7 @@ async fn handle_rename_prog(
     }
     send_u_packet(
         tx,
-        "#p",
+        "#P",
         &crate::protocol::packets::open_programmator(prog_id, name, &p.code).1,
     );
 }

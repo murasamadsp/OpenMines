@@ -261,11 +261,13 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
 /// `FormatException` в Unity → сообщение не отображается. Клиент — источник
 /// правды по wire (он неизменяем); референс здесь неверен.
 /// Полный пакет: `{"ch":"TAG","h":["ID±...","..."]}`.
-use crate::game::chat::ChatMessage;
+use crate::game::chat::{CHAT_HISTORY_LIMIT, ChatMessage};
 
 pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<u8>) {
+    let start = messages.len().saturating_sub(CHAT_HISTORY_LIMIT);
     let msg_strs: Vec<String> = messages
         .iter()
+        .skip(start)
         .map(|m| {
             format!(
                 "\"{}±{}±{}±{}±{}±{}±{}\"",
@@ -991,5 +993,30 @@ mod tests {
             assert_eq!(parts[5], src.text);
             assert_eq!(parts[6].parse::<i32>().unwrap(), src.user_id);
         }
+    }
+
+    #[test]
+    fn chat_messages_trims_to_history_limit() {
+        let msgs: Vec<ChatMessage> = (1..=CHAT_HISTORY_LIMIT + 1)
+            .map(|id| ChatMessage {
+                id: i64::try_from(id).unwrap(),
+                time: i64::try_from(id).unwrap(),
+                clan_id: 0,
+                user_id: i32::try_from(id).unwrap(),
+                nickname: format!("n{id}"),
+                text: format!("t{id}"),
+                color: 0,
+            })
+            .collect();
+
+        let (_name, payload) = chat_messages("FED", &msgs);
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        let h = json["h"].as_array().unwrap();
+        assert_eq!(h.len(), CHAT_HISTORY_LIMIT);
+
+        let first = h[0].as_str().unwrap();
+        let last = h[CHAT_HISTORY_LIMIT - 1].as_str().unwrap();
+        assert!(first.starts_with("2±"));
+        assert!(last.starts_with(&(CHAT_HISTORY_LIMIT + 1).to_string()));
     }
 }

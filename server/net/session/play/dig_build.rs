@@ -17,8 +17,11 @@ pub fn handle_dig(
                     let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                     let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
                     let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    // 1:1 ref `Session.cs:230` `DigHandler => TryAct(..., 200)`
-                    if cd.last_dig.elapsed().as_millis() < 200 {
+                    // 1:1 ref `Session.cs:230` `DigHandler => TryAct(..., 200)`;
+                    // дефолт 200ms, тюнится `gameplay.cooldowns.dig_ms`.
+                    if cd.last_dig.elapsed().as_millis()
+                        < u128::from(state.config.gameplay.cooldowns.dig_ms)
+                    {
                         return None;
                     }
                     if ui.current_window.is_some() {
@@ -344,8 +347,11 @@ pub fn handle_build(
                 if ui.current_window.is_some() {
                     return None;
                 }
-                // 1:1 ref `Session.cs:233` `BuildHandler => TryAct(..., 200)`
-                if cd.last_build.elapsed().as_millis() < 200 {
+                // 1:1 ref `Session.cs:233` `BuildHandler => TryAct(..., 200)`;
+                // дефолт 200ms, тюнится `gameplay.cooldowns.build_ms`.
+                if cd.last_build.elapsed().as_millis()
+                    < u128::from(state.config.gameplay.cooldowns.build_ms)
+                {
                     return None;
                 }
                 let (px, py, pdir) = (pos.x, pos.y, pos.dir);

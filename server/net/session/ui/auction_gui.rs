@@ -10,7 +10,8 @@ use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats, PlayerUI};
 use crate::net::auction::{credit_money, now_unix};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
-use crate::net::session::ui::gui_buttons::{build_market_tabs, resolve_market_window};
+use crate::net::session::ui::gui_buttons::{market_tabs, resolve_market_window};
+use crate::net::session::ui::horb::{Button, Horb, ListRow};
 
 /// C# `MarketSystem.PackName` — имена 51 типа предмета (индекс = `item_id`).
 const PACK_NAMES: [&str; 51] = [
@@ -91,17 +92,25 @@ fn min_bid(cost: i64, has_buyer: bool) -> i64 {
     }
 }
 
-fn send_horb(tx: &mpsc::UnboundedSender<Vec<u8>>, gui: &serde_json::Value) {
-    send_u_packet(tx, "GU", format!("horb:{gui}").as_bytes());
+fn auc_window_tag(bx: i32, by: i32) -> String {
+    format!("market:{bx}:{by}:auc")
 }
 
-fn set_auc_window(state: &Arc<GameState>, pid: PlayerId, bx: i32, by: i32) {
-    state.modify_player(pid, |ecs, e| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(e) {
-            ui.current_window = Some(format!("market:{bx}:{by}:auc"));
-        }
-        Some(())
-    });
+fn auc_page(title: impl Into<String>) -> Horb {
+    market_tabs("auc")
+        .into_iter()
+        .fold(Horb::new(title), Horb::tab)
+}
+
+fn send_auc(
+    page: &Horb,
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    page.send(state, tx, pid, auc_window_tag(bx, by));
 }
 
 /// `MarketSystem.GlobalFirstPage`/`Items` — item-грид (51 тип, кроме 49=Money)
@@ -139,15 +148,8 @@ pub async fn open_auc_grid(
         .collect::<Vec<_>>()
         .join(":");
 
-    let gui = serde_json::json!({
-        "title": "МАРКЕТ",
-        "tabs": build_market_tabs("auc"),
-        "inv": inv,
-        "buttons": ["ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    let page = auc_page("МАРКЕТ").inventory(inv).close_button();
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenItemAuc` — список ордеров по типу + «Создать Ордер».
@@ -162,30 +164,21 @@ pub async fn open_item_auc(
     };
     let orders = state.db.list_orders_by_item(item).await.unwrap_or_default();
     // list = тройки [label, btnLabel, action] (1:1 C# GetItems, сорт по cost).
-    let mut list: Vec<serde_json::Value> = Vec::new();
+    let mut page =
+        auc_page(format!("Auc {}", pack_name(item))).card(format!("i{item}:{}", pack_name(item)));
     for o in &orders {
         let display = min_bid(o.cost, o.buyer_id > 0);
-        list.push(serde_json::json!(format!(
-            "{} x{}",
-            pack_name(o.item_id),
-            o.num
-        )));
-        list.push(serde_json::json!(format!(
-            "<color=#aaeeaa>{display}$</color>"
-        )));
-        list.push(serde_json::json!(format!("openorder:{}", o.id)));
+        page = page.list_row(ListRow::new(
+            format!("{} x{}", pack_name(o.item_id), o.num),
+            format!("<color=#aaeeaa>{display}$</color>"),
+            format!("openorder:{}", o.id),
+        ));
     }
-
-    let gui = serde_json::json!({
-        "title": format!("Auc {}", pack_name(item)),
-        "tabs": build_market_tabs("auc"),
-        "card": format!("i{item}:{}", pack_name(item)),
-        "list": list,
-        "buttons": ["Создать Ордер", format!("auccreate:{item}"), "НАЗАД", "auc", "ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    let page = page
+        .button(Button::new("Создать Ордер", format!("auccreate:{item}")))
+        .button(Button::new("НАЗАД", "auc"))
+        .close_button();
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenOrder` — деталь ордера: карточка + ставка.
@@ -221,24 +214,28 @@ pub async fn open_order(
         None
     };
 
-    let mut gui = serde_json::json!({
-        "title": format!("Order {timer}"),
-        "tabs": build_market_tabs("auc"),
-        "card": format!("i{}:{} x{} costs <color=#aaeeaa>{}$</color>", o.item_id, pack_name(o.item_id), o.num, o.cost),
-        "input_place": format!("minimal bet is <color=#aaeeaa>{min}$</color>"),
-        "buttons": [
-            "minimalbet", format!("aucminbet:{order_id}"),
-            "bet", format!("aucbet:{order_id}:%I%"),
-            "НАЗАД", format!("choose:{}", o.item_id),
-            "ВЫЙТИ", "exit"
-        ],
-        "back": false
-    });
+    let mut page = auc_page(format!("Order {timer}"))
+        .card(format!(
+            "i{}:{} x{} costs <color=#aaeeaa>{}$</color>",
+            o.item_id,
+            pack_name(o.item_id),
+            o.num,
+            o.cost
+        ))
+        .input(
+            format!("minimal bet is <color=#aaeeaa>{min}$</color>"),
+            false,
+        )
+        .button(Button::new("minimalbet", format!("aucminbet:{order_id}")))
+        .button(Button::new("bet", format!("aucbet:{order_id}:%I%")))
+        .button(Button::new("НАЗАД", format!("choose:{}", o.item_id)))
+        .close_button();
     if let Some(name) = buyer_name {
-        gui["text"] = serde_json::json!(format!("last bet by: {name}"));
+        page = page
+            .text("Last bet")
+            .list_row(ListRow::new(format!("by: {name}"), "", ""));
     }
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenOrderCreation` — ввод стартовой цены.
@@ -251,17 +248,14 @@ pub fn open_order_creation(
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
-    let gui = serde_json::json!({
-        "title": format!("Order creation {}", pack_name(item)),
-        "tabs": build_market_tabs("auc"),
-        "card": format!("i{item}:{}", pack_name(item)),
-        "text": "Enter cost",
-        "input_place": "cost",
-        "buttons": ["createorder", format!("aucsetcost:{item}:%I%"), "НАЗАД", format!("choose:{item}"), "ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    let page = auc_page(format!("Order creation {}", pack_name(item)))
+        .card(format!("i{item}:{}", pack_name(item)))
+        .text("Enter cost")
+        .input("cost", false)
+        .button(Button::new("createorder", format!("aucsetcost:{item}:%I%")))
+        .button(Button::new("НАЗАД", format!("choose:{item}")))
+        .close_button();
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OrderCreationNum` — ввод количества (цена уже выбрана).
@@ -275,17 +269,17 @@ pub fn open_order_creation_num(
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
-    let gui = serde_json::json!({
-        "title": format!("Order creation {}", pack_name(item)),
-        "tabs": build_market_tabs("auc"),
-        "card": format!("i{item}:{}", pack_name(item)),
-        "text": format!("{} to sell count", pack_name(item)),
-        "input_place": "num",
-        "buttons": ["createorder", format!("aucsetnum:{item}:{cost}:%I%"), "НАЗАД", format!("auccreate:{item}"), "ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    let page = auc_page(format!("Order creation {}", pack_name(item)))
+        .card(format!("i{item}:{}", pack_name(item)))
+        .text("Enter count")
+        .input("num", false)
+        .button(Button::new(
+            "createorder",
+            format!("aucsetnum:{item}:{cost}:%I%"),
+        ))
+        .button(Button::new("НАЗАД", format!("auccreate:{item}")))
+        .close_button();
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.CreateOrder` — списать предметы, создать ордер, подтвердить.
@@ -350,15 +344,11 @@ pub async fn create_order(
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
-    let gui = serde_json::json!({
-        "title": "ok",
-        "tabs": build_market_tabs("auc"),
-        "text": "u just created order u can cancel it within five mins after first bet",
-        "buttons": ["НАЗАД", "auc", "ВЫЙТИ", "exit"],
-        "back": false
-    });
-    send_horb(tx, &gui);
-    set_auc_window(state, pid, bx, by);
+    let page = auc_page("ok")
+        .text("u just created order u can cancel it within five mins after first bet")
+        .button(Button::new("НАЗАД", "auc"))
+        .close_button();
+    send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// Кнопка «minimalbet» — ставка ровно минимальной суммой (1:1 C#).

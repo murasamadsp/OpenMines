@@ -150,22 +150,78 @@ async fn main() -> Result<()> {
     net_res
 }
 
-/// Финальное сохранение игроков + flush мира при остановке
-/// (вынесено из `main` — лимит строк).
+/// Финальное сохранение при остановке: игроки (с ретраем) + грязные здания +
+/// отложенная очередь боксов + flush мира. Периодические циклы при shutdown уже
+/// не сработают, поэтому дренируем всё, что они обычно пишут (иначе изменения
+/// последнего интервала теряются). Вынесено из `main` — лимит строк.
+// `significant_drop_tightening`: ecs-guard в блоке сбора dirty-зданий — та же
+// конвенция, что в `lifecycle::spawn_building_dirty_flush_loop`.
+#[allow(clippy::significant_drop_tightening)]
 async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
-    tracing::info!("Shutdown: saving all players and flushing world...");
+    tracing::info!("Shutdown: saving players, buildings, boxes and flushing world...");
+
+    // Игроки — финальный one-shot с ретраем (периодика уже не повторит).
     let shutdown_pids: Vec<_> = game_state.active_players.iter().map(|e| *e.key()).collect();
     for pid in shutdown_pids {
         let player_row = game_state.query_player_opt(pid, |ecs, entity| {
             crate::game::player::extract_player_row(ecs, entity)
         });
-
-        if let Some(row) = player_row
-            && let Err(e) = game_state.db.save_player(&row).await
-        {
-            tracing::error!("Shutdown save failed for player {pid}: {e}");
+        if let Some(row) = player_row {
+            let mut ok = false;
+            for attempt in 1..=3u32 {
+                match game_state.db.save_player(&row).await {
+                    Ok(()) => {
+                        ok = true;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Shutdown player {pid} save attempt {attempt}/3 failed: {e}"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            }
+            if !ok {
+                tracing::error!("Shutdown save failed for player {pid} after 3 attempts");
+            }
         }
     }
+
+    // Грязные здания — 45s-цикл мог не успеть до shutdown. Собираем под write-локом,
+    // отпускаем его ДО await (save берёт свой лок per-building).
+    let dirty_entities: Vec<bevy_ecs::prelude::Entity> = {
+        let mut ecs = game_state.ecs.write();
+        let mut query = ecs.query::<(bevy_ecs::prelude::Entity, &game::BuildingFlags)>();
+        query
+            .iter(&ecs)
+            .filter_map(|(e, f)| f.dirty.then_some(e))
+            .collect()
+    };
+    for entity in dirty_entities {
+        let row = game_state.modify_building(entity, |ecs, ent| {
+            ecs.get::<game::BuildingFlags>(ent)
+                .filter(|f| f.dirty)
+                .and_then(|_| crate::game::buildings::extract_building_row(ecs, ent))
+        });
+        if let Some(r) = row
+            && let Err(e) = game_state.db.save_building(&r).await
+        {
+            tracing::error!("Shutdown building save failed: {e}");
+        }
+    }
+
+    // Боксы — слить отложенную очередь персистенции (in-memory авторитетно).
+    for ((bx, by), op) in game_state.drain_box_persist() {
+        let r = match op {
+            None => game_state.db.delete_box_at(bx, by).await,
+            Some(crystals) => game_state.db.upsert_box(bx, by, &crystals).await,
+        };
+        if let Err(e) = r {
+            tracing::error!("Shutdown box persist ({bx},{by}) failed: {e}");
+        }
+    }
+
     if let Err(e) = game_state.world.flush() {
         tracing::error!("Shutdown world flush error: {e}");
     }
@@ -332,9 +388,12 @@ fn remove_world_files(state_dir: &Path) {
 
 /// Полная очистка позиционно-привязанного состояния при регене мира. Чистит то,
 /// что завязано на старый рельеф: здания, боксы, маркет-ордера (с отменой и
-/// рефандом владельцам). НЕ трогает программы и игроков (позиции/аккаунты) — по
-/// решению: игроки и их программы сохраняются.
+/// рефандом владельцам) + СБРОС позиций игроков на спавн. Аккаунты, прогресс
+/// (инвентарь/скиллы/деньги) и программы НЕ трогаем — только координаты.
 async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
+    // Спавн 1:1 с `create_spawns` (площадка золотой дороги вокруг (10,10)).
+    const SPAWN_X: i32 = 10;
+    const SPAWN_Y: i32 = 10;
     let n = database.delete_all_buildings().await?;
     tracing::info!("World regen: cleared {n} building rows from DB (stale packs vs new map)");
 
@@ -354,6 +413,13 @@ async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
     }
     let no = database.delete_all_orders().await?;
     tracing::info!("World regen: cancelled+refunded {no} market orders");
+
+    let np = database
+        .reset_all_players_to_spawn(SPAWN_X, SPAWN_Y)
+        .await?;
+    tracing::info!(
+        "World regen: reset {np} player positions to spawn ({SPAWN_X},{SPAWN_Y}) (stale terrain)"
+    );
 
     Ok(())
 }
@@ -391,8 +457,9 @@ where
 mod tests {
     use super::*;
 
-    /// `regen_clear_world_state`: сносит здания/боксы/ордера и рефандит ордер
-    /// владельцу (предметы инициатору, ставку покупателю). Игроков не сбрасывает.
+    /// `regen_clear_world_state`: сносит здания/боксы/ордера, рефандит ордер
+    /// владельцу (предметы инициатору, ставку покупателю) И сбрасывает позиции
+    /// игроков на спавн (старый рельеф невалиден). Прогресс не теряется.
     #[tokio::test]
     async fn regen_clears_world_state_and_refunds_orders() {
         let dir = std::env::temp_dir();
@@ -409,6 +476,19 @@ mod tests {
             .unwrap()
             .unwrap()
             .money;
+
+        // Инициатора ставим на off-spawn позицию (внутри будущего рельефа) —
+        // проверим, что реген сбросит её на спавн.
+        let mut init_row = database
+            .get_player_by_id(initiator.id)
+            .await
+            .unwrap()
+            .unwrap();
+        init_row.x = 999;
+        init_row.y = 888;
+        init_row.resp_x = Some(777);
+        init_row.resp_y = Some(666);
+        database.save_player(&init_row).await.unwrap();
 
         // Бокс (выпавшие кристаллы) + ордер с ставкой.
         database
@@ -447,6 +527,17 @@ mod tests {
             init_after.inventory.get(&40).copied().unwrap_or(0),
             5,
             "предметы не возвращены инициатору"
+        );
+        // Позиция и точка респавна сброшены на спавн (10,10), прогресс цел.
+        assert_eq!(
+            (
+                init_after.x,
+                init_after.y,
+                init_after.resp_x,
+                init_after.resp_y
+            ),
+            (10, 10, Some(10), Some(10)),
+            "позиции игрока не сброшены на спавн при регене"
         );
         let buyer_after = database.get_player_by_id(buyer.id).await.unwrap().unwrap();
         assert_eq!(
@@ -582,6 +673,7 @@ mod benchmarks {
                 data_dir: dir.to_string_lossy().to_string(),
                 logging: crate::config::LoggingConfig::default(),
                 cron: crate::config::CronConfig::default(),
+                gameplay: crate::config::GameplayConfig::default(),
             };
             let state =
                 crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;

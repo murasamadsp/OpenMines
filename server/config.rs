@@ -22,6 +22,55 @@ pub struct Config {
     /// Настройки фоновых задач.
     #[serde(default)]
     pub cron: CronConfig,
+    /// Тюнинг геймплея (админ-настраиваемые параметры). ОБЯЗАТЕЛЕН в `config.json`:
+    /// нет `#[serde(default)]` → пропущенный ключ = ошибка старта (fail-fast,
+    /// «missing field»), а не тихая подстановка. Конфиг — единственный источник
+    /// правды в рантайме. Новый параметр = новое поле; растёт организованно.
+    pub gameplay: GameplayConfig,
+}
+
+/// Корень геймплей-тюнинга. Растёт добавлением секций-суб-структур
+/// (`cooldowns`, далее `combat`/`items`/`economy`/…).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GameplayConfig {
+    pub cooldowns: CooldownConfig,
+    pub skills: SkillsConfig,
+}
+
+/// Тюнинг скиллов. `upgrade_cost_base` — цена апгрейда в деньгах:
+/// `cost = upgrade_cost_base * текущий_уровень` (в C# апгрейд был бесплатным —
+/// намеренная экономик-девиация, см. `docs/DEVIATIONS.md`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    pub upgrade_cost_base: i64,
+}
+
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            upgrade_cost_base: 100,
+        }
+    }
+}
+
+/// Кулдауны действий игрока (мс). Прежние литералы из `play/dig_build.rs`
+/// (200ms копание/стройка) — теперь только в `config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CooldownConfig {
+    pub dig_ms: u64,
+    pub build_ms: u64,
+}
+
+// `Default` — НЕ для serde-подстановки (поля обязательны при парсинге), а только
+// для генерации стартового `config.json` и тест-фикстур. Канонические значения
+// живут в одном месте; рантайм всегда читает их из файла.
+impl Default for CooldownConfig {
+    fn default() -> Self {
+        Self {
+            dig_ms: 200,
+            build_ms: 200,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,9 +170,53 @@ impl Config {
                 data_dir: default_data_dir(),
                 logging: LoggingConfig::default(),
                 cron: CronConfig::default(),
+                gameplay: GameplayConfig::default(),
             };
             fs::write(path, serde_json::to_string_pretty(&cfg)?)?;
             Ok(cfg)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: &str = r#"{
+        "world_name": "t", "port": 8090, "world_chunks_w": 4, "world_chunks_h": 4,
+        "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
+        "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
+                     "skills": {"upgrade_cost_base": 100}}
+    }"#;
+
+    #[test]
+    fn gameplay_values_come_from_config_not_defaults() {
+        let c: Config = serde_json::from_str(FULL).unwrap();
+        // Значения читаются из JSON, а не из кода (250/300 ≠ дефолтные 200).
+        assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
+        assert_eq!(c.gameplay.cooldowns.build_ms, 300);
+        assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
+    }
+
+    /// Fail-fast (запрошено): пропущенный геймплей-ключ = ошибка парсинга, а НЕ
+    /// тихая подстановка дефолта. Так админ сразу видит, что забыл в `config.json`.
+    #[test]
+    fn missing_gameplay_key_is_an_error_not_a_silent_default() {
+        // Нет секции gameplay целиком.
+        let no_gameplay = FULL.replace(
+            r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
+                     "skills": {"upgrade_cost_base": 100}}"#,
+            r#""x": 0"#,
+        );
+        assert!(
+            serde_json::from_str::<Config>(&no_gameplay).is_err(),
+            "пропущенный gameplay должен быть ошибкой (fail-fast), а не дефолтом"
+        );
+        // Нет одного ключа внутри (build_ms) — тоже ошибка.
+        let no_build = FULL.replace(r#", "build_ms": 300"#, "");
+        assert!(
+            serde_json::from_str::<Config>(&no_build).is_err(),
+            "пропущенный build_ms должен быть ошибкой"
+        );
     }
 }

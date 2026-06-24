@@ -366,6 +366,20 @@ impl Database {
         Ok(())
     }
 
+    /// Сброс позиции и точки респавна ВСЕХ игроков на спавн `(x, y)`. Вызывается
+    /// при `--regen`: после регена рельеф полностью новый, а старые `x/y` (и
+    /// `resp_x/resp_y`) указывают внутрь сгенерированных блоков → игрок логинится
+    /// (или респавнится после смерти) внутри камня и мгновенно умирает («покорёженный
+    /// спавн»). Прогресс (инвентарь/скиллы/деньги) НЕ трогаем — только координаты.
+    pub async fn reset_all_players_to_spawn(&self, x: i32, y: i32) -> Result<u64> {
+        let res = sqlx::query("UPDATE players SET x=?1, y=?2, dir=0, resp_x=?1, resp_y=?2")
+            .bind(x)
+            .bind(y)
+            .execute(&self.pool)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
     pub async fn player_name_exists(&self, name: &str) -> Result<bool> {
         let name = name.trim();
         if name.is_empty() {

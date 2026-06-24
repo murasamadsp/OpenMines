@@ -187,12 +187,30 @@ pub async fn dispatch_ty_packet(
         "GDon" => {
             crate::net::session::play::bonus::handle_bonus_claim(state, tx, pid);
         }
-        "PROG" | "PDEL" | "pRST" | "PREN" => {
+        // Client Help button disables movement before sending `Help`; C# decodes
+        // the packet but has no TY handler. Make the disabled feature explicit
+        // instead of leaving the UI with a silent click.
+        "Help" => {
+            send_ok(tx, "Справка", "Справка пока не подключена на сервере.");
+        }
+        // Mission panel click. We do not have mission content yet, but the client
+        // has a standard MM empty-text contract for hiding the panel.
+        "Miso" => {
+            send_mission_panel_hide(tx);
+        }
+        // Tutorial marker hidden client-side; keep the event known for telemetry.
+        "THID" => {
+            let marker = String::from_utf8_lossy(&packet.sub_payload);
+            tracing::debug!(pid, marker = %marker, "tutorial marker hidden");
+        }
+        "PROG" | "PDEL" | "pRST" | "PREN" | "PCOP" => {
             handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload).await;
         }
         // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
         // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.
-        "Miss" | "Rndm" | "TAGR" | "TAUR" => {}
+        "Miss" | "Rndm" | "TAGR" | "TAUR" => {
+            tracing::debug!(pid, event, "known no-op TY event");
+        }
         _ => {
             tracing::warn!("Unknown TY event: {event}");
         }
@@ -202,4 +220,31 @@ pub async fn dispatch_ty_packet(
         tracing::warn!(target: "tickprof", "SLOW handler event={event} pid={pid} elapsed={__el:?}");
     }
     Ok(())
+}
+
+fn send_mission_panel_hide(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(tx, "MM", b"#0#0#0#");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+
+    #[test]
+    fn mission_panel_hide_sends_empty_mm_payload() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        send_mission_panel_hide(&tx);
+
+        let frame = rx.try_recv().expect("MM frame");
+        let mut buf = BytesMut::from(&frame[..]);
+        let packet = crate::protocol::Packet::try_decode(&mut buf)
+            .expect("valid packet")
+            .expect("decoded packet");
+
+        assert_eq!(packet.data_type, b'U');
+        assert_eq!(packet.event_str(), "MM");
+        assert_eq!(&packet.payload[..], b"#0#0#0#");
+        assert!(buf.is_empty());
+    }
 }

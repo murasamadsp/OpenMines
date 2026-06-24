@@ -8,5 +8,14 @@
     "filter": "info,openmines_server=debug,tokio=warn",
     "format": "pretty",
     "file": null
+  },
+  "gameplay": {
+    "cooldowns": {
+      "dig_ms": 200,
+      "build_ms": 200
+    },
+    "skills": {
+      "upgrade_cost_base": 100
+    }
   }
 }

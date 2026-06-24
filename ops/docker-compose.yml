@@ -6,7 +6,12 @@ services:
       dockerfile: ops/Dockerfile
     restart: unless-stopped
     entrypoint: ["/usr/local/bin/openmines-proxy"]
-    command: ["--bind", "0.0.0.0:8090", "--backend", "openmines-server:8090"]
+    # --reconnect-timeout 90: запас на холодный старт бэкенда при деплое. Старый
+    # сервер по SIGTERM делает shutdown_flush (сохранение игроков/мира), новый
+    # грузит mmap-мир + БД + все здания в ECS. На большом мире дефолтных 30s
+    # может не хватить → прокси сбросит клиентов (теряя смысл бесшовности).
+    # Прокси переживает деплой (deploy.yml катит только openmines-server).
+    command: ["--bind", "0.0.0.0:8090", "--backend", "openmines-server:8090", "--reconnect-timeout", "90"]
     ports:
       - "8090:8090"
     depends_on:

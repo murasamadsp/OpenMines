@@ -35,7 +35,7 @@ jobs:
     outputs:
       sha: ${{ steps.meta.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ github.event.inputs.ref || github.event.workflow_run.head_sha || github.sha }}
 
@@ -44,17 +44,17 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build & push (linux/amd64 — VPS is x86_64)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ops/Dockerfile
@@ -77,7 +77,7 @@ jobs:
       packages: read
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           IMAGE_SHA: ${{ needs.build-push.outputs.sha }}
         with:
@@ -119,11 +119,52 @@ jobs:
             cd "$STACK"
             echo "[deploy] pull image"
             docker compose pull
-            echo "[deploy] up -d (force-recreate сохраняет named volume)"
-            docker compose up -d
 
-            # === Health-check: TCP-хендшейк на 8090 ===
-            echo "[deploy] health-check 8090"
+            # ZERO-DOWNTIME: катим ТОЛЬКО бэкенд, прокси НЕ трогаем.
+            # Прокси держит клиентский TCP живым; пересоздать его = оборвать всех
+            # игроков (ровно то, что он должен предотвращать). Поэтому:
+            #   1) --no-recreate: поднять недостающее (первый деплой), но НЕ
+            #      пересоздавать уже живой прокси, даже если образ обновился;
+            #   2) --force-recreate --no-deps openmines-server: катнуть ТОЛЬКО
+            #      сервер. Прокси ловит обрыв к старому контейнеру и
+            #      переподключается к новому (docker-DNS) — swallow ST/AU/PI +
+            #      replay AU. Клиентский сокет не рвётся.
+            # Обновить сам прокси (редко, при правке proxy.rs) — вручную:
+            #   docker compose up -d --force-recreate openmines-proxy
+            echo "[deploy] ensure stack up (no-recreate keeps proxy alive)"
+            docker compose up -d --no-recreate
+            echo "[deploy] roll backend only (proxy bridges the gap)"
+            docker compose up -d --no-deps --force-recreate openmines-server
+
+            # === Health-check, слой 1: БЭКЕНД реально поднялся ===
+            # Прокси теперь переживает деплой и держит 8090 открытым НЕЗАВИСИМО
+            # от сервера. Значит проверка «порт 8090 открыт» пройдёт даже если
+            # новый сервер упал на старте (битый конфиг/миграция) — ложно-зелёный
+            # деплой. Поэтому сперва убеждаемся, что контейнер сервера РАБОТАЕТ и
+            # не в крэш-лупе: running + RestartCount==0, стабильно 3 проверки.
+            echo "[deploy] health-check L1: backend container stable"
+            cid=$(docker compose ps -q openmines-server)
+            [ -n "$cid" ] || { echo "[deploy] FAILED: no openmines-server container"; docker compose ps; exit 1; }
+            srv_ok=0; good=0
+            for i in $(seq 1 20); do
+              status=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || echo missing)
+              restarts=$(docker inspect -f '{{.State.RestartCount}}' "$cid" 2>/dev/null || echo 0)
+              if [ "$restarts" != 0 ] || [ "$status" = exited ] || [ "$status" = dead ]; then
+                echo "[deploy] FAILED: backend crashed (status=$status restarts=$restarts)"
+                docker compose logs --tail 80 openmines-server; exit 1
+              fi
+              if [ "$status" = running ]; then
+                good=$((good+1)); echo "[deploy] backend running ($good/3 stable, attempt $i)"
+                [ "$good" -ge 3 ] && { srv_ok=1; break; }
+              else
+                echo "[deploy] backend status=$status ($i/20), wait 3s"
+              fi
+              sleep 3
+            done
+            [ "$srv_ok" -eq 1 ] || { echo "[deploy] FAILED: backend not stable in time"; docker compose logs --tail 80 openmines-server; exit 1; }
+
+            # === Health-check, слой 2: user-facing путь через прокси ===
+            echo "[deploy] health-check L2: proxy accepts on 8090"
             ok=0
             for i in $(seq 1 10); do
               if timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8090' 2>/dev/null; then

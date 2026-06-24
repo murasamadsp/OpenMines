@@ -1,7 +1,6 @@
 //! Главный модуль игры: состояние мира, игроки, здания и ECS-системы.
 //! Архитектура стремится к 1:1 соответствию логике C# сервера (World.cs, MServer.cs).
 
-pub mod acid;
 pub mod alive;
 pub mod botspot;
 pub mod building_damage;
@@ -233,7 +232,6 @@ impl GameState {
         schedule.add_systems(combat::gun_firing_system);
         schedule.add_systems(programmator::programmator_system);
         schedule.add_systems(alive::alive_physics_system);
-        schedule.add_systems(acid::acid_physics_system);
         schedule.add_systems(building_damage::building_hourly_damage_system);
         schedule.add_systems(building_damage::building_effect_tick_system);
 
@@ -248,7 +246,10 @@ impl GameState {
         // `ChatChannel.messages`. Без загрузки FED/DNO теряли бы всю историю
         // после рестарта сервера. `id` сохраняется для дедупа клиента.
         for ch in default_channels.iter_mut().filter(|c| c.global) {
-            if let Ok(rows) = database.get_recent_chat_messages(&ch.tag, 50).await {
+            if let Ok(rows) = database
+                .get_recent_chat_messages(&ch.tag, chat::CHAT_HISTORY_LIMIT)
+                .await
+            {
                 for (id, name, text, ts, player_id, color, clan_id) in rows {
                     ch.messages.push_back(chat::ChatMessage {
                         id,
@@ -317,7 +318,6 @@ impl GameState {
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
             ecs.insert_resource(alive::AliveTickTimer::default());
-            ecs.insert_resource(acid::AcidTickTimer::default());
             ecs.insert_resource(sand::SandTickTimer::default());
             ecs.insert_resource(combat::GunTickTimer::default());
             ecs.insert_resource(building_damage::BuildingDamageTimer::default());
@@ -733,9 +733,9 @@ impl GameState {
         self.box_persist_q.lock().push(((x, y), Some(crystals)));
     }
 
-    /// Слить очередь персистенции боксов (больше не используется —
-    /// `BoxPersistQueue` дренится внутри `ecs.write()` в lifecycle.rs).
-    #[allow(dead_code)]
+    /// Слить очередь персистенции боксов. На hot-path `BoxPersistQueue` дренится
+    /// внутри `ecs.write()` в lifecycle.rs; этот метод — для финального drain при
+    /// shutdown (`main::shutdown_flush`), чтобы не потерять последние upsert/delete.
     pub fn drain_box_persist(&self) -> Vec<BoxPersist> {
         let mut q = self.box_persist_q.lock();
         std::mem::take(&mut *q)
