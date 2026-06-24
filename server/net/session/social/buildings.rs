@@ -22,6 +22,7 @@ pub async fn handle_programmator_pope_menu(
 ) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
     let programs = state.db.list_programs(pid).await.unwrap_or_default();
+    tracing::info!("PROGDIAG Pope pid={pid} programs={}", programs.len());
     let mut win = Horb::new("ПРОГРАММАТОР");
     if programs.is_empty() {
         win = win

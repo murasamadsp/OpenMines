@@ -83,6 +83,11 @@ pub async fn handle_prog_ty(
                     .flatten()
                     .unwrap_or(false);
 
+                tracing::info!(
+                    "PROGDIAG PROG pid={pid} id={prog_id} source_len={} running={running}",
+                    source.len()
+                );
+
                 // C# StartedProg: RunProgramm (Gu close) → UpdateProg (#p) → ProgStatus (@P).
                 send_u_packet(tx, "Gu", &gu_close().1);
                 let name = state
@@ -109,7 +114,7 @@ pub async fn handle_prog_ty(
                 }
             } else {
                 tracing::warn!(
-                    "[PROG] Failed to decode payload pid={pid} len={}",
+                    "PROGDIAG PROG decode FAILED pid={pid} len={}",
                     payload.len()
                 );
                 send_u_packet(tx, "@P", &programmator_status(false).1);

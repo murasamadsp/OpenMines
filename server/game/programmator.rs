@@ -451,6 +451,12 @@ impl ProgrammatorState {
         self.function_order.clear();
         self.current_function.clear();
         if let Some((functions, order)) = Self::parse_normal(data) {
+            let total_actions: usize = functions.values().map(|f| f.actions.len()).sum();
+            tracing::info!(
+                "PROGDIAG run_program: parse OK funcs={} order={} actions={total_actions}",
+                functions.len(),
+                order.len()
+            );
             self.current_prog = functions;
             self.function_order = order;
             self.delay = Instant::now();
@@ -458,6 +464,10 @@ impl ProgrammatorState {
             self.running = true;
             true
         } else {
+            tracing::warn!(
+                "PROGDIAG run_program: parse_normal FAILED data_len={}",
+                data.len()
+            );
             self.drop_state();
             false
         }
