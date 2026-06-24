@@ -30,6 +30,13 @@
 
 # workflow
 See [workflow/taste.md](workflow/taste.md)
+
+# client
+- Never modify client networking code (packet send/receive/parse) — it's absolutely forbidden and breaks the client-server contract. Confidence: 0.95
+- Client changes must be surgical and 100% proven necessary — targeted single-purpose fixes only, no refactoring or restructuring. Confidence: 0.85
+
+# debugging
+- For persistent bugs, use systematic elimination method: list all possible causes and rule them out one by one. Do not guess or try random fixes. Confidence: 0.80
 # communication
 - Respond in Russian. Confidence: 0.95
 - Keep responses terse — user finds verbosity annoying ("ты слишком много пишешь"), asks "коротко" and "по пунктам". Confidence: 0.80

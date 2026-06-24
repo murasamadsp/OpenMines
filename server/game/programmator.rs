@@ -716,31 +716,35 @@ fn execute_action(
     let on_road = crate::world::cells::is_road(world.get_cell(pos.x, pos.y));
     match action.action_type {
         // ─── Movement ────────────────────────────────────────────────────
+        // dir = -1 (позиционный ход, 1:1 C# `Move(x,y)` дефолт). `handle_move`
+        // выводит поворот из дельты И достигает ветки автокопы (`movement.rs:129`:
+        // `dir == -1 && auto_dig`). С явным dir 0-3 автокопа в программе НЕ работала.
+        // Повороты (Rotate*) ниже остаются с явным dir — у них нулевая дельта.
         ActionType::MoveDown => {
             *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y + 1);
-            push_move(prog_q, meta, conn, pos.x, pos.y + 1, 0);
+            push_move(prog_q, meta, conn, pos.x, pos.y + 1, -1);
             ExecResult::None
         }
         ActionType::MoveUp => {
             *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y - 1);
-            push_move(prog_q, meta, conn, pos.x, pos.y - 1, 2);
+            push_move(prog_q, meta, conn, pos.x, pos.y - 1, -1);
             ExecResult::None
         }
         ActionType::MoveRight => {
             *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x + 1, pos.y);
-            push_move(prog_q, meta, conn, pos.x + 1, pos.y, 3);
+            push_move(prog_q, meta, conn, pos.x + 1, pos.y, -1);
             ExecResult::None
         }
         ActionType::MoveLeft => {
             *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x - 1, pos.y);
-            push_move(prog_q, meta, conn, pos.x - 1, pos.y, 1);
+            push_move(prog_q, meta, conn, pos.x - 1, pos.y, -1);
             ExecResult::None
         }
         ActionType::MoveForward => {
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
             *delay_ms =
                 speed_pause(skills, on_road) + move_block_penalty(world, pos.x + dx, pos.y + dy);
-            push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, pos.dir);
+            push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, -1);
             ExecResult::None
         }
 
