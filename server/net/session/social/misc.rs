@@ -69,16 +69,21 @@ pub async fn handle_prog_ty(
 
                 let running = state
                     .modify_player(pid, |ecs, entity| {
-                        if let Some(mut ps) =
-                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
-                        {
-                            ps.selected_id = Some(prog_id);
-                            ps.selected_data = Some(source.clone());
-                            ps.run_program(&source);
-                            Some(ps.running)
-                        } else {
-                            None
+                        // На запуске окно программатора закрывается (ниже шлём `Gu`).
+                        // ОБЯЗАТЕЛЬНО синхронизируем серверный `current_window=None`:
+                        // иначе после стопа гард `window_open` в `handle_move` режет
+                        // ручной ход и шлёт `@T` назад («сервер кидает назад»).
+                        // Pope-меню/окно ставило `current_window`, а сырой `Gu`
+                        // (send_u_packet) его не сбрасывал.
+                        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                            ui.current_window = None;
                         }
+                        let mut ps =
+                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+                        ps.selected_id = Some(prog_id);
+                        ps.selected_data = Some(source.clone());
+                        ps.run_program(&source);
+                        Some(ps.running)
                     })
                     .flatten()
                     .unwrap_or(false);
@@ -446,7 +451,29 @@ mod tests {
             .unwrap();
         let payload = prog_payload(3, prog_id, &[1, 2, 3], "");
 
+        // Эмулируем открытое окно (Pope-меню ставит current_window). Запуск проги
+        // ОБЯЗАН его сбросить — иначе после стопа гард window_open в handle_move
+        // кидает игрока назад («сервер кидает назад»).
+        test.state.modify_player(test.player.id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)?
+                .current_window = Some("pope".to_string());
+            Some(())
+        });
+
         handle_prog_ty(&test.state, &tx, test.player.id, "PROG", &payload).await;
+
+        let window_after = test.state.query_player_opt(test.player.id, |ecs, entity| {
+            Some(
+                ecs.get::<crate::game::player::PlayerUI>(entity)?
+                    .current_window
+                    .is_some(),
+            )
+        });
+        assert_eq!(
+            window_after,
+            Some(false),
+            "current_window должен сброситься на запуске проги (иначе tp-back после стопа)"
+        );
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
