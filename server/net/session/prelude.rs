@@ -25,9 +25,7 @@ pub use crate::protocol::packets::{
     inventory_full, level, money, ok_message, ping, programmator_status, settings_default_wire,
     skills_packet, speed, status, tp, world_info,
 };
-pub use crate::world::cells::{
-    cell_type, crystal_multiplier, crystal_type, is_boulder, is_crystal,
-};
+pub use crate::world::cells::{cell_type, is_crystal};
 pub use crate::world::{World, WorldProvider};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,9 +1,7 @@
 //! Подгрузка и синхронизация чанков вокруг игрока.
+use crate::game::PackOverlay;
 use crate::net::session::prelude::*;
 use std::collections::HashMap;
-
-/// HB-оверлей пака: `(code, x, y, clan, charged)` (как `PackOverlay` в `game`).
-type PackEntry = (u8, u16, u16, u8, u8);
 
 pub fn check_chunk_changed(
     state: &Arc<GameState>,
@@ -165,8 +163,8 @@ pub fn check_chunk_changed(
         // слать дубликаты и не триггерить преждевременный flush (иначе клиент
         // снесёт паки в visible-чанках, чей block_pos коллизит, а ре-отправка
         // окажется в отдельном бандле — «паки пропадают»).
-        for (_, px, py, _, _) in state.get_packs_in_single_chunk(ocx, ocy) {
-            if let Some(block_pos) = state.pack_block_pos(i32::from(px), i32::from(py)) {
+        for pack in state.get_packs_in_single_chunk(ocx, ocy) {
+            if let Some(block_pos) = state.pack_block_pos(i32::from(pack.x), i32::from(pack.y)) {
                 // Dedup: если два пака в уходящем чанке делят block_pos,
                 // слать очистку дважды бессмысленно (и тратит лимит).
                 if cleared_blocks.insert(block_pos) {
@@ -193,16 +191,20 @@ pub fn check_chunk_changed(
     // границы чанка сотрёт чужие transient-бумы на клиенте этого игрока, но они
     // живут 1–2с и самовосстановятся. НЕ добавлять сюда частичный сенд расходников
     // — инвариант «один `O` несёт весь блок» держит `gather_block_packs`.
-    let mut by_block: HashMap<i32, Vec<PackEntry>> = HashMap::new();
+    let mut by_block: HashMap<i32, Vec<PackOverlay>> = HashMap::new();
     for (vcx, vcy) in new_visible.iter().copied() {
         for pack in state.get_packs_in_single_chunk(vcx, vcy) {
-            if let Some(bp) = state.pack_block_pos(i32::from(pack.1), i32::from(pack.2)) {
+            if let Some(bp) = state.pack_block_pos(i32::from(pack.x), i32::from(pack.y)) {
                 by_block.entry(bp).or_default().push(pack);
             }
         }
     }
     for (bp, packs) in by_block {
-        sub_packets.push(hb_packs(bp, &packs));
+        let wire: Vec<(u8, u16, u16, u8, u8)> = packs
+            .iter()
+            .map(|p| (p.code, p.x, p.y, p.clan, p.charged))
+            .collect();
+        sub_packets.push(hb_packs(bp, &wire));
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
         if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
             || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES

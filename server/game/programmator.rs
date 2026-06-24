@@ -457,6 +457,16 @@ impl ProgrammatorState {
                 functions.len(),
                 order.len()
             );
+            // Дамп распарсенной последовательности — видно, ВЕРНЫЕ ли действия
+            // произвёл парсер (move/dig/if/...) или мусор.
+            for (fname, f) in &functions {
+                let seq: Vec<String> = f
+                    .actions
+                    .iter()
+                    .map(|a| format!("{:?}:{}", a.action_type, a.num))
+                    .collect();
+                tracing::info!("PROGDIAG parsed fn={fname:?} actions={seq:?}");
+            }
             self.current_prog = functions;
             self.function_order = order;
             self.delay = Instant::now();
@@ -636,6 +646,14 @@ pub fn programmator_system(
             f.current += 1;
             a
         };
+
+        tracing::info!(
+            "PROGDIAG exec {:?}:{} at ({},{})",
+            action.action_type,
+            action.num,
+            pos.x,
+            pos.y
+        );
 
         let mut delay_ms: u64 = 0;
 

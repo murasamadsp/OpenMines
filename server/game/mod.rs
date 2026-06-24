@@ -133,8 +133,20 @@ pub type IncomingAction = (
 );
 /// Запись персистенции бокса: (координата, `Some`=upsert | `None`=delete).
 type BoxPersist = ((i32, i32), Option<[i64; 6]>);
-/// Пакет в HB-overlay: (code, x, y, clan, charged).
-type PackOverlay = (u8, u16, u16, u8, u8);
+/// Пакет в HB-overlay здания: поля именованы для читаемости (IR-3).
+#[derive(Clone, Copy, Debug)]
+pub struct PackOverlay {
+    /// Код типа здания (`PackType::code()`).
+    pub code: u8,
+    /// X-координата здания (сетевой u16, `rem_euclid(65536)`).
+    pub x: u16,
+    /// Y-координата здания (сетевой u16).
+    pub y: u16,
+    /// Клановый ID (`clan_id.clamp(0,255) as u8`).
+    pub clan: u8,
+    /// 1 если `charge > 0`, 0 иначе ("charged" flag для оверлея).
+    pub charged: u8,
+}
 
 pub struct IncomingActionsQueue {
     pub(crate) queue: Mutex<Vec<IncomingAction>>,
@@ -220,6 +232,8 @@ pub struct GameState {
     /// и здания, и все активные расходники блока — иначе один бум стирает здания и
     /// другие бумы. `gather_block_packs` читает этот реестр. В памяти, transient.
     pub consumable_packs: DashMap<(i32, i32), (u8, u8)>,
+    /// Счётчик активных фоновых транзакций/записей в базу данных (используется при shutdown).
+    pub db_pending_tasks: std::sync::atomic::AtomicUsize,
 }
 
 impl GameState {
@@ -292,6 +306,7 @@ impl GameState {
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
             kick_channels: DashMap::new(),
             consumable_packs: DashMap::new(),
+            db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
@@ -644,13 +659,13 @@ impl GameState {
                 if let (Some(pos), Some(meta), Some(own), Some(stats)) = (pos, meta, own, stats)
                     && meta.pack_type.included_in_hb_overlay()
                 {
-                    results.push((
-                        meta.pack_type.code(),
-                        u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
-                        u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
-                        u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
-                        u8::from(stats.charge > 0.0),
-                    ));
+                    results.push(PackOverlay {
+                        code: meta.pack_type.code(),
+                        x: u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
+                        y: u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
+                        clan: u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
+                        charged: u8::from(stats.charge > 0.0),
+                    });
                 }
             }
         }
@@ -671,13 +686,13 @@ impl GameState {
                     if let (Some(pos), Some(meta), Some(own), Some(stats)) = (pos, meta, own, stats)
                         && meta.pack_type.included_in_hb_overlay()
                     {
-                        results.push((
-                            meta.pack_type.code(),
-                            u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
-                            u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
-                            u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
-                            u8::from(stats.charge > 0.0),
-                        ));
+                        results.push(PackOverlay {
+                            code: meta.pack_type.code(),
+                            x: u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
+                            y: u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
+                            clan: u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
+                            charged: u8::from(stats.charge > 0.0),
+                        });
                     }
                 }
             }
@@ -686,19 +701,25 @@ impl GameState {
         results
     }
 
-    pub fn visible_chunks_around(&self, cx: u32, cy: u32) -> Vec<(u32, u32)> {
-        let mut chunks = Vec::new();
+    /// Итератор видимых чанков вокруг `(cx, cy)` без аллокации Vec.
+    /// Используется внутри `broadcast_to_nearby` и `get_packs_in_chunk_area`.
+    pub fn visible_chunks_iter(&self, cx: u32, cy: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let (w, h) = (self.world.chunks_w(), self.world.chunks_h());
-        for dy in -Self::CHUNK_VIEW_RADIUS..=Self::CHUNK_VIEW_RADIUS {
-            for dx in -Self::CHUNK_VIEW_RADIUS..=Self::CHUNK_VIEW_RADIUS {
+        (-Self::CHUNK_VIEW_RADIUS..=Self::CHUNK_VIEW_RADIUS).flat_map(move |dy| {
+            (-Self::CHUNK_VIEW_RADIUS..=Self::CHUNK_VIEW_RADIUS).filter_map(move |dx| {
                 let ncx = cx.cast_signed() + dx;
                 let ncy = cy.cast_signed() + dy;
-                if ncx >= 0 && ncx < w.cast_signed() && ncy >= 0 && ncy < h.cast_signed() {
-                    chunks.push((ncx.cast_unsigned(), ncy.cast_unsigned()));
-                }
-            }
-        }
-        chunks
+                (ncx >= 0 && ncx < w.cast_signed() && ncy >= 0 && ncy < h.cast_signed())
+                    .then_some((ncx.cast_unsigned(), ncy.cast_unsigned()))
+            })
+        })
+    }
+
+    /// Собирает видимые чанки в `Vec`. Используй `visible_chunks_iter` там, где
+    /// можно обойтись без аллокации (broadcast-путь). `Vec`-версия остаётся для
+    /// мест, где список нужен как owned (например, `bots_render` due-list).
+    pub fn visible_chunks_around(&self, cx: u32, cy: u32) -> Vec<(u32, u32)> {
+        self.visible_chunks_iter(cx, cy).collect()
     }
 
     pub fn send_to_player(&self, pid: PlayerId, data: Vec<u8>) {
@@ -734,11 +755,11 @@ impl GameState {
     }
 
     pub fn broadcast_to_nearby(&self, cx: u32, cy: u32, data: &[u8], exclude_id: Option<PlayerId>) {
-        for (ncx, ncy) in self.visible_chunks_around(cx, cy) {
+        // PB-2: итерируем напрямую под guard'ом DashMap — не клонируем Vec<PlayerId>.
+        // send_to_player берёт player_sessions (другой DashMap-шард) → дедлок невозможен.
+        for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
             if let Some(players) = self.chunk_players.get(&(ncx, ncy)) {
-                let pids = players.value().clone();
-                drop(players);
-                for pid in pids {
+                for &pid in players.value() {
                     if Some(pid) == exclude_id {
                         continue;
                     }
@@ -765,10 +786,9 @@ impl GameState {
         data: &[u8],
         exclude_id: Option<PlayerId>,
     ) {
+        // PB-2: то же — без клонирования Vec под guard'ом.
         if let Some(players) = self.chunk_players.get(&(cx, cy)) {
-            let pids = players.value().clone();
-            drop(players);
-            for pid in pids {
+            for &pid in players.value() {
                 if Some(pid) == exclude_id {
                     continue;
                 }
@@ -782,7 +802,9 @@ impl GameState {
         generate_random_string(12, CHARSET)
     }
     pub fn generate_session_id() -> String {
-        const CHARSET: &[u8] = b"abcdefghijklmnoprtsuxyz0123456789";
+        // IR-8: восстановлены пропущенные символы q, v, w (были опечатки в оригинале).
+        // 5 символов из 36 → 36^5 ≈ 60M комбинаций (было 33^5 ≈ 39M).
+        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
         generate_random_string(5, CHARSET)
     }
 
@@ -815,11 +837,20 @@ pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
 }
 
 fn generate_random_string(len: usize, charset: &[u8]) -> String {
-    use rand::Rng;
-    let mut rng = rand::rng();
-    (0..len)
-        .map(|_| charset[rng.random_range(0..charset.len())] as char)
-        .collect()
+    use rand::Rng as _;
+    use rand::SeedableRng as _;
+    // PB-6: переиспользуем thread-local SmallRng — инициализация один раз на поток,
+    // а не при каждом вызове. SmallRng быстр и достаточен для non-crypto токенов.
+    thread_local! {
+        static RNG: std::cell::RefCell<rand::rngs::SmallRng> =
+            std::cell::RefCell::new(rand::rngs::SmallRng::from_os_rng());
+    }
+    RNG.with(|rng| {
+        let mut rng = rng.borrow_mut();
+        (0..len)
+            .map(|_| charset[rng.random_range(0..charset.len())] as char)
+            .collect()
+    })
 }
 
 /// Чанковый `block_pos` для клетки `(x, y)`. C# `PACKPOS = x + y * World.ChunksW`,

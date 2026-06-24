@@ -2,6 +2,11 @@
 use crate::net::session::play::death::hurt_player_pure;
 use crate::net::session::prelude::*;
 
+/// Делитель силы копания (C# `Player.cs`: `digPower / 500`).
+const DIG_POWER_DIVISOR: f32 = 500.0;
+/// Минимальный урон за удар — не даём округлить до нуля (epsilon).
+const MIN_HIT_POWER: f32 = 1.0e-6;
+
 pub fn handle_dig(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -81,10 +86,10 @@ pub fn handle_dig(
         return;
     }
 
-    let cell = state.world.get_cell(tgt_x, tgt_y);
+    let cell = crate::world::CellType(state.world.get_cell(tgt_x, tgt_y));
     let (touch_damage, diggable) = {
         let defs = state.world.cell_defs();
-        let p = defs.get(cell);
+        let p = defs.get_typed(cell);
         (p.damage, p.is_diggable())
     };
     // Референс `Player.Bz`: сначала `Hurt(damage)` если `GetProp(cell).damage > 0`, потом проверка `is_diggable`.
@@ -113,7 +118,7 @@ pub fn handle_dig(
 
     // Fix 2: BOX (90) special case — pick up crystals and destroy.
     // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
-    if cell == cell_type::BOX {
+    if cell.0 == cell_type::BOX {
         if let Some(bc) = state.box_take(tgt_x, tgt_y) {
             state.modify_player(pid, |ecs, entity| {
                 let mut p_stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
@@ -158,7 +163,7 @@ pub fn handle_dig(
     }
 
     // Fix 3: MilitaryBlock (81) special case — fixed 1.0 damage, no multiplier, no crystal/exp/FX2.
-    if cell == cell_type::MILITARY_BLOCK {
+    if cell.0 == cell_type::MILITARY_BLOCK {
         let destroyed = state.world.damage_cell(tgt_x, tgt_y, 1.0);
         if destroyed {
             broadcast_cell_update(state, tgt_x, tgt_y);
@@ -176,13 +181,13 @@ pub fn handle_dig(
         return;
     }
 
-    let hit = if is_crystal(cell) {
+    let hit = if cell.is_crystal() {
         1.0
     } else {
-        (dig_power / 500.0).max(1.0e-6)
+        (dig_power / DIG_POWER_DIVISOR).max(MIN_HIT_POWER)
     };
     let destroyed = state.world.damage_cell(tgt_x, tgt_y, hit);
-    let cry_idx = crystal_type(cell);
+    let cry_idx = cell.crystal_type();
 
     // D8+D9: Crystal mining happens on EVERY hit (1:1 with C# Player.Bz → Mine(cell,x,y)).
     // Dig exp happens only on destroy. MineGeneral exp happens every hit with crystals.
@@ -191,7 +196,7 @@ pub fn handle_dig(
         let mut carry = crystal_carry_init;
         let pre_mult_dob = 1.0_f32 + carry.trunc() + mine_mult;
         let mine_exp = pre_mult_dob.trunc();
-        let dob = pre_mult_dob * crystal_multiplier(cell) as f32;
+        let dob = pre_mult_dob * cell.crystal_multiplier() as f32;
         carry -= carry.trunc();
         let odob = dob.trunc() as i64;
         carry += dob - odob as f32;
@@ -256,14 +261,14 @@ pub fn handle_dig(
     // (эксплойт: копай валун → плодятся). Гейт `!destroyed`: при разрушении
     // `damage_cell` уже очистил клетку, а `cell` захвачен ДО удара (иначе воскресим);
     // C# в этом случае MoveCell'ит пустую клетку = no-op.
-    let pushed_boulder = if is_boulder(cell) && !destroyed {
+    let pushed_boulder = if cell.is_boulder() && !destroyed {
         let (bx, by) = (tgt_x + dx, tgt_y + dy);
         if state.world.valid_coord(bx, by) && state.world.is_empty(bx, by) {
             // durability читаем ПОСЛЕ damage_cell (как C# GetDurability после DamageCell).
             let dur = state.world.get_durability(tgt_x, tgt_y);
             state.world.destroy(tgt_x, tgt_y);
             broadcast_cell_update(state, tgt_x, tgt_y);
-            state.world.set_cell(bx, by, cell);
+            state.world.set_cell(bx, by, cell.0);
             state.world.set_durability(bx, by, dur);
             broadcast_cell_update(state, bx, by);
             true
@@ -566,7 +571,11 @@ pub fn try_spend_crystal(
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    let sub = hb_cell(x as u16, y as u16, state.world.get_cell(x, y));
+    let sub = hb_cell(
+        net_u16_nonneg(x),
+        net_u16_nonneg(y),
+        state.world.get_cell(x, y),
+    );
     state.broadcast_hb_at(x, y, &[sub], None);
 }
 

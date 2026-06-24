@@ -1,6 +1,5 @@
 use super::Database;
 use anyhow::Result;
-use sqlx::Row;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -67,43 +66,55 @@ const fn default_hp() -> i32 {
     1000
 }
 
+/// Преобразует строку sqlx в `BuildingRow` (переиспользуется в нескольких методах).
+fn parse_building_row(r: &sqlx::sqlite::SqliteRow) -> BuildingRow {
+    use sqlx::Row as _;
+    let data_str: Option<String> = r.get("data");
+    let extra: BuildingExtra = data_str
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    BuildingRow {
+        id: r.get("id"),
+        type_code: r.get("type_code"),
+        x: r.get("x"),
+        y: r.get("y"),
+        owner_id: r.get("owner_id"),
+        clan_id: r.get("clan_id"),
+        charge: extra.charge,
+        max_charge: extra.max_charge,
+        cost: extra.cost,
+        hp: extra.hp,
+        max_hp: extra.max_hp,
+        money_inside: extra.money_inside,
+        crystals_inside: extra.crystals_inside,
+        items_inside: extra.items_inside,
+        craft_recipe_id: extra.craft_recipe_id,
+        craft_num: extra.craft_num,
+        craft_end_ts: extra.craft_end_ts,
+        clanzone: extra.clanzone,
+    }
+}
+
 impl Database {
     pub async fn load_all_buildings(&self) -> Result<Vec<BuildingRow>> {
         let rows =
             sqlx::query("SELECT id, type_code, x, y, owner_id, clan_id, data FROM buildings")
                 .fetch_all(&self.pool)
                 .await?;
-        let res = rows
-            .into_iter()
-            .map(|r| {
-                let data_str: Option<String> = r.get("data");
-                let extra: BuildingExtra = data_str
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or_default();
-                BuildingRow {
-                    id: r.get("id"),
-                    type_code: r.get("type_code"),
-                    x: r.get("x"),
-                    y: r.get("y"),
-                    owner_id: r.get("owner_id"),
-                    clan_id: r.get("clan_id"),
-                    charge: extra.charge,
-                    max_charge: extra.max_charge,
-                    cost: extra.cost,
-                    hp: extra.hp,
-                    max_hp: extra.max_hp,
-                    money_inside: extra.money_inside,
-                    crystals_inside: extra.crystals_inside,
-                    items_inside: extra.items_inside,
-                    craft_recipe_id: extra.craft_recipe_id,
-                    craft_num: extra.craft_num,
-                    craft_end_ts: extra.craft_end_ts,
-                    clanzone: extra.clanzone,
-                }
-            })
-            .collect();
-        Ok(res)
+        Ok(rows.iter().map(parse_building_row).collect())
+    }
+
+    /// Загрузить только здания конкретного владельца (`WHERE owner_id = ?`).
+    /// PB-4: заменяет `load_all_buildings()` + in-memory filter в `handle_my_buildings_list`.
+    pub async fn load_buildings_by_owner(&self, owner_id: i32) -> Result<Vec<BuildingRow>> {
+        let rows = sqlx::query(
+            "SELECT id, type_code, x, y, owner_id, clan_id, data FROM buildings WHERE owner_id = ?1",
+        )
+        .bind(owner_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(parse_building_row).collect())
     }
 
     pub async fn insert_building(

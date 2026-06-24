@@ -278,6 +278,69 @@ impl CellDefs {
     pub fn get(&self, cell_type: u8) -> &CellDef {
         self.cells.get(cell_type as usize).unwrap_or(&self.cells[0])
     }
+
+    #[inline]
+    pub fn get_typed(&self, cell_type: CellType) -> &CellDef {
+        self.get(cell_type.0)
+    }
+}
+
+/// A strongly-typed wrapper around raw `u8` cell identifiers.
+/// Provides compiler-enforced safety to avoid mixing up raw byte indexes and cell type constants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[repr(transparent)]
+pub struct CellType(pub u8);
+
+impl CellType {
+    #[inline]
+    #[must_use]
+    pub const fn new(val: u8) -> Self {
+        Self(val)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_crystal(self) -> bool {
+        is_crystal(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn crystal_type(self) -> Option<usize> {
+        crystal_type(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn crystal_multiplier(self) -> i64 {
+        crystal_multiplier(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_road(self) -> bool {
+        is_road(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_boulder(self) -> bool {
+        is_boulder(self.0)
+    }
+}
+
+impl From<u8> for CellType {
+    #[inline]
+    fn from(val: u8) -> Self {
+        Self(val)
+    }
+}
+
+impl From<CellType> for u8 {
+    #[inline]
+    fn from(cell: CellType) -> Self {
+        cell.0
+    }
 }
 
 #[cfg(test)]
@@ -313,5 +376,16 @@ mod tests {
         }
         assert!(!is_crystal(cell_type::EMPTY));
         assert!(crystal_type(cell_type::ROCK).is_none());
+    }
+
+    #[test]
+    fn cell_type_helpers() {
+        let road = CellType::new(cell_type::ROAD);
+        assert!(road.is_road());
+        assert!(!road.is_crystal());
+
+        let green = CellType::new(cell_type::GREEN);
+        assert!(green.is_crystal());
+        assert_eq!(green.crystal_type(), Some(0));
     }
 }

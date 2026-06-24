@@ -11,6 +11,9 @@ use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
 
+/// Шанс дропа предмета-размещения при сносе здания (C# `Building.Destroy`: 40%).
+const SHPAAK_DROP_PCT: u32 = 40;
+
 // ─── Buildings ─────────────────────────────────────────────────────────
 
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
@@ -47,14 +50,14 @@ pub async fn handle_my_buildings_list(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let mine: Vec<crate::db::buildings::BuildingRow> = state
-        .db
-        .load_all_buildings()
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|r| r.owner_id == pid)
-        .collect();
+    let mine: Vec<crate::db::buildings::BuildingRow> =
+        match state.db.load_buildings_by_owner(pid).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(player_id = pid, error = ?e, "Failed to load buildings for player");
+                Vec::new()
+            }
+        };
     // Раньше все постройки сваливались в один `text` → окно росло за экран
     // (репорт). Теперь каждая — строка `list` (виджет в ScrollRect → ползунок).
     use crate::net::session::ui::horb::{Horb, ListRow};
@@ -384,10 +387,10 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
         return vec![];
     }
     let mut out = Vec::new();
-    for (code, px, py, cid, off) in state.get_packs_in_chunk_area(chunk_x as u32, chunk_y as u32) {
-        if let Some(bp) = state.pack_block_pos(i32::from(px), i32::from(py)) {
+    for po in state.get_packs_in_chunk_area(chunk_x as u32, chunk_y as u32) {
+        if let Some(bp) = state.pack_block_pos(i32::from(po.x), i32::from(po.y)) {
             if bp == block_pos {
-                out.push((code, px, py, cid, off));
+                out.push((po.code, po.x, po.y, po.clan, po.charged));
             }
         }
     }
@@ -441,19 +444,12 @@ where
     let mut ecs = state.ecs.write();
     let res = f(&mut ecs, entity);
 
-    // Auto-save check or just mark dirty
+    // Помечаем dirty — периодический spawn_building_dirty_flush_loop (каждые 45с)
+    // подхватит и сохранит. Снимает флаг только после успешного save, поэтому
+    // ошибка БД не теряет изменения тихо. Немедленный tokio::spawn(save) убран:
+    // он создавал два конкурирующих UPSERT к одной строке (dirty-flush + spawn).
     if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(entity) {
         flags.dirty = true;
-    }
-
-    // In current sync mode we might want to save immediately if it's critical
-    if let Some(row) = crate::game::buildings::extract_building_row(&ecs, entity) {
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            if let Err(e) = db.save_building(&row).await {
-                tracing::error!(error = ?e, "Failed to save building asynchronously");
-            }
-        });
     }
 
     Ok(res)
@@ -664,7 +660,7 @@ pub async fn destroy_damagable_building(
     // + HB bubble "ШПАААК ВЫПАЛ". Индекс = item-код здания (см. `shpaak_item_index`).
     if let (Some(pid), Some(item_idx)) = (trigger_pid, shpaak_item_index(view.pack_type)) {
         use rand::Rng as _;
-        if rand::rng().random_range(1u32..=100) < 40 {
+        if rand::rng().random_range(1u32..=100) < SHPAAK_DROP_PCT {
             let tx = state.query_player_opt(pid, |ecs, entity| {
                 ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
             });

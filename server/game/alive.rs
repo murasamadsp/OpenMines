@@ -29,9 +29,9 @@ impl Default for AliveTickTimer {
 }
 
 /// Check if a cell type is an alive cell.
-const fn is_alive(cell: u8) -> bool {
+const fn is_alive(cell: crate::world::CellType) -> bool {
     matches!(
-        cell,
+        cell.0,
         cell_type::ALIVE_BLUE
             | cell_type::ALIVE_CYAN
             | cell_type::ALIVE_RED
@@ -94,9 +94,9 @@ pub fn alive_physics_system(
                 if !world.valid_coord(x, y) || !seen.insert((x, y)) {
                     continue;
                 }
-                let cell = world.get_cell(x, y);
+                let cell = crate::world::CellType(world.get_cell(x, y));
                 if is_alive(cell) {
-                    alive_cells.push((x, y, cell));
+                    alive_cells.push((x, y, cell.0));
                 }
             }
         }
@@ -486,8 +486,8 @@ fn alive_rainbow(
             continue;
         }
 
-        let opposite_cell = world.get_cell(ox, oy);
-        let odef = cell_defs.get(opposite_cell);
+        let opposite_cell = crate::world::CellType(world.get_cell(ox, oy));
+        let odef = cell_defs.get_typed(opposite_cell);
 
         // C# conditions: not alive, not empty, is_diggable, is_destructible.
         if is_alive(opposite_cell)
@@ -498,11 +498,11 @@ fn alive_rainbow(
             continue;
         }
 
-        let target_def = cell_defs.get(opposite_cell);
+        let target_def = cell_defs.get_typed(opposite_cell);
         actions.push(AliveAction {
             x: nx,
             y: ny,
-            cell: opposite_cell,
+            cell: opposite_cell.0,
             durability: Some(
                 target_def.durability * f32::from(i16::try_from(modif).unwrap_or(i16::MAX)),
             ),

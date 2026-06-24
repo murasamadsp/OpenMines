@@ -2,7 +2,6 @@ use crate::game::player::PlayerPosition;
 use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
-use crate::world::cells::is_boulder;
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
@@ -14,10 +13,13 @@ use rand::Rng;
 /// не-solid), но C# `Physics` именно так и защищает паки. OOB = непроходимо.
 fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
     use crate::world::cells::cell_type as ct;
-    world.valid_coord(x, y)
-        && world.is_empty(x, y)
+    if !world.valid_coord(x, y) {
+        return false;
+    }
+    let cell = crate::world::CellType(world.get_cell(x, y));
+    world.is_empty(x, y)
         && !matches!(
-            world.get_cell(x, y),
+            cell.0,
             ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
         )
 }
@@ -27,8 +29,8 @@ fn has_falltype(world: &crate::world::World, x: i32, y: i32) -> bool {
     if !world.valid_coord(x, y) {
         return false;
     }
-    let cell = world.get_cell(x, y);
-    world.cell_defs().get(cell).is_sand() || is_boulder(cell)
+    let cell = crate::world::CellType(world.get_cell(x, y));
+    world.cell_defs().get_typed(cell).is_sand() || cell.is_boulder()
 }
 
 /// JS `GeoPhisics.DownFree`: 1 = падать прямо вниз, 0 = диагональный соскок,
@@ -76,7 +78,7 @@ pub fn sand_physics_system(
     let mut rng = rand::rng();
 
     // (src_x, src_y, dest_x, dest_y, cell)
-    let mut tasks: Vec<(i32, i32, i32, i32, u8)> = Vec::new();
+    let mut tasks: Vec<(i32, i32, i32, i32, crate::world::CellType)> = Vec::new();
 
     for pos in &query {
         let (player_x, player_y) = (pos.x, pos.y);
@@ -91,9 +93,9 @@ pub fn sand_physics_system(
                     continue;
                 }
 
-                let cell = world.get_cell(sx, sy);
-                let is_s = cell_defs.get(cell).is_sand();
-                let is_b = is_boulder(cell);
+                let cell = crate::world::CellType(world.get_cell(sx, sy));
+                let is_s = cell_defs.get_typed(cell).is_sand();
+                let is_b = cell.is_boulder();
 
                 if !is_s && !is_b {
                     continue;
@@ -141,7 +143,7 @@ pub fn sand_physics_system(
             // до полной при падении. Читаем durability ДО очистки источника.
             let dur = world.get_durability(sx, sy);
             world.set_cell(sx, sy, cell_type::EMPTY);
-            world.set_cell(dest_x, dest_y, cell);
+            world.set_cell(dest_x, dest_y, cell.0);
             world.set_durability(dest_x, dest_y, dur);
 
             bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));

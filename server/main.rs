@@ -94,17 +94,24 @@ async fn main() -> Result<()> {
             let use_ctrl_c = env::var("M3R_USE_CTRL_C")
                 .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
                 .unwrap_or(true);
-            let mut sigterm =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("SIGTERM handler");
-            if use_ctrl_c {
-                let ctrl_c = tokio::signal::ctrl_c();
-                tokio::select! {
-                    _ = ctrl_c => {},
-                    _ = sigterm.recv() => {},
+            // CF-4: не паникуем если signal() падает (rootless Docker / restricted ns).
+            // Фолбэк: только SIGINT (Ctrl+C), SIGTERM игнорируется в этом сеансе.
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to register SIGTERM handler; only SIGINT will trigger shutdown");
+                    let _ = tokio::signal::ctrl_c().await;
                 }
-            } else {
-                let _ = sigterm.recv().await;
+                Ok(mut sigterm) => {
+                    if use_ctrl_c {
+                        let ctrl_c = tokio::signal::ctrl_c();
+                        tokio::select! {
+                            _ = ctrl_c => {},
+                            _ = sigterm.recv() => {},
+                        }
+                    } else {
+                        let _ = sigterm.recv().await;
+                    }
+                }
             }
         }
         #[cfg(not(unix))]
@@ -226,6 +233,20 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
         if let Err(e) = r {
             tracing::error!(x = bx, y = by, error = ?e, "Shutdown box persist failed");
         }
+    }
+
+    // Ожидание завершения всех фоновых транзакций к БД
+    let start_t = std::time::Instant::now();
+    while game_state
+        .db_pending_tasks
+        .load(std::sync::atomic::Ordering::SeqCst)
+        > 0
+    {
+        if start_t.elapsed() > std::time::Duration::from_secs(5) {
+            tracing::warn!("Timeout waiting for background DB tasks to complete during shutdown");
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     if let Err(e) = game_state.world.flush() {

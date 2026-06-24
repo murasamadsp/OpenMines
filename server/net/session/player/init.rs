@@ -221,10 +221,50 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         (chunk.0, chunk.1, row)
     };
     if let Some(row) = row {
+        struct DbTaskGuard {
+            state: Arc<crate::game::GameState>,
+        }
+        impl Drop for DbTaskGuard {
+            fn drop(&mut self) {
+                self.state
+                    .db_pending_tasks
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         let db = state.db.clone();
+        let state_clone = state.clone();
+        state
+            .db_pending_tasks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tokio::spawn(async move {
-            if let Err(e) = db.save_player(&row).await {
-                tracing::error!(player_id = pid, error = ?e, "Failed to save player on disconnect");
+            let _guard = DbTaskGuard { state: state_clone };
+            let mut attempts = 0;
+            let mut backoff = std::time::Duration::from_millis(100);
+            loop {
+                match db.save_player(&row).await {
+                    Ok(()) => break,
+                    Err(e) => {
+                        attempts += 1;
+                        if attempts >= 3 {
+                            tracing::error!(
+                                player_id = pid,
+                                error = ?e,
+                                "Failed to save player on disconnect after 3 attempts"
+                            );
+                            break;
+                        }
+                        tracing::warn!(
+                            player_id = pid,
+                            error = ?e,
+                            attempt = attempts,
+                            "Failed to save player on disconnect, retrying in {:?}",
+                            backoff
+                        );
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                    }
+                }
             }
         });
     }
@@ -337,8 +377,8 @@ fn send_initial_sync(
     if let Some((cx, cy, dir, skin, clan_id_u16)) = spawn_broadcast {
         let sub = hb_bot(
             net_u16_nonneg(pid),
-            player.x.max(0) as u16,
-            player.y.max(0) as u16,
+            net_u16_nonneg(player.x),
+            net_u16_nonneg(player.y),
             dir,
             skin,
             clan_id_u16,

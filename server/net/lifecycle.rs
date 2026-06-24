@@ -252,7 +252,45 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         let n_actions = actions.len();
         let d0 = Instant::now();
         for (pid, tx, ty) in actions {
-            let _ = crate::net::session::dispatch::dispatch_ty_packet(&state, &tx, pid, &ty).await;
+            let state_clone = state.clone();
+            let tx_clone = tx.clone();
+            let ty_owned = ty.clone();
+            let handle = tokio::spawn(async move {
+                crate::net::session::dispatch::dispatch_ty_packet(
+                    &state_clone,
+                    &tx_clone,
+                    pid,
+                    &ty_owned,
+                )
+                .await
+            });
+            match handle.await {
+                Ok(res) => {
+                    if let Err(e) = res {
+                        tracing::error!(
+                            player_id = pid,
+                            packet = ?ty,
+                            error = ?e,
+                            "Error processing TY packet"
+                        );
+                    }
+                }
+                Err(je) if je.is_panic() => {
+                    tracing::error!(
+                        player_id = pid,
+                        packet = ?ty,
+                        "PANIC processing TY packet!"
+                    );
+                }
+                Err(je) => {
+                    tracing::error!(
+                        player_id = pid,
+                        packet = ?ty,
+                        "TY packet processing task cancelled or failed: {:?}",
+                        je
+                    );
+                }
+            }
         }
         let dt_dispatch = d0.elapsed();
 
@@ -333,8 +371,24 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
 
         // Персистенция боксов (BoxPersistQueue уже дренирован внутри ecs.write).
         if !box_ops.is_empty() {
+            struct DbTaskGuard {
+                state: Arc<GameState>,
+            }
+            impl Drop for DbTaskGuard {
+                fn drop(&mut self) {
+                    self.state
+                        .db_pending_tasks
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+
             let db = state.db.clone();
+            let state_clone = state.clone();
+            state
+                .db_pending_tasks
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
+                let _guard = DbTaskGuard { state: state_clone };
                 for ((bx, by), op) in box_ops {
                     let r = match op {
                         None => db.delete_box_at(bx, by).await,
@@ -403,6 +457,11 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                     crate::net::session::play::movement::handle_move_pure(
                         &state, &tx, pid, x, y, dir,
                     );
+                    // Программаторный ход сервер инициирует сам — клиентского
+                    // предсказания нет, а `handle_move_pure` исключает владельца из
+                    // рассылки. Без @t бот ходит на сервере, а у игрока стоит на месте.
+                    let st = crate::protocol::packets::smooth_tp(x, y);
+                    crate::net::session::wire::send_u_packet(&tx, st.0, &st.1);
                 }
                 crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
                     crate::net::session::play::dig_build::handle_dig(&state, &tx, pid, dir);

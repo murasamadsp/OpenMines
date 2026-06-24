@@ -1,5 +1,8 @@
 pub mod anl;
 pub mod cells;
+pub use cells::CellType;
+pub mod world_cell;
+pub use world_cell::WorldCell;
 pub mod generator;
 pub mod map_format;
 mod sector_palette;
@@ -120,8 +123,8 @@ impl Layer {
     }
 
     /// Путь файла слоя (для бэкапа вне лока).
-    pub fn path(&self) -> PathBuf {
-        self.path.clone()
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -143,6 +146,9 @@ pub trait WorldProvider: Send + Sync {
     fn set_cell(&self, x: i32, y: i32, cell: u8);
     fn get_durability(&self, x: i32, y: i32) -> f32;
     fn set_durability(&self, x: i32, y: i32, d: f32);
+    #[allow(dead_code)]
+    fn read_world_cell(&self, x: i32, y: i32) -> Option<WorldCell>;
+    fn write_world_cell(&self, x: i32, y: i32, cell: WorldCell);
     fn destroy(&self, x: i32, y: i32);
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool;
     fn read_chunk_cells(&self, chunk_x: u32, chunk_y: u32) -> Vec<u8>;
@@ -238,21 +244,21 @@ impl WorldProvider for World {
         if !self.valid_coord(x, y) {
             return;
         }
-        let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
+        let cell_type = CellType(cell);
         let prop = self.cell_defs.get(cell);
-        // Один байт на клетку — как клиентский `.map` (road/cells объединены).
-        self.cells.write().set_cell(x, y, cell);
-        // durability — серверное состояние (у клиента его нет): пусто → 0,
-        // иначе значение по типу клетки из cell_defs.
-        let d = if prop.cell_is_empty() {
+        let durability = if prop.cell_is_empty() {
             0.0f32
         } else {
             prop.durability
         };
-        let mut layer = self.durability.write();
-        let off = layer.cell_offset(ux, uy);
-        layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
-        layer.mark_dirty(ux, uy);
+        self.write_world_cell(
+            x,
+            y,
+            WorldCell {
+                cell_type,
+                durability,
+            },
+        );
     }
 
     fn get_durability(&self, x: i32, y: i32) -> f32 {
@@ -279,6 +285,31 @@ impl WorldProvider for World {
         let off = layer.cell_offset(x.cast_unsigned(), y.cast_unsigned());
         layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
         layer.mark_dirty(x.cast_unsigned(), y.cast_unsigned());
+    }
+
+    #[allow(dead_code)]
+    fn read_world_cell(&self, x: i32, y: i32) -> Option<WorldCell> {
+        if !self.valid_coord(x, y) {
+            return None;
+        }
+        let cell_type = CellType(self.get_cell(x, y));
+        let durability = self.get_durability(x, y);
+        Some(WorldCell {
+            cell_type,
+            durability,
+        })
+    }
+
+    fn write_world_cell(&self, x: i32, y: i32, cell: WorldCell) {
+        if !self.valid_coord(x, y) {
+            return;
+        }
+        let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
+        self.cells.write().set_cell(x, y, cell.cell_type.0);
+        let mut layer = self.durability.write();
+        let off = layer.cell_offset(ux, uy);
+        layer.mmap[off..off + 4].copy_from_slice(&cell.durability.to_le_bytes());
+        layer.mark_dirty(ux, uy);
     }
 
     fn destroy(&self, x: i32, y: i32) {
@@ -364,12 +395,20 @@ impl WorldProvider for World {
         }
 
         // Durability: msync mmap-слоя под локом, бэкап вне лока.
-        let dpath = {
+        // Клонируем PathBuf только при do_backup (раз в 30 мин) — нельзя держать
+        // ссылку &Path из Layer вне write-guard'а.
+        let dpath_for_backup: Option<PathBuf> = {
             let mut l = self.durability.write();
             l.msync_and_clear()?;
-            l.path()
+            if do_backup {
+                Some(l.path().to_owned())
+            } else {
+                None
+            }
         };
-        if do_backup && dpath.exists() {
+        if let Some(dpath) = dpath_for_backup
+            && dpath.exists()
+        {
             let bak = dpath.with_extension("mapb.bak");
             let tmp = dpath.with_extension("mapb.tmp");
             let _ = fs::copy(&dpath, &tmp);
@@ -472,5 +511,31 @@ impl World {
             x.max(0).cast_unsigned() / CHUNK_SIZE,
             y.max(0).cast_unsigned() / CHUNK_SIZE,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_world_cell_facade() {
+        let temp_dir = std::env::temp_dir();
+        let cell_defs = CellDefs::load("cells.json").unwrap_or_else(|_| CellDefs { cells: vec![] });
+        let world = World::new("test_world_facade", 1, 1, cell_defs, &temp_dir).unwrap();
+
+        let cell = WorldCell {
+            cell_type: CellType(cell_type::ROAD),
+            durability: 5.0,
+        };
+        world.write_world_cell(10, 10, cell);
+
+        let read = world.read_world_cell(10, 10).unwrap();
+        assert_eq!(read.cell_type, CellType(cell_type::ROAD));
+        assert!((read.durability - 5.0).abs() < f32::EPSILON);
+
+        // cleanup temp files if created
+        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));
+        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_durability.mapb"));
     }
 }
