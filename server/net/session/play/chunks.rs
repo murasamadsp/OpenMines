@@ -334,3 +334,68 @@ pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         send_b_packet(tx, "HB", &bundle);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Регрессия: игрок, заспавненный в чанке (0,0), ОБЯЗАН попасть в
+    // chunk_players с первого `check_chunk_changed`. Прежний `unwrap_or((0,0))`
+    // совпадал с реальным чанком → регистрации не было → игрок не получал свой
+    // же X-broadcast → программаторный ход был невидим.
+    #[tokio::test]
+    async fn spawn_in_chunk_zero_zero_registers_in_chunk_players() {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!("chunkreg_{}_{}.db", std::process::id(), nonce));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database
+            .create_player("chunk-user", "p", "h")
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("chunkreg_world_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        // Детерминированно спавним в чанке (0,0): клетка (15,8) → (15>>5,8>>5)=(0,0).
+        // На СТАРОМ коде (`last_chunk.unwrap_or((0,0))`) коннект→check_chunk_changed
+        // видел ncx,ncy==(0,0)==дефолт → «смены нет» → игрок НЕ регистрировался.
+        let mut player = player;
+        player.x = 15;
+        player.y = 8;
+        crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
+
+        let registered = state
+            .chunk_players
+            .get(&(0, 0))
+            .is_some_and(|e| e.value().contains(&player.id));
+        assert!(
+            registered,
+            "игрок со спавном в чанке (0,0) обязан попасть в chunk_players на коннекте"
+        );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+    }
+}
