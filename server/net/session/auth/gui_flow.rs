@@ -210,9 +210,9 @@ async fn handle_register_password(
     let hashed_passwd = hash_password(passwd, &hash);
     let player = state.db.create_player(nick, &hashed_passwd, &hash).await?;
     tracing::info!(
-        "[Auth GUI] New player registered: {} (id={})",
-        player.name,
-        player.id
+        player_name = %player.name,
+        player_id = player.id,
+        "New player registered via GUI"
     );
 
     finalize_auth(state, tx, &player, session_token, step)

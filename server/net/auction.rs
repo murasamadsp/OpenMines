@@ -55,7 +55,7 @@ async fn finalize_ready_orders(state: &Arc<GameState>) {
     let ready = match state.db.list_ready_orders(cutoff).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("auction: list_ready_orders failed: {e}");
+            tracing::error!(error = ?e, "Failed to list ready orders");
             return;
         }
     };
@@ -65,17 +65,17 @@ async fn finalize_ready_orders(state: &Arc<GameState>) {
             credit_money(state, o.initiator_id, o.cost).await;
         }
         if let Err(e) = state.db.delete_order(o.id).await {
-            tracing::error!("auction: delete_order {} failed: {e}", o.id);
+            tracing::error!(order_id = o.id, error = ?e, "Failed to delete finalized order");
             continue;
         }
         tracing::info!(
-            "auction: order {} finalized — buyer {} +item {}x{}, initiator {} +{}$",
-            o.id,
-            o.buyer_id,
-            o.item_id,
-            o.num,
-            o.initiator_id,
-            o.cost
+            order_id = o.id,
+            buyer_id = o.buyer_id,
+            item_id = o.item_id,
+            count = o.num,
+            initiator_id = o.initiator_id,
+            cost = o.cost,
+            "Order finalized successfully"
         );
     }
 }
@@ -99,7 +99,7 @@ pub async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) {
             send_u_packet(&tx, "P$", &money(m, c).1);
         }
     } else if let Err(e) = state.db.add_player_money(pid, amount).await {
-        tracing::error!("auction: add_player_money {pid} failed: {e}");
+        tracing::error!(player_id = pid, amount, error = ?e, "Failed to add player money offline");
     }
 }
 
@@ -125,6 +125,12 @@ pub async fn credit_inventory(state: &Arc<GameState>, pid: PlayerId, item_id: i3
             .add_player_inventory_item(pid, item_id, count)
             .await
     {
-        tracing::error!("auction: add_player_inventory_item {pid} failed: {e}");
+        tracing::error!(
+            player_id = pid,
+            item_id,
+            count,
+            error = ?e,
+            "Failed to add player inventory item offline"
+        );
     }
 }

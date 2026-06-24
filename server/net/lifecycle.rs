@@ -26,11 +26,11 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
             let state_c = state.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 if let Err(e) = state_c.world.flush() {
-                    tracing::error!("World flush error: {e}");
+                    tracing::error!(error = ?e, "World flush error");
                 }
             })
             .await;
-            tracing::warn!(target: "tickprof", "WORLD FLUSH end took {:?}", t0.elapsed());
+            tracing::warn!(target: "tickprof", elapsed = ?t0.elapsed(), "WORLD FLUSH end");
             crate::metrics::WORLD_FLUSH_TOTAL.inc();
             crate::metrics::WORLD_FLUSH_SECONDS.observe(t0.elapsed().as_secs_f64());
         }
@@ -76,14 +76,7 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
             }
 
             if !dirty_rows.is_empty() {
-                tracing::info!(
-                    "Periodic save: {} dirty players, inv sizes: {:?}",
-                    dirty_rows.len(),
-                    dirty_rows
-                        .iter()
-                        .map(|(pid, r)| (*pid, r.inventory.len()))
-                        .collect::<Vec<_>>()
-                );
+                tracing::debug!(dirty_count = dirty_rows.len(), "Periodic save started");
             }
 
             let mut saved = 0;
@@ -105,14 +98,14 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
                             crate::metrics::PLAYER_SAVE_TOTAL.inc();
                         }
                         Err(e) => {
-                            tracing::error!("Periodic save failed for player {}: {e}", pid_c);
+                            tracing::error!(player_id = pid_c, error = ?e, "Periodic save failed for player");
                         }
                     }
                 });
                 saved += 1;
             }
             if saved > 0 {
-                tracing::debug!("Periodic save: flushed {saved} players");
+                tracing::debug!(saved_count = saved, "Periodic save complete");
             }
         }
     });
@@ -171,12 +164,12 @@ pub fn spawn_building_dirty_flush_loop(
                             });
                             saved += 1;
                         }
-                        Err(e) => tracing::error!("Periodic save failed for building: {e}"),
+                        Err(e) => tracing::error!(error = ?e, "Periodic save failed for building"),
                     }
                 }
             }
             if saved > 0 {
-                tracing::debug!("Periodic save: flushed {saved} buildings");
+                tracing::debug!(count = saved, "Periodic save: flushed buildings");
             }
         }
     });
@@ -348,7 +341,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                         Some(crystals) => db.upsert_box(bx, by, &crystals).await,
                     };
                     if let Err(e) = r {
-                        tracing::error!("box persist ({bx},{by}) failed: {e}");
+                        tracing::error!(x = bx, y = by, error = ?e, "box persist failed");
                     }
                 }
             });

@@ -212,12 +212,12 @@ pub async fn dispatch_ty_packet(
             tracing::debug!(pid, event, "known no-op TY event");
         }
         _ => {
-            tracing::warn!("Unknown TY event: {event}");
+            tracing::warn!(event, "Unknown TY event");
         }
     }
     let __el = __d0.elapsed();
     if __el > std::time::Duration::from_millis(50) {
-        tracing::warn!(target: "tickprof", "SLOW handler event={event} pid={pid} elapsed={__el:?}");
+        tracing::warn!(target: "tickprof", event, player_id = pid, elapsed = ?__el, "Slow TY packet handler");
     }
     Ok(())
 }

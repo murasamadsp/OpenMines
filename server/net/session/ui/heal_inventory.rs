@@ -772,7 +772,7 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                 let db = state.db.clone();
                 tokio::spawn(async move {
                     if let Err(e) = db.delete_building(gate_id).await {
-                        tracing::error!("gate DB delete failed: {e}");
+                        tracing::error!(error = ?e, "gate DB delete failed");
                     }
                 });
             }

@@ -99,7 +99,7 @@ impl Database {
             .execute(&self.pool)
             .await?;
             did_migrate = true;
-            tracing::info!("Migrated DB: added programs table");
+            tracing::info!(table = "programs", "Migrated DB: table added");
         }
 
         let has_boxes_table = self.table_exists("boxes").await;
@@ -126,7 +126,7 @@ impl Database {
             .execute(&self.pool)
             .await?;
             did_migrate = true;
-            tracing::info!("Migrated DB: added boxes table");
+            tracing::info!(table = "boxes", "Migrated DB: table added");
         }
 
         // Reference-compatible `boxes` crystal columns: ze/cr/si/be/fi/go
@@ -138,7 +138,7 @@ impl Database {
                         format!("ALTER TABLE boxes ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0");
                     sqlx::query(&alter_query).execute(&self.pool).await?;
                     did_migrate = true;
-                    tracing::info!("Migrated DB: added boxes.{name}");
+                    tracing::info!(table = "boxes", column = name, "Migrated DB: column added");
                 }
             }
 
@@ -159,8 +159,8 @@ impl Database {
                 if updated.rows_affected() > 0 {
                     did_migrate = true;
                     tracing::info!(
-                        "Migrated DB: backfilled boxes ze/cr/si/be/fi/go from legacy cry_* for {} rows",
-                        updated.rows_affected()
+                        rows = updated.rows_affected(),
+                        "Migrated DB: backfilled boxes columns from legacy cry_*"
                     );
                 }
             }
@@ -181,7 +181,7 @@ impl Database {
                 .execute(&self.pool)
                 .await?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: added lines table");
+                tracing::info!(table = "lines", "Migrated DB: table added");
             }
         }
 
@@ -190,14 +190,22 @@ impl Database {
                 .execute(&self.pool)
                 .await?;
             did_migrate = true;
-            tracing::info!("Migrated DB: added inventory column");
+            tracing::info!(
+                table = "players",
+                column = "inventory",
+                "Migrated DB: column added"
+            );
         }
         if !self.column_exists("players", "skills").await {
             sqlx::query("ALTER TABLE players ADD COLUMN skills TEXT NOT NULL DEFAULT '{}'")
                 .execute(&self.pool)
                 .await?;
             did_migrate = true;
-            tracing::info!("Migrated DB: added skills column");
+            tracing::info!(
+                table = "players",
+                column = "skills",
+                "Migrated DB: column added"
+            );
         }
 
         {
@@ -211,7 +219,12 @@ impl Database {
                     .execute(&self.pool)
                     .await?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: renamed staff_role -> role");
+                tracing::info!(
+                    table = "players",
+                    from = "staff_role",
+                    to = "role",
+                    "Migrated DB: column renamed"
+                );
             }
 
             let has_role = self.column_exists("players", "role").await;
@@ -220,7 +233,11 @@ impl Database {
                     .execute(&self.pool)
                     .await?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: added role column");
+                tracing::info!(
+                    table = "players",
+                    column = "role",
+                    "Migrated DB: column added"
+                );
             }
 
             let has_clan_rank = self.column_exists("players", "clan_rank").await;
@@ -229,7 +246,11 @@ impl Database {
                     .execute(&self.pool)
                     .await?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: added clan_rank column");
+                tracing::info!(
+                    table = "players",
+                    column = "clan_rank",
+                    "Migrated DB: column added"
+                );
             }
 
             if has_is_admin || has_is_moderator {
@@ -246,9 +267,15 @@ impl Database {
                     {
                         Ok(_) => {
                             did_migrate = true;
-                            tracing::info!("Migrated DB: dropped is_admin");
+                            tracing::info!(
+                                table = "players",
+                                column = "is_admin",
+                                "Migrated DB: column dropped"
+                            );
                         }
-                        Err(e) => tracing::warn!("Migrated DB: could not DROP is_admin: {e}"),
+                        Err(e) => {
+                            tracing::warn!(table = "players", column = "is_admin", error = ?e, "Migrated DB: could not drop column");
+                        }
                     }
                 }
                 if has_is_moderator {
@@ -258,9 +285,15 @@ impl Database {
                     {
                         Ok(_) => {
                             did_migrate = true;
-                            tracing::info!("Migrated DB: dropped is_moderator");
+                            tracing::info!(
+                                table = "players",
+                                column = "is_moderator",
+                                "Migrated DB: column dropped"
+                            );
                         }
-                        Err(e) => tracing::warn!("Migrated DB: could not DROP is_moderator: {e}"),
+                        Err(e) => {
+                            tracing::warn!(table = "players", column = "is_moderator", error = ?e, "Migrated DB: could not drop column");
+                        }
                     }
                 }
             }
@@ -271,7 +304,11 @@ impl Database {
                 .execute(&self.pool)
                 .await?;
             did_migrate = true;
-            tracing::info!("Migrated DB: added chat_color column");
+            tracing::info!(
+                table = "players",
+                column = "chat_color",
+                "Migrated DB: column added"
+            );
         }
 
         for (col, ddl) in [
@@ -287,7 +324,11 @@ impl Database {
             if !self.column_exists("chat_messages", col).await {
                 sqlx::query(ddl).execute(&self.pool).await?;
                 did_migrate = true;
-                tracing::info!("Migrated DB: added chat_messages.{col} column");
+                tracing::info!(
+                    table = "chat_messages",
+                    column = col,
+                    "Migrated DB: column added"
+                );
             }
         }
 
@@ -307,8 +348,8 @@ impl Database {
                 Ok(res) if res.rows_affected() > 0 => {
                     did_migrate = true;
                     tracing::info!(
-                        "Migrated DB: backfilled chat_messages.player_id for {} legacy rows",
-                        res.rows_affected()
+                        rows = res.rows_affected(),
+                        "Migrated DB: backfilled chat_messages.player_id for legacy rows"
                     );
                 }
                 _ => {}
@@ -324,8 +365,8 @@ impl Database {
             match updated {
                 Ok(res) if res.rows_affected() > 0 => {
                     tracing::info!(
-                        "Migrated DB: bumped Movement skill to 60 for {} players",
-                        res.rows_affected()
+                        rows = res.rows_affected(),
+                        "Migrated DB: bumped Movement skill to 60 for players"
                     );
                 }
                 _ => {}

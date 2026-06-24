@@ -64,7 +64,7 @@ pub async fn handle_prog_ty(
             let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
             if let Some((prog_id, source)) = decoded {
                 if let Err(e) = state.db.save_program(pid, prog_id, &source).await {
-                    tracing::warn!("[PROG] DB save failed pid={pid} prog_id={prog_id}: {e:#}");
+                    tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB save failed");
                 }
 
                 let running = state
@@ -84,8 +84,11 @@ pub async fn handle_prog_ty(
                     .unwrap_or(false);
 
                 tracing::info!(
-                    "PROGDIAG PROG pid={pid} id={prog_id} source_len={} running={running}",
-                    source.len()
+                    player_id = pid,
+                    program_id = prog_id,
+                    len = source.len(),
+                    running,
+                    "PROGDIAG PROG program run status"
                 );
 
                 // C# StartedProg: RunProgramm (Gu close) → UpdateProg (#p) → ProgStatus (@P).
@@ -114,8 +117,9 @@ pub async fn handle_prog_ty(
                 }
             } else {
                 tracing::warn!(
-                    "PROGDIAG PROG decode FAILED pid={pid} len={}",
-                    payload.len()
+                    player_id = pid,
+                    len = payload.len(),
+                    "PROGDIAG PROG decode FAILED"
                 );
                 send_u_packet(tx, "@P", &programmator_status(false).1);
                 send_u_packet(
@@ -172,7 +176,7 @@ pub async fn handle_prog_ty(
             if let Ok(id_str) = std::str::from_utf8(payload) {
                 if let Ok(prog_id) = id_str.trim().parse::<i32>() {
                     if let Err(e) = state.db.delete_program_owned(pid, prog_id).await {
-                        tracing::warn!("[PDEL] DB delete failed pid={pid} id={prog_id}: {e:#}");
+                        tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB delete failed");
                     }
                     state.modify_player(pid, |ecs, entity| {
                         if let Some(mut ps) =
@@ -201,20 +205,26 @@ pub async fn handle_prog_ty(
                     Ok(Some(program)) if program.player_id == pid => {
                         let name = format!("{} (copy)", program.name);
                         if let Err(e) = state.db.insert_program(pid, &name, &program.code).await {
-                            tracing::warn!("[PCOP] DB copy failed pid={pid} id={id}: {e:#}");
+                            tracing::warn!(player_id = pid, program_id = id, error = ?e, "DB copy failed");
                         }
                     }
                     Ok(Some(program)) => {
                         tracing::warn!(
-                            "[PCOP] rejected foreign program copy pid={pid} id={id} owner={}",
-                            program.player_id
+                            player_id = pid,
+                            program_id = id,
+                            owner_id = program.player_id,
+                            "Rejected foreign program copy"
                         );
                     }
                     Ok(None) => {
-                        tracing::warn!("[PCOP] missing program pid={pid} id={id}");
+                        tracing::warn!(
+                            player_id = pid,
+                            program_id = id,
+                            "Missing program for copy"
+                        );
                     }
                     Err(e) => {
-                        tracing::warn!("[PCOP] DB get failed pid={pid} id={id}: {e:#}");
+                        tracing::warn!(player_id = pid, program_id = id, error = ?e, "DB get failed for copy");
                     }
                 }
             }

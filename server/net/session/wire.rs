@@ -22,7 +22,7 @@ pub fn send_u_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: 
     let mut buf = BytesMut::with_capacity(p.wire_len());
     p.encode(&mut buf).expect("U packet wire length overflow");
     if let Err(err) = tx.send(buf.to_vec()) {
-        tracing::warn!("Failed to enqueue U {event} packet: {err}");
+        tracing::warn!(event, error = ?err, "Failed to enqueue U packet");
     }
 }
 
@@ -33,7 +33,7 @@ pub fn send_b_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: 
     let mut buf = BytesMut::with_capacity(p.wire_len());
     p.encode(&mut buf).expect("B packet wire length overflow");
     if let Err(err) = tx.send(buf.to_vec()) {
-        tracing::warn!("Failed to enqueue B {event} packet: {err}");
+        tracing::warn!(event, error = ?err, "Failed to enqueue B packet");
     }
 }
 
@@ -46,11 +46,12 @@ pub fn encode_hb_bundle(payload: &[u8]) -> Vec<u8> {
 
 fn trace_outgoing_packet(data_type: &str, event: &str, payload: &[u8]) {
     tracing::debug!(
-        ">>> [{}] event={} len={} payload={}",
-        data_type,
+        direction = "outgoing",
+        packet_type = data_type,
         event,
-        payload.len(),
-        preview_payload(payload)
+        len = payload.len(),
+        payload = %preview_payload(payload),
+        "Trace outgoing packet"
     );
 }
 

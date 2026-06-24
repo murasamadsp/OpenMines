@@ -97,7 +97,7 @@ pub async fn send_enter_channel(
     tag: &str,
 ) {
     let Some((name, history)) = chat_access(state, pid, tag).await else {
-        tracing::warn!("[chat] enter denied pid={pid} tag={tag}");
+        tracing::warn!(player_id = pid, chat_tag = tag, "Chat enter denied");
         return;
     };
     state.modify_player(pid, |w, e| {

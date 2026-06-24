@@ -121,7 +121,12 @@ pub async fn handle_channel_chat(
         || (is_clan && clan_opt.is_some())
         || priv_ids.is_some_and(|(a, b)| my_id == a || my_id == b);
     if !allowed {
-        tracing::warn!("[chat] post denied pid={pid} my_id={my_id} tag={channel_tag}");
+        tracing::warn!(
+            player_id = pid,
+            internal_id = my_id,
+            chat_tag = channel_tag,
+            "Chat post denied"
+        );
         return;
     }
 
@@ -150,7 +155,7 @@ pub async fn handle_channel_chat(
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!("[chat] add_chat_message failed tag={db_tag} pid={pid}: {e:#}");
+            tracing::warn!(chat_tag = db_tag, player_id = pid, error = ?e, "Failed to add chat message in database");
             (0, 10)
         }
     };
@@ -264,7 +269,7 @@ pub async fn handle_chat_resync(
     }
 
     let Some((name, hist)) = chat_access(state, pid, cur).await else {
-        tracing::warn!("[chat] Chin resync denied pid={pid} cur={cur}");
+        tracing::warn!(player_id = pid, chat_tag = cur, "Chin resync denied");
         return;
     };
     state.modify_player(pid, |w, e| {
@@ -316,7 +321,7 @@ pub async fn handle_chat_settings(
 ) {
     match state.db.cycle_chat_color(pid).await {
         Ok(code) => send_u_packet(tx, "mC", &chat_color(code).1),
-        Err(e) => tracing::warn!("[chat] cycle_chat_color failed pid={pid}: {e:#}"),
+        Err(e) => tracing::warn!(player_id = pid, error = ?e, "Failed to cycle chat color"),
     }
 }
 
@@ -337,7 +342,11 @@ pub async fn handle_chat_private(
         return;
     }
     if !matches!(state.db.get_player_by_id(uid).await, Ok(Some(_))) {
-        tracing::warn!("[chat] Cpri to unknown uid={uid} by pid={pid}");
+        tracing::warn!(
+            target_uid = uid,
+            player_id = pid,
+            "Private chat request to unknown user ID"
+        );
         return;
     }
     let (lo, hi) = if pid < uid { (pid, uid) } else { (uid, pid) };

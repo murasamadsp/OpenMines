@@ -141,19 +141,19 @@ async fn handle_client(
     reconnect_timeout: u64,
 ) -> Result<()> {
     if let Err(e) = client_stream.set_nodelay(true) {
-        tracing::warn!("[Session {}] Failed to set nodelay: {e}", addr);
+        tracing::warn!(session = %addr, error = ?e, "Failed to set nodelay");
     }
 
-    tracing::info!("[Session {}] Connecting to backend {}", addr, backend_addr);
+    tracing::info!(session = %addr, backend = %backend_addr, "Connecting to backend");
     let initial_backend = match TcpStream::connect(&backend_addr).await {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("[Session {}] Initial backend connection failed: {e}", addr);
+            tracing::error!(session = %addr, error = ?e, "Initial backend connection failed");
             return Ok(());
         }
     };
     if let Err(e) = initial_backend.set_nodelay(true) {
-        tracing::warn!("[Session {}] Failed to set nodelay on backend: {e}", addr);
+        tracing::warn!(session = %addr, error = ?e, "Failed to set nodelay on backend");
     }
 
     // Split streams into owned halves to avoid borrow conflicts in select
@@ -192,7 +192,7 @@ async fn handle_client(
             res = client_reader.read_buf(&mut client_buf), if client_buf.len() < 32768 => {
                 let n = res?;
                 if n == 0 {
-                    tracing::info!("[Session {}] Client disconnected", addr);
+                    tracing::info!(session = %addr, "Client disconnected");
                     break;
                 }
                 // Save AU packet if we haven't yet
@@ -202,9 +202,9 @@ async fn handle_client(
                         if packet.event() == [b'A', b'U'] {
                             saved_au_packet = Some(packet.raw.clone());
                             tracing::info!(
-                                "[Session {}] Captured AU packet (len={})",
-                                addr,
-                                packet.raw.len()
+                                session = %addr,
+                                len = packet.raw.len(),
+                                "Captured AU packet"
                             );
                             break;
                         }
@@ -219,7 +219,7 @@ async fn handle_client(
             res = client_writer.write(&to_client_queue), if !to_client_queue.is_empty() => {
                 let n = res?;
                 if n == 0 {
-                    tracing::warn!("[Session {}] Client write returned 0 — closing", addr);
+                    tracing::warn!(session = %addr, "Client write returned 0 — closing");
                     break;
                 }
                 to_client_queue.drain(0..n);
@@ -229,7 +229,7 @@ async fn handle_client(
             res = read_from_backend(&mut backend_reader, &mut backend_buf), if backend_reader.is_some() => {
                 let n = res?;
                 if n == 0 {
-                    tracing::warn!("[Session {}] Backend disconnected. Reconnecting...", addr);
+                    tracing::warn!(session = %addr, "Backend disconnected. Reconnecting...");
                     backend_reader = None;
                     backend_writer = None;
                     swallow_handshake = true;
@@ -254,10 +254,9 @@ async fn handle_client(
                             ) {
                                 SwallowDecision::Swallow => {
                                     tracing::debug!(
-                                        "[Session {}] Swallowed {}{} from new backend",
-                                        addr,
-                                        ev[0] as char,
-                                        ev[1] as char
+                                        session = %addr,
+                                        event = %format!("{}{}", ev[0] as char, ev[1] as char),
+                                        "Swallowed event from new backend"
                                     );
                                 }
                                 SwallowDecision::Forward => {
@@ -289,7 +288,7 @@ async fn handle_client(
             res = write_to_backend(&mut backend_writer, &to_backend_queue), if backend_writer.is_some() && !to_backend_queue.is_empty() => {
                 let n = res?;
                 if n == 0 {
-                    tracing::warn!("[Session {}] Backend write returned 0 — closing", addr);
+                    tracing::warn!(session = %addr, "Backend write returned 0 — closing");
                     break;
                 }
                 to_backend_queue.drain(0..n);
@@ -305,7 +304,7 @@ async fn handle_client(
             } => {
                 match reconnect_res {
                     Ok(stream) => {
-                        tracing::info!("[Session {}] Reconnected to new backend instance", addr);
+                        tracing::info!(session = %addr, "Reconnected to new backend instance");
                         let (new_r, new_w) = stream.into_split();
                         backend_reader = Some(new_r);
                         backend_writer = Some(new_w);
@@ -314,12 +313,12 @@ async fn handle_client(
 
                         // Replay saved AU packet immediately
                         if let Some(ref au) = saved_au_packet {
-                            tracing::info!("[Session {}] Replaying saved AU packet...", addr);
+                            tracing::info!(session = %addr, "Replaying saved AU packet");
                             to_backend_queue.splice(0..0, au.iter().copied());
                         }
                     }
                     Err(e) => {
-                        tracing::error!("[Session {}] Reconnect attempt failed: {e}; retrying...", addr);
+                        tracing::error!(session = %addr, error = ?e, "Reconnect attempt failed; retrying");
                         tokio::time::sleep(Duration::from_millis(200)).await;
                         reconnect_fut = Some(Box::pin(attempt_reconnect(backend_addr.clone())));
                     }
@@ -329,9 +328,9 @@ async fn handle_client(
             // Reconnect timeout
             _timed_out = timeout_sleep => {
                 tracing::error!(
-                    "[Session {}] Reconnect timed out after {}s. Closing connection.",
-                    addr,
-                    reconnect_timeout
+                    session = %addr,
+                    timeout_secs = reconnect_timeout,
+                    "Reconnect timed out. Closing connection."
                 );
                 break;
             }
@@ -352,9 +351,12 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("Starting openmines-proxy on {}", args.bind);
-    tracing::info!("Forwarding target backend: {}", args.backend);
-    tracing::info!("Reconnect timeout: {}s", args.reconnect_timeout);
+    tracing::info!(bind = %args.bind, "Starting openmines-proxy");
+    tracing::info!(backend = %args.backend, "Forwarding target backend");
+    tracing::info!(
+        reconnect_timeout = args.reconnect_timeout,
+        "Reconnect timeout configured"
+    );
 
     let listener = tokio::net::TcpListener::bind(&args.bind).await?;
 
@@ -362,19 +364,19 @@ async fn main() -> Result<()> {
         let (stream, addr) = match listener.accept().await {
             Ok(val) => val,
             Err(e) => {
-                tracing::error!("Accept failed: {e}; retrying in 200ms");
+                tracing::error!(error = ?e, "Accept failed; retrying in 200ms");
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
         };
 
-        tracing::info!("New connection from {}", addr);
+        tracing::info!(client_ip = %addr, "New connection accepted by proxy");
         let backend_addr = args.backend.clone();
         let reconnect_timeout = args.reconnect_timeout;
 
         tokio::spawn(async move {
             if let Err(e) = handle_client(stream, addr, backend_addr, reconnect_timeout).await {
-                tracing::error!("[Session {}] Error: {e}", addr);
+                tracing::error!(session = %addr, error = ?e, "Session error");
             }
         });
     }

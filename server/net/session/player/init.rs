@@ -76,7 +76,10 @@ pub fn connect_in_tick(
         state.broadcast_to_nearby(old_cx, old_cy, &hb_data, None);
         // Despawn old ECS entity.
         state.ecs.write().despawn(old_entity);
-        tracing::warn!("Player {pid} reconnected — old ECS entity cleaned up");
+        tracing::warn!(
+            player_id = pid,
+            "Player reconnected — old ECS entity cleaned up"
+        );
     }
 
     let now = std::time::Instant::now();
@@ -221,7 +224,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         let db = state.db.clone();
         tokio::spawn(async move {
             if let Err(e) = db.save_player(&row).await {
-                tracing::error!("Failed to save player {pid} on disconnect: {e}");
+                tracing::error!(player_id = pid, error = ?e, "Failed to save player on disconnect");
             }
         });
     }
@@ -235,7 +238,10 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
     state.broadcast_to_nearby(cx, cy, &hb_data, None);
 
     state.ecs.write().despawn(entity);
-    tracing::info!("Player {pid} disconnected and ECS entity despawned");
+    tracing::info!(
+        player_id = pid,
+        "Player disconnected and ECS entity despawned"
+    );
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
@@ -285,15 +291,19 @@ fn send_initial_sync(
     });
     let spawn_broadcast = state.query_player_opt(pid, |ecs, entity| {
         let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-            tracing::error!("[Init] PlayerStats missing for pid={pid}; skip @T/clan tail");
+            tracing::error!(
+                player_id = pid,
+                "PlayerStats missing; skipping teleport and clan sync at init"
+            );
             return None;
         };
 
         // 11. tp(x, y)
         tracing::info!(
-            "[Init] @T pid={pid} to=({},{}) (db/player row position)",
-            player.x,
-            player.y
+            player_id = pid,
+            x = player.x,
+            y = player.y,
+            "Teleporting player to saved position at init"
         );
         send_u_packet(tx, "@T", &tp(player.x, player.y).1);
         // 12 консоль — пропускаем

@@ -511,10 +511,11 @@ pub fn generate(world: &super::World, seed: u64) {
     }
 
     tracing::info!(
-        "World generator: AccidentalNoise RidgedMulti + 3-layer AddW + CleanCs + SectorFiller — {}x{} cells ({} chunks, seed={seed})",
-        w,
-        h,
-        total_chunks
+        width = w,
+        height = h,
+        chunks = total_chunks,
+        seed = seed,
+        "World generator starting"
     );
 
     let t0 = std::time::Instant::now();
@@ -573,9 +574,9 @@ pub fn generate(world: &super::World, seed: u64) {
     world.ingest_generated_cells(&flat_cells);
 
     tracing::info!(
-        "World generator: finished ({:?}, ~{} MiB layers)",
-        t0.elapsed(),
-        (total_cells + total_cells * 4) / (1024 * 1024)
+        elapsed = ?t0.elapsed(),
+        size_mib = (total_cells + total_cells * 4) / (1024 * 1024),
+        "World generator finished"
     );
 }
 

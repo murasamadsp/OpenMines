@@ -89,6 +89,16 @@ pub async fn handle_chat_command(
     }
     let cmd = parts[0];
     let args = &parts[1..];
+
+    let is_admin = is_admin_command(state, pid);
+    tracing::info!(
+        target: "audit",
+        player_id = pid,
+        is_admin,
+        command = cmd,
+        arguments = ?args,
+        "Chat command executed"
+    );
     match cmd {
         "/give" => handle_chat_give_command(state, tx, pid, args),
         "/giveall" => handle_chat_giveall_command(state, tx, pid),

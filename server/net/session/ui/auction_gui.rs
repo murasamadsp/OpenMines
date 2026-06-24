@@ -327,7 +327,7 @@ pub async fn create_order(
         Some(())
     });
     if let Err(e) = state.db.create_order(pid, item, num, cost).await {
-        tracing::error!("auction: create_order failed: {e}");
+        tracing::error!(error = ?e, "Failed to create auction order");
         // Refund: undo the item deduction so the player doesn't lose their items.
         state.modify_player(pid, |ecs, e| {
             let mut inv = ecs.get_mut::<PlayerInventory>(e)?;

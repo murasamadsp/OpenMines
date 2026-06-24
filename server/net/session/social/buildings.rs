@@ -22,7 +22,7 @@ pub async fn handle_programmator_pope_menu(
 ) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
     let programs = state.db.list_programs(pid).await.unwrap_or_default();
-    tracing::info!("PROGDIAG Pope pid={pid} programs={}", programs.len());
+    tracing::info!(player_id = pid, count = programs.len(), "PROGDIAG Pope");
     let mut win = Horb::new("ПРОГРАММАТОР");
     if programs.is_empty() {
         win = win
@@ -280,10 +280,11 @@ pub fn place_building_in_world(
         send_u_packet(tx, g.0, &g.1);
     }
     tracing::info!(
-        "Player {pid} placed building {} at ({}, {})",
-        view.pack_type.code(),
-        view.x,
-        view.y
+        player_id = pid,
+        building_type = view.pack_type.code(),
+        x = view.x,
+        y = view.y,
+        "Player placed building"
     );
 }
 
@@ -450,7 +451,7 @@ where
         let db = state.db.clone();
         tokio::spawn(async move {
             if let Err(e) = db.save_building(&row).await {
-                tracing::error!("Failed to save building asynchronously: {e}");
+                tracing::error!(error = ?e, "Failed to save building asynchronously");
             }
         });
     }

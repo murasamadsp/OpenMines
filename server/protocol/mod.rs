@@ -77,13 +77,17 @@ impl Packet {
 /// Helper to build a "U" packet
 pub fn u_packet(event: &str, payload: &[u8]) -> Packet {
     let mut ev = [0u8; 2];
-    ev.copy_from_slice(event.as_bytes());
+    let bytes = event.as_bytes();
+    let len = bytes.len().min(2);
+    ev[..len].copy_from_slice(&bytes[..len]);
     Packet::new(b'U', ev, bytes::Bytes::copy_from_slice(payload))
 }
 
 /// Helper to build a "B" packet
 pub fn b_packet(event: &str, payload: &[u8]) -> Packet {
     let mut ev = [0u8; 2];
-    ev.copy_from_slice(event.as_bytes());
+    let bytes = event.as_bytes();
+    let len = bytes.len().min(2);
+    ev[..len].copy_from_slice(&bytes[..len]);
     Packet::new(b'B', ev, bytes::Bytes::copy_from_slice(payload))
 }

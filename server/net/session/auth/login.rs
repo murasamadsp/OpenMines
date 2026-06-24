@@ -39,31 +39,31 @@ pub async fn handle_auth(
     session_token: u64,
     auth_state: &mut crate::net::session::connection::AuthState,
 ) -> Result<Option<PlayerId>> {
-    tracing::debug!("[Auth] Attempting auth for uniq={}", au.client_uniq());
+    tracing::debug!(uniq = %au.client_uniq(), "Attempting auth");
 
     let result = match &au.auth_type {
         AuAuthType::Regular { user_id, token } => {
-            tracing::debug!("[Auth] Regular auth: id={}", user_id);
+            tracing::debug!(user_id = *user_id, "Regular auth");
             if let Ok(Some(player)) = state.db.get_player_by_id(*user_id).await {
                 if GameState::token_matches_legacy_auth(token, &player.hash, sid) {
                     Some(player)
                 } else {
-                    tracing::debug!("[Auth] Token mismatch for id={}", user_id);
+                    tracing::debug!(user_id = *user_id, "Token mismatch");
                     None
                 }
             } else {
-                tracing::debug!("[Auth] Player not found: id={}", user_id);
+                tracing::debug!(user_id = *user_id, "Player not found");
                 None
             }
         }
         AuAuthType::NoAuth => {
-            tracing::debug!("[Auth] NoAuth attempt denied");
+            tracing::debug!("NoAuth attempt denied");
             None
         }
     };
 
     if let Some(mut player) = result {
-        tracing::info!("[Auth] Success! Player={} (id={})", player.name, player.id);
+        tracing::info!(player_id = player.id, username = %player.name, "Auth success");
 
         // M3R_GRANT_ADMIN на ЛОГИНЕ: `bootstrap_grant_admin` при старте не находит
         // игроков свежесгенерированного мира (таблица пуста до первого входа), поэтому
@@ -104,7 +104,7 @@ pub async fn handle_auth(
         return Ok(Some(pid));
     }
 
-    tracing::debug!("[Auth] Sending auth-failure sequence (cf+BI+HB+GU)");
+    tracing::debug!("Sending auth-failure sequence (cf+BI+HB+GU)");
     send_auth_failure(state, tx, au);
     // Transition to GUI auth state — client now sees the auth window and can interact via GUI_ buttons.
     *auth_state = crate::net::session::connection::AuthState::GuiAuth(

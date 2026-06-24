@@ -80,7 +80,13 @@ pub fn handle_move(
                 return None;
             }
             if window_open {
-                tracing::info!("[MOVE REJECTED: WINDOW] pid={} pos=({},{})", pid, px, py);
+                tracing::debug!(
+                    player_id = pid,
+                    x = px,
+                    y = py,
+                    reason = "window_open",
+                    "Movement rejected"
+                );
                 tp_back("window", tx, px, py, target_x, target_y, "");
                 return None;
             }
@@ -93,11 +99,25 @@ pub fn handle_move(
 
             if !state.world.is_empty(target_x, target_y) {
                 let cell = state.world.get_cell(target_x, target_y);
-                tracing::info!(
-                    "[MOVE REJECTED: OBSTACLE] pid={} cell={} pos=({},{}) dest=({},{})",
-                    pid, cell, px, py, target_x, target_y
+                tracing::debug!(
+                    player_id = pid,
+                    cell,
+                    x = px,
+                    y = py,
+                    dest_x = target_x,
+                    dest_y = target_y,
+                    reason = "obstacle",
+                    "Movement rejected"
                 );
-                tp_back("not_empty", tx, px, py, target_x, target_y, &format!("cell={cell}"));
+                tp_back(
+                    "not_empty",
+                    tx,
+                    px,
+                    py,
+                    target_x,
+                    target_y,
+                    &format!("cell={cell}"),
+                );
                 // 1:1 C# `Player.cs:429-437`: непустая клетка + `dir==-1` + autoDig →
                 // tp назад и копнуть (`Bz`). Направление копки — из дельты (как this.dir
                 // в C# `Player.cs:416-417`), совпадает с `dir_offset`. Иначе просто tp.
@@ -130,11 +150,26 @@ pub fn handle_move(
                     ecs.get::<crate::game::BuildingOwnership>(bld_entity),
                 ) {
                     if meta.pack_type == PackType::Gate && ownership.clan_id != clan {
-                        tracing::info!(
-                            "[MOVE REJECTED: GATE] pid={} gate_clan={} player_clan={} pos=({},{}) dest=({},{})",
-                            pid, ownership.clan_id, clan, px, py, target_x, target_y
+                        tracing::debug!(
+                            player_id = pid,
+                            gate_clan = ownership.clan_id,
+                            player_clan = clan,
+                            x = px,
+                            y = py,
+                            dest_x = target_x,
+                            dest_y = target_y,
+                            reason = "gate",
+                            "Movement rejected"
                         );
-                        tp_back("gate", tx, px, py, target_x, target_y, &format!("pack_clan={} player_clan={clan}", ownership.clan_id));
+                        tp_back(
+                            "gate",
+                            tx,
+                            px,
+                            py,
+                            target_x,
+                            target_y,
+                            &format!("pack_clan={} player_clan={clan}", ownership.clan_id),
+                        );
                         return None;
                     }
                 }
@@ -147,11 +182,25 @@ pub fn handle_move(
             // Безопасно теперь, когда cooldown-дропов нет (сервер
             // обрабатывает каждый ход → dist всегда ~1.0 при честной игре).
             if dist >= 1.2 {
-                tracing::info!(
-                    "[MOVE REJECTED: DISTANCE] pid={} dist={:.3} pos=({},{}) dest=({},{})",
-                    pid, dist, px, py, target_x, target_y
+                tracing::debug!(
+                    player_id = pid,
+                    dist,
+                    x = px,
+                    y = py,
+                    dest_x = target_x,
+                    dest_y = target_y,
+                    reason = "distance",
+                    "Movement rejected"
                 );
-                tp_back("dist", tx, px, py, target_x, target_y, &format!("dist={dist:.3}"));
+                tp_back(
+                    "dist",
+                    tx,
+                    px,
+                    py,
+                    target_x,
+                    target_y,
+                    &format!("dist={dist:.3}"),
+                );
                 return None;
             }
 

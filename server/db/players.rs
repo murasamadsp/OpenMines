@@ -191,31 +191,31 @@ impl PlayerRow {
     }
 }
 
-fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> PlayerRow {
+fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow, sqlx::Error> {
     let inv_str: String = r.try_get("inventory").unwrap_or_default();
     let skills_str: String = r.try_get("skills").unwrap_or_default();
     let auto_dig_val: i32 = r.try_get("auto_dig").unwrap_or(0);
-    PlayerRow {
-        id: r.try_get("id").unwrap(),
-        name: r.try_get("name").unwrap(),
-        passwd: r.try_get("passwd").unwrap(),
-        hash: r.try_get("hash").unwrap(),
-        x: r.try_get("x").unwrap(),
-        y: r.try_get("y").unwrap(),
-        dir: r.try_get("dir").unwrap(),
-        health: r.try_get("health").unwrap(),
-        max_health: r.try_get("max_health").unwrap(),
-        money: r.try_get("money").unwrap(),
-        creds: r.try_get("creds").unwrap(),
-        skin: r.try_get("skin").unwrap(),
+    Ok(PlayerRow {
+        id: r.try_get("id")?,
+        name: r.try_get("name")?,
+        passwd: r.try_get("passwd")?,
+        hash: r.try_get("hash")?,
+        x: r.try_get("x")?,
+        y: r.try_get("y")?,
+        dir: r.try_get("dir")?,
+        health: r.try_get("health")?,
+        max_health: r.try_get("max_health")?,
+        money: r.try_get("money")?,
+        creds: r.try_get("creds")?,
+        skin: r.try_get("skin")?,
         auto_dig: auto_dig_val != 0,
         crystals: [
-            r.try_get("cry_green").unwrap(),
-            r.try_get("cry_blue").unwrap(),
-            r.try_get("cry_red").unwrap(),
-            r.try_get("cry_violet").unwrap(),
-            r.try_get("cry_white").unwrap(),
-            r.try_get("cry_cyan").unwrap(),
+            r.try_get("cry_green")?,
+            r.try_get("cry_blue")?,
+            r.try_get("cry_red")?,
+            r.try_get("cry_violet")?,
+            r.try_get("cry_white")?,
+            r.try_get("cry_cyan")?,
         ],
         clan_id: r.try_get("clan_id").unwrap_or(None),
         inventory: serde_json::from_str(&inv_str).unwrap_or_default(),
@@ -230,7 +230,7 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> PlayerRow {
         role: r.try_get("role").unwrap_or(0),
         clan_rank: r.try_get("clan_rank").unwrap_or(0),
         last_bonus_at: r.try_get("last_bonus_at").unwrap_or(0),
-    }
+    })
 }
 
 impl Database {
@@ -307,7 +307,7 @@ impl Database {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| row_to_player(&r)))
+        Ok(row.map(|r| row_to_player(&r)).transpose()?)
     }
 
     pub async fn get_player_by_name(&self, name: &str) -> Result<Option<PlayerRow>> {
@@ -324,7 +324,7 @@ impl Database {
         .bind(name)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| row_to_player(&r)))
+        Ok(row.map(|r| row_to_player(&r)).transpose()?)
     }
 
     pub async fn save_player(&self, p: &PlayerRow) -> Result<()> {

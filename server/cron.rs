@@ -27,7 +27,7 @@ impl CronManager {
             let mut sched = match JobScheduler::new().await {
                 Ok(s) => s,
                 Err(e) => {
-                    error!("Failed to create JobScheduler: {e}");
+                    error!(error = ?e, "Failed to create JobScheduler");
                     return;
                 }
             };
@@ -40,26 +40,26 @@ impl CronManager {
                     let st = Arc::clone(&state_clone);
                     Box::pin(async move {
                         let online = st.active_players.len();
-                        info!("[Cron] Hourly Heartbeat. Online players: {}", online);
+                        info!(online_players = online, "[Cron] Hourly Heartbeat");
                     })
                 });
 
                 match job {
                     Ok(j) => {
                         if let Err(e) = sched.add(j).await {
-                            error!("Failed to add HourlyHeartbeat job to scheduler: {e}");
+                            error!(error = ?e, "Failed to add HourlyHeartbeat job to scheduler");
                         } else {
                             info!("HourlyHeartbeat job registered in cron");
                         }
                     }
                     Err(e) => {
-                        error!("Failed to create HourlyHeartbeat job: {e}");
+                        error!(error = ?e, "Failed to create HourlyHeartbeat job");
                     }
                 }
             }
 
             if let Err(e) = sched.start().await {
-                error!("Failed to start JobScheduler: {e}");
+                error!(error = ?e, "Failed to start JobScheduler");
                 return;
             }
             info!("Cron system started (tokio-cron-scheduler)");
@@ -68,7 +68,7 @@ impl CronManager {
             let _ = shutdown_rx.recv().await;
             info!("Cron system shutting down...");
             if let Err(e) = sched.shutdown().await {
-                error!("Error shutting down cron scheduler: {e}");
+                error!(error = ?e, "Error shutting down cron scheduler");
             }
         });
     }

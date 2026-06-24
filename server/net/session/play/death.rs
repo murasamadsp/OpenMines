@@ -282,7 +282,13 @@ pub fn send_respawn_after_death(
     mh: i32,
     bcast: &DeathBroadcasts,
 ) {
-    tracing::warn!("[Respawn] @T pid={pid} to=({rx},{ry}) mh={mh}");
+    tracing::warn!(
+        player_id = pid,
+        x = rx,
+        y = ry,
+        max_health = mh,
+        "Player respawned after death"
+    );
     // C# ref Death(): win=null → SendWindow() → SendMoney → tp → SendHealth().
     send_u_packet(tx, "Gu", &gu_close().1);
     // C# Basket: @B (SendCrys) только если корзина была очищена (AllCry>0).

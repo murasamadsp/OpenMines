@@ -36,13 +36,13 @@ async fn main() -> Result<()> {
     }
     println!("[Main] Config loaded, initializing logging...");
     let _logging_guard = logging::init(&cfg.logging)?;
-    tracing::info!("Config loaded: world={}, port={}", cfg.world_name, cfg.port);
+    tracing::info!(world_name = %cfg.world_name, port = cfg.port, "Config loaded");
 
     let state_dir = resolve_state_dir(&cfg)?;
     std::fs::create_dir_all(&state_dir)?;
     migrate_legacy_state_files(&state_dir, &cfg.world_name)?;
     migrate_mines3_db_to_openmines(&state_dir);
-    tracing::info!("Runtime state directory: {}", state_dir.display());
+    tracing::info!(state_dir = %state_dir.display(), "Runtime state directory resolved");
 
     let force_regenerate =
         parse_regen_flag_from(env::args().skip(1), env::var("M3R_REGEN_WORLD").ok())
@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     }
 
     let cell_defs = world::cells::CellDefs::load("configs/cells.json")?;
-    tracing::info!("Loaded {} cell definitions", cell_defs.cells.len());
+    tracing::info!(count = cell_defs.cells.len(), "Loaded cell definitions");
 
     let buildings_cfg_path = if Path::new("configs/buildings.json").exists() {
         "configs/buildings.json"
@@ -70,11 +70,11 @@ async fn main() -> Result<()> {
         &state_dir,
     )?;
     tracing::info!(
-        "World ready: {}x{} cells ({}x{} chunks)",
-        world.cells_width(),
-        world.cells_height(),
-        cfg.world_chunks_w,
-        cfg.world_chunks_h
+        width = world.cells_width(),
+        height = world.cells_height(),
+        chunks_w = cfg.world_chunks_w,
+        chunks_h = cfg.world_chunks_h,
+        "World ready"
     );
 
     let database = db::Database::open(state_dir.join(DB_FILENAME)).await?;
@@ -135,7 +135,7 @@ async fn main() -> Result<()> {
     let repl_shutdown = shutdown_tx.clone();
     tokio::spawn(async move {
         if let Err(e) = console::run_repl(repl_state, repl_shutdown).await {
-            tracing::error!("REPL console error: {e}");
+            tracing::error!(error = ?e, "REPL console error");
         }
     });
 
@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
     let net_res = net::run(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).await;
     match &net_res {
         Ok(()) => tracing::info!("net::run finished Ok (accept loop ended, e.g. shutdown)"),
-        Err(e) => tracing::error!("net::run finished with error (process may exit): {e:#}"),
+        Err(e) => tracing::error!(error = ?e, "net::run finished with error (process may exit)"),
     }
 
     shutdown_flush(&game_state).await;
@@ -176,14 +176,20 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "Shutdown player {pid} save attempt {attempt}/3 failed: {e}"
+                            player_id = pid,
+                            attempt,
+                            error = ?e,
+                            "Shutdown player save attempt failed"
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     }
                 }
             }
             if !ok {
-                tracing::error!("Shutdown save failed for player {pid} after 3 attempts");
+                tracing::error!(
+                    player_id = pid,
+                    "Shutdown save failed for player after 3 attempts"
+                );
             }
         }
     }
@@ -207,7 +213,7 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
         if let Some(r) = row
             && let Err(e) = game_state.db.save_building(&r).await
         {
-            tracing::error!("Shutdown building save failed: {e}");
+            tracing::error!(error = ?e, "Shutdown building save failed");
         }
     }
 
@@ -218,12 +224,12 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
             Some(crystals) => game_state.db.upsert_box(bx, by, &crystals).await,
         };
         if let Err(e) = r {
-            tracing::error!("Shutdown box persist ({bx},{by}) failed: {e}");
+            tracing::error!(x = bx, y = by, error = ?e, "Shutdown box persist failed");
         }
     }
 
     if let Err(e) = game_state.world.flush() {
-        tracing::error!("Shutdown world flush error: {e}");
+        tracing::error!(error = ?e, "Shutdown world flush error");
     }
 }
 
@@ -239,10 +245,10 @@ async fn bootstrap_grant_admin(database: &db::Database) -> Result<()> {
         }
         if let Some(p) = database.get_player_by_name(name).await? {
             if database.set_player_role(p.id, db::Role::Admin).await? {
-                tracing::info!("M3R_GRANT_ADMIN: Role::Admin для id={} name={name:?}", p.id);
+                tracing::info!(player_id = p.id, player_name = %name, "M3R_GRANT_ADMIN: Role::Admin granted");
             }
         } else {
-            tracing::warn!("M3R_GRANT_ADMIN: нет игрока name={name:?}");
+            tracing::warn!(player_name = %name, "M3R_GRANT_ADMIN: player not found");
         }
     }
     Ok(())
@@ -319,10 +325,16 @@ fn migrate_legacy_state_files(state_dir: &Path, world_name: &str) -> Result<()> 
             continue;
         }
         match std::fs::rename(&from, &to) {
-            Ok(()) => tracing::info!("migrated {name} -> {}", state_dir.display()),
+            Ok(()) => tracing::info!(
+                file_name = %name,
+                state_dir = %state_dir.display(),
+                "Migrated legacy state file"
+            ),
             Err(err) => tracing::warn!(
-                "could not migrate {name} into {}: {err}",
-                state_dir.display()
+                file_name = %name,
+                state_dir = %state_dir.display(),
+                error = ?err,
+                "Could not migrate legacy state file"
             ),
         }
     }
@@ -348,8 +360,16 @@ fn migrate_mines3_db_to_openmines(state_dir: &Path) {
         let to = state_dir.join(new_suffix);
         if from.exists() && !to.exists() {
             match std::fs::rename(&from, &to) {
-                Ok(()) => tracing::info!("renamed {} -> {}", from.display(), to.display()),
-                Err(e) => tracing::warn!("could not rename {}: {e}", from.display()),
+                Ok(()) => tracing::info!(
+                    from = %from.display(),
+                    to = %to.display(),
+                    "Renamed legacy database file"
+                ),
+                Err(e) => tracing::warn!(
+                    from = %from.display(),
+                    error = ?e,
+                    "Could not rename legacy database file"
+                ),
             }
         }
     }
@@ -378,10 +398,10 @@ fn remove_world_files(state_dir: &Path) {
         let path = entry.path();
         if let Err(err) = std::fs::remove_file(&path) {
             if err.kind() != ErrorKind::NotFound {
-                tracing::warn!("Failed to remove world file {}: {err}", path.display());
+                tracing::warn!(path = %path.display(), error = ?err, "Failed to remove world file");
             }
         } else {
-            tracing::info!("Removed {} for full world regeneration", path.display());
+            tracing::info!(path = %path.display(), "Removed world file for full world regeneration");
         }
     }
 }
@@ -395,10 +415,10 @@ async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
     const SPAWN_X: i32 = 10;
     const SPAWN_Y: i32 = 10;
     let n = database.delete_all_buildings().await?;
-    tracing::info!("World regen: cleared {n} building rows from DB (stale packs vs new map)");
+    tracing::info!(count = n, "World regen: cleared building rows from DB");
 
     let nb = database.delete_all_boxes().await?;
-    tracing::info!("World regen: cleared {nb} crystal boxes (stale positions)");
+    tracing::info!(count = nb, "World regen: cleared crystal boxes");
 
     // Маркет-ордера: отменить и вернуть всё владельцам — залоченные предметы
     // инициатору, текущую ставку покупателю — затем снести.
@@ -412,13 +432,19 @@ async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
         }
     }
     let no = database.delete_all_orders().await?;
-    tracing::info!("World regen: cancelled+refunded {no} market orders");
+    tracing::info!(
+        count = no,
+        "World regen: cancelled and refunded market orders"
+    );
 
     let np = database
         .reset_all_players_to_spawn(SPAWN_X, SPAWN_Y)
         .await?;
     tracing::info!(
-        "World regen: reset {np} player positions to spawn ({SPAWN_X},{SPAWN_Y}) (stale terrain)"
+        count = np,
+        spawn_x = SPAWN_X,
+        spawn_y = SPAWN_Y,
+        "World regen: reset player positions to spawn"
     );
 
     Ok(())

@@ -7,11 +7,20 @@ use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+#[tracing::instrument(
+    name = "session",
+    skip(state, stream),
+    fields(
+        client_ip = %addr.ip(),
+        session_id = tracing::field::Empty,
+        player_id = tracing::field::Empty
+    )
+)]
 pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAddr) -> Result<()> {
-    tracing::info!("New session from {addr}");
+    tracing::info!(ip = %addr.ip(), "New connection");
     // Важно для маленьких handshake-пакетов: не ждём Nagle на первых байтах.
     if let Err(err) = stream.set_nodelay(true) {
-        tracing::warn!("set_nodelay failed for {addr}: {err}");
+        tracing::warn!(error = %err, "set_nodelay failed");
     }
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (kick_tx, mut kick_rx) = tokio::sync::oneshot::channel::<()>();
@@ -49,6 +58,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
 
     // Референс: OnConnected шлёт ST → AU → PI (именно в таком порядке).
     let sid = GameState::generate_session_id();
+    tracing::Span::current().record("session_id", &sid);
 
     // 1:1 ref: `SendU(new StatusPacket("черный хуй в твоей жопе"))`
     let st = status("черный хуй в твоей жопе");
@@ -64,14 +74,14 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     stream.write_all(&au_pkt).await?;
     stream.write_all(&pi_pkt).await?;
     stream.flush().await?;
-    tracing::debug!("Sent ST+AU+PI handshake (sid={sid}) to {addr}");
+    tracing::debug!("Sent ST+AU+PI handshake");
 
     loop {
         let blocked_remaining = state.auth_blocked_remaining_by_addr(&client_ip, Instant::now());
 
         tokio::select! {
             _ = &mut kick_rx => {
-                tracing::info!("Player {:?} kicked via admin console", pid);
+                tracing::info!(player_id = ?pid, "Player kicked via admin console");
                 break;
             }
             _ = heartbeat.tick() => {
@@ -80,7 +90,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 // ловится `read_buf`==0 ниже.
                 let idle = Instant::now().saturating_duration_since(last_pong);
                 if idle > Duration::from_secs(30) {
-                    tracing::warn!("Pong timeout (>30s). Closing {addr}");
+                    tracing::warn!("Pong timeout (>30s). Closing connection");
                     break;
                 }
                 // 1 PI / тик → клиент 1 PO / PI → нет шторма. `num2` =
@@ -104,7 +114,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
             result = stream.read_buf(&mut buf) => {
                 let n = result?;
                 if n == 0 {
-                    tracing::debug!("Connection closed by remote: {addr}");
+                    tracing::debug!("Connection closed by remote");
                     break;
                 }
                 loop {
@@ -142,15 +152,16 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     let res = handle_auth(&state, &tx, &au, &sid, session_token, &mut new_auth).await?;
                                     if let Some(id) = res {
                                         pid = Some(id);
+                                        tracing::Span::current().record("player_id", id);
                                         auth_state = new_auth;
                                         if let Some(kt) = kick_tx_opt.take() {
                                             state.kick_channels.insert(id, kt);
                                         }
-                                        tracing::info!("Player {addr} authenticated (id={:?})", pid);
+                                        tracing::info!(player_id = id, "Player authenticated");
                                     } else {
                                         // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
                                         auth_state = new_auth;
-                                        tracing::warn!("Auth failed for {addr}");
+                                        tracing::warn!("Auth failed");
                                         let wait = state.record_auth_failure_by_addr(&client_ip, now);
                                         if wait.is_some() { break; }
                                     }
@@ -166,11 +177,12 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                             let res = handle_gui_auth_flow(&state, &tx, button.as_ref(), session_token, step).await?;
                                             if let Some(id) = res {
                                                 pid = Some(id);
+                                                tracing::Span::current().record("player_id", id);
                                                 auth_state = AuthState::Authenticated;
                                                 if let Some(kt) = kick_tx_opt.take() {
                                                     state.kick_channels.insert(id, kt);
                                                 }
-                                                tracing::info!("Player {addr} registered/logged via GUI (id={:?})", pid);
+                                                tracing::info!(player_id = id, "Player registered/logged via GUI");
                                             }
                                         }
                                     }
@@ -181,8 +193,36 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                             if let Some(id) = pid {
                                 if ev == "TY" {
                                     if let Some(ty) = TyPacket::decode(&packet.payload) {
-                                        tracing::debug!("<<< [TY] enqueued event={} pid={} time={}", ty.event_str(), id, ty.time);
-                                        state.incoming_actions.push(id, tx.clone(), ty);
+                                        let event = ty.event_str();
+                                        if is_tick_action(event) {
+                                            tracing::debug!(
+                                                event = event,
+                                                time = ty.time,
+                                                "<<< [TY] enqueued"
+                                            );
+                                            state.incoming_actions.push(id, tx.clone(), ty);
+                                        } else {
+                                            let event_owned = event.to_string();
+                                            tracing::debug!(
+                                                event = %event_owned,
+                                                time = ty.time,
+                                                "<<< [TY] spawned async"
+                                            );
+                                            let state_c = state.clone();
+                                            let tx_c = tx.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(e) = crate::net::session::dispatch::dispatch_ty_packet(
+                                                    &state_c, &tx_c, id, &ty
+                                                ).await {
+                                                    tracing::error!(
+                                                        player_id = id,
+                                                        event = %event_owned,
+                                                        error = ?e,
+                                                        "Failed to dispatch async TY packet"
+                                                    );
+                                                }
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -201,8 +241,10 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 format!("{:02x?}", &buf[..preview_len])
                             };
                             tracing::warn!(
-                                "Wire decode error from {addr}: {err} (buf_len={} preview={preview})",
-                                buf.len(),
+                                error = %err,
+                                buf_len = buf.len(),
+                                preview = %preview,
+                                "Wire decode error"
                             );
                             break;
                         }
@@ -219,7 +261,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
         }
         if let Some(rem) = blocked_remaining {
             if rem > Duration::from_secs(0) {
-                tracing::warn!("IP {client_ip} is blocked. Closing.");
+                tracing::warn!(ip = %client_ip, "IP blocked, closing connection");
                 break;
             }
         }
@@ -251,4 +293,11 @@ pub enum GuiAuthStep {
     RegisterNick,
     /// Creating new account — nick accepted, waiting for password.
     RegisterPassword { nick: String },
+}
+
+fn is_tick_action(event: &str) -> bool {
+    matches!(
+        event,
+        "Xmov" | "Xdig" | "Xbld" | "Xgeo" | "Xhea" | "INVN" | "INCL" | "TADG" | "RESP"
+    )
 }

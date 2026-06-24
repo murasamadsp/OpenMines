@@ -1236,11 +1236,21 @@ fn handle_teleport_action(
     };
 
     let Some(dest_view) = state.get_pack_at(dest_x, dest_y) else {
-        tracing::warn!(pid, "TP action: destination {dest_x}:{dest_y} not found");
+        tracing::warn!(
+            player_id = pid,
+            destination_x = dest_x,
+            destination_y = dest_y,
+            "TP action: destination not found"
+        );
         return;
     };
     if dest_view.pack_type != PackType::Teleport || dest_view.charge <= 0.0 {
-        tracing::warn!(pid, "TP action: destination not a valid teleport");
+        tracing::warn!(
+            player_id = pid,
+            destination_x = dest_x,
+            destination_y = dest_y,
+            "TP action: destination not a valid teleport"
+        );
         return;
     }
 
@@ -1257,7 +1267,10 @@ fn handle_teleport_action(
     });
 
     let Some((src_x, src_y)) = src_coords else {
-        tracing::warn!(pid, "TP action: player not at a teleport window");
+        tracing::warn!(
+            player_id = pid,
+            "TP action: player not at a teleport window"
+        );
         return;
     };
 
@@ -1292,8 +1305,12 @@ fn handle_teleport_action(
     crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
     tracing::info!(
-        pid,
-        "Teleported from ({src_x},{src_y}) to ({dest_x},{tp_y})"
+        player_id = pid,
+        from_x = src_x,
+        from_y = src_y,
+        to_x = dest_x,
+        to_y = tp_y,
+        "Teleported player"
     );
 }
 
@@ -1913,7 +1930,7 @@ async fn handle_create_prog(
                 &crate::protocol::packets::open_programmator(p.id, &p.name, &p.code).1,
             );
         }
-        Err(e) => tracing::warn!("[createprog] DB insert failed pid={pid}: {e:#}"),
+        Err(e) => tracing::warn!(player_id = pid, error = ?e, "DB insert failed for createprog"),
     }
 }
 
@@ -1934,7 +1951,7 @@ async fn handle_rename_prog(
         return;
     }
     if let Err(e) = state.db.rename_program(prog_id, name).await {
-        tracing::warn!("[rename] DB rename failed pid={pid} id={prog_id}: {e:#}");
+        tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB rename failed for program");
         return;
     }
     send_u_packet(

@@ -306,7 +306,7 @@ impl GameState {
                     state.box_index.len()
                 );
             }
-            Err(e) => tracing::error!("Failed to load boxes into index: {e}"),
+            Err(e) => tracing::error!(error = ?e, "Failed to load boxes into index"),
         }
 
         {
@@ -522,27 +522,25 @@ impl GameState {
         y: i32,
     ) -> Option<(i32, i32)> {
         let (cx, cy) = World::chunk_pos(x, y);
-        for ncy in (cy.cast_signed() - 1)..=(cy.cast_signed() + 1) {
-            for ncx in (cx.cast_signed() - 1)..=(cx.cast_signed() + 1) {
-                if ncx < 0 || ncy < 0 {
-                    continue;
-                }
-                if let Some(entities) =
-                    chunk_buildings.get(&(ncx.cast_unsigned(), ncy.cast_unsigned()))
-                {
-                    let ents = entities.value().clone();
-                    drop(entities);
-                    for entity in ents {
-                        let Some(pos) = ecs.get::<GridPosition>(entity) else {
-                            continue;
-                        };
-                        let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
-                            continue;
-                        };
-                        for (dx, dy, _) in meta.pack_type.building_cells() {
-                            if pos.x + dx == x && pos.y + dy == y {
-                                return Some((pos.x, pos.y));
-                            }
+        let check_range_x = (cx.cast_signed() - 1)..=(cx.cast_signed() + 1);
+        let check_range_y = (cy.cast_signed() - 1)..=(cy.cast_signed() + 1);
+
+        for (ncx, ncy) in check_range_x.flat_map(|x| check_range_y.clone().map(move |y| (x, y))) {
+            if ncx < 0 || ncy < 0 {
+                continue;
+            }
+            let key = (ncx.cast_unsigned(), ncy.cast_unsigned());
+            if let Some(entities) = chunk_buildings.get(&key) {
+                for &entity in entities.value() {
+                    let Some(pos) = ecs.get::<GridPosition>(entity) else {
+                        continue;
+                    };
+                    let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
+                        continue;
+                    };
+                    for (dx, dy, _) in meta.pack_type.building_cells() {
+                        if pos.x + dx == x && pos.y + dy == y {
+                            return Some((pos.x, pos.y));
                         }
                     }
                 }
@@ -583,9 +581,7 @@ impl GameState {
                 if let Some(entities) =
                     chunk_buildings.get(&(ncx.cast_unsigned(), ncy.cast_unsigned()))
                 {
-                    let ents = entities.value().clone();
-                    drop(entities);
-                    for entity in ents {
+                    for &entity in entities.value() {
                         let Some(pos) = ecs.get::<GridPosition>(entity) else {
                             continue;
                         };
@@ -640,9 +636,7 @@ impl GameState {
         let mut results = Vec::new();
         let ecs = self.ecs.read();
         if let Some(entities) = self.chunk_buildings.get(&(cx, cy)) {
-            let ents = entities.value().clone();
-            drop(entities);
-            for entity in ents {
+            for &entity in entities.value() {
                 let pos = ecs.get::<GridPosition>(entity);
                 let meta = ecs.get::<BuildingMetadata>(entity);
                 let own = ecs.get::<BuildingOwnership>(entity);
@@ -669,9 +663,7 @@ impl GameState {
         let ecs = self.ecs.read();
         for (ucx, ucy) in self.visible_chunks_around(cx, cy) {
             if let Some(entities) = self.chunk_buildings.get(&(ucx, ucy)) {
-                let ents = entities.value().clone();
-                drop(entities);
-                for entity in ents {
+                for &entity in entities.value() {
                     let pos = ecs.get::<GridPosition>(entity);
                     let meta = ecs.get::<BuildingMetadata>(entity);
                     let own = ecs.get::<BuildingOwnership>(entity);

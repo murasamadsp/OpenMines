@@ -168,7 +168,7 @@ pub async fn handle_clan_create(
             return;
         }
         Err(e) => {
-            tracing::error!("pick_clan_id error: {e}");
+            tracing::error!(error = ?e, "Failed to pick clan ID");
             return;
         }
     };
@@ -190,7 +190,7 @@ pub async fn handle_clan_create(
             handle_clan_info_view(state, tx, pid, new_id).await;
         }
         Err(e) => {
-            tracing::error!("create_clan error: {e}");
+            tracing::error!(error = ?e, "Failed to create clan");
             send_clan_ok(
                 tx,
                 "Ошибка",
@@ -253,7 +253,7 @@ pub async fn handle_clan_leave(
                 handle_clan_menu(state, tx, pid).await;
             }
             Err(e) => {
-                tracing::error!("delete_clan error: {e}");
+                tracing::error!(clan_id, error = ?e, "Failed to delete clan");
                 send_clan_ok(tx, "Ошибка", "Не удалось покинуть клан");
             }
         }
@@ -294,7 +294,7 @@ pub async fn handle_clan_leave(
                 handle_clan_menu(state, tx, pid).await;
             }
             Err(e) => {
-                tracing::error!("leave_clan error: {e}");
+                tracing::error!(player_id = pid, error = ?e, "Failed to leave clan");
                 send_clan_ok(tx, "Ошибка", "Не удалось покинуть клан");
             }
         }
@@ -328,7 +328,7 @@ pub async fn handle_clan_join_request(
             send_clan_ok(tx, "Клан", "Заявка отправлена");
         }
         Err(e) => {
-            tracing::error!("add_clan_request error: {e}");
+            tracing::error!(clan_id, player_id = pid, error = ?e, "Failed to add clan join request");
             send_clan_ok(tx, "Ошибка", "Не удалось отправить заявку");
         }
     }
@@ -475,7 +475,7 @@ pub async fn handle_clan_invite_send(
             });
         }
         Err(e) => {
-            tracing::error!("add_clan_invite error: {e}");
+            tracing::error!(clan_id, target_id = target_pid, error = ?e, "Failed to add clan invite");
             send_clan_ok(tx, "Ошибка", "Не удалось отправить приглашение");
         }
     }
@@ -531,7 +531,7 @@ pub async fn handle_clan_invite_accept(
             send_clan_ok(tx, "Клан", "Вы вступили в клан!");
         }
         Err(e) => {
-            tracing::error!("accept_clan_invite error: {e}");
+            tracing::error!(clan_id, player_id = pid, error = ?e, "Failed to accept clan invite");
             send_clan_ok(tx, "Ошибка", "Не удалось принять приглашение");
         }
     }
@@ -577,7 +577,7 @@ pub async fn handle_clan_promote(
             handle_clan_members_view(state, tx, pid).await;
         }
         Err(e) => {
-            tracing::error!("set_clan_rank error: {e}");
+            tracing::error!(clan_id, player_id = target_pid, error = ?e, "Failed to promote player rank");
             send_clan_ok(tx, "Ошибка", "Не удалось повысить игрока");
         }
     }
@@ -662,7 +662,7 @@ pub async fn handle_clan_accept(
             handle_clan_requests_view(state, tx, pid).await;
         }
         Err(e) => {
-            tracing::error!("accept_clan_request error: {e}");
+            tracing::error!(clan_id, player_id = target_pid, error = ?e, "Failed to accept clan request");
             send_clan_ok(tx, "Ошибка", "Не удалось принять заявку");
         }
     }
