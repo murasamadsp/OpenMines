@@ -234,20 +234,31 @@ pub fn check_chunk_changed(
                 (pos.chunk_x(), pos.chunk_y())
             };
             let mut view = ecs.get_mut::<crate::game::player::PlayerView>(entity)?;
-            let (ocx, ocy) = view.last_chunk.unwrap_or((0, 0));
+            let prev = view.last_chunk;
             view.last_chunk = Some((ncx, ncy));
             view.visible_chunks = new_visible;
-            if (ocx, ocy) != (ncx, ncy) {
-                Some((ocx, ocy, ncx, ncy))
-            } else {
-                None
+            // `prev == None` — первый вызов после спавна: регистрируем БЕЗ снятия
+            // со старого чанка. Прежний `unwrap_or((0,0))` был ядовитым сентинелом:
+            // у игрока, заспавненного в чанке (0,0), дефолт совпадал с реальным
+            // чанком → «смены нет» → его НИКОГДА не клали в chunk_players →
+            // broadcast_to_nearby (идёт по chunk_players) не доставлял ему его же
+            // X-пакет. Ручной ход рисуется предсказанием (поэтому работал), а
+            // программаторный ход живёт только этим broadcast'ом → бот замирал.
+            match prev {
+                None => Some((None, (ncx, ncy))),
+                Some((ocx, ocy)) if (ocx, ocy) != (ncx, ncy) => {
+                    Some((Some((ocx, ocy)), (ncx, ncy)))
+                }
+                Some(_) => None,
             }
         })
         .flatten();
     // ecs.write() отпущен — безопасно обновляем chunk_players.
-    if let Some((ocx, ocy, ncx, ncy)) = chunk_update {
-        if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy)) {
-            e.retain(|&id| id != pid);
+    if let Some((old, (ncx, ncy))) = chunk_update {
+        if let Some((ocx, ocy)) = old {
+            if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy)) {
+                e.retain(|&id| id != pid);
+            }
         }
         state.chunk_players.entry((ncx, ncy)).or_default().push(pid);
     }
