@@ -102,11 +102,12 @@ pub async fn handle_prog_ty(
                     .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
                     .map(|p| p.name)
                     .unwrap_or_default();
-                // ДЕВИАЦИЯ от C# (по требованию: на run редактор НЕ должен открываться).
-                // Клиент `UpdateProgramm`: id=-1 → апдейт title/source без `SetActive(true)`;
-                // реальный id → ОТКРЫВАЕТ редактор. C# шлёт реальный id (окно всплывает) —
-                // шлём -1, чтобы запуск не разворачивал окно поверх игры.
-                send_u_packet(tx, "#p", &open_programmator(-1, &name, &source).1);
+                // 1:1 C# `StaticGUI.StartedProg` → `UpdateProg(programm)`: `#p` с
+                // РЕАЛЬНЫМ id. Клиент `GUIManager.UpdateProgramm(realId)` грузит исходник
+                // в редактор и В КОНЦЕ делает `SetActive(false)` (`GUIManager.cs:296`) —
+                // это и есть механизм ЗАКРЫТИЯ окна на запуске. Прежняя девиация (id=-1)
+                // делала ранний `return` БЕЗ скрытия → окно зависало открытым. Откат к C#.
+                send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
                 if !running {
                     send_u_packet(
@@ -451,9 +452,9 @@ mod tests {
         assert_eq!(events[2].1, b"0");
 
         let update_json: serde_json::Value = serde_json::from_slice(&events[1].1).unwrap();
-        // id=-1: #p на run = апдейт title/source БЕЗ открытия редактора (клиент
-        // `UpdateProgramm`: -1 → не `SetActive(true)`). Девиация от C# по требованию.
-        assert_eq!(update_json["id"], -1);
+        // 1:1 C# `UpdateProg`: #p с РЕАЛЬНЫМ id. Клиент `UpdateProgramm(realId)` грузит
+        // исходник и в конце `SetActive(false)` — окно скрывается (механизм закрытия).
+        assert_eq!(update_json["id"], prog_id);
         assert_eq!(update_json["title"], "main");
         assert_eq!(update_json["source"], "");
 
