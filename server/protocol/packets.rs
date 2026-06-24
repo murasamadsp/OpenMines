@@ -263,6 +263,29 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
 /// Полный пакет: `{"ch":"TAG","h":["ID±...","..."]}`.
 use crate::game::chat::{CHAT_HISTORY_LIMIT, ChatMessage};
 
+/// JSON-экранирование строки для вставки в `mU`/прочий JSON. Клиентский
+/// `JsonUtility.FromJson` СТРОГИЙ: сырой `\` или `"` в нике/тексте → «Invalid
+/// escape character» и краш парсера. Экранируем `\ "` и управляющие символы;
+/// UTF-8 (кириллица, `±`) проходит как есть.
+fn json_escape(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<u8>) {
     let start = messages.len().saturating_sub(CHAT_HISTORY_LIMIT);
     let msg_strs: Vec<String> = messages
@@ -271,7 +294,13 @@ pub fn chat_messages(tag: &str, messages: &[ChatMessage]) -> (&'static str, Vec<
         .map(|m| {
             format!(
                 "\"{}±{}±{}±{}±{}±{}±{}\"",
-                m.id, m.color, m.clan_id, m.time, m.nickname, m.text, m.user_id
+                m.id,
+                m.color,
+                m.clan_id,
+                m.time,
+                json_escape(&m.nickname),
+                json_escape(&m.text),
+                m.user_id
             )
         })
         .collect();
@@ -993,6 +1022,34 @@ mod tests {
             assert_eq!(parts[5], src.text);
             assert_eq!(parts[6].parse::<i32>().unwrap(), src.user_id);
         }
+    }
+
+    /// Регресс: ник/текст с `\` или `"` ломали `mU` («Invalid escape character»)
+    /// → весь чат не парсился клиентом. Экранирование делает JSON валидным,
+    /// а после split('±') текст восстанавливается без потерь.
+    #[test]
+    fn chat_messages_escapes_backslash_and_quote() {
+        let msgs = [ChatMessage {
+            id: 1,
+            time: 1,
+            clan_id: 0,
+            user_id: 1,
+            nickname: "ev\\il".to_string(),
+            text: "path C:\\x and \"quote\"".to_string(),
+            color: 0,
+        }];
+        let (_, payload) = chat_messages("FED", &msgs);
+        // Строгая проверка: JSON обязан парситься (как Unity JsonUtility).
+        let json: serde_json::Value = serde_json::from_slice(&payload)
+            .expect("mU с backslash/quote должен быть валидным JSON");
+        let h = json["h"].as_array().unwrap();
+        let parts: Vec<&str> = h[0].as_str().unwrap().split('±').collect();
+        assert_eq!(parts.len(), 7);
+        assert_eq!(parts[4], "ev\\il", "ник восстановлен 1:1");
+        assert_eq!(
+            parts[5], "path C:\\x and \"quote\"",
+            "текст восстановлен 1:1"
+        );
     }
 
     #[test]
