@@ -6,15 +6,20 @@ use crate::world::cells::is_boulder;
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
-/// Проходима ли клетка для падающего блока — эталон `js_reference/scripts/geophys.js`
-/// (`BlockStats[id].solid`): блок падает в любую НЕ-`solid` клетку. В JS `solid`
-/// взведён у кристаллов/скал/песка/валунов/блоков/жив/рамки(106)/угла(38) и сброшен
-/// у фонов/дорог/ворот/дверей/полимера. Это ровно Rust `is_empty` (isEmpty=true ⇔
-/// !solid для всех боевых клеток). Поэтому раньше `&& !is_building_background`
-/// ошибочно держал песок на дорогах/воротах/дверях (30/35/36/37/39) — в JS они
-/// проходимы. OOB трактуем как непроходимое (solid-граница мира).
+/// Проходима ли клетка для падающего блока. База — `is_empty` (≡ JS
+/// `!BlockStats[id].solid`): песок течёт сквозь фон/обычную дорогу(35)/ворота(30).
+/// НО плюс C#-блоклист `TrueEmpty`: `cell ∉ {0,36,37,39}` — инфраструктура зданий
+/// (NOTHING, ЗОЛОТАЯ ДОРОГА 36, ДВЕРЬ 37, ПОЛИМЕР 39) НЕ проходима, иначе песок
+/// затирает её («жрёт золотую дорогу»). Чистый JS-geophys это не ловит (там 36
+/// не-solid), но C# `Physics` именно так и защищает паки. OOB = непроходимо.
 fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
-    world.valid_coord(x, y) && world.is_empty(x, y)
+    use crate::world::cells::cell_type as ct;
+    world.valid_coord(x, y)
+        && world.is_empty(x, y)
+        && !matches!(
+            world.get_cell(x, y),
+            ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
+        )
 }
 
 /// Есть ли у клетки `falltype` (песок/валун) — JS `BlockStats[id].falltype != null`.
@@ -335,6 +340,61 @@ mod physics_repro {
             world.get_cell(x, 52),
             cell_type::EMPTY,
             "источник песка не очистился"
+        );
+    }
+
+    /// C# `TrueEmpty`-блоклист {0,36,37,39}: песок НЕ должен жрать золотую дорогу(36),
+    /// дверь(37), полимер(39) — инфраструктуру зданий. Садится сверху, не затирает.
+    #[test]
+    fn sand_does_not_eat_golden_road() {
+        const SAND: u8 = 100;
+        let dir = std::env::temp_dir().join(format!("phys_gold_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let cd = CellDefs::load("configs/cells.json").unwrap();
+        let world = Arc::new(World::new("phys_gold", 4, 4, cd, &dir).unwrap());
+        let x = 64;
+        for y in 50..=61 {
+            world.set_cell(x - 1, y, 107); // solid-стены изоляции
+            world.set_cell(x + 1, y, 107);
+        }
+        for y in 52..60 {
+            world.set_cell(x, y, cell_type::EMPTY);
+        }
+        world.set_cell(x, 51, 107); // потолок
+        world.set_cell(x, 60, cell_type::GOLDEN_ROAD); // пол — НЕ должен быть съеден
+        world.set_cell(x, 52, SAND);
+        // golden road: isEmpty=true, но C#-блоклист делает её НЕпроходимой для песка.
+        assert!(
+            world.is_empty(x, 60),
+            "golden road всё ещё isEmpty в конфиге"
+        );
+
+        let mut w = bevy_ecs::world::World::new();
+        w.insert_resource(WorldResource(Arc::clone(&world)));
+        w.insert_resource(BroadcastQueue::default());
+        w.insert_resource(super::SandTickTimer(past()));
+        w.spawn(PlayerPosition { x, y: 56, dir: 0 });
+        let mut sched = Schedule::default();
+        sched.add_systems(super::sand_physics_system);
+        for _ in 0..30 {
+            w.resource_mut::<super::SandTickTimer>().0 = past();
+            sched.run(&mut w);
+        }
+
+        assert_eq!(
+            world.get_cell(x, 60),
+            cell_type::GOLDEN_ROAD,
+            "песок СЪЕЛ золотую дорогу (блоклист {{0,36,37,39}} не сработал)"
+        );
+        assert_eq!(
+            world.get_cell(x, 59),
+            SAND,
+            "песок не сел на золотую дорогу"
         );
     }
 }

@@ -124,13 +124,23 @@ jobs:
 
             cd "$STACK"
             # Самодостаточный prod-compose (image-based — VPS не собирает Rust).
-            # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды, сервис
-            # `server`, явное имя volume = openmines_server_data (совпадает с бэкапом
-            # выше; без зависимости от project-префикса). Прокси НЕ включён (task #8
-            # «не скоро»): его нет на VPS, добавлять вслепую = риск даунтайма.
-            echo "[deploy] write docker-compose.yml (server-only, 1337 admin)"
+            # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды.
+            # proxy держит публичный 8090 и переживает рестарт сервера (zero-downtime
+            # обновление); server слушает 8090 внутри, наружу не публикуется.
+            # Образ один — оба бинаря внутри (ops/Dockerfile), proxy через entrypoint.
+            echo "[deploy] write docker-compose.yml (proxy + server, 1337 admin)"
             cat > docker-compose.yml <<COMPOSE
             services:
+              proxy:
+                image: ${IMAGE}:${IMAGE_SHA}
+                init: true
+                restart: unless-stopped
+                entrypoint: ["/usr/local/bin/openmines-proxy"]
+                command: ["--bind", "0.0.0.0:8090", "--backend", "server:8090", "--reconnect-timeout", "90"]
+                ports:
+                  - "8090:8090"
+                depends_on:
+                  - server
               server:
                 image: ${IMAGE}:${IMAGE_SHA}
                 init: true
@@ -140,8 +150,6 @@ jobs:
                   - M3R_USE_CTRL_C=false
                 volumes:
                   - server_data:/data
-                ports:
-                  - "8090:8090"
             volumes:
               server_data:
                 name: openmines_server_data

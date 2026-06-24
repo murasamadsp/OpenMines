@@ -62,8 +62,27 @@ pub async fn handle_auth(
         }
     };
 
-    if let Some(player) = result {
+    if let Some(mut player) = result {
         tracing::info!("[Auth] Success! Player={} (id={})", player.name, player.id);
+
+        // M3R_GRANT_ADMIN на ЛОГИНЕ: `bootstrap_grant_admin` при старте не находит
+        // игроков свежесгенерированного мира (таблица пуста до первого входа), поэтому
+        // на fresh-мире 1337 иначе НИКОГДА не админ. Грантим здесь — когда игрок есть.
+        if let Ok(raw) = std::env::var("M3R_GRANT_ADMIN") {
+            if raw.split(',').map(str::trim).any(|n| n == player.name)
+                && state
+                    .db
+                    .set_player_role(player.id, crate::db::Role::Admin)
+                    .await
+                    .unwrap_or(false)
+            {
+                player.role = crate::db::Role::Admin as i32;
+                tracing::info!(
+                    "M3R_GRANT_ADMIN: Role::Admin для {:?} на логине",
+                    player.name
+                );
+            }
+        }
 
         // 1. Сначала CF (world_info) — клиент в OnWorldConfig вызывает ServerController.Init(),
         //    который регистрирует ВСЕ остальные обработчики пакетов. Без CF клиент мёртв.
