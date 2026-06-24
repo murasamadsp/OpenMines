@@ -20,7 +20,7 @@ enum MoveOutcome {
     Autodig(i32),
 }
 
-#[allow(clippy::similar_names)]
+#[allow(clippy::similar_names, clippy::too_many_arguments)]
 pub fn handle_move(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -29,6 +29,11 @@ pub fn handle_move(
     target_x: i32,
     target_y: i32,
     dir: i32,
+    // `true` — ход инициирован программатором (а не игроком). Пропускает guards
+    // «программа бежит»/«окно открыто», но ВСЯ валидация (coord/коллизия/ворота/
+    // дистанция) общая — чтобы программатор делал ровно то же, что ручной ход
+    // (no-DRY): нельзя пройти сквозь блоки.
+    programmatic: bool,
 ) {
     // C# `Player.cs:414-415`: Ctrl-move шлёт `(dir+10)` — снять флаг (клиент
     // `ClientController.cs:1022`). `dir==-1` (autoDig-в-стену) проходит без изменений.
@@ -76,10 +81,10 @@ pub fn handle_move(
             // CLAUDE.md методология «rate-limit делает клиент» + ae637b9).
             // C# `Move`: `(win != null && !prog)` → tp; `TryAct`:
             // ProgRunning → silent return.
-            if prog_running {
+            if prog_running && !programmatic {
                 return None;
             }
-            if window_open {
+            if window_open && !programmatic {
                 tracing::debug!(
                     player_id = pid,
                     x = px,
@@ -286,7 +291,10 @@ pub fn handle_move(
             tail,
         );
         let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
-        state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
+        // Включаем владельца (None): клиентский `RobotRenderer.XYBot` ЖДЁТ X своего
+        // бота. Ручной ход (tail=0) → пишет `myBotLastSync` (гейт-реконсиляция);
+        // программаторный (tail=1) → `SetXY + SetRotation` (бот идёт И поворачивается).
+        state.broadcast_to_nearby(cx, cy, &hb_data, None);
         crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
         // Feature 1: ref Player.cs:462-467 — auto-open pack GUI на ORIGIN-клетке пака.
@@ -310,66 +318,5 @@ pub fn handle_move(
     }
 }
 
-/// A "pure" version of `handle_move` that bypasses all network-related cooldown checks and distance validations.
-/// Used for Programmator execution where the movement is already throttled by the internal programmator timer.
-pub fn handle_move_pure(
-    state: &Arc<GameState>,
-    tx: &tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    pid: crate::game::PlayerId,
-    target_x: i32,
-    target_y: i32,
-    dir: i32,
-) {
-    let result = state
-        .modify_player(pid, |ecs, entity| {
-            let actual_dir = dir;
-            let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-            let skin = p_stats.skin;
-            let clan = p_stats.clan_id.unwrap_or(0);
-
-            {
-                let mut pos_mut = ecs.get_mut::<PlayerPosition>(entity)?;
-                pos_mut.x = target_x;
-                pos_mut.y = target_y;
-                pos_mut.dir = actual_dir;
-            }
-            {
-                let mut flags_mut = ecs.get_mut::<PlayerFlags>(entity)?;
-                flags_mut.dirty = true;
-            }
-
-            // Award Movement skill exp (1:1 ref Player.cs:443-452)
-            {
-                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
-                if add_skill_exp(&mut skills.states, "M", 1.0) {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
-                    send_u_packet(tx, sk.0, &sk.1);
-                }
-            }
-
-            Some((target_x, target_y, actual_dir, skin, clan))
-        })
-        .flatten();
-
-    if let Some((nx, ny, ndir, skin, clan)) = result {
-        let tail = state
-            .query_player(pid, |ecs, entity| {
-                ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                    .map_or(0, |ps| u8::from(ps.running))
-            })
-            .unwrap_or(0);
-        let (cx, cy) = World::chunk_pos(nx, ny);
-        let bot = hb_bot(
-            net_u16_nonneg(pid),
-            net_u16_nonneg(nx),
-            net_u16_nonneg(ny),
-            net_u8_clamped(ndir, 3),
-            net_u8_clamped(skin, 255),
-            net_u16_nonneg(clan),
-            tail,
-        );
-        let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
-        state.broadcast_to_nearby(cx, cy, &hb_data, Some(pid));
-        crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
-    }
-}
+// handle_move_pure удалён (no-DRY): программатор зовёт handle_move(..., true) —
+// та же валидация коллизии/ворот/дистанции, что и ручной ход.

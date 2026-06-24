@@ -48,15 +48,6 @@ pub fn tp(x: i32, y: i32) -> (&'static str, Vec<u8>) {
     ("@T", s.into_bytes())
 }
 
-/// Encode a smooth-move packet (@t): "x:y". Клиент `SmoothTPHandler` плавно ведёт
-/// СВОЙ бот к (x,y). Нужно для программаторного хода: сервер двигает бота сам, без
-/// клиентского предсказания (как у ручного `Xmov`), поэтому позицию владельцу надо
-/// досылать явно — иначе бот ходит на сервере, а у игрока стоит на месте.
-pub fn smooth_tp(x: i32, y: i32) -> (&'static str, Vec<u8>) {
-    let s = format!("{x}:{y}");
-    ("@t", s.into_bytes())
-}
-
 /// Encode a `BotInfo` packet (`BotInfoPacket.packetName` = `"BI"`).
 pub fn bot_info(name: &str, x: i32, y: i32, id: i32) -> (&'static str, Vec<u8>) {
     let json = serde_json::json!({

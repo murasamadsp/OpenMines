@@ -41,6 +41,7 @@ pub async fn dispatch_ty_packet(
                     packet.x as i32,
                     packet.y as i32,
                     dir,
+                    false, // ручной ход игрока (не программатор)
                 );
             }
         }

@@ -454,14 +454,13 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         for action in prog_actions {
             match action {
                 crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
-                    crate::net::session::play::movement::handle_move_pure(
-                        &state, &tx, pid, x, y, dir,
+                    // Тот же handle_move, что и ручной ход (no-DRY): валидация
+                    // коллизии/ворот/дистанции — нельзя пройти сквозь блоки.
+                    // programmatic=true пропускает guard «программа бежит». Тайминг
+                    // (delay per operator) — в programmator_system, отдельный цикл.
+                    crate::net::session::play::movement::handle_move(
+                        &state, &tx, pid, 0, x, y, dir, true,
                     );
-                    // Программаторный ход сервер инициирует сам — клиентского
-                    // предсказания нет, а `handle_move_pure` исключает владельца из
-                    // рассылки. Без @t бот ходит на сервере, а у игрока стоит на месте.
-                    let st = crate::protocol::packets::smooth_tp(x, y);
-                    crate::net::session::wire::send_u_packet(&tx, st.0, &st.1);
                 }
                 crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
                     crate::net::session::play::dig_build::handle_dig(&state, &tx, pid, dir);

@@ -1894,6 +1894,9 @@ async fn handle_open_prog(
         }
         Some(())
     });
+    // C# `StaticGUI.OpenProg`: `win = null` (→ `Gu` закрыть список) → `OpenProg` (#P).
+    // Без `Gu` окно-список программ не закрывалось поверх редактора.
+    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
     send_u_packet(
         tx,
         "#P",
@@ -1924,6 +1927,8 @@ async fn handle_create_prog(
                 }
                 Some(())
             });
+            // C# `NewProg`: `win = null` (→ `Gu`) перед открытием редактора (#P).
+            send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
             send_u_packet(
                 tx,
                 "#P",
