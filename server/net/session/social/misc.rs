@@ -91,7 +91,6 @@ pub async fn handle_prog_ty(
                     "PROGDIAG PROG program run status"
                 );
 
-                // C# StartedProg: RunProgramm (Gu close) → UpdateProg (#p) → ProgStatus (@P).
                 send_u_packet(tx, "Gu", &gu_close().1);
                 let name = state
                     .db
@@ -102,13 +101,17 @@ pub async fn handle_prog_ty(
                     .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
                     .map(|p| p.name)
                     .unwrap_or_default();
-                // 1:1 C# `StaticGUI.StartedProg` → `UpdateProg(programm)`: `#p` с
-                // РЕАЛЬНЫМ id. Клиент `GUIManager.UpdateProgramm(realId)` грузит исходник
-                // в редактор и В КОНЦЕ делает `SetActive(false)` (`GUIManager.cs:296`) —
-                // это и есть механизм ЗАКРЫТИЯ окна на запуске. Прежняя девиация (id=-1)
-                // делала ранний `return` БЕЗ скрытия → окно зависало открытым. Откат к C#.
-                send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
+                // ДЕВИАЦИЯ от C# (порядок @P↔#p), эталон — js_reference (оригинал):
+                // там `SendBotProgramStatus` обновляет окно ТОЛЬКО если оно уже открыто
+                // юзером — запуск программы окно НЕ открывает. Unity-клиент же на
+                // `@P "1"` зовёт `ChangeProgTo(true)` (открывает редактор), а `#p`
+                // (`UpdateProgramm(realId)`) в конце делает `SetActive(false)` (закрывает).
+                // Поэтому шлём СНАЧАЛА `@P` (ставит isProgrammator/playing + откроет окно),
+                // а СЛЕДОМ `#p` — его `SetActive(false)` закрывает окно последним.
+                // Итог = поведение оригинала: прога бежит, ввод гейтнут (сервер сам
+                // режет ручной ход при prog_running), кнопка стоп есть, окно закрыто.
                 send_u_packet(tx, "@P", &programmator_status(running).1);
+                send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                 if !running {
                     send_u_packet(
                         tx,
@@ -447,13 +450,15 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "#p", "@P", "OK"]);
+        // Порядок @P ПЕРЕД #p (девиация от C#, эталон js_reference): #p своим
+        // `SetActive(false)` закрывает окно ПОСЛЕДНИМ → запуск не открывает редактор.
+        assert_eq!(names, vec!["Gu", "@P", "#p", "OK"]);
         assert_eq!(events[0].1, b"_");
-        assert_eq!(events[2].1, b"0");
+        assert_eq!(events[1].1, b"0");
 
-        let update_json: serde_json::Value = serde_json::from_slice(&events[1].1).unwrap();
-        // 1:1 C# `UpdateProg`: #p с РЕАЛЬНЫМ id. Клиент `UpdateProgramm(realId)` грузит
-        // исходник и в конце `SetActive(false)` — окно скрывается (механизм закрытия).
+        let update_json: serde_json::Value = serde_json::from_slice(&events[2].1).unwrap();
+        // #p с РЕАЛЬНЫМ id. Клиент `UpdateProgramm(realId)` грузит исходник и в конце
+        // `SetActive(false)` — окно скрывается (механизм закрытия на запуске).
         assert_eq!(update_json["id"], prog_id);
         assert_eq!(update_json["title"], "main");
         assert_eq!(update_json["source"], "");
