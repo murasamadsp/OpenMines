@@ -192,6 +192,13 @@ pub enum LifeCmd {
     },
 }
 
+pub struct GameSchedule {
+    pub name: String,
+    pub schedule: RwLock<Schedule>,
+    pub interval_ms: std::sync::atomic::AtomicU64,
+    pub last_run: Mutex<Instant>,
+}
+
 // ─── GameState ───────────────────────────────────────────────────────────────
 
 pub struct GameState {
@@ -206,7 +213,7 @@ pub struct GameState {
     pub chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     pub ecs: RwLock<EcsWorld>,
-    pub schedule: RwLock<Schedule>,
+    pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
     pub incoming_actions: IncomingActionsQueue,
     /// Очередь команд жизненного цикла (Connect/Disconnect). Дренится в
@@ -241,19 +248,32 @@ pub struct GameState {
 impl GameState {
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
 
+    #[allow(clippy::too_many_lines)]
     pub async fn new(
         world: Arc<World>,
         database: Arc<Database>,
         config: Config,
     ) -> anyhow::Result<Arc<Self>> {
-        let mut schedule = Schedule::default();
-        schedule.add_systems(sand::sand_physics_system);
-        schedule.add_systems(combat::standing_cell_hazard_system);
-        schedule.add_systems(combat::gun_firing_system);
-        schedule.add_systems(programmator::programmator_system);
-        schedule.add_systems(alive::alive_physics_system);
-        schedule.add_systems(building_damage::building_hourly_damage_system);
-        schedule.add_systems(building_damage::building_effect_tick_system);
+        let mut schedule_hazards = Schedule::default();
+        schedule_hazards.add_systems(combat::standing_cell_hazard_system);
+
+        let mut schedule_physics = Schedule::default();
+        schedule_physics.add_systems(sand::sand_physics_system);
+
+        let mut schedule_guns = Schedule::default();
+        schedule_guns.add_systems(combat::gun_firing_system);
+
+        let mut schedule_programmator = Schedule::default();
+        schedule_programmator.add_systems(programmator::programmator_system);
+
+        let mut schedule_alive = Schedule::default();
+        schedule_alive.add_systems(alive::alive_physics_system);
+
+        let mut schedule_building_effects = Schedule::default();
+        schedule_building_effects.add_systems(building_damage::building_effect_tick_system);
+
+        let mut schedule_hourly_damage = Schedule::default();
+        schedule_hourly_damage.add_systems(building_damage::building_hourly_damage_system);
 
         let mut default_channels = vec![
             chat::ChatChannel::new("FED", "Федеральный чат", true),
@@ -289,6 +309,51 @@ impl GameState {
             }
         }
 
+        let schedules = vec![
+            GameSchedule {
+                name: "hazards".to_string(),
+                schedule: RwLock::new(schedule_hazards),
+                interval_ms: std::sync::atomic::AtomicU64::new(10),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "physics".to_string(),
+                schedule: RwLock::new(schedule_physics),
+                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "guns".to_string(),
+                schedule: RwLock::new(schedule_guns),
+                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "programmator".to_string(),
+                schedule: RwLock::new(schedule_programmator),
+                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "alive".to_string(),
+                schedule: RwLock::new(schedule_alive),
+                interval_ms: std::sync::atomic::AtomicU64::new(5000),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "building_effects".to_string(),
+                schedule: RwLock::new(schedule_building_effects),
+                interval_ms: std::sync::atomic::AtomicU64::new(1000),
+                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "hourly_damage".to_string(),
+                schedule: RwLock::new(schedule_hourly_damage),
+                interval_ms: std::sync::atomic::AtomicU64::new(3_600_000),
+                last_run: Mutex::new(Instant::now()),
+            },
+        ];
+
         let state = Arc::new(Self {
             world,
             db: database,
@@ -301,7 +366,7 @@ impl GameState {
             chunk_buildings: DashMap::new(),
             chat_channels: RwLock::new(default_channels),
             ecs: RwLock::new(EcsWorld::new()),
-            schedule: RwLock::new(schedule),
+            schedules,
             auth_failures: DashMap::new(),
             incoming_actions: IncomingActionsQueue::new(),
             life_queue: Mutex::new(Vec::new()),
@@ -488,6 +553,17 @@ impl GameState {
         let res = f(&mut ecs, entity);
         drop(ecs);
         Some(res)
+    }
+
+    pub fn set_schedule_interval(&self, name: &str, interval_ms: u64) -> bool {
+        self.schedules
+            .iter()
+            .find(|s| s.name == name)
+            .is_some_and(|gs| {
+                gs.interval_ms
+                    .store(interval_ms, std::sync::atomic::Ordering::Relaxed);
+                true
+            })
     }
 
     pub fn modify_building<F, R>(&self, entity: Entity, f: F) -> R
@@ -755,8 +831,6 @@ impl GameState {
         results
     }
 
-    /// Итератор видимых чанков вокруг `(cx, cy)` без аллокации Vec.
-    /// Используется внутри `broadcast_to_nearby` и `get_packs_in_chunk_area`.
     pub fn visible_chunks_iter(&self, cx: u32, cy: u32) -> impl Iterator<Item = (u32, u32)> + '_ {
         let (w, h) = (self.world.chunks_w(), self.world.chunks_h());
         (-Self::CHUNK_VIEW_RADIUS..=Self::CHUNK_VIEW_RADIUS).flat_map(move |dy| {

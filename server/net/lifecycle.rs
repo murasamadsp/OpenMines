@@ -334,10 +334,24 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             sched_run,
         ) = {
             let mut ecs = state.ecs.write();
-            let mut schedule = state.schedule.write();
             let lw = sched_t0.elapsed();
             let run_t0 = Instant::now();
-            schedule.run(&mut ecs);
+
+            let now = Instant::now();
+            for gs in &state.schedules {
+                let _ = &gs.name;
+                let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
+                if interval_ms == 0 {
+                    continue;
+                }
+                let interval = std::time::Duration::from_millis(interval_ms);
+                let mut last_run = gs.last_run.lock();
+                if now.duration_since(*last_run) >= interval {
+                    gs.schedule.write().run(&mut ecs);
+                    *last_run = now;
+                }
+            }
+
             let rn = run_t0.elapsed();
 
             let p = crate::net::session::play::death::flush_player_death_queue_after_tick(
@@ -352,7 +366,6 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
             let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
             drop(ecs);
-            drop(schedule);
             (p, bc, pa, convs, pr, bp, lw, rn)
         };
         let dt_schedule = sched_t0.elapsed();
@@ -627,7 +640,9 @@ mod tests {
         p2.x = 6;
         p2.y = 5;
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("online_count_world_{nonce}");
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {

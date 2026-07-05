@@ -21,6 +21,14 @@ use tokio::sync::broadcast;
 /// Имя файла `SQLite` в каталоге состояния (`data_dir` / `M3R_DATA_DIR`).
 const DB_FILENAME: &str = "openmines.db";
 
+#[cfg(test)]
+pub(crate) fn test_config_path(relative: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("server crate must live inside workspace root")
+        .join(relative)
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -741,11 +749,15 @@ mod tests {
         let db_path = dir.join(format!("create_spawns_db_{}", std::process::id()));
         let _ = std::fs::remove_file(&db_path);
         let database = crate::db::Database::open(&db_path).await.unwrap();
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("create_spawns_world_{}", std::process::id());
         let world = crate::world::World::new(&world_name, 4, 4, cell_defs, &dir).unwrap();
         // Конфиг зданий нужен для building_cells/extra (OnceLock — может быть уже задан).
-        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
 
         // Fresh world → создаёт Market/Resp/Up + площадку.
         create_spawns(&database, &world).await.unwrap();
@@ -790,7 +802,9 @@ mod benchmarks {
             let db_path = dir.join(format!("bench_db_{}", std::process::id()));
             let _ = std::fs::remove_file(&db_path);
             let database = crate::db::Database::open(&db_path).await.unwrap();
-            let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+            let cell_defs =
+                crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                    .unwrap();
             let world_name = format!("bench_world_{}", std::process::id());
             let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
             let config = crate::config::Config {
@@ -822,14 +836,15 @@ mod benchmarks {
         let start = Instant::now();
         for _ in 0..BENCH_N {
             let mut ecs = state.ecs.write();
-            let mut schedule = state.schedule.write();
-            schedule.run(&mut ecs);
+            for gs in &state.schedules {
+                let mut schedule = gs.schedule.write();
+                schedule.run(&mut ecs);
+            }
             // drain queues
             let _bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
             let _pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
             let _pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
             drop(ecs);
-            drop(schedule);
         }
         drop(rt);
         let elapsed = start.elapsed();
