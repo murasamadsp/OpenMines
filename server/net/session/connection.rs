@@ -298,6 +298,6 @@ pub enum GuiAuthStep {
 fn is_tick_action(event: &str) -> bool {
     matches!(
         event,
-        "Xmov" | "Xdig" | "Xbld" | "Xgeo" | "Xhea" | "INVN" | "INCL" | "TADG" | "RESP"
+        "Xmov" | "Xdig" | "Xbld" | "Xgeo" | "Xhea" | "INVN" | "INCL" | "TADG" | "RESP" | "PROG"
     )
 }
