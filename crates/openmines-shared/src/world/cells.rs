@@ -231,10 +231,7 @@ pub struct CellDefs {
 impl CellDefs {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path_ref = path.as_ref();
-        if let Ok(data) = fs::read_to_string(path_ref)
-            .or_else(|_| fs::read_to_string(format!("../{}", path_ref.display())))
-            .or_else(|_| fs::read_to_string(format!("../../{}", path_ref.display())))
-        {
+        if let Ok(data) = fs::read_to_string(path_ref) {
             let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
 
             // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
@@ -342,6 +339,28 @@ impl CellType {
     #[must_use]
     pub const fn is_boulder(self) -> bool {
         is_boulder(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == cell_type::EMPTY
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_sand(self) -> bool {
+        matches!(
+            self.0,
+            cell_type::WHITE_SAND
+                | cell_type::BLUE_SAND
+                | cell_type::DARK_BLUE_SAND
+                | cell_type::YELLOW_SAND
+                | cell_type::DARK_YELLOW_SAND
+                | cell_type::DARK_WHITE_SAND
+                | cell_type::RUSTY_SAND
+                | cell_type::DARK_RUSTY_SAND
+        )
     }
 }
 

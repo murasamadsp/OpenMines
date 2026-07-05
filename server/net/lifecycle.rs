@@ -272,6 +272,13 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             }
         }
 
+        let is_simulation_critical = |event: &str| -> bool {
+            matches!(
+                event,
+                "Xmov" | "Xdig" | "Xbld" | "Xhea" | "INUS" | "INCL" | "TADG" | "RESP" | "ADMN"
+            )
+        };
+
         // 1. Сначала обрабатываем все входящие пакеты от игроков (Action Queue 1:1 с C#).
         let actions = state.incoming_actions.drain();
         let n_actions = actions.len();
@@ -280,41 +287,74 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             let state_clone = state.clone();
             let tx_clone = tx.clone();
             let ty_owned = ty.clone();
+            let is_critical = is_simulation_critical(ty.event_str());
+            let ty_for_dispatch = ty_owned.clone();
             let handle = tokio::spawn(async move {
                 crate::net::session::dispatch::dispatch_ty_packet(
                     &state_clone,
                     &tx_clone,
                     pid,
-                    &ty_owned,
+                    &ty_for_dispatch,
                 )
                 .await
             });
-            match handle.await {
-                Ok(res) => {
-                    if let Err(e) = res {
+            if is_critical {
+                match handle.await {
+                    Ok(res) => {
+                        if let Err(e) = res {
+                            tracing::error!(
+                                player_id = %pid,
+                                packet = ?ty,
+                                error = ?e,
+                                "Error processing critical TY packet"
+                            );
+                        }
+                    }
+                    Err(je) if je.is_panic() => {
                         tracing::error!(
                             player_id = %pid,
                             packet = ?ty,
-                            error = ?e,
-                            "Error processing TY packet"
+                            "PANIC processing critical TY packet!"
+                        );
+                    }
+                    Err(je) => {
+                        tracing::error!(
+                            player_id = %pid,
+                            packet = ?ty,
+                            "Critical TY packet task failed/cancelled: {:?}",
+                            je
                         );
                     }
                 }
-                Err(je) if je.is_panic() => {
-                    tracing::error!(
-                        player_id = %pid,
-                        packet = ?ty,
-                        "PANIC processing TY packet!"
-                    );
-                }
-                Err(je) => {
-                    tracing::error!(
-                        player_id = %pid,
-                        packet = ?ty,
-                        "TY packet processing task cancelled or failed: {:?}",
-                        je
-                    );
-                }
+            } else {
+                tokio::spawn(async move {
+                    match handle.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::error!(
+                                player_id = %pid,
+                                packet = ?ty_owned,
+                                error = ?e,
+                                "Error processing background TY packet"
+                            );
+                        }
+                        Err(je) if je.is_panic() => {
+                            tracing::error!(
+                                player_id = %pid,
+                                packet = ?ty_owned,
+                                "PANIC processing background TY packet!"
+                            );
+                        }
+                        Err(je) => {
+                            tracing::error!(
+                                player_id = %pid,
+                                packet = ?ty_owned,
+                                "Background TY packet task failed/cancelled: {:?}",
+                                je
+                            );
+                        }
+                    }
+                });
             }
         }
         let dt_dispatch = d0.elapsed();
@@ -347,7 +387,33 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 let interval = std::time::Duration::from_millis(interval_ms);
                 let mut last_run = gs.last_run.lock();
                 if now.duration_since(*last_run) >= interval {
-                    gs.schedule.write().run(&mut ecs);
+                    let sched_t0 = Instant::now();
+                    let mut schedule = gs.schedule.write();
+
+                    let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        schedule.run(&mut ecs);
+                    }));
+                    drop(schedule);
+
+                    let elapsed = sched_t0.elapsed();
+                    if elapsed > std::time::Duration::from_millis(5) {
+                        tracing::warn!(
+                            target: "scheduler",
+                            schedule = %gs.name,
+                            duration = ?elapsed,
+                            "System schedule execution exceeded warning threshold (5ms)"
+                        );
+                    }
+
+                    if let Err(panic_err) = run_res {
+                        tracing::error!(
+                            target: "scheduler",
+                            schedule = %gs.name,
+                            panic = ?panic_err,
+                            "PANIC occurred in system schedule execution! World state might be corrupted."
+                        );
+                    }
+
                     *last_run = now;
                 }
             }
