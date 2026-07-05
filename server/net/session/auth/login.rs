@@ -63,7 +63,7 @@ pub async fn handle_auth(
     };
 
     if let Some(mut player) = result {
-        tracing::info!(player_id = player.id, username = %player.name, "Auth success");
+        tracing::info!(player_id = %player.id, username = %player.name, "Auth success");
 
         // M3R_GRANT_ADMIN на ЛОГИНЕ: `bootstrap_grant_admin` при старте не находит
         // игроков свежесгенерированного мира (таблица пуста до первого входа), поэтому

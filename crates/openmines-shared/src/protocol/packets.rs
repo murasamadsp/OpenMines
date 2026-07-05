@@ -77,8 +77,6 @@ pub fn speed(xy_pause: i32, road_pause: i32, depth: i32) -> (&'static str, Vec<u
 }
 
 /// Encode an Online packet (ON): "online:max"
-// TODO: will be used when online count broadcast is fully wired
-#[allow(dead_code)]
 pub fn online(count: i32, max: i32) -> (&'static str, Vec<u8>) {
     let s = format!("{count}:{max}");
     ("ON", s.into_bytes())
@@ -261,7 +259,7 @@ pub fn chat_list(entries: &[(String, bool, String, String)]) -> (&'static str, V
 /// `FormatException` в Unity → сообщение не отображается. Клиент — источник
 /// правды по wire (он неизменяем); референс здесь неверен.
 /// Полный пакет: `{"ch":"TAG","h":["ID±...","..."]}`.
-use crate::game::chat::{CHAT_HISTORY_LIMIT, ChatMessage};
+use crate::protocol::chat::{CHAT_HISTORY_LIMIT, ChatMessage};
 
 /// JSON-экранирование строки для вставки в `mU`/прочий JSON. Клиентский
 /// `JsonUtility.FromJson` СТРОГИЙ: сырой `\` или `"` в нике/тексте → «Invalid
@@ -654,7 +652,7 @@ pub fn hb_cell(x: u16, y: u16, cell: u8) -> Vec<u8> {
 
 // ─── Decode helpers for client→server packets ───────────────────────────────
 
-/// Decode a TY wrapper: [4B `event_name`] [u32 LE time] [u32 LE x] [u32 LE y] [`sub_payload`...]
+/// Decode a TY wrapper: \[4B `event_name`\] \[u32 LE time\] \[u32 LE x\] \[u32 LE y\] \[`sub_payload`...\]
 #[derive(Debug, Clone)]
 pub struct TyPacket {
     pub event_name: [u8; 4],
@@ -810,18 +808,13 @@ fn parse_i32_text(data: &[u8]) -> Option<i32> {
 /// Референс `GUI_Packet.Decode`: `JSON.Parse(UTF8.GetString(data))["b"]`
 pub fn decode_gui_button(data: &[u8]) -> Option<Cow<'_, str>> {
     let s = std::str::from_utf8(data).ok()?;
-    if s.starts_with('{')
-        && let Ok(v) = serde_json::from_str::<serde_json::Value>(s)
-        && let Some(b) = v.get("b").and_then(|b| b.as_str())
-    {
-        return Some(Cow::Owned(b.to_string()));
-    }
-    // Fallback: treat entire payload as button name (raw string)
-    let trimmed = s.trim();
-    if trimmed.is_empty() {
+    if s.trim().is_empty() {
         None
     } else {
-        Some(Cow::Borrowed(trimmed))
+        let v = serde_json::from_str::<serde_json::Value>(s).ok()?;
+        v.get("b")
+            .and_then(|b| b.as_str())
+            .map(|b| Cow::Owned(b.to_string()))
     }
 }
 
@@ -859,17 +852,23 @@ pub fn open_programmator(id: i32, title: &str, source: &str) -> (&'static str, V
 }
 
 /// Decode Whoi (bot ID request): list of u16 IDs
-pub fn decode_whoi(data: &[u8]) -> Vec<i32> {
-    let Ok(s) = std::str::from_utf8(data) else {
-        return vec![];
-    };
-    s.split(',').filter_map(|p| p.parse().ok()).collect()
+pub fn decode_whoi(data: &[u8]) -> Option<Vec<i32>> {
+    let s = std::str::from_utf8(data).ok()?;
+    if s.is_empty() {
+        return Some(Vec::new());
+    }
+    s.split(',')
+        .map(|p| {
+            let p = p.trim();
+            if p.is_empty() { None } else { p.parse().ok() }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::chat::ChatMessage;
+    use crate::protocol::chat::ChatMessage;
     use crate::protocol::{Packet, u_packet};
 
     // Golden wire bytes привязаны к ДОКУМЕНТИРОВАННОМУ контракту фрейма

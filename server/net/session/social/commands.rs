@@ -1,6 +1,6 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
 use crate::db::players::Role;
-use crate::game::player::{PlayerInventory, PlayerStats};
+use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
@@ -53,6 +53,10 @@ pub fn send_admin_help(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     send_ok(tx, "Админ-команды", ADMIN_COMMAND_HELP);
 }
 
+fn send_command_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_ok(tx, "КОМАНДА", "Состояние игрока недоступно.");
+}
+
 pub fn is_admin_command(state: &Arc<GameState>, pid: PlayerId) -> bool {
     state
         .query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
@@ -93,7 +97,7 @@ pub async fn handle_chat_command(
     let is_admin = is_admin_command(state, pid);
     tracing::info!(
         target: "audit",
-        player_id = pid,
+        player_id = %pid,
         is_admin,
         command = cmd,
         arguments = ?args,
@@ -141,6 +145,13 @@ fn handle_chat_giveall_command(
     // за границы (давать 0..=50 безопасно). Часть индексов сервер пока не
     // обрабатывает в Use(), но предметы существуют и админ должен иметь всё.
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+        if ecs.get::<PlayerInventory>(entity).is_none()
+            || ecs.get::<PlayerStats>(entity).is_none()
+            || ecs.get::<PlayerFlags>(entity).is_none()
+        {
+            send_command_state_error(tx);
+            return Some(());
+        }
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
         for id in 0..=50 {
             *inv.items.entry(id).or_insert(0) += 10;
@@ -157,20 +168,15 @@ fn handle_chat_giveall_command(
             inv.miniq.push(*k);
         }
         send_inventory(tx, &mut inv);
-        if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            flags.dirty = true;
-        }
-        Some(())
-    });
-    // + деньги и creds (по просьбе «выдать все предметы И деньги»).
-    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+        flags.dirty = true;
+
+        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
         s.money = s.money.saturating_add(1_000_000);
         s.creds = s.creds.saturating_add(100_000);
         let (m, c) = (s.money, s.creds);
-        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            f.dirty = true;
-        }
+        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+        flags.dirty = true;
         send_u_packet(tx, "P$", &money(m, c).1);
         Some(())
     });
@@ -196,13 +202,17 @@ fn handle_chat_give_command(
         None => return,
     };
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+        if ecs.get::<PlayerInventory>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
+        {
+            send_command_state_error(tx);
+            return Some(());
+        }
         {
             let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
             *inv.items.entry(item_id).or_insert(0) += amount;
         }
-        if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            flags.dirty = true;
-        }
+        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+        flags.dirty = true;
         let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
         send_inventory(tx, &mut inv);
         Some(())
@@ -225,12 +235,15 @@ fn handle_chat_money_command(
         None => return,
     };
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
+            send_command_state_error(tx);
+            return Some(());
+        }
+        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
         s.money += amount;
         let (m, c) = (s.money, s.creds);
-        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            f.dirty = true;
-        }
+        let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+        f.dirty = true;
         send_u_packet(tx, "P$", &money(m, c).1);
         Some(())
     });
@@ -251,30 +264,50 @@ async fn handle_chat_money_all_command(
         Some(a) => a,
         None => return,
     };
-    if let Ok(count) = state.db.add_money_to_all(amount).await {
-        for entry in &state.active_players {
-            state.modify_player(
-                *entry.key(),
-                |ecs: &mut bevy_ecs::prelude::World, entity| {
-                    let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                    s.money = s.money.saturating_add(amount);
-                    let (m, c) = (s.money, s.creds);
-                    if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-                        f.dirty = true;
-                    }
-                    if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
-                        send_u_packet(&conn.tx, "P$", &money(m, c).1);
-                    }
-                    Some(())
-                },
-            );
+    let count = match state.db.add_money_to_all(amount).await {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::error!(player_id = %pid, amount, error = ?e, "DB add_money_to_all failed");
+            send_ok(tx, "Ошибка", "Не удалось выдать деньги всем игрокам");
+            return;
         }
-        send_ok(
-            tx,
-            "Банк",
-            &format!("Выдано $ {amount} всем игрокам ({count})"),
+    };
+    for entry in &state.active_players {
+        state.modify_player(
+            *entry.key(),
+            |ecs: &mut bevy_ecs::prelude::World, entity| {
+                let conn_tx = ecs
+                    .get::<crate::game::player::PlayerConnection>(entity)
+                    .map(|conn| conn.tx.clone());
+                if ecs.get::<PlayerStats>(entity).is_none()
+                    || ecs.get::<PlayerFlags>(entity).is_none()
+                {
+                    tracing::error!(
+                        player_id = %entry.key(),
+                        "Online moneyall skipped for incomplete player state"
+                    );
+                    if let Some(conn_tx) = conn_tx {
+                        send_command_state_error(&conn_tx);
+                    }
+                    return Some(());
+                }
+                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                s.money = s.money.saturating_add(amount);
+                let (m, c) = (s.money, s.creds);
+                let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+                f.dirty = true;
+                if let Some(conn_tx) = conn_tx {
+                    send_u_packet(&conn_tx, "P$", &money(m, c).1);
+                }
+                Some(())
+            },
         );
     }
+    send_ok(
+        tx,
+        "Банк",
+        &format!("Выдано $ {amount} всем игрокам ({count})"),
+    );
 }
 
 // ─── /tp ────────────────────────────────────────────────────────────────────
@@ -300,22 +333,42 @@ fn handle_chat_teleport_command(
         send_ok(tx, "Ошибка", "Координаты вне карты");
         return;
     }
-    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        let mut pos = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
-        pos.x = x;
-        pos.y = y;
-        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+    let teleported = state
+        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if ecs
+                .get::<crate::game::player::PlayerPosition>(entity)
+                .is_none()
+                || ecs.get::<crate::game::player::PlayerUI>(entity).is_none()
+                || ecs.get::<crate::game::player::PlayerView>(entity).is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                send_command_state_error(tx);
+                return false;
+            }
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .expect("PlayerPosition checked before teleport mutation");
+            pos.x = x;
+            pos.y = y;
+            let mut ui = ecs
+                .get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("PlayerUI checked before teleport mutation");
             ui.current_window = None;
-        }
-        if let Some(mut view) = ecs.get_mut::<crate::game::player::PlayerView>(entity) {
+            let mut view = ecs
+                .get_mut::<crate::game::player::PlayerView>(entity)
+                .expect("PlayerView checked before teleport mutation");
             view.last_chunk = None;
             view.visible_chunks.clear();
-        }
-        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+            let mut f = ecs
+                .get_mut::<PlayerFlags>(entity)
+                .expect("PlayerFlags checked before teleport mutation");
             f.dirty = true;
-        }
-        Some(())
-    });
+            true
+        })
+        .unwrap_or(false);
+    if !teleported {
+        return;
+    }
     send_u_packet(tx, "@T", &tp(x, y).1);
     check_chunk_changed(state, tx, pid);
 }
@@ -331,12 +384,15 @@ fn handle_chat_heal_command(
         return;
     }
     state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
+            send_command_state_error(tx);
+            return Some(());
+        }
+        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
         s.health = s.max_health;
         let (h, mh) = (s.health, s.max_health);
-        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            f.dirty = true;
-        }
+        let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+        f.dirty = true;
         send_u_packet(tx, "@L", &health(h, mh).1);
         Some(())
     });
@@ -491,7 +547,7 @@ fn handle_pack_move_command(
         {
             if let Some((_, entity)) = state.building_index.remove(&(x, y)) {
                 let (ocx, ocy) = crate::world::World::chunk_pos(x, y);
-                if let Some(mut e) = state.chunk_buildings.get_mut(&(ocx, ocy)) {
+                if let Some(mut e) = state.chunk_buildings.get_mut(&(ocx, ocy).into()) {
                     e.retain(|&ent| ent != entity);
                 }
 
@@ -499,7 +555,7 @@ fn handle_pack_move_command(
                 let (ncx, ncy) = crate::world::World::chunk_pos(nx, ny);
                 state
                     .chunk_buildings
-                    .entry((ncx, ncy))
+                    .entry((ncx, ncy).into())
                     .or_default()
                     .push(entity);
             }
@@ -528,7 +584,14 @@ fn handle_pack_type_command(
         .get(2)
         .and_then(|&s| crate::game::buildings::PackType::from_str(s));
     if let Some(nt) = t {
-        let ex = building_extra_for_pack_type(nt);
+        let ex = match building_extra_for_pack_type(nt) {
+            Ok(extra) => extra,
+            Err(e) => {
+                tracing::error!(?nt, error = ?e, "Missing building config for pack type command");
+                send_ok(tx, "Ошибка", "Конфиг здания не найден");
+                return;
+            }
+        };
         if modify_pack_with_db(state, x, y, |ecs: &mut bevy_ecs::prelude::World, entity| {
             if let Some(mut m) = ecs.get_mut::<crate::game::buildings::BuildingMetadata>(entity) {
                 m.pack_type = nt;
@@ -613,7 +676,7 @@ async fn handle_chat_role_command(
     match state.db.get_player_by_name(target_name).await {
         Ok(Some(row)) => match state.db.set_player_role(row.id, role).await {
             Ok(true) => {
-                state.modify_player(row.id, |ecs, entity| {
+                state.modify_player(row.id.into(), |ecs, entity| {
                     if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
                         s.role = role as i32;
                     }
@@ -684,5 +747,163 @@ fn parse_pack_pos(
             send_ok(tx, "Пак", usage);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::players::PlayerRow;
+    use crate::game::player::{PlayerFlags, PlayerPosition};
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct CommandTestState {
+        state: Arc<GameState>,
+        player: PlayerRow,
+        db_path: PathBuf,
+        world_name: String,
+        dir: PathBuf,
+    }
+
+    impl CommandTestState {
+        fn cleanup(&self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(
+                self.dir
+                    .join(format!("{}_durability.mapb", self.world_name)),
+            );
+        }
+    }
+
+    async fn make_command_test_state(label: &str) -> CommandTestState {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!(
+            "commands_{label}_{}_{}.db",
+            std::process::id(),
+            nonce
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database
+            .create_player("command-user", "p", "h")
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("commands_world_{label}_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        CommandTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = bytes::BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    fn make_admin_and_remove_flags(game_state: &Arc<GameState>, pid: PlayerId) {
+        let entity = game_state.get_player_entity(pid).unwrap();
+        let mut ecs = game_state.ecs.write();
+        let mut admin_stats = ecs.get_mut::<PlayerStats>(entity).unwrap();
+        admin_stats.role = 2;
+        ecs.entity_mut(entity).remove::<PlayerFlags>();
+    }
+
+    fn player_money(game_state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        game_state
+            .query_player_opt(pid, |ecs, entity| {
+                let money_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(money_stats.money)
+            })
+            .unwrap()
+    }
+
+    fn player_pos(game_state: &Arc<GameState>, pid: PlayerId) -> (i32, i32) {
+        game_state
+            .query_player_opt(pid, |ecs, entity| {
+                let pos = ecs.get::<PlayerPosition>(entity)?;
+                Some((pos.x, pos.y))
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn money_missing_flags_is_explicit_error_without_money_mutation() {
+        let test = make_command_test_state("money_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin_and_remove_flags(&test.state, pid);
+        let before_money = player_money(&test.state, pid);
+
+        handle_chat_money_command(&test.state, &tx, pid, &["50"]);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+        assert_eq!(player_money(&test.state, pid), before_money);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn teleport_missing_flags_is_explicit_error_without_tp_packet_or_position_mutation() {
+        let test = make_command_test_state("tp_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin_and_remove_flags(&test.state, pid);
+        let before_pos = player_pos(&test.state, pid);
+
+        handle_chat_teleport_command(&test.state, &tx, pid, &["12", "12"]);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+        assert_eq!(player_pos(&test.state, pid), before_pos);
+
+        test.cleanup();
     }
 }

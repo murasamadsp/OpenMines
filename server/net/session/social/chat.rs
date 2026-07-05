@@ -6,6 +6,56 @@ use crate::net::session::outbound::chat_sync::{
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::handle_chat_command;
 
+fn send_chat_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(tx, "OK", &ok_message("ЧАТ", "Состояние чата недоступно.").1);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ChinResync<'a> {
+    Initial,
+    Incremental { current: &'a str, lastid: i64 },
+}
+
+fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync<'_>> {
+    let payload = payload.trim();
+    if payload == "_" {
+        return Some(ChinResync::Initial);
+    }
+
+    let rest = payload.strip_prefix("1:")?;
+    let (current, lasts) = rest.split_once(':')?;
+    let current = current.trim();
+    if current.is_empty() {
+        return None;
+    }
+    if lasts.is_empty() {
+        return Some(ChinResync::Incremental {
+            current,
+            lastid: -1,
+        });
+    }
+
+    let parts: Vec<&str> = lasts.split('#').collect();
+    if !parts.len().is_multiple_of(2) {
+        return None;
+    }
+
+    let mut lastid = -1;
+    for pair in parts.chunks_exact(2) {
+        let tag = pair[0].trim();
+        let id = pair[1].trim();
+        if tag.is_empty() || id.is_empty() {
+            return None;
+        }
+        let parsed_id = id.parse::<i64>().ok()?;
+        if tag == current {
+            lastid = parsed_id;
+        }
+    }
+
+    Some(ChinResync::Incremental { current, lastid })
+}
+
 pub async fn handle_local_chat(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -40,7 +90,7 @@ async fn handle_chat_text(
     if handle_chat_command_if_present(state, tx, pid, msg).await {
         return;
     }
-    broadcast_player_chat(state, pid, msg);
+    broadcast_player_chat(state, tx, pid, msg);
 }
 
 async fn handle_chat_command_if_present(
@@ -57,23 +107,37 @@ async fn handle_chat_command_if_present(
     true
 }
 
-fn broadcast_player_chat(state: &Arc<GameState>, pid: PlayerId, msg: &str) {
+fn broadcast_player_chat(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    msg: &str,
+) {
     let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-        let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-        let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
+        let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for local chat");
+            return None;
+        };
+        let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerMetadata", "Player component missing for local chat");
+            return None;
+        };
         Some((pos.x, pos.y, meta.name.clone()))
     });
 
-    if let Some((px, py, name)) = data {
-        let text = format!("{name}: {msg}");
-        let chat_sub = hb_chat(
-            net_u16_nonneg(pid),
-            net_u16_nonneg(px),
-            net_u16_nonneg(py),
-            &text,
-        );
-        state.broadcast_hb_at(px, py, &[chat_sub], None);
-    }
+    let Some((px, py, name)) = data else {
+        send_chat_state_error(tx);
+        return;
+    };
+
+    let text = format!("{name}: {msg}");
+    let chat_sub = hb_chat(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(px),
+        net_u16_nonneg(py),
+        &text,
+    );
+    state.broadcast_hb_at(px, py, &[chat_sub], None);
 }
 
 pub async fn handle_channel_chat(
@@ -91,9 +155,18 @@ pub async fn handle_channel_chat(
     }
 
     let p_data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-        let meta = ecs.get::<crate::game::player::PlayerMetadata>(entity)?;
-        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-        let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+        let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerMetadata", "Player component missing for channel chat");
+            return None;
+        };
+        let Some(pstats) = ecs.get::<crate::game::player::PlayerStats>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for channel chat");
+            return None;
+        };
+        let Some(ui) = ecs.get::<crate::game::player::PlayerUI>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for channel chat");
+            return None;
+        };
         Some((
             meta.name.clone(),
             meta.id,
@@ -103,6 +176,7 @@ pub async fn handle_channel_chat(
     });
 
     let Some((nickname, my_id, clan_opt, channel_tag)) = p_data else {
+        send_chat_state_error(tx);
         return;
     };
 
@@ -122,8 +196,8 @@ pub async fn handle_channel_chat(
         || priv_ids.is_some_and(|(a, b)| my_id == a || my_id == b);
     if !allowed {
         tracing::warn!(
-            player_id = pid,
-            internal_id = my_id,
+            player_id = %pid,
+            internal_id = %my_id,
             chat_tag = channel_tag,
             "Chat post denied"
         );
@@ -150,13 +224,14 @@ pub async fn handle_channel_chat(
     // цвет live и при перезагрузке). CLIENT_PROTOCOL_GAPS.md §1.
     let (msg_id, color) = match state
         .db
-        .add_chat_message(&db_tag, &nickname, &text, my_id)
+        .add_chat_message(&db_tag, &nickname, &text, my_id.into())
         .await
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(chat_tag = db_tag, player_id = pid, error = ?e, "Failed to add chat message in database");
-            (0, 10)
+            tracing::error!(chat_tag = db_tag, player_id = %pid, error = ?e, "Failed to add chat message in database");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+            return;
         }
     };
     // Один экземпляр: live-рассылка == in-mem-копия == будущая история
@@ -165,7 +240,7 @@ pub async fn handle_channel_chat(
         id: msg_id,
         time,
         clan_id: clan_opt.unwrap_or(0),
-        user_id: my_id,
+        user_id: my_id.into(),
         nickname,
         text,
         color,
@@ -233,51 +308,72 @@ pub async fn handle_chat_resync(
     payload: &[u8],
 ) {
     let s = String::from_utf8_lossy(payload).trim().to_string();
-    let cur_default = state
-        .query_player_opt(pid, |w, e| {
-            w.get::<crate::game::player::PlayerUI>(e)
-                .map(|u| u.current_chat.clone())
-        })
-        .unwrap_or_else(|| "FED".to_string());
-
-    if s.is_empty() || s == "_" {
-        if let Some((_, hist)) = chat_access(state, pid, &cur_default).await {
-            send_u_packet(tx, "mU", &chat_messages(&cur_default, &hist).1);
-        }
-        return;
-    }
-
-    let Some(rest) = s.strip_prefix("1:") else {
+    let Some(cur_default) = state.query_player_opt(pid, |w, e| {
+        let Some(ui) = w.get::<crate::game::player::PlayerUI>(e) else {
+            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for chat resync");
+            return None;
+        };
+        Some(ui.current_chat.clone())
+    }) else {
+        send_chat_state_error(tx);
         return;
     };
-    let (cur, lasts_str) = rest.split_once(':').unwrap_or((rest, ""));
-    let cur = cur.trim();
-    if cur.is_empty() {
+
+    let Some(request) = parse_chin_resync_payload(&s) else {
+        tracing::warn!(player_id = %pid, payload = %s, "Malformed Chin payload");
         return;
-    }
-    // lasts: `TAG#id#TAG#id…`, порядок произволен (Dictionary клиента).
-    let mut lastid: i64 = -1;
-    let parts: Vec<&str> = lasts_str.split('#').collect();
-    let mut i = 0;
-    while i + 1 < parts.len() {
-        if parts[i] == cur {
-            if let Ok(v) = parts[i + 1].parse::<i64>() {
-                lastid = v;
+    };
+
+    let ChinResync::Incremental {
+        current: cur,
+        lastid,
+    } = request
+    else {
+        match chat_access(state, pid, &cur_default).await {
+            Ok(Some((_, hist))) => send_u_packet(tx, "mU", &chat_messages(&cur_default, &hist).1),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(player_id = %pid, chat_tag = cur_default, error = ?e, "Chat resync failed");
+                send_u_packet(
+                    tx,
+                    "OK",
+                    &ok_message("ЧАТ", "Не удалось прочитать данные чата.").1,
+                );
             }
         }
-        i += 2;
-    }
-
-    let Some((name, hist)) = chat_access(state, pid, cur).await else {
-        tracing::warn!(player_id = pid, chat_tag = cur, "Chin resync denied");
         return;
     };
-    state.modify_player(pid, |w, e| {
-        if let Some(mut ui) = w.get_mut::<crate::game::player::PlayerUI>(e) {
-            ui.current_chat = cur.to_string();
+
+    let (name, hist) = match chat_access(state, pid, cur).await {
+        Ok(Some(access)) => access,
+        Ok(None) => {
+            tracing::warn!(player_id = %pid, chat_tag = cur, "Chin resync denied");
+            return;
         }
-        Some(())
-    });
+        Err(e) => {
+            tracing::error!(player_id = %pid, chat_tag = cur, error = ?e, "Chin resync failed");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("ЧАТ", "Не удалось прочитать данные чата.").1,
+            );
+            return;
+        }
+    };
+    let updated = state
+        .modify_player(pid, |w, e| {
+            let Some(mut ui) = w.get_mut::<crate::game::player::PlayerUI>(e) else {
+                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while applying chat resync");
+                return None;
+            };
+            ui.current_chat = cur.to_string();
+            Some(())
+        })
+        .is_some();
+    if !updated {
+        send_chat_state_error(tx);
+        return;
+    }
     let fresh: Vec<ChatMessage> = hist.into_iter().filter(|m| m.id > lastid).collect();
     send_u_packet(tx, "mO", &chat_current(cur, &name).1);
     send_u_packet(tx, "mU", &chat_messages(cur, &fresh).1);
@@ -319,9 +415,12 @@ pub async fn handle_chat_settings(
     pid: PlayerId,
     _payload: &[u8],
 ) {
-    match state.db.cycle_chat_color(pid).await {
+    match state.db.cycle_chat_color(pid.as_i32()).await {
         Ok(code) => send_u_packet(tx, "mC", &chat_color(code).1),
-        Err(e) => tracing::warn!(player_id = pid, error = ?e, "Failed to cycle chat color"),
+        Err(e) => {
+            tracing::error!(player_id = %pid, error = ?e, "Failed to cycle chat color");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+        }
     }
 }
 
@@ -341,14 +440,23 @@ pub async fn handle_chat_private(
     if uid == pid || uid <= 0 {
         return;
     }
-    if !matches!(state.db.get_player_by_id(uid).await, Ok(Some(_))) {
-        tracing::warn!(
-            target_uid = uid,
-            player_id = pid,
-            "Private chat request to unknown user ID"
-        );
-        return;
+    match state.db.get_player_by_id(uid).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            tracing::warn!(
+                target_uid = uid,
+                player_id = %pid,
+                "Private chat request to unknown user ID"
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::error!(target_uid = uid, player_id = %pid, error = ?e, "Failed to load private chat target");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+            return;
+        }
     }
+    let uid: PlayerId = uid.into();
     let (lo, hi) = if pid < uid { (pid, uid) } else { (uid, pid) };
     let tag = format!("_{lo}_{hi}");
     send_enter_channel(state, tx, pid, &tag).await;
@@ -391,10 +499,197 @@ fn send_mu_to_clan(state: &Arc<GameState>, data: &[u8], clan_id: i32) {
 fn send_mu_to_users(state: &Arc<GameState>, data: &[u8], user_ids: &[i32]) {
     let pkt = send_mu_bytes(data);
     for &uid in user_ids {
-        state.query_player(uid, |ecs: &bevy_ecs::prelude::World, entity| {
+        state.query_player(uid.into(), |ecs: &bevy_ecs::prelude::World, entity| {
             if let Some(c) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
                 let _ = c.tx.send(pkt.clone());
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct TestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        world_name: String,
+        db_path: std::path::PathBuf,
+    }
+
+    impl TestState {
+        fn cleanup(&self) {
+            let dir = std::env::temp_dir();
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(dir.join(format!("{}_durability.mapb", self.world_name)));
+        }
+    }
+
+    async fn make_test_state(label: &str) -> TestState {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database.create_player("chat-user", "p", "h").await.unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        TestState {
+            state,
+            player,
+            world_name,
+            db_path,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    #[test]
+    fn chin_initial_accepts_only_underscore() {
+        assert_eq!(parse_chin_resync_payload("_"), Some(ChinResync::Initial));
+        assert_eq!(parse_chin_resync_payload(""), None);
+    }
+
+    #[test]
+    fn chin_incremental_requires_current_and_lasts_separator() {
+        assert_eq!(
+            parse_chin_resync_payload("1:FED:FED#10#DNO#3"),
+            Some(ChinResync::Incremental {
+                current: "FED",
+                lastid: 10,
+            })
+        );
+        assert_eq!(
+            parse_chin_resync_payload("1:FED:"),
+            Some(ChinResync::Incremental {
+                current: "FED",
+                lastid: -1,
+            })
+        );
+        assert_eq!(parse_chin_resync_payload("1:FED"), None);
+        assert_eq!(parse_chin_resync_payload("1::FED#10"), None);
+    }
+
+    #[test]
+    fn chin_incremental_rejects_malformed_lasts() {
+        assert_eq!(parse_chin_resync_payload("1:FED:FED"), None);
+        assert_eq!(parse_chin_resync_payload("1:FED:FED#x"), None);
+        assert_eq!(parse_chin_resync_payload("1:FED:#1"), None);
+        assert_eq!(parse_chin_resync_payload("1:FED:FED#"), None);
+    }
+
+    #[tokio::test]
+    async fn local_chat_missing_position_is_explicit_error_not_silent_drop() {
+        let test = make_test_state("local_chat_missing_position").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerPosition>();
+        }
+
+        handle_local_chat(&test.state, &tx, pid, "hello").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние чата недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn channel_chat_missing_stats_is_explicit_error_not_access_denied_noop() {
+        let test = make_test_state("channel_chat_missing_stats").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerStats>();
+        }
+
+        handle_channel_chat(&test.state, &tx, pid, b"hello").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние чата недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn chin_initial_missing_ui_is_explicit_error_not_fed_fallback() {
+        let test = make_test_state("chin_missing_ui").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerUI>();
+        }
+
+        handle_chat_resync(&test.state, &tx, pid, b"_").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние чата недоступно."));
+
+        test.cleanup();
     }
 }

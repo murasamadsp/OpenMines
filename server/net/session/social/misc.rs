@@ -2,6 +2,39 @@
 use crate::net::session::prelude::*;
 use crate::protocol::packets::open_programmator;
 
+async fn load_owned_program_name(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    prog_id: i32,
+) -> anyhow::Result<Option<String>> {
+    let program = state.db.get_program(prog_id).await?;
+    Ok(program
+        .filter(|p| p.player_id == pid.as_i32())
+        .map(|p| p.name))
+}
+
+fn send_programmator_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ПРОГРАММАТОР", "Состояние программатора недоступно.").1,
+    );
+}
+
+fn send_settings_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
+    );
+}
+
+enum AutoDigMutation {
+    Changed(bool),
+    Unchanged,
+    MissingState(&'static str),
+}
+
 pub fn handle_auto_dig_toggle(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -9,18 +42,41 @@ pub fn handle_auto_dig_toggle(
 ) {
     let new_val = state
         .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            let mut settings = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
+            if ecs
+                .get::<crate::game::player::PlayerSettings>(entity)
+                .is_none()
+            {
+                return Some(AutoDigMutation::MissingState("PlayerSettings"));
+            }
+            if ecs
+                .get::<crate::game::player::PlayerFlags>(entity)
+                .is_none()
+            {
+                return Some(AutoDigMutation::MissingState("PlayerFlags"));
+            }
+            let mut settings = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .expect("PlayerSettings checked before auto-dig toggle");
             settings.auto_dig = !settings.auto_dig;
             let val = settings.auto_dig;
-            if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-                flags.dirty = true;
-            }
-            Some(val)
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .expect("PlayerFlags checked before auto-dig toggle")
+                .dirty = true;
+            Some(AutoDigMutation::Changed(val))
         })
         .flatten();
 
-    if let Some(val) = new_val {
-        send_u_packet(tx, "BD", &auto_digg(val).1);
+    match new_val {
+        Some(AutoDigMutation::Changed(val)) => send_u_packet(tx, "BD", &auto_digg(val).1),
+        Some(AutoDigMutation::Unchanged) => {}
+        Some(AutoDigMutation::MissingState(component)) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for auto-dig toggle");
+            send_settings_state_error(tx);
+        }
+        None => {
+            tracing::error!(player_id = %pid, "Player entity missing for auto-dig toggle");
+            send_settings_state_error(tx);
+        }
     }
 }
 
@@ -33,21 +89,44 @@ pub fn handle_auto_dig_set(
 ) {
     let changed = state
         .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            let mut settings = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
+            if ecs
+                .get::<crate::game::player::PlayerSettings>(entity)
+                .is_none()
+            {
+                return Some(AutoDigMutation::MissingState("PlayerSettings"));
+            }
+            if ecs
+                .get::<crate::game::player::PlayerFlags>(entity)
+                .is_none()
+            {
+                return Some(AutoDigMutation::MissingState("PlayerFlags"));
+            }
+            let mut settings = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .expect("PlayerSettings checked before auto-dig set");
             if settings.auto_dig != enabled {
                 settings.auto_dig = enabled;
-                if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-                    flags.dirty = true;
-                }
-                Some(enabled)
+                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before auto-dig set")
+                    .dirty = true;
+                Some(AutoDigMutation::Changed(enabled))
             } else {
-                None
+                Some(AutoDigMutation::Unchanged)
             }
         })
         .flatten();
 
-    if let Some(val) = changed {
-        send_u_packet(tx, "BD", &auto_digg(val).1);
+    match changed {
+        Some(AutoDigMutation::Changed(val)) => send_u_packet(tx, "BD", &auto_digg(val).1),
+        Some(AutoDigMutation::Unchanged) => {}
+        Some(AutoDigMutation::MissingState(component)) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for auto-dig set");
+            send_settings_state_error(tx);
+        }
+        None => {
+            tracing::error!(player_id = %pid, "Player entity missing for auto-dig set");
+            send_settings_state_error(tx);
+        }
     }
 }
 
@@ -63,8 +142,14 @@ pub async fn handle_prog_ty(
         "PROG" => {
             let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
             if let Some((prog_id, source)) = decoded {
-                if let Err(e) = state.db.save_program(pid, prog_id, &source).await {
-                    tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB save failed");
+                if let Err(e) = state.db.save_program(pid.into(), prog_id, &source).await {
+                    tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB save failed");
+                    send_u_packet(
+                        tx,
+                        "OK",
+                        &ok_message("ПРОГРАММАТОР", "Не удалось сохранить программу.").1,
+                    );
+                    return;
                 }
 
                 let running = state
@@ -85,11 +170,17 @@ pub async fn handle_prog_ty(
                         ps.run_program(&source);
                         Some(ps.running)
                     })
-                    .flatten()
-                    .unwrap_or(false);
+                    .flatten();
+
+                let Some(running) = running else {
+                    tracing::error!(player_id = %pid, program_id = prog_id, "Programmator state missing for PROG");
+                    send_u_packet(tx, "@P", &programmator_status(false).1);
+                    send_programmator_state_error(tx);
+                    return;
+                };
 
                 tracing::info!(
-                    player_id = pid,
+                    player_id = %pid,
                     program_id = prog_id,
                     len = source.len(),
                     running,
@@ -97,15 +188,31 @@ pub async fn handle_prog_ty(
                 );
 
                 send_u_packet(tx, "Gu", &gu_close().1);
-                let name = state
-                    .db
-                    .get_program(prog_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
-                    .map(|p| p.name)
-                    .unwrap_or_default();
+                let name = match load_owned_program_name(state, pid, prog_id).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => {
+                        tracing::error!(
+                            player_id = %pid,
+                            program_id = prog_id,
+                            "Program saved but owned row is missing"
+                        );
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Сохранённая программа недоступна.").1,
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed after save");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        return;
+                    }
+                };
                 // ДЕВИАЦИЯ от C# (порядок @P↔#p), эталон — js_reference (оригинал):
                 // там `SendBotProgramStatus` обновляет окно ТОЛЬКО если оно уже открыто
                 // юзером — запуск программы окно НЕ открывает. Unity-клиент же на
@@ -130,7 +237,7 @@ pub async fn handle_prog_ty(
                 }
             } else {
                 tracing::warn!(
-                    player_id = pid,
+                    player_id = %pid,
                     len = payload.len(),
                     "PROGDIAG PROG decode FAILED"
                 );
@@ -164,19 +271,42 @@ pub async fn handle_prog_ty(
                     Some((false, editor_data, was_running))
                 })
                 .flatten();
-            let (running, editor_data, was_running) = result.unwrap_or((false, None, false));
+            let Some((running, editor_data, was_running)) = result else {
+                tracing::error!(player_id = %pid, "Programmator state missing for pRST");
+                send_u_packet(tx, "@P", &programmator_status(false).1);
+                send_programmator_state_error(tx);
+                return;
+            };
             // C# Prst: if (selected && !running) OpenProg (#P); if (running) RunProgramm (Gu close);
             // затем ProgStatus (@P). Ветки взаимоисключающие.
             if let Some((prog_id, source)) = editor_data {
-                let name = state
-                    .db
-                    .get_program(prog_id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .filter(|p| p.player_id == pid) // ownership: блок IDOR (чужой prog_id)
-                    .map(|p| p.name)
-                    .unwrap_or_default();
+                let name = match load_owned_program_name(state, pid, prog_id).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => {
+                        tracing::warn!(
+                            player_id = %pid,
+                            program_id = prog_id,
+                            "Selected program is missing or owned by another player"
+                        );
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Выбранная программа недоступна.").1,
+                        );
+                        send_u_packet(tx, "@P", &programmator_status(running).1);
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for selected program");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        send_u_packet(tx, "@P", &programmator_status(running).1);
+                        return;
+                    }
+                };
                 send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
             }
             if was_running {
@@ -188,8 +318,30 @@ pub async fn handle_prog_ty(
         "PDEL" => {
             if let Ok(id_str) = std::str::from_utf8(payload) {
                 if let Ok(prog_id) = id_str.trim().parse::<i32>() {
-                    if let Err(e) = state.db.delete_program_owned(pid, prog_id).await {
-                        tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB delete failed");
+                    match state.db.delete_program_owned(pid.into(), prog_id).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            tracing::warn!(
+                                player_id = %pid,
+                                program_id = prog_id,
+                                "Program delete rejected: missing or foreign row"
+                            );
+                            send_u_packet(
+                                tx,
+                                "OK",
+                                &ok_message("ПРОГРАММАТОР", "Программа не найдена.").1,
+                            );
+                            return;
+                        }
+                        Err(e) => {
+                            tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB delete failed");
+                            send_u_packet(
+                                tx,
+                                "OK",
+                                &ok_message("ПРОГРАММАТОР", "Не удалось удалить программу.").1,
+                            );
+                            return;
+                        }
                     }
                     state.modify_player(pid, |ecs, entity| {
                         if let Some(mut ps) =
@@ -215,31 +367,66 @@ pub async fn handle_prog_ty(
                 .and_then(|s| s.trim().parse::<i32>().ok());
             if let Some(id) = prog_id {
                 match state.db.get_program(id).await {
-                    Ok(Some(program)) if program.player_id == pid => {
+                    Ok(Some(program)) if program.player_id == pid.as_i32() => {
                         let name = format!("{} (copy)", program.name);
-                        if let Err(e) = state.db.insert_program(pid, &name, &program.code).await {
-                            tracing::warn!(player_id = pid, program_id = id, error = ?e, "DB copy failed");
+                        if let Err(e) = state
+                            .db
+                            .insert_program(pid.into(), &name, &program.code)
+                            .await
+                        {
+                            tracing::error!(player_id = %pid, program_id = id, error = ?e, "DB copy failed");
+                            send_u_packet(
+                                tx,
+                                "OK",
+                                &ok_message("ПРОГРАММАТОР", "Не удалось скопировать программу.").1,
+                            );
+                            return;
                         }
                     }
                     Ok(Some(program)) => {
                         tracing::warn!(
-                            player_id = pid,
+                            player_id = %pid,
                             program_id = id,
                             owner_id = program.player_id,
                             "Rejected foreign program copy"
                         );
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Программа недоступна.").1,
+                        );
+                        return;
                     }
                     Ok(None) => {
                         tracing::warn!(
-                            player_id = pid,
+                            player_id = %pid,
                             program_id = id,
                             "Missing program for copy"
                         );
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Программа не найдена.").1,
+                        );
+                        return;
                     }
                     Err(e) => {
-                        tracing::warn!(player_id = pid, program_id = id, error = ?e, "DB get failed for copy");
+                        tracing::error!(player_id = %pid, program_id = id, error = ?e, "DB get failed for copy");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        return;
                     }
                 }
+            } else {
+                send_u_packet(
+                    tx,
+                    "OK",
+                    &ok_message("ПРОГРАММАТОР", "Некорректный идентификатор программы.").1,
+                );
+                return;
             }
             crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid)
                 .await;
@@ -340,15 +527,27 @@ pub fn handle_sett_ty(
 pub async fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
     let mut parts = Vec::new();
     for &id in ids {
-        let mut name_opt = state.query_player_opt(id, |ecs: &bevy_ecs::prelude::World, entity| {
-            ecs.get::<crate::game::player::PlayerMetadata>(entity)
-                .map(|m| m.name.clone())
-        });
+        let mut name_opt =
+            state.query_player_opt(id.into(), |ecs: &bevy_ecs::prelude::World, entity| {
+                ecs.get::<crate::game::player::PlayerMetadata>(entity)
+                    .map(|m| m.name.clone())
+            });
         if name_opt.is_none() {
-            if let Ok(Some(p)) = state.db.get_player_by_id(id).await {
-                name_opt = Some(p.name);
+            match state.db.get_player_by_id(id).await {
+                Ok(Some(p)) => name_opt = Some(p.name),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(player_id = id, error = ?e, "DB get failed for Whoi");
+                    send_u_packet(
+                        tx,
+                        "OK",
+                        &ok_message("НИКИ", "Не удалось прочитать имя игрока.").1,
+                    );
+                    return;
+                }
             }
         }
+        // Wire-контракт NL допускает пустое имя для реально отсутствующего id.
         let name = name_opt.unwrap_or_default();
         parts.push(format!("{id}:{name}"));
     }
@@ -395,7 +594,9 @@ mod tests {
             gameplay: crate::config::GameplayConfig::default(),
         };
 
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
         TestState {
             state,
             player,
@@ -454,15 +655,16 @@ mod tests {
         // Эмулируем открытое окно (Pope-меню ставит current_window). Запуск проги
         // ОБЯЗАН его сбросить — иначе после стопа гард window_open в handle_move
         // кидает игрока назад («сервер кидает назад»).
-        test.state.modify_player(test.player.id, |ecs, entity| {
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
             ecs.get_mut::<crate::game::player::PlayerUI>(entity)?
                 .current_window = Some("pope".to_string());
             Some(())
         });
 
-        handle_prog_ty(&test.state, &tx, test.player.id, "PROG", &payload).await;
+        handle_prog_ty(&test.state, &tx, pid, "PROG", &payload).await;
 
-        let window_after = test.state.query_player_opt(test.player.id, |ecs, entity| {
+        let window_after = test.state.query_player_opt(pid, |ecs, entity| {
             Some(
                 ecs.get::<crate::game::player::PlayerUI>(entity)?
                     .current_window
@@ -497,6 +699,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_dig_toggle_missing_flags_is_explicit_error_without_settings_mutation() {
+        let test = make_test_state("auto_dig_toggle_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<crate::game::player::PlayerSettings>(entity)
+                .unwrap()
+                .auto_dig = false;
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerFlags>();
+        }
+
+        handle_auto_dig_toggle(&test.state, &tx, pid);
+
+        let auto_dig = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<crate::game::player::PlayerSettings>(entity)?
+                        .auto_dig,
+                )
+            })
+            .unwrap();
+        assert!(!auto_dig);
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert!(!events.iter().any(|(event, _)| event == "BD"));
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние настроек недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn auto_dig_set_missing_flags_is_explicit_error_without_settings_mutation() {
+        let test = make_test_state("auto_dig_set_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<crate::game::player::PlayerSettings>(entity)
+                .unwrap()
+                .auto_dig = false;
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerFlags>();
+        }
+
+        handle_auto_dig_set(&test.state, &tx, pid, true);
+
+        let auto_dig = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<crate::game::player::PlayerSettings>(entity)?
+                        .auto_dig,
+                )
+            })
+            .unwrap();
+        assert!(!auto_dig);
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert!(!events.iter().any(|(event, _)| event == "BD"));
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние настроек недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
     async fn prst_reopens_selected_stopped_program_with_uppercase_open_packet() {
         let test = make_test_state("prst_state_machine").await;
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -509,7 +791,8 @@ mod tests {
             .insert_program(test.player.id, "main", "")
             .await
             .unwrap();
-        test.state.modify_player(test.player.id, |ecs, entity| {
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
             let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
             ps.selected_id = Some(prog_id);
             ps.selected_data = Some(String::new());
@@ -517,7 +800,7 @@ mod tests {
             Some(())
         });
 
-        handle_prog_ty(&test.state, &tx, test.player.id, "pRST", b"").await;
+        handle_prog_ty(&test.state, &tx, pid, "pRST", b"").await;
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
@@ -528,6 +811,67 @@ mod tests {
         assert_eq!(open_json["id"], prog_id);
         assert_eq!(open_json["title"], "main");
         assert_eq!(open_json["source"], "");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prog_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
+        let test = make_test_state("prog_missing_component").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "old")
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::programmator::ProgrammatorState>();
+        }
+
+        let payload = prog_payload(3, prog_id, &[1, 2, 3], "");
+        handle_prog_ty(&test.state, &tx, pid, "PROG", &payload).await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["@P", "OK"]);
+        assert_eq!(events[0].1, b"0");
+        let message = std::str::from_utf8(&events[1].1).unwrap();
+        assert!(message.contains("Состояние программатора недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prst_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
+        let test = make_test_state("prst_missing_component").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::programmator::ProgrammatorState>();
+        }
+
+        handle_prog_ty(&test.state, &tx, pid, "pRST", b"").await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["@P", "OK"]);
+        assert_eq!(events[0].1, b"0");
+        let message = std::str::from_utf8(&events[1].1).unwrap();
+        assert!(message.contains("Состояние программатора недоступно."));
 
         test.cleanup();
     }
@@ -549,7 +893,7 @@ mod tests {
         handle_prog_ty(
             &test.state,
             &tx,
-            test.player.id,
+            PlayerId(test.player.id),
             "PCOP",
             prog_id.to_string().as_bytes(),
         )
@@ -597,7 +941,7 @@ mod tests {
         handle_prog_ty(
             &test.state,
             &tx,
-            test.player.id,
+            PlayerId(test.player.id),
             "PCOP",
             foreign_prog_id.to_string().as_bytes(),
         )
@@ -617,7 +961,9 @@ mod tests {
         );
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "GU");
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Программа недоступна."));
 
         test.cleanup();
     }
@@ -635,7 +981,8 @@ mod tests {
             .insert_program(test.player.id, "main", "")
             .await
             .unwrap();
-        test.state.modify_player(test.player.id, |ecs, entity| {
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
             let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
             ps.selected_id = Some(prog_id);
             ps.selected_data = Some(String::new());
@@ -646,7 +993,7 @@ mod tests {
         handle_prog_ty(
             &test.state,
             &tx,
-            test.player.id,
+            pid,
             "PDEL",
             prog_id.to_string().as_bytes(),
         )
@@ -655,13 +1002,80 @@ mod tests {
         assert!(test.state.db.get_program(prog_id).await.unwrap().is_none());
         let state_after = test
             .state
-            .query_player_opt(test.player.id, |ecs, entity| {
+            .query_player_opt(pid, |ecs, entity| {
                 let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
                 Some((ps.selected_id, ps.selected_data.clone(), ps.running))
             })
             .unwrap();
         assert_eq!(state_after, (None, None, false));
         assert!(drain_events(&mut rx).is_empty());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn pdel_rejects_foreign_program_without_clearing_selected_state() {
+        let test = make_test_state("pdel_foreign_state_machine").await;
+        let foreign = test
+            .state
+            .db
+            .create_player("foreign-pdel", "p", "h2")
+            .await
+            .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let own_prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "own", "")
+            .await
+            .unwrap();
+        let foreign_prog_id = test
+            .state
+            .db
+            .insert_program(foreign.id, "foreign", "")
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.selected_id = Some(own_prog_id);
+            ps.selected_data = Some(String::new());
+            ps.running = true;
+            Some(())
+        });
+
+        handle_prog_ty(
+            &test.state,
+            &tx,
+            pid,
+            "PDEL",
+            foreign_prog_id.to_string().as_bytes(),
+        )
+        .await;
+
+        assert!(
+            test.state
+                .db
+                .get_program(foreign_prog_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let state_after = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+                Some((ps.selected_id, ps.selected_data.clone(), ps.running))
+            })
+            .unwrap();
+        assert_eq!(state_after, (Some(own_prog_id), Some(String::new()), true));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
 
         test.cleanup();
     }
@@ -682,7 +1096,7 @@ mod tests {
         handle_prog_ty(
             &test.state,
             &tx,
-            test.player.id,
+            PlayerId(test.player.id),
             "PREN",
             prog_id.to_string().as_bytes(),
         )

@@ -1,26 +1,19 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    #[serde(default = "default_world_name")]
     pub world_name: String,
-    #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_chunks_w")]
     pub world_chunks_w: u32,
-    #[serde(default = "default_chunks_h")]
     pub world_chunks_h: u32,
     /// Каталог для `SQLite` и слоёв мира (`.mapb`), относительно текущей рабочей директории.
     /// Перекрывается переменной окружения `M3R_DATA_DIR` (абсолютный или относительный путь).
-    #[serde(default = "default_data_dir")]
     pub data_dir: String,
-    /// См. `LoggingConfig`; при отсутствии ключа в JSON подставляются значения по умолчанию.
-    #[serde(default)]
+    /// См. `LoggingConfig`; секция обязательна в runtime-конфиге.
     pub logging: LoggingConfig,
     /// Настройки фоновых задач.
-    #[serde(default)]
     pub cron: CronConfig,
     /// Тюнинг геймплея (админ-настраиваемые параметры). ОБЯЗАТЕЛЕН в `config.json`:
     /// нет `#[serde(default)]` → пропущенный ключ = ошибка старта (fail-fast,
@@ -75,7 +68,6 @@ impl Default for CooldownConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronConfig {
-    #[serde(default = "default_hourly_log_enabled")]
     pub hourly_log_enabled: bool,
 }
 
@@ -91,15 +83,13 @@ const fn default_hourly_log_enabled() -> bool {
     true
 }
 
-/// Настройки вывода логов (см. `crate::logging::init`).
+/// Настройки вывода логов (см. `crate::logging::init`). Все поля обязательны в
+/// runtime-конфиге: отсутствующее значение — ошибка старта, не тихий дефолт.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
     /// Директивы `EnvFilter`, если не заданы `RUST_LOG` / `M3R_LOG`.
-    #[serde(default = "default_log_filter")]
     pub filter: String,
-    #[serde(default)]
     pub format: LogFormat,
-    #[serde(default)]
     pub file: Option<LogFileConfig>,
 }
 
@@ -130,51 +120,59 @@ pub enum LogFormat {
 pub struct LogFileConfig {
     /// Путь вида `logs/server.log` — каталог создаётся, префикс имени для ротации по дням.
     pub path: String,
-    #[serde(default = "default_file_log_format")]
     pub format: LogFormat,
-}
-
-const fn default_file_log_format() -> LogFormat {
-    LogFormat::Json
-}
-
-fn default_world_name() -> String {
-    "world".into()
-}
-
-fn default_data_dir() -> String {
-    "data".into()
-}
-
-const fn default_port() -> u16 {
-    8090
-}
-/// ~5024×100000 клеток (32×32 на чанк); слои мира ≈3 ГБ.
-const fn default_chunks_w() -> u32 {
-    157
-}
-const fn default_chunks_h() -> u32 {
-    3125
 }
 
 impl Config {
     pub fn load(path: &str) -> Result<Self> {
-        if let Ok(data) = fs::read_to_string(path) {
-            Ok(serde_json::from_str(&data)?)
-        } else {
-            let cfg = Self {
-                world_name: default_world_name(),
-                port: default_port(),
-                world_chunks_w: default_chunks_w(),
-                world_chunks_h: default_chunks_h(),
-                data_dir: default_data_dir(),
-                logging: LoggingConfig::default(),
-                cron: CronConfig::default(),
-                gameplay: GameplayConfig::default(),
-            };
-            fs::write(path, serde_json::to_string_pretty(&cfg)?)?;
-            Ok(cfg)
+        let data =
+            fs::read_to_string(path).with_context(|| format!("read server config {path}"))?;
+        let cfg: Self =
+            serde_json::from_str(&data).with_context(|| format!("parse server config {path}"))?;
+        cfg.validate()
+            .with_context(|| format!("validate server config {path}"))?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.world_name.trim().is_empty() {
+            anyhow::bail!("world_name is empty");
         }
+        if self.port == 0 {
+            anyhow::bail!("port must be in 1..=65535");
+        }
+        if self.world_chunks_w == 0 {
+            anyhow::bail!("world_chunks_w must be greater than 0");
+        }
+        if self.world_chunks_h == 0 {
+            anyhow::bail!("world_chunks_h must be greater than 0");
+        }
+        if self.data_dir.trim().is_empty() {
+            anyhow::bail!("data_dir is empty");
+        }
+        self.logging.validate()?;
+        Ok(())
+    }
+}
+
+impl LoggingConfig {
+    fn validate(&self) -> Result<()> {
+        if self.filter.trim().is_empty() {
+            anyhow::bail!("logging.filter is empty");
+        }
+        if let Some(file) = &self.file {
+            file.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl LogFileConfig {
+    fn validate(&self) -> Result<()> {
+        if self.path.trim().is_empty() {
+            anyhow::bail!("logging.file.path is empty");
+        }
+        Ok(())
     }
 }
 
@@ -185,6 +183,7 @@ mod tests {
     const FULL: &str = r#"{
         "world_name": "t", "port": 8090, "world_chunks_w": 4, "world_chunks_h": 4,
         "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
+        "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
                      "skills": {"upgrade_cost_base": 100}}
     }"#;
@@ -192,10 +191,12 @@ mod tests {
     #[test]
     fn gameplay_values_come_from_config_not_defaults() {
         let c: Config = serde_json::from_str(FULL).unwrap();
+        c.validate().unwrap();
         // Значения читаются из JSON, а не из кода (250/300 ≠ дефолтные 200).
         assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
         assert_eq!(c.gameplay.cooldowns.build_ms, 300);
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
+        assert!(c.cron.hourly_log_enabled);
     }
 
     /// Fail-fast (запрошено): пропущенный геймплей-ключ = ошибка парсинга, а НЕ
@@ -217,6 +218,80 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(&no_build).is_err(),
             "пропущенный build_ms должен быть ошибкой"
+        );
+    }
+
+    #[test]
+    fn missing_top_level_keys_are_errors_not_silent_defaults() {
+        for key in [
+            "world_name",
+            "port",
+            "world_chunks_w",
+            "world_chunks_h",
+            "data_dir",
+            "logging",
+            "cron",
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<Config>(raw).is_err(),
+                "missing key must be an error: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_load_missing_file_is_error_not_autogenerated() {
+        let path = std::env::temp_dir().join(format!(
+            "openmines_missing_config_{}_{}.json",
+            std::process::id(),
+            "strict"
+        ));
+        let _ = std::fs::remove_file(&path);
+        let err = Config::load(path.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("read server config"),
+            "missing config should fail with read context, got: {err:?}"
+        );
+        assert!(
+            !path.exists(),
+            "Config::load must not create missing config"
+        );
+    }
+
+    #[test]
+    fn invalid_infrastructure_values_are_errors() {
+        for (key, value) in [
+            ("world_name", serde_json::json!("")),
+            ("port", serde_json::json!(0)),
+            ("world_chunks_w", serde_json::json!(0)),
+            ("world_chunks_h", serde_json::json!(0)),
+            ("data_dir", serde_json::json!(" ")),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw.as_object_mut().unwrap().insert(key.to_string(), value);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_logging_values_are_errors() {
+        let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        raw["logging"]["filter"] = serde_json::json!("");
+        let cfg: Config = serde_json::from_value(raw).unwrap();
+        assert!(
+            cfg.validate().is_err(),
+            "empty logging.filter must be rejected"
+        );
+
+        let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        raw["logging"]["file"] = serde_json::json!({"path": " ", "format": "json"});
+        let cfg: Config = serde_json::from_value(raw).unwrap();
+        assert!(
+            cfg.validate().is_err(),
+            "empty logging.file.path must be rejected"
         );
     }
 }

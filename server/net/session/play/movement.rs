@@ -20,6 +20,14 @@ enum MoveOutcome {
     Autodig(i32),
 }
 
+fn send_move_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ДВИЖЕНИЕ", "Состояние игрока недоступно.").1,
+    );
+}
+
 #[allow(clippy::similar_names, clippy::too_many_arguments)]
 pub fn handle_move(
     state: &Arc<GameState>,
@@ -56,11 +64,32 @@ pub fn handle_move(
         .modify_player(pid, |ecs, entity| {
             // 1. Immutable data gathering
             let (px, py, skin, clan, window_open, prog_running, auto_dig) = {
-                let pos = ecs.get::<PlayerPosition>(entity)?;
-                let stats = ecs.get::<PlayerStats>(entity)?;
-                let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
-                let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
-                let settings = ecs.get::<crate::game::player::PlayerSettings>(entity)?;
+                let Some(pos) = ecs.get::<PlayerPosition>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for movement");
+                    send_move_state_error(tx);
+                    return None;
+                };
+                let Some(stats) = ecs.get::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for movement");
+                    send_move_state_error(tx);
+                    return None;
+                };
+                let Some(ui) = ecs.get::<crate::game::player::PlayerUI>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for movement");
+                    send_move_state_error(tx);
+                    return None;
+                };
+                let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                else {
+                    tracing::error!(player_id = %pid, component = "ProgrammatorState", "Player component missing for movement");
+                    send_move_state_error(tx);
+                    return None;
+                };
+                let Some(settings) = ecs.get::<crate::game::player::PlayerSettings>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSettings", "Player component missing for movement");
+                    send_move_state_error(tx);
+                    return None;
+                };
                 (
                     pos.x,
                     pos.y,
@@ -86,7 +115,7 @@ pub fn handle_move(
             }
             if window_open && !programmatic {
                 tracing::debug!(
-                    player_id = pid,
+                    player_id = %pid,
                     x = px,
                     y = py,
                     reason = "window_open",
@@ -105,7 +134,7 @@ pub fn handle_move(
             if !state.world.is_empty(target_x, target_y) {
                 let cell = state.world.get_cell(target_x, target_y);
                 tracing::debug!(
-                    player_id = pid,
+                    player_id = %pid,
                     cell,
                     x = px,
                     y = py,
@@ -156,7 +185,7 @@ pub fn handle_move(
                 ) {
                     if meta.pack_type == PackType::Gate && ownership.clan_id != clan {
                         tracing::debug!(
-                            player_id = pid,
+                            player_id = %pid,
                             gate_clan = ownership.clan_id,
                             player_clan = clan,
                             x = px,
@@ -188,7 +217,7 @@ pub fn handle_move(
             // обрабатывает каждый ход → dist всегда ~1.0 при честной игре).
             if dist >= 1.2 {
                 tracing::debug!(
-                    player_id = pid,
+                    player_id = %pid,
                     dist,
                     x = px,
                     y = py,
@@ -239,7 +268,7 @@ pub fn handle_move(
 
             // Exp and skills
             {
-                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)?;
+                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
                 if add_skill_exp(&mut skills.states, "M", 1.0) {
                     let sk = skills_packet(&skill_progress_payload(&skills.states));
                     send_u_packet(tx, sk.0, &sk.1);
@@ -320,3 +349,132 @@ pub fn handle_move(
 
 // handle_move_pure удалён (no-DRY): программатор зовёт handle_move(..., true) —
 // та же валидация коллизии/ворот/дистанции, что и ручной ход.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct TestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        world_name: String,
+        db_path: std::path::PathBuf,
+    }
+
+    impl TestState {
+        fn cleanup(&self) {
+            let dir = std::env::temp_dir();
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(dir.join(format!("{}_durability.mapb", self.world_name)));
+        }
+    }
+
+    async fn make_test_state(label: &str) -> TestState {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database.create_player("move-user", "p", "h").await.unwrap();
+        player.x = 10;
+        player.y = 10;
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        TestState {
+            state,
+            player,
+            world_name,
+            db_path,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn move_missing_position_is_explicit_error_not_silent_reject() {
+        let test = make_test_state("move_missing_position").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerPosition>();
+        }
+
+        handle_move(&test.state, &tx, pid, 0, 11, 10, 3, false);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn move_distance_reject_stays_tp_back_without_state_error() {
+        let test = make_test_state("move_distance_reject").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_move(
+            &test.state,
+            &tx,
+            PlayerId(test.player.id),
+            0,
+            15,
+            10,
+            3,
+            false,
+        );
+
+        // @T is a legitimate gameplay reject. No OK state error should appear.
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "@T");
+        assert_eq!(events[0].1, b"10:10");
+
+        test.cleanup();
+    }
+}

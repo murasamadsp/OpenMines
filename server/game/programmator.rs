@@ -1,5 +1,5 @@
 use crate::game::player::{
-    PlayerConnection, PlayerMetadata, PlayerPosition, PlayerSkills, PlayerStats,
+    PlayerConnection, PlayerMetadata, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
 use crate::game::skills::{SkillType, get_player_skill_effect};
 use crate::game::{ProgrammatorAction, ProgrammatorQueue, WorldResource};
@@ -599,7 +599,7 @@ pub fn programmator_system(
         &PlayerPosition,
         &PlayerConnection,
         &PlayerStats,
-        &PlayerSkills,
+        &PlayerSkillsComp,
         &mut ProgrammatorState,
         &crate::game::player::PlayerGeoStack,
     )>,
@@ -704,7 +704,7 @@ fn execute_action(
     prog: &mut ProgrammatorState,
     pos: &PlayerPosition,
     stats: &PlayerStats,
-    skills: &PlayerSkills,
+    skills: &PlayerSkillsComp,
     world: &crate::world::World,
     meta: &PlayerMetadata,
     conn: &PlayerConnection,
@@ -1208,7 +1208,7 @@ fn execute_action(
             let pkt = crate::protocol::u_packet("BB", &[]);
             let mut buf = bytes::BytesMut::with_capacity(pkt.wire_len());
             if pkt.encode(&mut buf).is_ok() {
-                let _ = conn.tx.send(buf.to_vec());
+                conn.send_or_log(buf.to_vec());
             }
             ExecResult::None
         }
@@ -1649,7 +1649,7 @@ fn move_block_penalty(world: &crate::world::World, tx: i32, ty: i32) -> u64 {
     }
 }
 
-fn speed_pause(skills: &PlayerSkills, on_road: bool) -> u64 {
+fn speed_pause(skills: &PlayerSkillsComp, on_road: bool) -> u64 {
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
     // 1:1 ref Player.cs:155: ServerPause = (OnRoad ? pause*5*0.80 : pause*5) * 1.4 / 1000.
     // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
@@ -1673,8 +1673,8 @@ mod tests {
     use crate::db::SkillSlots;
     use std::collections::HashMap;
 
-    fn empty_skills() -> PlayerSkills {
-        PlayerSkills {
+    fn empty_skills() -> PlayerSkillsComp {
+        PlayerSkillsComp {
             states: SkillSlots {
                 skills: HashMap::new(),
                 total_slots: 20,

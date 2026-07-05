@@ -3,7 +3,7 @@ use crate::game::buildings::{
 };
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition,
-    PlayerSkills as PlayerSkillsCom, PlayerStats,
+    PlayerSkillsComp as PlayerSkillsCom, PlayerStats,
 };
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
@@ -66,9 +66,7 @@ pub fn standing_cell_hazard_system(
                 let sk = crate::protocol::packets::skills_packet(
                     &crate::game::skills::skill_progress_payload(&skills.states),
                 );
-                let _ = conn
-                    .tx
-                    .send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
             }
 
             if stats.health > fd {
@@ -78,7 +76,7 @@ pub fn standing_cell_hazard_system(
                 death_q.0.push(p_meta.id);
             }
             flags.dirty = true;
-            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+            conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
                 "@L",
                 &crate::protocol::packets::health(stats.health, stats.max_health).1,
             ));
@@ -109,22 +107,22 @@ pub fn standing_cell_hazard_system(
             // (get_box_at/delete_box_at тут фризили весь сервер каждые 10ms при
             // игроке на BOX). Поведение 1:1 (`PEntity.GetBox`: всегда удаляет,
             // кристаллы могут быть 0); персистенция отложена (box_persist_q).
-            if let Some(crys) = box_index.0.remove(&(px, py)).map(|(_, v)| v) {
-                box_persist.0.lock().push(((px, py), None));
+            if let Some(crys) = box_index.0.remove(&(px, py).into()).map(|(_, v)| v) {
+                box_persist.0.lock().push(((px, py).into(), None));
                 for (i, &c) in crys.iter().enumerate() {
                     stats.crystals[i] = stats.crystals[i].saturating_add(c);
                 }
                 flags.dirty = true;
-                let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
                     "@B",
                     &crate::protocol::packets::basket(&stats.crystals, 1).1,
                 ));
             }
             let _ = world.damage_cell(px, py, 1.0);
-            bcast_q.0.push(BroadcastEffect::CellUpdate(px, py));
+            bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
         } else if pdef.physical.is_destructible {
             world.destroy(px, py);
-            bcast_q.0.push(BroadcastEffect::CellUpdate(px, py));
+            bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
         }
     }
 }
@@ -216,7 +214,7 @@ pub fn gun_firing_system(
                 let sk_pkt = crate::protocol::packets::skills_packet(
                     &crate::game::skills::skill_progress_payload(&p_sk.states),
                 );
-                let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
                     sk_pkt.0, &sk_pkt.1,
                 ));
             }
@@ -240,7 +238,7 @@ pub fn gun_firing_system(
                     death_q.0.push(p_meta.id);
                 }
             }
-            let _ = conn.tx.send(crate::net::session::wire::make_u_packet_bytes(
+            conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
                 "@L",
                 &crate::protocol::packets::health(stats.health, stats.max_health).1,
             ));

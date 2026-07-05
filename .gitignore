@@ -108,6 +108,7 @@ tools/**/obj/
 *.mapb
 *_v2.map
 /data/
+/.local/
 /mines3.db
 /openmines.db
 

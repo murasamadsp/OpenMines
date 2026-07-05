@@ -1,13 +1,15 @@
-mod config;
+pub use openmines_shared::config;
+pub use openmines_shared::db;
+pub use openmines_shared::env_config;
+pub use openmines_shared::logging;
+pub use openmines_shared::metrics;
+pub use openmines_shared::protocol;
+pub use openmines_shared::world;
+
 mod console;
 mod cron;
-mod db;
 mod game;
-mod logging;
-mod metrics;
 mod net;
-mod protocol;
-mod world;
 
 use crate::world::WorldProvider;
 use anyhow::Result;
@@ -24,16 +26,18 @@ const DB_FILENAME: &str = "openmines.db";
 async fn main() -> Result<()> {
     // До `logging::init` паники не попадали в tracing — ловим в stderr сразу.
     logging::install_early_panic_hook();
+    let force_regenerate =
+        parse_regen_flag_from(env::args().skip(1), env::var("M3R_REGEN_WORLD").ok())
+            .unwrap_or_else(|e| e.exit());
+
     println!("[Main] Process started");
     let mut cfg = config::Config::load("configs/config.json").map_err(|e| {
         println!("[Main] CRITICAL: Failed to load configs/config.json: {e}");
         e
     })?;
-    if let Ok(p_str) = env::var("M3R_PORT")
-        && let Ok(p) = p_str.trim().parse::<u16>()
-    {
-        cfg.port = p;
-    }
+    cfg.port = parse_port_override_from(env::var("M3R_PORT").ok(), cfg.port)?;
+    let use_ctrl_c =
+        env_config::parse_bool_env_or("M3R_USE_CTRL_C", env::var("M3R_USE_CTRL_C").ok(), true)?;
     println!("[Main] Config loaded, initializing logging...");
     let _logging_guard = logging::init(&cfg.logging)?;
     tracing::info!(world_name = %cfg.world_name, port = cfg.port, "Config loaded");
@@ -44,9 +48,6 @@ async fn main() -> Result<()> {
     migrate_mines3_db_to_openmines(&state_dir);
     tracing::info!(state_dir = %state_dir.display(), "Runtime state directory resolved");
 
-    let force_regenerate =
-        parse_regen_flag_from(env::args().skip(1), env::var("M3R_REGEN_WORLD").ok())
-            .unwrap_or_else(|e| e.exit());
     if force_regenerate {
         remove_world_files(&state_dir);
     }
@@ -54,12 +55,7 @@ async fn main() -> Result<()> {
     let cell_defs = world::cells::CellDefs::load("configs/cells.json")?;
     tracing::info!(count = cell_defs.cells.len(), "Loaded cell definitions");
 
-    let buildings_cfg_path = if Path::new("configs/buildings.json").exists() {
-        "configs/buildings.json"
-    } else {
-        "data/buildings.json"
-    };
-    crate::game::buildings::load_buildings_config(buildings_cfg_path)?;
+    crate::game::buildings::load_buildings_config("configs/buildings.json")?;
     tracing::info!("Loaded buildings configurations");
 
     let world = world::World::new(
@@ -91,9 +87,6 @@ async fn main() -> Result<()> {
         #[cfg(unix)]
         {
             // В Docker `ctrl_c()` иногда готовится сразу — сервер выходит до accept. В compose: `M3R_USE_CTRL_C=0`.
-            let use_ctrl_c = env::var("M3R_USE_CTRL_C")
-                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
-                .unwrap_or(true);
             // CF-4: не паникуем если signal() падает (rootless Docker / restricted ns).
             // Фолбэк: только SIGINT (Ctrl+C), SIGTERM игнорируется в этом сеансе.
             match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -132,7 +125,7 @@ async fn main() -> Result<()> {
         std::sync::Arc::new(database),
         cfg.clone(),
     )
-    .await;
+    .await?;
 
     // Cron system.
     cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
@@ -183,7 +176,7 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            player_id = pid,
+                            player_id = %pid,
                             attempt,
                             error = ?e,
                             "Shutdown player save attempt failed"
@@ -194,7 +187,7 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
             }
             if !ok {
                 tracing::error!(
-                    player_id = pid,
+                    player_id = %pid,
                     "Shutdown save failed for player after 3 attempts"
                 );
             }
@@ -225,7 +218,8 @@ async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     }
 
     // Боксы — слить отложенную очередь персистенции (in-memory авторитетно).
-    for ((bx, by), op) in game_state.drain_box_persist() {
+    for (pos, op) in game_state.drain_box_persist() {
+        let (bx, by): (i32, i32) = pos.into();
         let r = match op {
             None => game_state.db.delete_box_at(bx, by).await,
             Some(crystals) => game_state.db.upsert_box(bx, by, &crystals).await,
@@ -309,9 +303,9 @@ async fn create_spawns(database: &db::Database, world: &world::World) -> Result<
         (PackType::Up, "U", SPAWN_X, SPAWN_Y - 4),
     ];
     for (pack_type, code, ox, oy) in spawns {
-        let extra = building_extra_for_pack_type(pack_type);
+        let extra = building_extra_for_pack_type(pack_type)?;
         database.insert_building(code, ox, oy, 0, 0, &extra).await?;
-        for (dx, dy, cell) in pack_type.building_cells() {
+        for (dx, dy, cell) in pack_type.building_cells()? {
             world.set_cell(ox + dx, oy + dy, cell);
         }
     }
@@ -320,10 +314,30 @@ async fn create_spawns(database: &db::Database, world: &world::World) -> Result<
 }
 
 fn resolve_state_dir(cfg: &config::Config) -> Result<PathBuf> {
-    if let Ok(p) = env::var("M3R_DATA_DIR") {
-        return Ok(PathBuf::from(p));
+    resolve_state_dir_from(
+        env::var("M3R_DATA_DIR").ok(),
+        &env::current_dir()?,
+        &cfg.data_dir,
+    )
+}
+
+fn resolve_state_dir_from(
+    env_override: Option<String>,
+    current_dir: &Path,
+    config_data_dir: &str,
+) -> Result<PathBuf> {
+    if let Some(raw) = env_override {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("M3R_DATA_DIR is set but empty");
+        }
+        return Ok(PathBuf::from(trimmed));
     }
-    Ok(env::current_dir()?.join(&cfg.data_dir))
+    let trimmed = config_data_dir.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("config data_dir is empty");
+    }
+    Ok(current_dir.join(trimmed))
 }
 
 /// Переносит БД и слои мира из рабочего каталога (старая схема) в `state_dir`.
@@ -492,12 +506,24 @@ where
     let parsed = Args::try_parse_from(os_args)?;
 
     let force_regen = parsed.regen
-        || env_val.is_some_and(|s| {
-            let t = s.trim().to_ascii_lowercase();
-            matches!(t.as_str(), "1" | "true" | "yes" | "on")
-        });
+        || env_config::parse_bool_env_or("M3R_REGEN_WORLD", env_val, false).map_err(|err| {
+            clap::Error::raw(clap::error::ErrorKind::InvalidValue, err.to_string())
+        })?;
 
     Ok(force_regen)
+}
+
+fn parse_port_override_from(env_val: Option<String>, config_port: u16) -> Result<u16> {
+    let Some(raw) = env_val else {
+        return Ok(config_port);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("M3R_PORT is set but empty");
+    }
+    trimmed
+        .parse::<u16>()
+        .map_err(|err| anyhow::anyhow!("invalid M3R_PORT {trimmed:?}: {err}"))
 }
 
 #[cfg(test)]
@@ -621,6 +647,8 @@ mod tests {
     fn test_parse_regen_flag_env_false() {
         assert!(!parse_regen_flag_from([] as [&str; 0], Some("0".to_string())).unwrap());
         assert!(!parse_regen_flag_from([] as [&str; 0], Some("false".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], Some("NO".to_string())).unwrap());
+        assert!(!parse_regen_flag_from([] as [&str; 0], Some(" off ".to_string())).unwrap());
         assert!(!parse_regen_flag_from([] as [&str; 0], None).unwrap());
     }
 
@@ -628,6 +656,59 @@ mod tests {
     fn test_parse_regen_flag_cli_overrides_env() {
         // --regen включает реген, даже если env = false
         assert!(parse_regen_flag_from(["--regen"], Some("0".to_string())).unwrap());
+    }
+
+    #[test]
+    fn test_parse_regen_flag_invalid_env_is_error_not_false() {
+        assert!(parse_regen_flag_from([] as [&str; 0], Some(String::new())).is_err());
+        assert!(parse_regen_flag_from([] as [&str; 0], Some("wat".to_string())).is_err());
+        assert!(parse_regen_flag_from([] as [&str; 0], Some("2".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_parse_port_override_absent_keeps_config_port() {
+        assert_eq!(parse_port_override_from(None, 8090).unwrap(), 8090);
+    }
+
+    #[test]
+    fn test_parse_port_override_valid_uses_env_port() {
+        assert_eq!(
+            parse_port_override_from(Some(" 19090 ".to_string()), 8090).unwrap(),
+            19090
+        );
+    }
+
+    #[test]
+    fn test_parse_port_override_invalid_is_error_not_fallback() {
+        assert!(parse_port_override_from(Some("abc".to_string()), 8090).is_err());
+        assert!(parse_port_override_from(Some(String::new()), 8090).is_err());
+        assert!(parse_port_override_from(Some("70000".to_string()), 8090).is_err());
+    }
+
+    #[test]
+    fn test_resolve_state_dir_uses_explicit_env_override() {
+        let cwd = PathBuf::from("/repo");
+        assert_eq!(
+            resolve_state_dir_from(Some(" /tmp/openmines ".to_string()), &cwd, "data").unwrap(),
+            PathBuf::from("/tmp/openmines")
+        );
+    }
+
+    #[test]
+    fn test_resolve_state_dir_uses_config_data_dir_without_env() {
+        let cwd = PathBuf::from("/repo");
+        assert_eq!(
+            resolve_state_dir_from(None, &cwd, " data ").unwrap(),
+            PathBuf::from("/repo/data")
+        );
+    }
+
+    #[test]
+    fn test_resolve_state_dir_empty_values_are_errors_not_current_dir() {
+        let cwd = PathBuf::from("/repo");
+        assert!(resolve_state_dir_from(Some(String::new()), &cwd, "data").is_err());
+        assert!(resolve_state_dir_from(Some("   ".to_string()), &cwd, "data").is_err());
+        assert!(resolve_state_dir_from(None, &cwd, " ").is_err());
     }
 
     // --- ошибки ---
@@ -722,8 +803,9 @@ mod benchmarks {
                 cron: crate::config::CronConfig::default(),
                 gameplay: crate::config::GameplayConfig::default(),
             };
-            let state =
-                crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+            let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+                .await
+                .unwrap();
 
             // Чистим за собой при падении assert
             let _ = std::fs::remove_file(&db_path);

@@ -1,5 +1,5 @@
 use super::Database;
-use anyhow::Result;
+use anyhow::{Context as _, Result, bail};
 use sqlx::Row;
 
 /// Строка истории чата:
@@ -20,13 +20,12 @@ impl Database {
         let color = if player_id <= 0 {
             50
         } else {
-            let row = sqlx::query(
-                "SELECT COALESCE(chat_color, 0) as chat_color FROM players WHERE id = ?1",
-            )
-            .bind(player_id)
-            .fetch_one(&self.pool)
-            .await;
-            row.map_or(10, |r| r.get::<i32, _>("chat_color"))
+            sqlx::query("SELECT chat_color FROM players WHERE id = ?1")
+                .bind(player_id)
+                .fetch_one(&self.pool)
+                .await
+                .with_context(|| format!("load chat_color for player id={player_id}"))?
+                .try_get::<i32, _>("chat_color")?
         };
 
         let result = sqlx::query(
@@ -68,18 +67,24 @@ impl Database {
     /// Циклически инкрементит `players.chat_color` `(c+1) % 20`, сохраняет,
     /// возвращает НОВОЕ значение.
     pub async fn cycle_chat_color(&self, player_id: i32) -> Result<i32> {
-        let cur_row =
-            sqlx::query("SELECT COALESCE(chat_color, 0) as chat_color FROM players WHERE id = ?1")
-                .bind(player_id)
-                .fetch_one(&self.pool)
-                .await;
-        let cur = cur_row.map_or(0, |r| r.get::<i32, _>("chat_color"));
+        let cur = sqlx::query("SELECT chat_color FROM players WHERE id = ?1")
+            .bind(player_id)
+            .fetch_one(&self.pool)
+            .await
+            .with_context(|| format!("load chat_color for player id={player_id}"))?
+            .try_get::<i32, _>("chat_color")?;
         let next = (cur + 1).rem_euclid(20);
-        sqlx::query("UPDATE players SET chat_color = ?1 WHERE id = ?2")
+        let result = sqlx::query("UPDATE players SET chat_color = ?1 WHERE id = ?2")
             .bind(next)
             .bind(player_id)
             .execute(&self.pool)
             .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "update chat_color for player id={player_id} affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(next)
     }
 
@@ -117,5 +122,43 @@ impl Database {
 
         result.reverse();
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    async fn temp_database(name: &str) -> Database {
+        let path = std::env::temp_dir().join(format!("{name}_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        Database::open(path).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_chat_message_rejects_missing_player_color() {
+        let database = temp_database("chat_missing_player_color").await;
+        let err = database
+            .add_chat_message("FED", "ghost", "msg", 12345)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("load chat_color"));
+    }
+
+    #[tokio::test]
+    async fn cycle_chat_color_rejects_missing_player() {
+        let database = temp_database("chat_cycle_missing_player").await;
+        let err = database.cycle_chat_color(12345).await.unwrap_err();
+        assert!(err.to_string().contains("load chat_color"));
+    }
+
+    #[tokio::test]
+    async fn system_chat_message_keeps_system_color_without_player_row() {
+        let database = temp_database("chat_system_color").await;
+        let (_id, color) = database
+            .add_chat_message("FED", "system", "msg", 0)
+            .await
+            .unwrap();
+        assert_eq!(color, 50);
     }
 }

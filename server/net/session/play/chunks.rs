@@ -59,7 +59,7 @@ pub fn check_chunk_changed(
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
 
         // Сначала отправляем ботов (игроков), чтобы клиент знал о них до обработки построек
-        if let Some(pids) = state.chunk_players.get(&(ncx, ncy)) {
+        if let Some(pids) = state.chunk_players.get(&(ncx, ncy).into()) {
             for &opid in pids.iter() {
                 if opid == pid {
                     continue;
@@ -90,7 +90,7 @@ pub fn check_chunk_changed(
 
         // BotSpot entities (C# BotSpot: skin=3, tail=1, id=-owner_id)
         {
-            if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy)) {
+            if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy).into()) {
                 let ecs = state.ecs.read();
                 for &botspot_entity in botspot_entities.iter() {
                     if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity)
@@ -138,7 +138,7 @@ pub fn check_chunk_changed(
         }
 
         // Notify the player to remove bots that are now too far away
-        if let Some(pids) = state.chunk_players.get(&(ocx, ocy)) {
+        if let Some(pids) = state.chunk_players.get(&(ocx, ocy).into()) {
             for &opid in pids.iter() {
                 if opid == pid {
                     continue;
@@ -149,7 +149,7 @@ pub fn check_chunk_changed(
         }
 
         // Notify BotSpots removal
-        if let Some(botspot_entities) = state.chunk_botspots.get(&(ocx, ocy)) {
+        if let Some(botspot_entities) = state.chunk_botspots.get(&(ocx, ocy).into()) {
             let ecs = state.ecs.read();
             for &botspot_entity in botspot_entities.iter() {
                 if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
@@ -256,11 +256,15 @@ pub fn check_chunk_changed(
     // ecs.write() отпущен — безопасно обновляем chunk_players.
     if let Some((old, (ncx, ncy))) = chunk_update {
         if let Some((ocx, ocy)) = old {
-            if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy)) {
+            if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy).into()) {
                 e.retain(|&id| id != pid);
             }
         }
-        state.chunk_players.entry((ncx, ncy)).or_default().push(pid);
+        state
+            .chunk_players
+            .entry((ncx, ncy).into())
+            .or_default()
+            .push(pid);
     }
 }
 
@@ -281,7 +285,7 @@ pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
     let mut subs: Vec<Vec<u8>> = Vec::new();
     for (ncx, ncy) in state.visible_chunks_around(cx, cy) {
         // Игроки в чанке (кроме самого наблюдателя).
-        if let Some(pids) = state.chunk_players.get(&(ncx, ncy)) {
+        if let Some(pids) = state.chunk_players.get(&(ncx, ncy).into()) {
             for &opid in pids.iter() {
                 if opid == pid {
                     continue;
@@ -309,7 +313,7 @@ pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         }
 
         // BotSpot-сущности (skin/tail константы, id = wrap отрицательного owner).
-        if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy)) {
+        if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy).into()) {
             let ecs = state.ecs.read();
             for &botspot_entity in botspot_entities.iter() {
                 if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
@@ -372,7 +376,9 @@ mod tests {
             cron: crate::config::CronConfig::default(),
             gameplay: crate::config::GameplayConfig::default(),
         };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();
 
         // Детерминированно спавним в чанке (0,0): клетка (15,8) → (15>>5,8>>5)=(0,0).
@@ -383,10 +389,10 @@ mod tests {
         player.y = 8;
         crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
 
-        let registered = state
-            .chunk_players
-            .get(&(0, 0))
-            .is_some_and(|e| e.value().contains(&player.id));
+        let registered = state.chunk_players.get(&(0, 0).into()).is_some_and(|e| {
+            e.value()
+                .contains(&crate::game::player::PlayerId(player.id))
+        });
         assert!(
             registered,
             "игрок со спавном в чанке (0,0) обязан попасть в chunk_players на коннекте"

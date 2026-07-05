@@ -1,6 +1,6 @@
 #![allow(dead_code, unused_imports)]
 
-use crate::game::player::{PlayerSkills as PlayerSkillsComponent, PlayerStats};
+use crate::game::player::{PlayerSkillsComp as PlayerSkillsComponent, PlayerStats};
 use crate::game::skills::{
     OnHealth, OnMove, OnPackCrys, PlayerSkills as PlayerSkillsHelper, SkillType,
     skill_progress_payload,

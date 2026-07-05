@@ -2,7 +2,7 @@ use crate::db::players::PlayerRow;
 use crate::game::LifeCmd;
 use crate::game::player::{
     ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
-    PlayerInventory, PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkills, PlayerStats,
+    PlayerInventory, PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkillsComp, PlayerStats,
     PlayerUI, PlayerView,
 };
 use crate::game::programmator::ProgrammatorState;
@@ -24,12 +24,13 @@ pub fn init_player(
     player: &PlayerRow,
     token: u64,
 ) -> PlayerId {
+    let pid: PlayerId = player.id.into();
     state.enqueue_life(LifeCmd::Connect {
         row: Box::new(player.clone()),
         tx: tx.clone(),
         token,
     });
-    player.id
+    pid
 }
 
 /// Conn-таск: ставит выход игрока в lifecycle-очередь (см. `init_player`).
@@ -46,7 +47,7 @@ pub fn connect_in_tick(
     player: &PlayerRow,
     token: u64,
 ) {
-    let pid = player.id;
+    let pid: PlayerId = player.id.into();
 
     // Clear military block at spawn position if present
     // TODO: ввести полноценную систему, а не только для военного блока. к примеру, можно в принципе для всех блкоов. а вот для сыпучек и паков другая система. хотя надо обсуждать. потом. как я скажу. про это самому никогда не упоминать.
@@ -77,7 +78,7 @@ pub fn connect_in_tick(
         // Despawn old ECS entity.
         state.ecs.write().despawn(old_entity);
         tracing::warn!(
-            player_id = pid,
+            player_id = %pid,
             "Player reconnected — old ECS entity cleaned up"
         );
     }
@@ -129,7 +130,7 @@ pub fn connect_in_tick(
                 minv: true,
                 miniq: Vec::new(),
             },
-            PlayerSkills {
+            PlayerSkillsComp {
                 states: player.skills.clone(),
             },
             PlayerView {
@@ -169,12 +170,12 @@ pub fn connect_in_tick(
         },
     );
 
-    state.player_sessions.insert(pid, tx.clone());
+    state.player_tx.insert(pid, tx.clone());
 
     // BUG 3: Recalculate max_health from Health skill at login (C# ref: MaxHealth = 100 + skill.Effect).
     state.modify_player(pid, |ecs, entity| {
         let max_health = {
-            let skills = ecs.get::<PlayerSkills>(entity)?;
+            let skills = ecs.get::<PlayerSkillsComp>(entity)?;
             let effect = get_player_skill_effect(&skills.states, SkillType::Health);
             #[allow(clippy::cast_possible_truncation)]
             {
@@ -206,7 +207,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         return;
     };
     state.active_players.remove(&pid);
-    state.player_sessions.remove(&pid);
+    state.player_tx.remove(&pid);
     let entity = p;
 
     // Берём чанк и row из ECS (sync), затем save_player отдаём в отдельный
@@ -248,14 +249,14 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
                         attempts += 1;
                         if attempts >= 3 {
                             tracing::error!(
-                                player_id = pid,
+                                player_id = %pid,
                                 error = ?e,
                                 "Failed to save player on disconnect after 3 attempts"
                             );
                             break;
                         }
                         tracing::warn!(
-                            player_id = pid,
+                            player_id = %pid,
                             error = ?e,
                             attempt = attempts,
                             "Failed to save player on disconnect, retrying in {:?}",
@@ -269,7 +270,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         });
     }
 
-    if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy)) {
+    if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy).into()) {
         e.retain(|&id| id != pid);
     }
 
@@ -279,7 +280,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
 
     state.ecs.write().despawn(entity);
     tracing::info!(
-        player_id = pid,
+        player_id = %pid,
         "Player disconnected and ECS entity despawned"
     );
 }
@@ -293,12 +294,12 @@ fn send_initial_sync(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     player: &PlayerRow,
 ) {
-    let pid = player.id;
+    let pid: PlayerId = player.id.into();
     // BUG 2: C# ref calls MoveToChunk(ChunkX, ChunkY) BEFORE sync packets (BD, GE, @L, BI, etc.).
     check_chunk_changed(state, tx, pid);
     state.modify_player(pid, |ecs, entity| {
         let stats = ecs.get::<PlayerStats>(entity)?;
-        let skills = ecs.get::<PlayerSkills>(entity)?;
+        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
 
         // 1. SendAutoDigg
         send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
@@ -312,7 +313,7 @@ fn send_initial_sync(
         // 3. SendHealth
         send_player_health(tx, stats);
         // 4. SendBotInfo
-        let bi = bot_info(&player.name, player.x, player.y, pid);
+        let bi = bot_info(&player.name, player.x, player.y, pid.into());
         send_u_packet(tx, bi.0, &bi.1);
         // 5. SendSpeed
         send_player_speed(tx, skills);
@@ -332,7 +333,7 @@ fn send_initial_sync(
     let spawn_broadcast = state.query_player_opt(pid, |ecs, entity| {
         let Some(stats) = ecs.get::<PlayerStats>(entity) else {
             tracing::error!(
-                player_id = pid,
+                player_id = %pid,
                 "PlayerStats missing; skipping teleport and clan sync at init"
             );
             return None;
@@ -340,7 +341,7 @@ fn send_initial_sync(
 
         // 11. tp(x, y)
         tracing::info!(
-            player_id = pid,
+            player_id = %pid,
             x = player.x,
             y = player.y,
             "Teleporting player to saved position at init"
@@ -454,7 +455,9 @@ mod tests {
             gameplay: crate::config::GameplayConfig::default(),
         };
 
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
         // временная система
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let player = PlayerRow {
@@ -533,7 +536,9 @@ mod tests {
             gameplay: crate::config::GameplayConfig::default(),
         };
 
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config).await;
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let player = PlayerRow {
@@ -577,8 +582,12 @@ mod tests {
         }
 
         let mut ecs = state.ecs.write();
-        let result = crate::net::session::play::death::apply_player_death_core(&state, &mut ecs, 1);
-        assert!(result.is_some());
+        let result = crate::net::session::play::death::apply_player_death_core(
+            &state,
+            &mut ecs,
+            crate::game::player::PlayerId(1),
+        );
+        assert!(result.is_ok());
         let (rx, ry, _, bcast) = result.unwrap();
 
         // Verify the block was cleared and the cleared position is tracked in DeathBroadcasts

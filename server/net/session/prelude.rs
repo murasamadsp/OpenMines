@@ -32,6 +32,7 @@ pub use crate::world::{World, WorldProvider};
 pub enum PackAccessError {
     NotAtObject,
     NoRights,
+    ConfigMissing,
 }
 
 // TODO: will be used when pack ownership checks are needed in additional handlers
@@ -60,9 +61,10 @@ pub fn validate_pack_access(
     player_clan: i32,
     pid: PlayerId,
 ) -> Result<(), PackAccessError> {
-    if !view
-        .pack_type
-        .building_cells()
+    let Ok(cells) = view.pack_type.building_cells() else {
+        return Err(PackAccessError::ConfigMissing);
+    };
+    if !cells
         .iter()
         .any(|(dx, dy, _)| view.x + dx == player_pos.0 && view.y + dy == player_pos.1)
     {

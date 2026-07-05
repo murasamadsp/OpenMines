@@ -113,7 +113,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 let name = args[0];
                 match state.db.get_player_by_name(name).await {
                     Ok(Some(row)) => {
-                        let pid = row.id;
+                        let pid: PlayerId = row.id.into();
                         let online = state.active_players.contains_key(&pid);
                         if online {
                             let detail = state.query_player_opt(pid, |ecs, entity| {
@@ -196,10 +196,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     Some(())
                 });
                 if res.flatten().is_some() {
-                    tracing::info!(target: "console", player_id = pid, item_id = iid, amount, "Gave item to player");
+                    tracing::info!(target: "console", player_id = %pid, item_id = iid, amount, "Gave item to player");
                     println!("Gave item {iid} x{amount} to player {pid}.");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for give");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for give");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -224,10 +224,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     Some(())
                 });
                 if res.flatten().is_some() {
-                    tracing::info!(target: "console", player_id = pid, amount, "Added money to player");
+                    tracing::info!(target: "console", player_id = %pid, amount, "Added money to player");
                     println!("Added ${amount} to player {pid}.");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for money");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for money");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -267,10 +267,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     Some(())
                 });
                 if res.flatten().is_some() {
-                    tracing::info!(target: "console", player_id = pid, x, y, "Teleported player");
+                    tracing::info!(target: "console", player_id = %pid, x, y, "Teleported player");
                     println!("Teleported player {pid} to ({x},{y}).");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for tp");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for tp");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -293,10 +293,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     Some(())
                 });
                 if res.flatten().is_some() {
-                    tracing::info!(target: "console", player_id = pid, "Healed player");
+                    tracing::info!(target: "console", player_id = %pid, "Healed player");
                     println!("Healed player {pid}.");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for heal");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for heal");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -311,10 +311,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 });
                 if let Some(tx) = conn_tx {
                     crate::net::session::play::death::handle_death(&state, &tx, pid);
-                    tracing::info!(target: "console", player_id = pid, "Killed player");
+                    tracing::info!(target: "console", player_id = %pid, "Killed player");
                     println!("Killed player {pid}.");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for kill");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for kill");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -324,10 +324,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     continue;
                 };
                 if state.kick_channels.remove(&pid).is_some() {
-                    tracing::info!(target: "console", player_id = pid, "Kicked player");
+                    tracing::info!(target: "console", player_id = %pid, "Kicked player");
                     println!("Kicked player {pid}.");
                 } else {
-                    tracing::warn!(target: "console", player_id = pid, "Player not found/offline for kick");
+                    tracing::warn!(target: "console", player_id = %pid, "Player not found/offline for kick");
                     println!("Player {pid} not found/offline.");
                 }
             }
@@ -349,21 +349,21 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 };
                 match state.db.set_player_role(pid, role).await {
                     Ok(true) => {
-                        state.modify_player(pid, |ecs, entity| {
+                        state.modify_player(pid.into(), |ecs, entity| {
                             if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
                                 s.role = role as i32;
                             }
                             Some(())
                         });
-                        tracing::info!(target: "console", player_id = pid, role = role_arg, "Set player role");
+                        tracing::info!(target: "console", player_id = %pid, role = role_arg, "Set player role");
                         println!("Set role '{role_arg}' for player {pid}.");
                     }
                     Ok(false) => {
-                        tracing::warn!(target: "console", player_id = pid, "Player not found in DB for role");
+                        tracing::warn!(target: "console", player_id = %pid, "Player not found in DB for role");
                         println!("Player {pid} not found in DB.");
                     }
                     Err(e) => {
-                        tracing::error!(target: "console", player_id = pid, error = %e, "DB error for role");
+                        tracing::error!(target: "console", player_id = %pid, error = %e, "DB error for role");
                         println!("DB error: {e}");
                     }
                 }
@@ -377,7 +377,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
                     let s = ecs.get::<PlayerStats>(entity)?;
                     let meta = ecs.get::<PlayerMetadata>(entity)?;
-                    let skills = ecs.get::<crate::game::player::PlayerSkills>(entity)?;
+                    let skills = ecs.get::<crate::game::player::PlayerSkillsComp>(entity)?;
                     let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
                     Some((
                         meta.name.clone(),
@@ -443,7 +443,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                         match state.db.save_player(&row).await {
                             Ok(()) => saved += 1,
                             Err(e) => {
-                                tracing::error!(target: "console", player_id = pid, error = %e, "Error saving player");
+                                tracing::error!(target: "console", player_id = %pid, error = %e, "Error saving player");
                                 println!("Error saving player {pid}: {e}");
                             }
                         }

@@ -5,7 +5,7 @@ use anyhow::Result;
 
 // TODO: DatabaseProvider trait methods will be used when the abstraction layer is fully wired for dependency injection
 #[allow(dead_code)]
-pub trait DatabaseProvider: Send + Sync {
+pub(crate) trait DatabaseProvider: Send + Sync {
     // buildings
     async fn load_all_buildings(&self) -> Result<Vec<BuildingRow>>;
     async fn insert_building(

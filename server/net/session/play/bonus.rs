@@ -29,6 +29,14 @@ enum ClaimOutcome {
     NotReady { remaining: i64 },
 }
 
+fn send_bonus_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("Бонус", "Состояние бонуса недоступно.").1,
+    );
+}
+
 /// Обработка `GDon` (клик по кнопке БОНУСЫ). Sub-payload (`METHOD`) игнорируется.
 pub fn handle_bonus_claim(
     state: &Arc<GameState>,
@@ -40,21 +48,38 @@ pub fn handle_bonus_claim(
     // чтобы спам `GDon` не дал двойной клейм. Начисляем в ECS (онлайн-игрок),
     // не прямым DB-write — иначе разойдётся с кэшем и flush затрёт.
     let outcome = state.modify_player(pid, |ecs, entity| {
-        let last = ecs.get::<PlayerStats>(entity)?.last_bonus_at;
+        let Some(player_stats) = ecs.get::<PlayerStats>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for bonus claim");
+            send_bonus_state_error(tx);
+            return None;
+        };
+        if ecs.get::<PlayerFlags>(entity).is_none() {
+            tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for bonus claim");
+            send_bonus_state_error(tx);
+            return None;
+        }
+        let last = player_stats.last_bonus_at;
         if now - last < BONUS_COOLDOWN_SECS {
             return Some(ClaimOutcome::NotReady {
                 remaining: BONUS_COOLDOWN_SECS - (now - last),
             });
         }
         let (money, creds) = {
-            let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+            let Some(mut pstats) = ecs.get_mut::<PlayerStats>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing while applying bonus claim");
+                send_bonus_state_error(tx);
+                return None;
+            };
             pstats.money += BONUS_REWARD;
             pstats.last_bonus_at = now;
             (pstats.money, pstats.creds)
         };
-        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-            f.dirty = true;
-        }
+        let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying bonus claim");
+            send_bonus_state_error(tx);
+            return None;
+        };
+        f.dirty = true;
         Some(ClaimOutcome::Claimed { money, creds })
     });
 
@@ -82,5 +107,149 @@ pub fn handle_bonus_claim(
             );
         }
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct BonusTestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        db_path: std::path::PathBuf,
+        world_name: String,
+        dir: std::path::PathBuf,
+    }
+
+    impl BonusTestState {
+        fn cleanup(&self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(
+                self.dir
+                    .join(format!("{}_durability.mapb", self.world_name)),
+            );
+        }
+    }
+
+    async fn make_bonus_test_state(label: &str) -> BonusTestState {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!("bonus_{label}_{}_{}.db", std::process::id(), nonce));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database
+            .create_player("bonus-user", "p", "h")
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("bonus_world_{label}_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        BonusTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    fn player_money(state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(player_stats.money)
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bonus_missing_stats_is_explicit_error_not_silent_noop() {
+        let test = make_bonus_test_state("missing_stats").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerStats>();
+        }
+
+        handle_bonus_claim(&test.state, &tx, pid);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние бонуса недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn bonus_missing_flags_is_explicit_error_without_reward_mutation() {
+        let test = make_bonus_test_state("missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let before_money = player_money(&test.state, pid);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerFlags>();
+        }
+
+        handle_bonus_claim(&test.state, &tx, pid);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние бонуса недоступно."));
+        assert_eq!(player_money(&test.state, pid), before_money);
+
+        test.cleanup();
     }
 }

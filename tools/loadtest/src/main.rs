@@ -23,7 +23,6 @@
 //!        --move-ms M (период `Xmov`), --ramp-ms R (задержка между стартами),
 //!        --db PATH (файл БД сервера, по умолчанию data/openmines.db).
 
-use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -141,17 +140,11 @@ async fn main() {
 
 /// Вставить N игроков `loadtest_<i>` (детерминированный хэш) в БД сервера.
 /// Идемпотентно (`ON CONFLICT` обновляет хэш). Возвращает `(id, hash)` по индексу.
-async fn seed_players(db_path: &str, n: u32) -> Result<Vec<(i64, String)>, sqlx::Error> {
-    use sqlx::sqlite::SqliteConnectOptions;
-    use sqlx::{Row, SqlitePool};
-
-    let opts = SqliteConnectOptions::from_str(&format!("sqlite://{db_path}"))?
-        .create_if_missing(false)
-        .busy_timeout(Duration::from_secs(10));
-    let pool = SqlitePool::connect_with(opts).await?;
-
+async fn seed_players(db_path: &str, n: u32) -> Result<Vec<(i64, String)>, anyhow::Error> {
+    use sqlx::Row;
+    let database = openmines_shared::db::Database::open(db_path).await?;
     let mut out = Vec::with_capacity(n as usize);
-    let mut tx = pool.begin().await?;
+    let mut tx = database.pool.begin().await?;
     for i in 0..n {
         let name = format!("loadtest_{i}");
         let hash = format!("lthash_{i}");
@@ -166,7 +159,6 @@ async fn seed_players(db_path: &str, n: u32) -> Result<Vec<(i64, String)>, sqlx:
         out.push((row.get::<i64, _>(0), hash));
     }
     tx.commit().await?;
-    pool.close().await;
     Ok(out)
 }
 

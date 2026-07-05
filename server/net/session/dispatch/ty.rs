@@ -84,8 +84,9 @@ pub async fn dispatch_ty_packet(
             handle_auto_dig_toggle(state, tx, pid);
         }
         "Whoi" => {
-            let ids = decode_whoi(&packet.sub_payload);
-            handle_whoi(state, tx, &ids).await;
+            if let Some(ids) = decode_whoi(&packet.sub_payload) {
+                handle_whoi(state, tx, &ids).await;
+            }
         }
         "Chat" => {
             handle_channel_chat(state, tx, pid, &packet.sub_payload).await;
@@ -132,7 +133,7 @@ pub async fn dispatch_ty_packet(
         "ADMN" => {
             // C# ref: ADMN triggers AdminButton() on current window (gear icon).
             // Check if player has a building window open with admin support.
-            let handled = state.query_player_opt(pid, |ecs, entity| {
+            let handled = state.query_player_expected(pid, "ADMN packet", |ecs, entity| {
                 let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
                 ui.current_window.clone()
             });
@@ -154,6 +155,18 @@ pub async fn dispatch_ty_packet(
                     if parts.len() >= 2 {
                         if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
                             crate::net::session::ui::gui_buttons::open_market_admin_gui(
+                                state, tx, pid, x, y,
+                            );
+                            return Ok(());
+                        }
+                    }
+                }
+                // Up admin: C# Up.OnAdmin opens a small page with hp/maxhp.
+                if let Some(rest) = window.strip_prefix("up:") {
+                    let parts: Vec<&str> = rest.split(':').collect();
+                    if parts.len() >= 2 {
+                        if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+                            crate::net::session::ui::up_building::open_up_admin_gui(
                                 state, tx, pid, x, y,
                             );
                             return Ok(());
@@ -202,7 +215,7 @@ pub async fn dispatch_ty_packet(
         // Tutorial marker hidden client-side; keep the event known for telemetry.
         "THID" => {
             let marker = String::from_utf8_lossy(&packet.sub_payload);
-            tracing::debug!(pid, marker = %marker, "tutorial marker hidden");
+            tracing::debug!(pid = %pid, marker = %marker, "tutorial marker hidden");
         }
         "PROG" | "PDEL" | "pRST" | "PREN" | "PCOP" => {
             handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload).await;
@@ -210,7 +223,7 @@ pub async fn dispatch_ty_packet(
         // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
         // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.
         "Miss" | "Rndm" | "TAGR" | "TAUR" => {
-            tracing::debug!(pid, event, "known no-op TY event");
+            tracing::debug!(pid = %pid, event, "known no-op TY event");
         }
         _ => {
             tracing::warn!(event, "Unknown TY event");
@@ -218,7 +231,7 @@ pub async fn dispatch_ty_packet(
     }
     let __el = __d0.elapsed();
     if __el > std::time::Duration::from_millis(50) {
-        tracing::warn!(target: "tickprof", event, player_id = pid, elapsed = ?__el, "Slow TY packet handler");
+        tracing::warn!(target: "tickprof", event, player_id = %pid, elapsed = ?__el, "Slow TY packet handler");
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
 use super::{Database, clans::ClanRank};
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use sqlx::Row;
 use std::collections::HashMap;
 
@@ -33,11 +33,6 @@ impl Role {
     pub const fn is_moderator_effective(self) -> bool {
         matches!(self, Self::Moderator | Self::Admin)
     }
-}
-
-/// Default skills for a new player — basic digging, movement, building, mining, health, repair
-const fn default_total_slots() -> i32 {
-    20
 }
 
 /// Дефолтные скиллы нового игрока
@@ -94,7 +89,6 @@ pub struct SkillEntry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SkillSlots {
     pub skills: HashMap<i32, SkillEntry>,
-    #[serde(default = "default_total_slots")]
     pub total_slots: i32,
 }
 
@@ -191,12 +185,31 @@ impl PlayerRow {
     }
 }
 
-fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow, sqlx::Error> {
-    let inv_str: String = r.try_get("inventory").unwrap_or_default();
-    let skills_str: String = r.try_get("skills").unwrap_or_default();
-    let auto_dig_val: i32 = r.try_get("auto_dig").unwrap_or(0);
+fn parse_inventory(player_id: i32, raw: &str) -> Result<HashMap<i32, i32>> {
+    serde_json::from_str(raw)
+        .with_context(|| format!("player id={player_id}: parse inventory JSON"))
+}
+
+fn parse_skills(player_id: i32, raw: &str) -> Result<SkillSlots> {
+    serde_json::from_str::<SkillSlots>(raw)
+        .or_else(|new_err| {
+            serde_json::from_str::<HashMap<String, SkillState>>(raw)
+                .map(migrate_old_skills)
+                .map_err(|legacy_err| {
+                    anyhow::anyhow!(
+                        "player id={player_id}: parse skills JSON failed: SkillSlots={new_err}; legacy={legacy_err}"
+                    )
+                })
+        })
+}
+
+fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow> {
+    let id: i32 = r.try_get("id")?;
+    let inv_str: String = r.try_get("inventory")?;
+    let skills_str: String = r.try_get("skills")?;
+    let auto_dig_val: i32 = r.try_get("auto_dig")?;
     Ok(PlayerRow {
-        id: r.try_get("id")?,
+        id,
         name: r.try_get("name")?,
         passwd: r.try_get("passwd")?,
         hash: r.try_get("hash")?,
@@ -217,19 +230,14 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow, sqlx::Error> 
             r.try_get("cry_white")?,
             r.try_get("cry_cyan")?,
         ],
-        clan_id: r.try_get("clan_id").unwrap_or(None),
-        inventory: serde_json::from_str(&inv_str).unwrap_or_default(),
-        skills: serde_json::from_str::<SkillSlots>(&skills_str)
-            .or_else(|_| {
-                serde_json::from_str::<HashMap<String, SkillState>>(&skills_str)
-                    .map(migrate_old_skills)
-            })
-            .unwrap_or_else(|_| default_skills()),
-        resp_x: r.try_get("resp_x").unwrap_or(None),
-        resp_y: r.try_get("resp_y").unwrap_or(None),
-        role: r.try_get("role").unwrap_or(0),
-        clan_rank: r.try_get("clan_rank").unwrap_or(0),
-        last_bonus_at: r.try_get("last_bonus_at").unwrap_or(0),
+        clan_id: r.try_get("clan_id")?,
+        inventory: parse_inventory(id, &inv_str)?,
+        skills: parse_skills(id, &skills_str)?,
+        resp_x: r.try_get("resp_x")?,
+        resp_y: r.try_get("resp_y")?,
+        role: r.try_get("role")?,
+        clan_rank: r.try_get("clan_rank")?,
+        last_bonus_at: r.try_get("last_bonus_at")?,
     })
 }
 
@@ -280,11 +288,17 @@ impl Database {
     }
 
     pub async fn update_player_passwd(&self, player_id: i32, passwd: &str) -> Result<()> {
-        sqlx::query("UPDATE players SET passwd = ?1 WHERE id = ?2")
+        let result = sqlx::query("UPDATE players SET passwd = ?1 WHERE id = ?2")
             .bind(passwd)
             .bind(player_id)
             .execute(&self.pool)
             .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "player id={player_id}: update passwd affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(())
     }
 
@@ -307,7 +321,7 @@ impl Database {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| row_to_player(&r)).transpose()?)
+        row.map(|r| row_to_player(&r)).transpose()
     }
 
     pub async fn get_player_by_name(&self, name: &str) -> Result<Option<PlayerRow>> {
@@ -324,13 +338,13 @@ impl Database {
         .bind(name)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|r| row_to_player(&r)).transpose()?)
+        row.map(|r| row_to_player(&r)).transpose()
     }
 
     pub async fn save_player(&self, p: &PlayerRow) -> Result<()> {
         let inv_json = serde_json::to_string(&p.inventory)?;
         let skills_json = serde_json::to_string(&p.skills)?;
-        sqlx::query(
+        let result = sqlx::query(
             "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
              skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
              cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
@@ -363,6 +377,13 @@ impl Database {
         .bind(p.last_bonus_at)
         .execute(&self.pool)
         .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "player id={}: save affected {} rows",
+                p.id,
+                result.rows_affected()
+            );
+        }
         Ok(())
     }
 
@@ -400,12 +421,18 @@ impl Database {
         resp_x: Option<i32>,
         resp_y: Option<i32>,
     ) -> Result<()> {
-        sqlx::query("UPDATE players SET resp_x = ?1, resp_y = ?2 WHERE id = ?3")
+        let result = sqlx::query("UPDATE players SET resp_x = ?1, resp_y = ?2 WHERE id = ?3")
             .bind(resp_x)
             .bind(resp_y)
             .bind(player_id)
             .execute(&self.pool)
             .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "player id={player_id}: update resp affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(())
     }
 
@@ -420,11 +447,17 @@ impl Database {
     /// Начислить деньги офлайн-игроку напрямую в БД (online — через ECS).
     /// Используется финализацией аукциона (`net::auction`).
     pub async fn add_player_money(&self, id: i32, amount: i64) -> Result<()> {
-        sqlx::query("UPDATE players SET money = money + ?1 WHERE id = ?2")
+        let result = sqlx::query("UPDATE players SET money = money + ?1 WHERE id = ?2")
             .bind(amount)
             .bind(id)
             .execute(&self.pool)
             .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "player id={id}: add money affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(())
     }
 
@@ -436,17 +469,149 @@ impl Database {
             .fetch_optional(&self.pool)
             .await?
         else {
-            return Ok(());
+            bail!("player id={id}: missing player for inventory credit");
         };
-        let inv_str: String = row.try_get("inventory").unwrap_or_default();
-        let mut inv: HashMap<i32, i32> = serde_json::from_str(&inv_str).unwrap_or_default();
+        let inv_str: String = row.try_get("inventory")?;
+        let mut inv: HashMap<i32, i32> = serde_json::from_str(&inv_str)
+            .with_context(|| format!("player id={id}: parse inventory JSON"))?;
         *inv.entry(item_id).or_insert(0) += count;
         let new_str = serde_json::to_string(&inv)?;
-        sqlx::query("UPDATE players SET inventory = ?1 WHERE id = ?2")
+        let result = sqlx::query("UPDATE players SET inventory = ?1 WHERE id = ?2")
             .bind(new_str)
             .bind(id)
             .execute(&self.pool)
             .await?;
+        if result.rows_affected() != 1 {
+            bail!(
+                "player id={id}: inventory credit affected {} rows",
+                result.rows_affected()
+            );
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    async fn temp_database(name: &str) -> Database {
+        let path = std::env::temp_dir().join(format!("{name}_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        Database::open(path).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_player_rejects_invalid_inventory_json() {
+        let database = temp_database("player_bad_inventory").await;
+        let player = database.create_player("bad-inv", "p", "h").await.unwrap();
+        sqlx::query("UPDATE players SET inventory = ?1 WHERE id = ?2")
+            .bind("{bad")
+            .bind(player.id)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+
+        let err = database.get_player_by_id(player.id).await.unwrap_err();
+        assert!(err.to_string().contains("parse inventory JSON"));
+    }
+
+    #[tokio::test]
+    async fn get_player_rejects_invalid_skills_json() {
+        let database = temp_database("player_bad_skills").await;
+        let player = database
+            .create_player("bad-skills", "p", "h")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE players SET skills = ?1 WHERE id = ?2")
+            .bind("{bad")
+            .bind(player.id)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+
+        let err = database.get_player_by_id(player.id).await.unwrap_err();
+        assert!(err.to_string().contains("parse skills JSON failed"));
+    }
+
+    #[tokio::test]
+    async fn get_player_migrates_legacy_skills_json_explicitly() {
+        let database = temp_database("player_legacy_skills").await;
+        let player = database
+            .create_player("legacy-skills", "p", "h")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE players SET skills = ?1 WHERE id = ?2")
+            .bind(r#"{"M":{"level":2,"exp":1.5},"__slots":{"level":25,"exp":0.0}}"#)
+            .bind(player.id)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+
+        let loaded = database.get_player_by_id(player.id).await.unwrap().unwrap();
+        assert_eq!(loaded.skills.total_slots, 25);
+        assert_eq!(loaded.skills.find("M").unwrap().level, 2);
+    }
+
+    #[tokio::test]
+    async fn add_player_money_rejects_missing_player() {
+        let database = temp_database("player_money_missing").await;
+
+        let err = database.add_player_money(999_999, 10).await.unwrap_err();
+
+        assert!(err.to_string().contains("add money affected 0 rows"));
+    }
+
+    #[tokio::test]
+    async fn add_player_inventory_item_rejects_missing_player() {
+        let database = temp_database("player_inventory_missing").await;
+
+        let err = database
+            .add_player_inventory_item(999_999, 1, 1)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing player for inventory credit")
+        );
+    }
+
+    #[tokio::test]
+    async fn save_player_rejects_missing_player() {
+        let database = temp_database("player_save_missing").await;
+        let mut player = database
+            .create_player("save-missing", "p", "h")
+            .await
+            .unwrap();
+        player.id = 999_999;
+
+        let err = database.save_player(&player).await.unwrap_err();
+
+        assert!(err.to_string().contains("save affected 0 rows"));
+    }
+
+    #[tokio::test]
+    async fn update_player_passwd_rejects_missing_player() {
+        let database = temp_database("player_passwd_missing").await;
+
+        let err = database
+            .update_player_passwd(999_999, "new-passwd")
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("update passwd affected 0 rows"));
+    }
+
+    #[tokio::test]
+    async fn update_player_resp_rejects_missing_player() {
+        let database = temp_database("player_resp_missing").await;
+
+        let err = database
+            .update_player_resp(999_999, Some(1), Some(2))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("update resp affected 0 rows"));
     }
 }

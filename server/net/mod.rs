@@ -15,6 +15,7 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
     tracing::info!(port, "TCP server listening");
 
     lifecycle::spawn_world_flush_loop(state.clone(), shutdown.subscribe());
+    lifecycle::spawn_online_count_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_player_dirty_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_building_dirty_flush_loop(state.clone(), shutdown.subscribe());
     lifecycle::spawn_game_tick_loop(state.clone(), shutdown.clone());

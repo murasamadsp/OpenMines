@@ -229,8 +229,12 @@ pub struct CellDefs {
 }
 
 impl CellDefs {
-    pub fn load(path: &str) -> Result<Self> {
-        if let Ok(data) = fs::read_to_string(path) {
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        let path_ref = path.as_ref();
+        if let Ok(data) = fs::read_to_string(path_ref)
+            .or_else(|_| fs::read_to_string(format!("../{}", path_ref.display())))
+            .or_else(|_| fs::read_to_string(format!("../../{}", path_ref.display())))
+        {
             let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
 
             // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
@@ -281,7 +285,7 @@ impl CellDefs {
                     ..Default::default()
                 })
                 .collect();
-            fs::write(path, serde_json::to_string_pretty(&cells)?)?;
+            fs::write(path_ref, serde_json::to_string_pretty(&cells)?)?;
             Ok(Self { cells })
         }
     }

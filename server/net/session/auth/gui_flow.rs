@@ -6,6 +6,7 @@ use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
 use crate::net::session::ui::horb::{Button, Horb};
 use crate::protocol::packets::auth_hash;
+use anyhow::Context as _;
 
 fn hash_password(passwd: &str, user_hash: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -26,6 +27,10 @@ fn verify_password(passwd: &str, stored: &str, user_hash: &str) -> bool {
                 == hex
         },
     )
+}
+
+fn required_button_payload<'a>(button: &'a str, prefix: &str) -> Option<&'a str> {
+    button.strip_prefix(prefix)
 }
 
 /// Called from connection loop when `AuthState::GuiAuth` and a GUI_ button arrives.
@@ -135,7 +140,11 @@ async fn handle_login_password(
     session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
-    let passwd = button.strip_prefix("passwd:").unwrap_or(button);
+    let Some(passwd) = required_button_payload(button, "passwd:") else {
+        send_u_packet(tx, "OK", &ok_message("auth", "Некорректное действие").1);
+        send_auth_input_window(tx, "ВХОД", "Пароль", "passwd:%I%");
+        return Ok(None);
+    };
 
     let player = state.db.get_player_by_name(nick).await?;
     let Some(player) = player else {
@@ -148,7 +157,11 @@ async fn handle_login_password(
     if verify_password(passwd, &player.passwd, &player.hash) {
         if !player.passwd.starts_with("sha256:") {
             let hashed = hash_password(passwd, &player.hash);
-            let _ = state.db.update_player_passwd(player.id, &hashed).await;
+            state
+                .db
+                .update_player_passwd(player.id, &hashed)
+                .await
+                .with_context(|| format!("migrate legacy password for player id={}", player.id))?;
         }
         return finalize_auth(state, tx, &player, session_token, step);
     }
@@ -170,7 +183,12 @@ async fn handle_register_nick(
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
-    let nick = button.strip_prefix("newnick:").unwrap_or(button).trim();
+    let Some(nick) = required_button_payload(button, "newnick:") else {
+        send_u_packet(tx, "OK", &ok_message("auth", "Некорректное действие").1);
+        send_auth_input_window(tx, "НОВЫЙ ИГРОК", "Ник", "newnick:%I%");
+        return Ok(None);
+    };
+    let nick = nick.trim();
 
     if nick.is_empty() {
         send_u_packet(tx, "OK", &ok_message("auth", "Введите ник").1);
@@ -199,7 +217,11 @@ async fn handle_register_password(
     session_token: u64,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
-    let passwd = button.strip_prefix("passwd:").unwrap_or(button);
+    let Some(passwd) = required_button_payload(button, "passwd:") else {
+        send_u_packet(tx, "OK", &ok_message("auth", "Некорректное действие").1);
+        send_auth_input_window(tx, "НОВЫЙ ИГРОК", "Пароль", "passwd:%I%");
+        return Ok(None);
+    };
 
     if passwd.is_empty() {
         send_u_packet(tx, "OK", &ok_message("auth", "Введите пароль").1);
@@ -241,4 +263,27 @@ fn finalize_auth(
 
     *step = GuiAuthStep::MainMenu;
     Ok(Some(pid))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hash_password, required_button_payload, verify_password};
+
+    #[test]
+    fn button_payload_requires_expected_prefix() {
+        assert_eq!(
+            required_button_payload("passwd:secret", "passwd:"),
+            Some("secret")
+        );
+        assert_eq!(required_button_payload("secret", "passwd:"), None);
+        assert_eq!(required_button_payload("newnick:Bob", "passwd:"), None);
+    }
+
+    #[test]
+    fn password_verification_keeps_legacy_and_hash_paths_explicit() {
+        let hashed = hash_password("secret", "user-hash");
+        assert!(verify_password("secret", "secret", "user-hash"));
+        assert!(verify_password("secret", &hashed, "user-hash"));
+        assert!(!verify_password("wrong", &hashed, "user-hash"));
+    }
 }

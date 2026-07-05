@@ -1,6 +1,6 @@
 //! Up building (`PackType::Up`) — skill management GUI.
 //!
-//! 1:1 with C# `Buildings/Up.cs` + `GUI/UP/UpPage.cs` + `PlayerSkills.cs`.
+//! 1:1 with C# `Buildings/Up.cs` + `GUI/UP/UpPage.cs` + `PlayerSkillsComp.cs`.
 //!
 //! Wire format: `"up:{json}"` (distinct from `"horb:{json}"`).
 //! JSON fields: `k`, `s`, `b`, `ba`, `i`, `del`, `sl`, `si`, `txt`, `buttons`, `back`.
@@ -14,13 +14,13 @@
 //! - `exit` / `exit:0` — close window (handled upstream)
 
 use crate::db::{SkillEntry, SkillSlots};
-use crate::game::player::{PlayerSkills as PlayerSkillsComp, PlayerStats, PlayerUI};
+use crate::game::player::{PlayerSkillsComp, PlayerStats, PlayerUI};
 use crate::game::skills::{
     self, OnHealth, PlayerSkills as PlayerSkillsHelper, SkillType, exp_needed,
     get_skill_requirements, skill_effect,
 };
 use crate::net::session::outbound::player_sync::{
-    send_player_level, send_player_skills, send_player_speed,
+    send_player_health, send_player_level, send_player_skills, send_player_speed,
 };
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
@@ -28,8 +28,16 @@ use crate::net::session::social::commands::send_ok;
 /// Maximum number of skill slots a player can have.
 const MAX_SLOTS: i32 = 34;
 
-/// Cost in creds to buy an additional slot.
+/// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
+
+fn send_up_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("UP", "Состояние апгрейда недоступно.").1,
+    );
+}
 
 // ─── Public API ─────────────────────────────────────────────────────────────────
 
@@ -40,15 +48,23 @@ pub fn open_up_gui(
     pid: PlayerId,
     view: &PackView,
 ) {
+    let opened = state
+        .modify_player(pid, |ecs, entity| {
+            let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while opening Up GUI");
+                return None;
+            };
+            ui.current_window = Some(format!("up:{}:{}", view.x, view.y));
+            Some(())
+        })
+        .is_some();
+    if !opened {
+        send_up_state_error(tx);
+        return;
+    }
+
     // Send UpPage with no selected slot (initial state)
     send_up_page(state, tx, pid, -1);
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("up:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
 }
 
 /// Handle Up building button presses.
@@ -60,13 +76,21 @@ pub fn handle_up_button(
     button: &str,
 ) -> bool {
     // Check that the player has an Up window open
-    let has_up_window = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<PlayerUI>(entity)
-                .and_then(|ui| ui.current_window.as_deref())
-                .is_some_and(|w| w.starts_with("up:"))
-        })
-        .unwrap_or(false);
+    let has_up_window = state.query_player_opt(pid, |ecs, entity| {
+        let Some(ui) = ecs.get::<PlayerUI>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for Up button");
+            return None;
+        };
+        Some(
+            ui.current_window
+                .as_deref()
+                .is_some_and(|w| w.starts_with("up:")),
+        )
+    });
+    let Some(has_up_window) = has_up_window else {
+        send_up_state_error(tx);
+        return true;
+    };
 
     if !has_up_window {
         return false;
@@ -103,6 +127,37 @@ pub fn handle_up_button(
     false
 }
 
+pub fn open_up_admin_gui(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    pack_x: i32,
+    pack_y: i32,
+) {
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return;
+    };
+    if view.owner_id != pid {
+        return;
+    }
+
+    let payload = format!("horb:{}", build_up_admin_page_json(&view));
+    send_u_packet(tx, "GU", payload.as_bytes());
+    let opened = state
+        .modify_player(pid, |ecs, entity| {
+            let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while opening Up admin GUI");
+                return None;
+            };
+            ui.current_window = Some(format!("up:{pack_x}:{pack_y}:admin"));
+            Some(())
+        })
+        .is_some();
+    if !opened {
+        send_up_state_error(tx);
+    }
+}
+
 // ─── Internal handlers ─────────────────────────────────────────────────────────
 
 /// Select a skill slot — re-render the page with the slot selected.
@@ -122,7 +177,9 @@ fn handle_skill_upgrade(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let selected_slot = get_selected_slot(state, pid);
+    let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
+        return;
+    };
     if selected_slot < 0 {
         return;
     }
@@ -131,7 +188,11 @@ fn handle_skill_upgrade(
         .modify_player(pid, |ecs, entity| {
             // Read skill code, check exp-readiness и считаем цену апгрейда (деньги).
             let (skill_type, needed, cost) = {
-                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 let entry = skills.states.skills.get(&selected_slot)?;
                 let stype = SkillType::from_code(&entry.code)?;
                 let need = exp_needed(stype, entry.level);
@@ -147,26 +208,46 @@ fn handle_skill_upgrade(
 
             // Не хватает денег → сообщение и стоп (без апгрейда).
             {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
+                let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 if pstats.money < cost {
                     send_ok(tx, "Апгрейд", &format!("Недостаточно денег: нужно {cost}"));
                     return Some(false);
                 }
+                let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
             }
 
             // Списываем деньги + P$ + dirty (иначе списание не сохранится).
             {
-                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                let Some(mut pstats_mut) = ecs.get_mut::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing while applying Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 pstats_mut.money -= cost;
                 send_u_packet(tx, "P$", &money(pstats_mut.money, pstats_mut.creds).1);
             }
-            if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) {
-                flags.dirty = true;
-            }
+            let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying Up skill upgrade");
+                send_up_state_error(tx);
+                return None;
+            };
+            flags.dirty = true;
 
             // Perform upgrade (mutable borrow) — 1:1 C# `Skill.Up`: exp-=need, lvl+1.
             {
-                let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
+                let Some(mut skills_mut) = ecs.get_mut::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing while applying Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 let entry = skills_mut.states.skills.get_mut(&selected_slot)?;
                 if needed > 0.0 {
                     entry.exp -= needed;
@@ -176,9 +257,19 @@ fn handle_skill_upgrade(
 
             // Send updated skills progress and compute health changes
             let new_max_health = {
-                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing after Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 send_player_skills(tx, skills);
                 send_player_level(tx, skills);
+                let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing after Up skill upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
+                send_player_health(tx, pstats);
 
                 if skill_type.effect_type() == skills::SkillEffectType::OnMove {
                     send_player_speed(tx, skills);
@@ -196,7 +287,11 @@ fn handle_skill_upgrade(
 
             // If health skill, update max health (separate mutable borrow)
             if let Some(new_max) = new_max_health {
-                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+                let Some(mut pstats) = ecs.get_mut::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing while applying Up health upgrade");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 pstats.max_health = new_max;
                 if pstats.health > pstats.max_health {
                     pstats.health = pstats.max_health;
@@ -216,44 +311,73 @@ fn handle_skill_upgrade(
 }
 
 /// Delete skill from the selected slot.
-/// C# ref: `PlayerSkills.DeleteSkill(Player p)`.
+/// C# ref: `PlayerSkillsComp.DeleteSkill(Player p)`.
 fn handle_skill_delete(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     slot: i32,
 ) {
-    let selected_slot = get_selected_slot(state, pid);
+    let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
+        return;
+    };
     if selected_slot < 0 || slot != selected_slot {
         return;
     }
 
-    state.modify_player(pid, |ecs, entity| {
+    let deleted = state
+        .modify_player(pid, |ecs, entity| {
         {
-            let skills = ecs.get::<PlayerSkillsComp>(entity)?;
-            if !skills.states.skills.contains_key(&slot) {
+            let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up skill delete");
+                send_up_state_error(tx);
                 return None;
+            };
+            if !skills.states.skills.contains_key(&slot) {
+                return Some(false);
             }
+            let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for Up skill delete");
+                send_up_state_error(tx);
+                return None;
+            };
         }
 
         {
-            let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
+            let Some(mut skills_mut) = ecs.get_mut::<PlayerSkillsComp>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing while applying Up skill delete");
+                send_up_state_error(tx);
+                return None;
+            };
             skills_mut.states.skills.remove(&slot);
         }
+        let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying Up skill delete");
+            send_up_state_error(tx);
+            return None;
+        };
+        flags.dirty = true;
 
-        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+        let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing after Up skill delete");
+            send_up_state_error(tx);
+            return None;
+        };
         send_player_level(tx, skills);
-        send_player_skills(tx, skills);
 
-        Some(())
-    });
+        Some(true)
+    })
+        .flatten()
+        .unwrap_or(false);
 
     // Re-render with no selection
-    send_up_page(state, tx, pid, -1);
+    if deleted {
+        send_up_page(state, tx, pid, -1);
+    }
 }
 
 /// Install a new skill into the selected empty slot.
-/// C# ref: `PlayerSkills.InstallSkill(string type, int slot, Player p)`.
+/// C# ref: `PlayerSkillsComp.InstallSkill(string type, int slot, Player p)`.
 fn handle_skill_install(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -262,11 +386,13 @@ fn handle_skill_install(
     slot: i32,
 ) {
     let Some(skill_type) = SkillType::from_code(code) else {
-        tracing::warn!(pid, code, "Up: invalid skill code for install");
+        tracing::warn!(pid = %pid, code, "Up: invalid skill code for install");
         return;
     };
 
-    let selected_slot = get_selected_slot(state, pid);
+    let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
+        return;
+    };
     if selected_slot < 0 || slot != selected_slot {
         return;
     }
@@ -275,7 +401,11 @@ fn handle_skill_install(
         .modify_player(pid, |ecs, entity| {
             // Validate before mutating
             {
-                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up skill install");
+                    send_up_state_error(tx);
+                    return None;
+                };
 
                 // Check the slot is empty
                 if skills.states.skills.contains_key(&slot) {
@@ -297,11 +427,20 @@ fn handle_skill_install(
                 if !is_skill_visible_and_meets_reqs(&skills.states, skill_type) {
                     return Some(false);
                 }
+                let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for Up skill install");
+                    send_up_state_error(tx);
+                    return None;
+                };
             }
 
             // Install (mutable borrow)
             {
-                let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
+                let Some(mut skills_mut) = ecs.get_mut::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing while applying Up skill install");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 skills_mut.states.skills.insert(
                     slot,
                     SkillEntry {
@@ -311,11 +450,20 @@ fn handle_skill_install(
                     },
                 );
             }
+            let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying Up skill install");
+                send_up_state_error(tx);
+                return None;
+            };
+            flags.dirty = true;
 
             // Send updates (immutable borrow)
-            let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+            let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing after Up skill install");
+                send_up_state_error(tx);
+                return None;
+            };
             send_player_level(tx, skills);
-            send_player_skills(tx, skills);
 
             Some(true)
         })
@@ -327,34 +475,50 @@ fn handle_skill_install(
     }
 }
 
-/// Buy an additional slot (costs creds).
-/// C# ref: `PlayerSkills.slots++` if `p.creds > 1000 && slots < 34`.
+/// Buy an additional slot.
+/// C# ref: `PlayerSkillsComp.slots++` if `p.creds > 1000 && slots < 34`.
 fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
     let bought = state
         .modify_player(pid, |ecs, entity| {
             // Validate (immutable borrows)
             {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
-                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for Up slot purchase");
+                    send_up_state_error(tx);
+                    return None;
+                };
+                let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up slot purchase");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 let current_slots = get_player_slot_count(skills);
 
                 if pstats.creds <= SLOT_COST || current_slots >= MAX_SLOTS {
                     return Some(false);
                 }
-            }
-
-            // Deduct creds (mutable borrow on pstats)
-            {
-                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                pstats_mut.creds -= SLOT_COST;
-                send_u_packet(tx, "P$", &money(pstats_mut.money, pstats_mut.creds).1);
+                let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for Up slot purchase");
+                    send_up_state_error(tx);
+                    return None;
+                };
             }
 
             // Increment slot count (mutable borrow on skills)
             {
-                let mut skills_mut = ecs.get_mut::<PlayerSkillsComp>(entity)?;
+                let Some(mut skills_mut) = ecs.get_mut::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing while applying Up slot purchase");
+                    send_up_state_error(tx);
+                    return None;
+                };
                 skills_mut.states.total_slots += 1;
             }
+            let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying Up slot purchase");
+                send_up_state_error(tx);
+                return None;
+            };
+            flags.dirty = true;
 
             Some(true)
         })
@@ -377,35 +541,84 @@ fn send_up_page(
     selected_slot: i32,
 ) {
     let page_data = state.query_player_opt(pid, |ecs, entity| {
-        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+        let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up page");
+            return None;
+        };
+        let is_owner = current_up_pack_owner(state, pid);
         Some(build_up_page_json(
             &skills.states,
             skills.states.total_slots,
             selected_slot,
+            is_owner,
         ))
     });
 
-    if let Some(json_str) = page_data {
-        send_u_packet(tx, "GU", format!("up:{json_str}").as_bytes());
-    }
+    let Some(json_str) = page_data else {
+        send_up_state_error(tx);
+        return;
+    };
+    send_u_packet(tx, "GU", format!("up:{json_str}").as_bytes());
 
     // Store selected slot in window state
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+    let updated = state
+        .modify_player(pid, |ecs, entity| {
+            let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while storing Up page state");
+                return None;
+            };
             // Preserve the "up:x:y" prefix, append selected slot
-            if let Some(window) = &ui.current_window {
-                if window.starts_with("up:") {
-                    let base = window.split(':').take(3).collect::<Vec<_>>().join(":");
-                    ui.current_window = Some(format!("{base}:{selected_slot}"));
-                }
+            let Some(window) = &ui.current_window else {
+                return Some(());
+            };
+            if window.starts_with("up:") {
+                let base = window.split(':').take(3).collect::<Vec<_>>().join(":");
+                ui.current_window = Some(format!("{base}:{selected_slot}"));
             }
+            Some(())
+        })
+        .is_some();
+    if !updated {
+        send_up_state_error(tx);
+    }
+}
+
+/// Get the selected slot from the player's `current_window` state.
+/// Window format: "`up:{x}:{y}:{selected_slot`}"
+fn get_selected_slot(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) -> Option<i32> {
+    let selected = state.query_player_opt(pid, |ecs, entity| {
+        let Some(ui) = ecs.get::<PlayerUI>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for Up selected slot");
+            return None;
+        };
+        let Some(window) = ui.current_window.as_deref() else {
+            return Some(-1);
+        };
+        // "up:x:y:slot"
+        let parts: Vec<&str> = window.split(':').collect();
+        if parts.len() >= 4 {
+            Some(parts[3].parse::<i32>().ok().unwrap_or(-1))
+        } else {
+            Some(-1)
         }
-        Some(())
     });
+    if selected.is_none() {
+        send_up_state_error(tx);
+    }
+    selected
 }
 
 /// Build the `UpPage` JSON string (1:1 with C# `Window.ToString()` for `UpPage`).
-fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32) -> String {
+fn build_up_page_json(
+    skills: &SkillSlots,
+    total_slots: i32,
+    selected_slot: i32,
+    is_owner: bool,
+) -> String {
     // Build skills list: "code:level:slot:can_upgrade" per УСТАНОВЛЕННЫЙ скилл.
     // 1:1 C# `obj["k"] = join("#", Skills.Select(x => "{code}:{level}:{slot}:{canUp}"))`.
     // Слоты реальные (ключ map). Сортируем по слоту для детерминированного вывода.
@@ -415,7 +628,7 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
     for (slot, entry) in slotted {
         let can_upgrade = SkillType::from_code(&entry.code).is_some_and(|st_type| {
             let needed = exp_needed(st_type, entry.level);
-            needed > 0.0 && entry.exp >= needed
+            entry.exp >= needed
         });
         skill_entries.push(format!(
             "{}:{}:{}:{}",
@@ -432,6 +645,14 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
     };
 
     let mut obj = serde_json::Map::new();
+
+    obj.insert(
+        "title".into(),
+        serde_json::Value::String(if selected_slot < 0 { "xxx" } else { "penis" }.into()),
+    );
+    if is_owner {
+        obj.insert("admin".into(), serde_json::Value::Bool(true));
+    }
 
     // Back button: always false for initial page
     obj.insert("back".into(), serde_json::Value::Bool(false));
@@ -486,7 +707,7 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
             // Upgrade button if exp >= needed
             let can_upgrade = skill_type.is_some_and(|stype| {
                 let needed = exp_needed(stype, entry.level);
-                needed > 0.0 && entry.exp >= needed
+                entry.exp >= needed
             });
 
             if can_upgrade {
@@ -540,22 +761,20 @@ fn build_up_page_json(skills: &SkillSlots, total_slots: i32, selected_slot: i32)
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Get the selected slot from the player's `current_window` state.
-/// Window format: "`up:{x}:{y}:{selected_slot`}"
-fn get_selected_slot(state: &Arc<GameState>, pid: PlayerId) -> i32 {
-    state
-        .query_player_opt(pid, |ecs, entity| {
-            let ui = ecs.get::<PlayerUI>(entity)?;
-            let window = ui.current_window.as_deref()?;
-            // "up:x:y:slot"
-            let parts: Vec<&str> = window.split(':').collect();
-            if parts.len() >= 4 {
-                parts[3].parse::<i32>().ok()
-            } else {
-                Some(-1)
-            }
-        })
-        .unwrap_or(-1)
+fn current_up_pack_owner(state: &Arc<GameState>, pid: PlayerId) -> bool {
+    let coords = state.query_player_opt(pid, |ecs, entity| {
+        let ui = ecs.get::<PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?;
+        let rest = window.strip_prefix("up:")?;
+        let mut parts = rest.split(':');
+        let x = parts.next()?.parse::<i32>().ok()?;
+        let y = parts.next()?.parse::<i32>().ok()?;
+        Some((x, y))
+    });
+
+    coords
+        .and_then(|(x, y)| state.get_pack_at(x, y))
+        .is_some_and(|view| view.owner_id == pid)
 }
 
 /// Get the total number of skill slots for a player from the component.
@@ -603,7 +822,7 @@ fn skill_visibility(skills: &SkillSlots, skill: SkillType) -> (bool, bool) {
 }
 
 /// Get the list of skills available for installation.
-/// C# ref: `PlayerSkills.SkillToInstall(Player p)` → Dict<`SkillType`, bool>.
+/// C# ref: `PlayerSkillsComp.SkillToInstall(Player p)` → Dict<`SkillType`, bool>.
 /// Returns Vec<(`SkillType`, `meets_requirements`)>.
 fn get_installable_skills(skills: &SkillSlots) -> Vec<(SkillType, bool)> {
     use SkillType::{
@@ -716,7 +935,611 @@ fn build_skill_description(skill_type: SkillType, state: &SkillEntry) -> String 
             format!("Стройка дорог Уровень:{lvl}\nExp - {exp_str}\nСтоимость блока: {effect}")
         }
         _ => {
-            format!("lvl:{lvl} effect:{effect:.2} exp:{exp_str}")
+            let cost = skill_cost(skill_type, lvl);
+            format!("lvl:{lvl} effect:{effect:.2} cost:{cost} exp:{exp_str}")
         }
+    }
+}
+
+const fn skill_cost(skill_type: SkillType, _level: i32) -> i32 {
+    match skill_type {
+        SkillType::Movement => 0,
+        _ => 1,
+    }
+}
+
+fn build_up_admin_page_json(view: &PackView) -> serde_json::Value {
+    serde_json::json!({
+        "title": "UP",
+        "text": "",
+        "back": false,
+        "buttons": [],
+        "richList": [
+            format!("hp {}/{}", view.hp, view.max_hp), "text", "", "", "",
+            "динаху", "text", "", "", ""
+        ],
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[test]
+    fn up_page_json_has_reference_titles() {
+        let slots = SkillSlots {
+            skills: HashMap::new(),
+            total_slots: 20,
+        };
+
+        let no_selection: serde_json::Value =
+            serde_json::from_str(&build_up_page_json(&slots, 20, -1, false)).unwrap();
+        let selected: serde_json::Value =
+            serde_json::from_str(&build_up_page_json(&slots, 20, 0, false)).unwrap();
+
+        assert_eq!(no_selection["title"], "xxx");
+        assert_eq!(selected["title"], "penis");
+    }
+
+    #[test]
+    fn anti_gun_is_marked_upgrade_ready_when_exp_needed_is_zero() {
+        let slots = SkillSlots {
+            skills: HashMap::from([(
+                0,
+                SkillEntry {
+                    code: SkillType::AntiGun.code().to_string(),
+                    level: 1,
+                    exp: 0.0,
+                },
+            )]),
+            total_slots: 20,
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&build_up_page_json(&slots, 20, 0, false)).unwrap();
+        assert_eq!(json["k"], "u:1:0:1#");
+    }
+
+    #[test]
+    fn up_page_json_marks_owner_admin() {
+        let slots = SkillSlots {
+            skills: HashMap::new(),
+            total_slots: 20,
+        };
+
+        let owner: serde_json::Value =
+            serde_json::from_str(&build_up_page_json(&slots, 20, -1, true)).unwrap();
+        let non_owner: serde_json::Value =
+            serde_json::from_str(&build_up_page_json(&slots, 20, -1, false)).unwrap();
+
+        assert_eq!(owner["admin"], true);
+        assert!(non_owner.get("admin").is_none());
+    }
+
+    #[test]
+    fn up_admin_page_matches_reference_content() {
+        let view = PackView {
+            id: 1,
+            pack_type: crate::game::PackType::Up,
+            x: 10,
+            y: 10,
+            owner_id: PlayerId(1),
+            clan_id: 0,
+            charge: 0.0,
+            max_charge: 0.0,
+            hp: 123,
+            max_hp: 1000,
+        };
+
+        let json = build_up_admin_page_json(&view);
+        assert_eq!(json["title"], "UP");
+        assert_eq!(
+            json["richList"],
+            serde_json::json!([
+                "hp 123/1000",
+                "text",
+                "",
+                "",
+                "",
+                "динаху",
+                "text",
+                "",
+                "",
+                ""
+            ])
+        );
+    }
+
+    #[test]
+    fn generic_skill_description_includes_cost_field() {
+        let entry = SkillEntry {
+            code: SkillType::Induction.code().to_string(),
+            level: 2,
+            exp: 0.0,
+        };
+
+        let description = build_skill_description(SkillType::Induction, &entry);
+        assert!(description.contains("cost:1"));
+    }
+
+    #[tokio::test]
+    async fn buyslot_keeps_creds_and_does_not_send_money_packet() {
+        let test = make_up_test_state("buyslot").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let view = PackView {
+            id: 1,
+            pack_type: crate::game::PackType::Up,
+            x: 10,
+            y: 10,
+            owner_id: test.player.id.into(),
+            clan_id: 0,
+            charge: 0.0,
+            max_charge: 0.0,
+            hp: 1000,
+            max_hp: 1000,
+        };
+        open_up_gui(&test.state, &tx, test.player.id.into(), &view);
+        drain_events(&mut rx);
+
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "buyslot"
+        ));
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().all(|(event, _)| event != "P$"));
+        assert!(events.iter().any(|(event, payload)| {
+            event == "GU" && std::str::from_utf8(payload).is_ok_and(|s| s.starts_with("up:"))
+        }));
+
+        let (creds, total_slots, dirty) =
+            player_creds_slots_and_dirty(&test.state, test.player.id.into());
+        assert_eq!(creds, 1001);
+        assert_eq!(total_slots, 21);
+        assert!(dirty);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_upgrade_sends_health_packet_for_non_health_skill() {
+        let mut test = make_up_test_state("upgrade_health_packet").await;
+        test.player.money = 1_000;
+        test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+        let expected_health = player_health_payload(&test.state, test.player.id.into());
+
+        let view = PackView {
+            id: 1,
+            pack_type: crate::game::PackType::Up,
+            x: 10,
+            y: 10,
+            owner_id: test.player.id.into(),
+            clan_id: 0,
+            charge: 0.0,
+            max_charge: 0.0,
+            hp: 1000,
+            max_hp: 1000,
+        };
+        open_up_gui(&test.state, &tx, test.player.id.into(), &view);
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "skill:1"
+        ));
+        drain_events(&mut rx);
+
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "upgrade"
+        ));
+
+        let events = drain_events(&mut rx);
+        let event_names = events
+            .iter()
+            .map(|(event, _)| event.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(
+            event_names
+                .windows(3)
+                .any(|window| window == ["@S", "LV", "@L"])
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(event, payload)| event == "@L" && payload == expected_health.as_bytes())
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_delete_sends_level_without_skills_packet() {
+        let test = make_up_test_state("delete_no_skills_packet").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        open_test_up_gui(&test.state, &tx, test.player.id.into());
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "skill:1"
+        ));
+        drain_events(&mut rx);
+
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "delete:1"
+        ));
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|(event, _)| event == "LV"));
+        assert!(events.iter().all(|(event, _)| event != "@S"));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_install_sends_level_without_skills_packet() {
+        let test = make_up_test_state("install_no_skills_packet").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        open_test_up_gui(&test.state, &tx, test.player.id.into());
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "skill:4"
+        ));
+        drain_events(&mut rx);
+
+        assert!(handle_up_button(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            "install:p#4"
+        ));
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|(event, _)| event == "LV"));
+        assert!(events.iter().all(|(event, _)| event != "@S"));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn up_button_missing_ui_is_explicit_error_not_unhandled_button() {
+        let test = make_up_test_state("up_button_missing_ui").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerUI>();
+        }
+
+        assert!(handle_up_button(&test.state, &tx, pid, "buyslot"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние апгрейда недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn buyslot_missing_skills_is_explicit_error_not_not_enough_slots_noop() {
+        let test = make_up_test_state("buyslot_missing_skills").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        drain_events(&mut rx);
+        {
+            let entity = test.state.get_player_entity(pid).unwrap();
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerSkillsComp>();
+        }
+
+        assert!(handle_up_button(&test.state, &tx, pid, "buyslot"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние апгрейда недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_upgrade_missing_flags_is_explicit_error_before_money_or_skill_mutation() {
+        let mut test = make_up_test_state("upgrade_missing_flags").await;
+        test.player.money = 1_000;
+        test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        assert!(handle_up_button(&test.state, &tx, pid, "skill:1"));
+        drain_events(&mut rx);
+        remove_player_flags(&test.state, pid);
+
+        assert!(handle_up_button(&test.state, &tx, pid, "upgrade"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert!(
+            std::str::from_utf8(&events[0].1)
+                .unwrap()
+                .contains("Состояние апгрейда недоступно.")
+        );
+        assert_eq!(player_money(&test.state, pid), 1_000);
+        assert_eq!(skill_level_exp(&test.state, pid, 1), (1, 1.0));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_delete_missing_flags_is_explicit_error_without_skill_mutation_or_rerender() {
+        let test = make_up_test_state("delete_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        assert!(handle_up_button(&test.state, &tx, pid, "skill:1"));
+        drain_events(&mut rx);
+        remove_player_flags(&test.state, pid);
+
+        assert!(handle_up_button(&test.state, &tx, pid, "delete:1"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert!(skill_exists(&test.state, pid, 1));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_install_missing_flags_is_explicit_error_without_skill_mutation() {
+        let test = make_up_test_state("install_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        assert!(handle_up_button(&test.state, &tx, pid, "skill:4"));
+        drain_events(&mut rx);
+        remove_player_flags(&test.state, pid);
+
+        assert!(handle_up_button(&test.state, &tx, pid, "install:p#4"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert!(!skill_exists(&test.state, pid, 4));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn buyslot_missing_flags_is_explicit_error_without_slot_mutation() {
+        let test = make_up_test_state("buyslot_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        drain_events(&mut rx);
+        remove_player_flags(&test.state, pid);
+
+        assert!(handle_up_button(&test.state, &tx, pid, "buyslot"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(player_slot_count(&test.state, pid), 20);
+
+        test.cleanup();
+    }
+
+    struct UpTestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        db_path: std::path::PathBuf,
+        world_name: String,
+        dir: std::path::PathBuf,
+    }
+
+    impl UpTestState {
+        fn cleanup(&self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(
+                self.dir
+                    .join(format!("{}_durability.mapb", self.world_name)),
+            );
+        }
+    }
+
+    fn open_test_up_gui(
+        state: &Arc<GameState>,
+        tx: &mpsc::UnboundedSender<Vec<u8>>,
+        pid: PlayerId,
+    ) {
+        let view = PackView {
+            id: 1,
+            pack_type: crate::game::PackType::Up,
+            x: 10,
+            y: 10,
+            owner_id: pid,
+            clan_id: 0,
+            charge: 0.0,
+            max_charge: 0.0,
+            hp: 1000,
+            max_hp: 1000,
+        };
+        open_up_gui(state, tx, pid, &view);
+    }
+
+    async fn make_up_test_state(label: &str) -> UpTestState {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("up_building_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database.create_player("up-user", "p", "h").await.unwrap();
+        player.creds = 1001;
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("up_building_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        UpTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    fn player_creds_slots_and_dirty(state: &Arc<GameState>, pid: PlayerId) -> (i64, i32, bool) {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let flags = ecs.get::<crate::game::PlayerFlags>(entity)?;
+                Some((player_stats.creds, skills.states.total_slots, flags.dirty))
+            })
+            .unwrap()
+    }
+
+    fn player_health_payload(state: &Arc<GameState>, pid: PlayerId) -> String {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(format!(
+                    "{}:{}",
+                    player_stats.health, player_stats.max_health
+                ))
+            })
+            .unwrap()
+    }
+
+    fn remove_player_flags(state: &Arc<GameState>, pid: PlayerId) {
+        let entity = state.get_player_entity(pid).unwrap();
+        let mut ecs = state.ecs.write();
+        ecs.entity_mut(entity).remove::<crate::game::PlayerFlags>();
+    }
+
+    fn player_money(state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(player_stats.money)
+            })
+            .unwrap()
+    }
+
+    fn player_slot_count(state: &Arc<GameState>, pid: PlayerId) -> i32 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                Some(skills.states.total_slots)
+            })
+            .unwrap()
+    }
+
+    fn skill_exists(state: &Arc<GameState>, pid: PlayerId, slot: i32) -> bool {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                Some(skills.states.skills.contains_key(&slot))
+            })
+            .unwrap()
+    }
+
+    fn skill_level_exp(state: &Arc<GameState>, pid: PlayerId, slot: i32) -> (i32, f32) {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                let skill = skills.states.skills.get(&slot)?;
+                Some((skill.level, skill.exp))
+            })
+            .unwrap()
+    }
+
+    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    fn unique_test_nonce() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 }

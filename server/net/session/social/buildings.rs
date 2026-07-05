@@ -4,7 +4,9 @@ use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
     BuildingStorage, GridPosition, PackType, PackView, get_building_config,
 };
-use crate::game::player::{PlayerConnection, PlayerPosition, PlayerStats, PlayerUI};
+use crate::game::player::{
+    PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
+};
 use crate::game::programmator::ProgrammatorState;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
@@ -13,6 +15,14 @@ use std::collections::HashMap;
 
 /// Шанс дропа предмета-размещения при сносе здания (C# `Building.Destroy`: 40%).
 const SHPAAK_DROP_PCT: u32 = 40;
+
+fn send_building_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ПОСТРОЙКА", "Состояние игрока недоступно.").1,
+    );
+}
 
 // ─── Buildings ─────────────────────────────────────────────────────────
 
@@ -24,8 +34,15 @@ pub async fn handle_programmator_pope_menu(
     pid: PlayerId,
 ) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
-    let programs = state.db.list_programs(pid).await.unwrap_or_default();
-    tracing::info!(player_id = pid, count = programs.len(), "PROGDIAG Pope");
+    let programs = match state.db.list_programs(pid.into()).await {
+        Ok(programs) => programs,
+        Err(e) => {
+            tracing::error!(player_id = %pid, error = ?e, "Failed to load player programs");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+            return;
+        }
+    };
+    tracing::info!(player_id = %pid, count = programs.len(), "PROGDIAG Pope");
     let mut win = Horb::new("ПРОГРАММАТОР");
     if programs.is_empty() {
         win = win
@@ -50,14 +67,17 @@ pub async fn handle_my_buildings_list(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
 ) {
-    let mine: Vec<crate::db::buildings::BuildingRow> =
-        match state.db.load_buildings_by_owner(pid).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::error!(player_id = pid, error = ?e, "Failed to load buildings for player");
-                Vec::new()
-            }
-        };
+    let mine: Vec<crate::db::buildings::BuildingRow> = match state
+        .db
+        .load_buildings_by_owner(pid.into())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(player_id = %pid, error = ?e, "Failed to load buildings for player");
+            Vec::new()
+        }
+    };
     // Раньше все постройки сваливались в один `text` → окно росло за экран
     // (репорт). Теперь каждая — строка `list` (виджет в ScrollRect → ползунок).
     use crate::net::session::ui::horb::{Horb, ListRow};
@@ -132,20 +152,29 @@ pub async fn handle_place_building(
     type_code: &str,
 ) {
     let Some(pack_type) = PackType::from_str(type_code) else {
+        send_building_error(tx, "Некорректное здание");
         return;
     };
     let Some(cfg) = get_building_config(pack_type) else {
+        send_building_error(tx, "Конфиг здания не найден");
         return;
     };
     let cost = cfg.cost;
 
-    let p_data = state.query_player_opt(pid, |ecs, entity| {
-        let pstats = ecs.get::<PlayerStats>(entity)?;
-        let pos = ecs.get::<PlayerPosition>(entity)?;
-        Some((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
+    let p_data = state.query_player(pid, |ecs, entity| {
+        let pstats = ecs.get::<PlayerStats>(entity);
+        let pos = ecs.get::<PlayerPosition>(entity);
+        let flags = ecs.get::<PlayerFlags>(entity);
+        match (pstats, pos, flags) {
+            (Some(pstats), Some(pos), Some(_)) => {
+                Ok((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
+            }
+            _ => Err(()),
+        }
     });
 
-    let Some((player_clan, px, py, pdir)) = p_data else {
+    let Some(Ok((player_clan, px, py, pdir))) = p_data else {
+        send_building_state_error(tx);
         return;
     };
 
@@ -162,20 +191,37 @@ pub async fn handle_place_building(
         return;
     }
 
-    let extra = building_extra_for_pack_type(pack_type);
-    let result = state
-        .modify_player(pid, |ecs, entity| {
-            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-            if s.money < cost {
-                return None;
-            }
-            s.money -= cost;
-            let m = s.money;
-            let c = s.creds;
-            send_u_packet(tx, "P$", &money(m, c).1);
-            Some(s.clan_id.unwrap_or(0))
-        })
-        .flatten();
+    let extra = match building_extra_for_pack_type(pack_type) {
+        Ok(extra) => extra,
+        Err(e) => {
+            tracing::error!(?pack_type, error = ?e, "Missing building config for placement");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Конфиг здания не найден").1);
+            return;
+        }
+    };
+    let result = state.modify_player(pid, |ecs, entity| {
+        if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
+            send_building_state_error(tx);
+            return None;
+        }
+        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+        if s.money < cost {
+            return None;
+        }
+        s.money -= cost;
+        let m = s.money;
+        let c = s.creds;
+        let owner_clan = s.clan_id.unwrap_or(0);
+        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+        flags.dirty = true;
+        send_u_packet(tx, "P$", &money(m, c).1);
+        Some(owner_clan)
+    });
+
+    let Some(result) = result else {
+        send_building_state_error(tx);
+        return;
+    };
 
     let Some(owner_clan) = result else {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Недостаточно денег").1);
@@ -189,17 +235,31 @@ pub async fn handle_place_building(
     };
     let db_id = match state
         .db
-        .insert_building(type_code, bx, by, pid, initial_clan, &extra)
+        .insert_building(type_code, bx, by, pid.into(), initial_clan, &extra)
         .await
     {
         Ok(id) => id,
         Err(_) => {
-            state.modify_player(pid, |ecs, entity| {
-                if let Some(mut s) = ecs.get_mut::<PlayerStats>(entity) {
+            let refunded = state
+                .modify_player(pid, |ecs, entity| {
+                    if ecs.get::<PlayerStats>(entity).is_none()
+                        || ecs.get::<PlayerFlags>(entity).is_none()
+                    {
+                        send_building_state_error(tx);
+                        return None;
+                    }
+                    let mut s = ecs.get_mut::<PlayerStats>(entity)?;
                     s.money += cost;
-                }
-                Some(())
-            });
+                    let m = s.money;
+                    let c = s.creds;
+                    let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+                    flags.dirty = true;
+                    Some((m, c))
+                })
+                .flatten();
+            if let Some((m, c)) = refunded {
+                send_u_packet(tx, "P$", &money(m, c).1);
+            }
             send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
             return;
         }
@@ -245,7 +305,7 @@ pub async fn handle_place_building(
     let (cx, cy) = crate::world::World::chunk_pos(bx, by);
     state
         .chunk_buildings
-        .entry((cx, cy))
+        .entry((cx, cy).into())
         .or_default()
         .push(entity);
 
@@ -283,7 +343,7 @@ pub fn place_building_in_world(
         send_u_packet(tx, g.0, &g.1);
     }
     tracing::info!(
-        player_id = pid,
+        player_id = %pid,
         building_type = view.pack_type.code(),
         x = view.x,
         y = view.y,
@@ -317,9 +377,15 @@ pub async fn handle_remove_building(
         return;
     }
 
-    if !view
-        .pack_type
-        .building_cells()
+    let cells = match view.pack_type.building_cells() {
+        Ok(cells) => cells,
+        Err(e) => {
+            tracing::error!(pack_type = ?view.pack_type, error = ?e, "Missing building config for remove");
+            send_building_error(tx, "Конфиг здания не найден");
+            return;
+        }
+    };
+    if !cells
         .iter()
         .any(|(dx, dy, _)| view.x + dx == actor.0 && view.y + dy == actor.1)
     {
@@ -338,22 +404,24 @@ pub async fn handle_remove_building(
     }
 }
 
-pub fn building_extra_for_pack_type(pack_type: PackType) -> BuildingExtra {
-    let cfg = get_building_config(pack_type);
-    BuildingExtra {
-        charge: cfg.as_ref().map_or(0.0, |c| c.charge),
+pub fn building_extra_for_pack_type(pack_type: PackType) -> anyhow::Result<BuildingExtra> {
+    let cfg = get_building_config(pack_type)
+        .ok_or_else(|| anyhow::anyhow!("missing building config for {pack_type:?}"))?;
+    Ok(BuildingExtra {
+        charge: cfg.charge,
         items_inside: HashMap::new(),
-        max_charge: cfg.as_ref().map_or(0.0, |c| c.max_charge),
-        cost: cfg.as_ref().map_or(10, |c| c.cost as i32),
-        hp: cfg.as_ref().map_or(1000, |c| c.hp),
-        max_hp: cfg.as_ref().map_or(1000, |c| c.max_hp),
+        max_charge: cfg.max_charge,
+        cost: i32::try_from(cfg.cost)
+            .map_err(|_| anyhow::anyhow!("building config cost overflow for {pack_type:?}"))?,
+        hp: cfg.hp,
+        max_hp: cfg.max_hp,
         money_inside: 0,
         crystals_inside: [0; 6],
         craft_recipe_id: None,
         craft_num: 0,
         craft_end_ts: 0,
         clanzone: 0,
-    }
+    })
 }
 
 pub fn validate_building_area(
@@ -362,7 +430,10 @@ pub fn validate_building_area(
     by: i32,
     pack_type: PackType,
 ) -> Result<(), &'static str> {
-    for &(cdx, cdy, _) in &pack_type.building_cells() {
+    let cells = pack_type
+        .building_cells()
+        .map_err(|_| "Конфиг здания не найден")?;
+    for (cdx, cdy, _) in cells {
         let cx = bx + cdx;
         let cy = by + cdy;
         if !state.world.valid_coord(cx, cy) || !state.world.is_empty(cx, cy) {
@@ -442,15 +513,19 @@ where
         .get(&(pack_x, pack_y))
         .ok_or_else(|| "Объект не найден".to_string())?;
     let mut ecs = state.ecs.write();
+    if ecs.get::<BuildingFlags>(entity).is_none() {
+        return Err("Состояние здания недоступно".to_string());
+    }
     let res = f(&mut ecs, entity);
 
     // Помечаем dirty — периодический spawn_building_dirty_flush_loop (каждые 45с)
     // подхватит и сохранит. Снимает флаг только после успешного save, поэтому
     // ошибка БД не теряет изменения тихо. Немедленный tokio::spawn(save) убран:
     // он создавал два конкурирующих UPSERT к одной строке (dirty-flush + spawn).
-    if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(entity) {
-        flags.dirty = true;
-    }
+    let mut flags = ecs
+        .get_mut::<BuildingFlags>(entity)
+        .ok_or_else(|| "Состояние здания недоступно".to_string())?;
+    flags.dirty = true;
 
     Ok(res)
 }
@@ -467,6 +542,7 @@ fn pack_has_cell(
 ) -> bool {
     pack_type
         .building_cells()
+        .expect("loaded building pack type must have config")
         .iter()
         .any(|(dx, dy, _)| bx + dx == cx && by + dy == cy)
 }
@@ -480,7 +556,10 @@ fn validate_pack_footprint(
     new_y: i32,
     new_type: PackType,
 ) -> Result<(), &'static str> {
-    for (dx, dy, _) in new_type.building_cells() {
+    let cells = new_type
+        .building_cells()
+        .map_err(|_| "Конфиг здания не найден")?;
+    for (dx, dy, _) in cells {
         let tx = new_x + dx;
         let ty = new_y + dy;
         if !state.world.valid_coord(tx, ty) {
@@ -508,7 +587,7 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
     let window_key = format!("pack:{}:{}", view.x, view.y);
     let (pcx, pcy) = World::chunk_pos(view.x, view.y);
     for (cx, cy) in state.visible_chunks_around(pcx, pcy) {
-        if let Some(players) = state.chunk_players.get(&(cx, cy)) {
+        if let Some(players) = state.chunk_players.get(&(cx, cy).into()) {
             let ids: Vec<PlayerId> = players.value().clone();
             for pid in ids {
                 state.modify_player(pid, |ecs, entity| {
@@ -529,14 +608,21 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
 }
 
 pub fn place_building_cells(state: &Arc<GameState>, bx: i32, by: i32, pack_type: PackType) {
-    for &(cdx, cdy, cell) in &pack_type.building_cells() {
+    for (cdx, cdy, cell) in pack_type
+        .building_cells()
+        .expect("loaded building pack type must have config")
+    {
         state.world.set_cell(bx + cdx, by + cdy, cell);
         broadcast_cell_update(state, bx + cdx, by + cdy);
     }
 }
 
 pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
-    for (cdx, cdy, _) in view.pack_type.building_cells() {
+    for (cdx, cdy, _) in view
+        .pack_type
+        .building_cells()
+        .expect("loaded building pack type must have config")
+    {
         state
             .world
             .set_cell(view.x + cdx, view.y + cdy, cell_type::EMPTY);
@@ -577,7 +663,7 @@ pub fn spawn_botspot(
         .spawn((
             BotSpotMarker,
             BotSpotData {
-                bot_id: -owner_id,
+                bot_id: (-owner_id).into(),
                 owner_id,
                 clan_id,
                 x,
@@ -594,11 +680,11 @@ pub fn spawn_botspot(
     let (cx, cy) = crate::world::World::chunk_pos(x, y);
     state
         .chunk_botspots
-        .entry((cx, cy))
+        .entry((cx, cy).into())
         .or_default()
         .push(botspot_entity);
 
-    tracing::info!(owner_id, x, y, "Spawned BotSpot entity for Spot building");
+    tracing::info!(owner_id = %owner_id, x, y, "Spawned BotSpot entity for Spot building");
 }
 
 /// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.
@@ -628,7 +714,7 @@ pub async fn destroy_damagable_building(
 
     if let Some((_, entity)) = state.building_index.remove(&(bx, by)) {
         let (cx, cy) = crate::world::World::chunk_pos(bx, by);
-        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy)) {
+        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy).into()) {
             e.retain(|&ent| ent != entity);
         }
         if view.pack_type == PackType::Spot {
@@ -673,12 +759,16 @@ pub async fn destroy_damagable_building(
                 );
                 let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
                 state.modify_player(pid, |ecs, entity| {
-                    use crate::game::player::{PlayerFlags, PlayerInventory};
+                    if ecs.get::<PlayerInventory>(entity).is_none()
+                        || ecs.get::<PlayerFlags>(entity).is_none()
+                    {
+                        send_building_state_error(&tx);
+                        return Some(());
+                    }
                     let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
                     *inv.items.entry(item_idx).or_insert(0) += 1;
-                    if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
-                        flags.dirty = true;
-                    }
+                    let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+                    flags.dirty = true;
                     Some(())
                 });
             }
@@ -737,6 +827,167 @@ pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
             .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
 
         state.ecs.write().despawn(entity);
-        tracing::info!(owner_id, "Despawned BotSpot entity");
+        tracing::info!(owner_id = %owner_id, "Despawned BotSpot entity");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::players::PlayerRow;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct BuildingTestState {
+        state: Arc<GameState>,
+        player: PlayerRow,
+        db_path: PathBuf,
+        world_name: String,
+        dir: PathBuf,
+    }
+
+    impl BuildingTestState {
+        fn cleanup(&self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(
+                self.dir
+                    .join(format!("{}_durability.mapb", self.world_name)),
+            );
+        }
+    }
+
+    async fn make_building_test_state(label: &str) -> BuildingTestState {
+        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!(
+            "buildings_{label}_{}_{}.db",
+            std::process::id(),
+            nonce
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database
+            .create_player("building-user", "p", "h")
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("buildings_world_{label}_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        BuildingTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = bytes::BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    fn player_money(game_state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        game_state
+            .query_player_opt(pid, |ecs, entity| {
+                let stats = ecs.get::<PlayerStats>(entity)?;
+                Some(stats.money)
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn place_building_missing_flags_is_explicit_error_without_money_mutation() {
+        let test = make_building_test_state("place_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut stats = ecs.get_mut::<PlayerStats>(entity).unwrap();
+            stats.money = 10_000;
+            ecs.entity_mut(entity).remove::<PlayerFlags>();
+        }
+
+        handle_place_building(&test.state, &tx, pid, "R").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+        assert_eq!(player_money(&test.state, pid), 10_000);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn modify_pack_missing_flags_rejects_without_mutating_building() {
+        let test = make_building_test_state("pack_missing_flags").await;
+        let building_entity = test
+            .state
+            .ecs
+            .write()
+            .spawn((
+                BuildingMetadata {
+                    id: 1,
+                    pack_type: PackType::Resp,
+                },
+                GridPosition { x: 8, y: 8 },
+                BuildingOwnership {
+                    owner_id: PlayerId(1),
+                    clan_id: 0,
+                },
+            ))
+            .id();
+        test.state.building_index.insert((8, 8), building_entity);
+
+        let result = modify_pack_with_db(&test.state, 8, 8, |ecs, entity| {
+            let mut ownership = ecs.get_mut::<BuildingOwnership>(entity).unwrap();
+            ownership.owner_id = PlayerId(99);
+        });
+
+        assert_eq!(result, Err("Состояние здания недоступно".to_string()));
+        let owner_id = {
+            let ecs = test.state.ecs.read();
+            ecs.get::<BuildingOwnership>(building_entity)
+                .unwrap()
+                .owner_id
+        };
+        assert_eq!(owner_id, PlayerId(1));
+
+        test.cleanup();
     }
 }

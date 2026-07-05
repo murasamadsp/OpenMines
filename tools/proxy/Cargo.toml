@@ -1,0 +1,17 @@
+[package]
+name = "openmines-proxy"
+version = "0.0.2"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "openmines-proxy"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,9 +1,10 @@
 use crate::db::buildings::BuildingRow;
 use crate::game::player::PlayerId;
+use anyhow::Context as _;
 use bevy_ecs::prelude::{Component, Entity};
 use rand::Rng as _;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::OnceLock;
 
@@ -34,28 +35,105 @@ pub struct BuildingsConfig {
 
 static BUILDINGS_CONFIG: OnceLock<BuildingsConfig> = OnceLock::new();
 
-pub fn load_buildings_config(path: &str) -> anyhow::Result<()> {
-    let data = fs::read_to_string(path)?;
-    let config: BuildingsConfig = serde_json::from_str(&data)?;
+pub fn load_buildings_config(path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+    let path_ref = path.as_ref();
+    let data = fs::read_to_string(path_ref)
+        .or_else(|_| fs::read_to_string(format!("../{}", path_ref.display())))
+        .or_else(|_| fs::read_to_string(format!("../../{}", path_ref.display())))
+        .with_context(|| format!("read buildings config {}", path_ref.display()))?;
+    let config: BuildingsConfig = serde_json::from_str(&data)
+        .with_context(|| format!("parse buildings config {}", path_ref.display()))?;
+    config
+        .validate()
+        .with_context(|| format!("validate buildings config {}", path_ref.display()))?;
 
-    // Валидация: проверяем инварианты зданий на старте (fail-fast).
-    for (key, bld) in &config.buildings {
-        if bld.code.is_empty() {
+    BUILDINGS_CONFIG
+        .set(config)
+        .map_err(|_| anyhow::anyhow!("Buildings config already loaded"))?;
+    Ok(())
+}
+
+impl BuildingsConfig {
+    fn validate(&self) -> anyhow::Result<()> {
+        if self.buildings.is_empty() {
+            anyhow::bail!("buildings map is empty");
+        }
+        let mut codes = HashSet::new();
+        for (key, bld) in &self.buildings {
+            bld.validate(key)
+                .with_context(|| format!("validate building '{key}'"))?;
+            if !codes.insert(bld.code.clone()) {
+                anyhow::bail!("Building '{key}' duplicates code '{}'", bld.code);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl BuildingConfig {
+    fn validate(&self, key: &str) -> anyhow::Result<()> {
+        if self.code.is_empty() {
             anyhow::bail!("Building '{key}' has empty code");
         }
-        if bld.cost < 0 {
-            anyhow::bail!("Building '{key}' has negative cost {}", bld.cost);
+        if self.code.len() != 1 || !self.code.is_ascii() {
+            anyhow::bail!("Building '{key}' code must be exactly one ASCII byte");
         }
-        if bld.charge < 0.0 {
-            anyhow::bail!("Building '{key}' has negative charge {}", bld.charge);
+        if self.cost < 0 {
+            anyhow::bail!("Building '{key}' has negative cost {}", self.cost);
         }
-        if bld.hp < 0 {
-            anyhow::bail!("Building '{key}' has negative hp {}", bld.hp);
+        if !self.charge.is_finite() {
+            anyhow::bail!("Building '{key}' has non-finite charge {}", self.charge);
         }
-        if bld.cells.is_empty() {
+        if !self.max_charge.is_finite() {
+            anyhow::bail!(
+                "Building '{key}' has non-finite max_charge {}",
+                self.max_charge
+            );
+        }
+        if self.charge < 0.0 {
+            anyhow::bail!("Building '{key}' has negative charge {}", self.charge);
+        }
+        if self.max_charge < 0.0 {
+            anyhow::bail!(
+                "Building '{key}' has negative max_charge {}",
+                self.max_charge
+            );
+        }
+        if self.charge > self.max_charge {
+            anyhow::bail!(
+                "Building '{key}' charge {} exceeds max_charge {}",
+                self.charge,
+                self.max_charge
+            );
+        }
+        if self.hp <= 0 {
+            anyhow::bail!("Building '{key}' hp must be positive, got {}", self.hp);
+        }
+        if self.max_hp <= 0 {
+            anyhow::bail!(
+                "Building '{key}' max_hp must be positive, got {}",
+                self.max_hp
+            );
+        }
+        if self.hp > self.max_hp {
+            anyhow::bail!(
+                "Building '{key}' hp {} exceeds max_hp {}",
+                self.hp,
+                self.max_hp
+            );
+        }
+        if self.cells.is_empty() {
             anyhow::bail!("Building '{key}' has no cells");
         }
-        for cell in &bld.cells {
+        let mut positions = HashSet::new();
+        for cell in &self.cells {
+            if !positions.insert((cell.dx, cell.dy)) {
+                anyhow::bail!(
+                    "Building '{key}' has duplicate cell ({},{})",
+                    cell.dx,
+                    cell.dy
+                );
+            }
             if cell.cell_type >= 126 {
                 anyhow::bail!(
                     "Building '{key}' cell ({},{}): cell type {} out of range [0..125]",
@@ -65,12 +143,8 @@ pub fn load_buildings_config(path: &str) -> anyhow::Result<()> {
                 );
             }
         }
+        Ok(())
     }
-
-    BUILDINGS_CONFIG
-        .set(config)
-        .map_err(|_| anyhow::anyhow!("Buildings config already loaded"))?;
-    Ok(())
 }
 
 pub fn get_building_config(pack_type: PackType) -> Option<&'static BuildingConfig> {
@@ -189,13 +263,14 @@ impl PackType {
         }
     }
 
-    pub fn building_cells(self) -> Vec<(i32, i32, u8)> {
-        get_building_config(self).map_or_else(Vec::new, |cfg| {
-            cfg.cells
-                .iter()
-                .map(|c| (c.dx, c.dy, c.cell_type))
-                .collect()
-        })
+    pub fn building_cells(self) -> anyhow::Result<Vec<(i32, i32, u8)>> {
+        let cfg = get_building_config(self)
+            .ok_or_else(|| anyhow::anyhow!("missing building config for {self:?}"))?;
+        Ok(cfg
+            .cells
+            .iter()
+            .map(|c| (c.dx, c.dy, c.cell_type))
+            .collect())
     }
 }
 
@@ -310,40 +385,56 @@ pub struct BuildingFlags {
     pub dirty: bool,
 }
 
-pub fn spawn_building_from_row(ecs: &mut bevy_ecs::prelude::World, row: &BuildingRow) -> Entity {
-    let pack_type = PackType::from_str(&row.type_code).unwrap_or(PackType::Resp);
-    ecs.spawn((
-        BuildingMetadata {
-            id: row.id,
-            pack_type,
-        },
-        GridPosition { x: row.x, y: row.y },
-        BuildingStats {
-            charge: row.charge,
-            max_charge: row.max_charge,
-            cost: row.cost,
-            hp: row.hp,
-            max_hp: row.max_hp,
-            clanzone: row.clanzone,
-            broken_timer: None,
-        },
-        BuildingStorage {
-            money: row.money_inside,
-            crystals: row.crystals_inside,
-            items: row.items_inside.clone(),
-        },
-        BuildingOwnership {
-            owner_id: row.owner_id,
-            clan_id: row.clan_id,
-        },
-        BuildingCrafting {
-            recipe_id: row.craft_recipe_id,
-            num: row.craft_num,
-            end_ts: row.craft_end_ts,
-        },
-        BuildingFlags { dirty: false },
-    ))
-    .id()
+pub fn spawn_building_from_row(
+    ecs: &mut bevy_ecs::prelude::World,
+    row: &BuildingRow,
+) -> anyhow::Result<(Entity, PackType)> {
+    let pack_type = PackType::from_str(&row.type_code).with_context(|| {
+        format!(
+            "building id={} at ({},{}): unknown type_code {:?}",
+            row.id, row.x, row.y, row.type_code
+        )
+    })?;
+    get_building_config(pack_type).with_context(|| {
+        format!(
+            "building id={} at ({},{}): missing config for {pack_type:?}",
+            row.id, row.x, row.y
+        )
+    })?;
+    let entity = ecs
+        .spawn((
+            BuildingMetadata {
+                id: row.id,
+                pack_type,
+            },
+            GridPosition { x: row.x, y: row.y },
+            BuildingStats {
+                charge: row.charge,
+                max_charge: row.max_charge,
+                cost: row.cost,
+                hp: row.hp,
+                max_hp: row.max_hp,
+                clanzone: row.clanzone,
+                broken_timer: None,
+            },
+            BuildingStorage {
+                money: row.money_inside,
+                crystals: row.crystals_inside,
+                items: row.items_inside.clone(),
+            },
+            BuildingOwnership {
+                owner_id: row.owner_id.into(),
+                clan_id: row.clan_id,
+            },
+            BuildingCrafting {
+                recipe_id: row.craft_recipe_id,
+                num: row.craft_num,
+                end_ts: row.craft_end_ts,
+            },
+            BuildingFlags { dirty: false },
+        ))
+        .id();
+    Ok((entity, pack_type))
 }
 
 pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> Option<BuildingRow> {
@@ -359,7 +450,7 @@ pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> O
         type_code: (meta.pack_type.code() as char).to_string(),
         x: pos.x,
         y: pos.y,
-        owner_id: ownership.owner_id,
+        owner_id: ownership.owner_id.into(),
         clan_id: ownership.clan_id,
         charge: stats.charge,
         max_charge: stats.max_charge,
@@ -400,5 +491,110 @@ impl PackView {
     #[allow(dead_code)]
     pub fn off(&self) -> u8 {
         u8::from(self.charge > 0.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::buildings::BuildingRow;
+
+    use super::{BuildingCellConfig, BuildingConfig, BuildingsConfig};
+    use std::collections::HashMap;
+
+    fn valid_building(code: &str) -> BuildingConfig {
+        BuildingConfig {
+            code: code.to_string(),
+            cost: 10,
+            charge: 0.0,
+            max_charge: 100.0,
+            hp: 100,
+            max_hp: 100,
+            cells: vec![BuildingCellConfig {
+                dx: 0,
+                dy: 0,
+                cell_type: 37,
+            }],
+        }
+    }
+
+    #[test]
+    fn buildings_config_rejects_empty_map_and_duplicate_codes() {
+        assert!(
+            BuildingsConfig {
+                buildings: HashMap::new(),
+            }
+            .validate()
+            .is_err()
+        );
+
+        let mut buildings = HashMap::new();
+        buildings.insert("A".to_string(), valid_building("A"));
+        buildings.insert("B".to_string(), valid_building("A"));
+        assert!(BuildingsConfig { buildings }.validate().is_err());
+    }
+
+    #[test]
+    fn building_config_rejects_ambiguous_numeric_invariants() {
+        let mut b = valid_building("A");
+        b.charge = 101.0;
+        assert!(b.validate("A").is_err());
+
+        let mut b = valid_building("A");
+        b.hp = 101;
+        assert!(b.validate("A").is_err());
+
+        let mut b = valid_building("A");
+        b.max_hp = 0;
+        assert!(b.validate("A").is_err());
+    }
+
+    #[test]
+    fn building_config_rejects_ambiguous_wire_code_and_cells() {
+        let mut b = valid_building("AB");
+        assert!(b.validate("A").is_err());
+
+        b = valid_building("Ж");
+        assert!(b.validate("A").is_err());
+
+        b = valid_building("A");
+        b.cells.push(BuildingCellConfig {
+            dx: 0,
+            dy: 0,
+            cell_type: 37,
+        });
+        assert!(b.validate("A").is_err());
+
+        b = valid_building("A");
+        b.cells[0].cell_type = 126;
+        assert!(b.validate("A").is_err());
+    }
+
+    #[test]
+    fn spawn_building_from_row_rejects_unknown_type_code() {
+        let mut ecs = bevy_ecs::prelude::World::new();
+        let row = BuildingRow {
+            id: 7,
+            type_code: "?".to_string(),
+            x: 10,
+            y: 20,
+            owner_id: 1,
+            clan_id: 0,
+            charge: 0.0,
+            max_charge: 100.0,
+            cost: 10,
+            hp: 100,
+            max_hp: 100,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            clanzone: 0,
+        };
+
+        let err = super::spawn_building_from_row(&mut ecs, &row)
+            .expect_err("unknown building type_code must fail startup");
+        assert!(err.to_string().contains("unknown type_code"));
     }
 }

@@ -1,6 +1,7 @@
 //! Инициализация `tracing`: фильтр, формат, опциональный файл с ротацией по дням.
 
 use crate::config::{LogFileConfig, LogFormat, LoggingConfig};
+use crate::env_config;
 use anyhow::{Context, Result};
 use std::io::{IsTerminal, Write};
 use std::path::Path;
@@ -75,18 +76,13 @@ pub fn install_early_panic_hook() {
     }));
 }
 
-fn install_panic_hook() {
+fn install_panic_hook(abort_on_panic: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // stderr уже пишет цепочка из `install_early_panic_hook`; здесь — в subscriber.
         tracing::error!(target: "openmines_server::panic", %info, "panic (see stderr for message + RUST_BACKTRACE)");
         previous(info);
-        if std::env::var("M3R_ABORT_ON_PANIC").ok().is_some_and(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        }) {
+        if abort_on_panic {
             let _ = writeln!(
                 std::io::stderr(),
                 "[openmines-server] M3R_ABORT_ON_PANIC: exiting with status 101"
@@ -311,6 +307,11 @@ type NonBlockingWriter = tracing_appender::non_blocking::NonBlocking;
 /// Инициализирует глобальный subscriber. Вызывать один раз после загрузки конфига.
 pub fn init(cfg: &LoggingConfig) -> Result<LoggingGuard> {
     let filter = build_env_filter(cfg)?;
+    let abort_on_panic = env_config::parse_bool_env_or(
+        "M3R_ABORT_ON_PANIC",
+        std::env::var("M3R_ABORT_ON_PANIC").ok(),
+        false,
+    )?;
     let timer = SystemTime;
     let mut file_worker = None;
 
@@ -323,7 +324,7 @@ pub fn init(cfg: &LoggingConfig) -> Result<LoggingGuard> {
         init_stderr_only(filter, cfg.format, timer)?;
     }
 
-    install_panic_hook();
+    install_panic_hook(abort_on_panic);
 
     Ok(LoggingGuard {
         _file_worker: file_worker,

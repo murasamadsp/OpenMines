@@ -8,7 +8,7 @@
 
 use super::packets::*;
 use super::{Packet, b_packet, u_packet};
-use crate::game::chat::ChatMessage;
+use crate::protocol::chat::ChatMessage;
 use bytes::BytesMut;
 
 // ─── Строковые билдеры: event-имя + точный payload ──────────────────────────
@@ -680,31 +680,39 @@ fn gui_button_parses_json_b_field() {
 }
 
 #[test]
-fn gui_button_falls_back_to_raw_string() {
-    assert_eq!(
-        decode_gui_button(b"exit"),
-        Some(std::borrow::Cow::Borrowed("exit"))
-    );
-}
-
-#[test]
 fn gui_button_rejects_blank() {
     assert_eq!(decode_gui_button(b"   "), None);
 }
 
 #[test]
-fn decode_whoi_parses_comma_separated_ids() {
-    assert_eq!(decode_whoi(b"1,2,3"), vec![1, 2, 3]);
+fn gui_button_rejects_non_json_payload() {
+    assert_eq!(decode_gui_button(b"exit"), None);
 }
 
 #[test]
-fn decode_whoi_skips_unparsable_ids() {
-    assert_eq!(decode_whoi(b"1,x,3"), vec![1, 3]);
+fn gui_button_rejects_json_without_string_b_field() {
+    assert_eq!(decode_gui_button(br#"{"x":"shop"}"#), None);
+    assert_eq!(decode_gui_button(br#"{"b":1}"#), None);
+}
+
+#[test]
+fn decode_whoi_parses_comma_separated_ids() {
+    assert_eq!(decode_whoi(b"1,2,3"), Some(vec![1, 2, 3]));
+}
+
+#[test]
+fn decode_whoi_rejects_unparsable_ids() {
+    assert_eq!(decode_whoi(b"1,x,3"), None);
+}
+
+#[test]
+fn decode_whoi_rejects_empty_items() {
+    assert_eq!(decode_whoi(b"1,,3"), None);
 }
 
 #[test]
 fn decode_whoi_empty_is_empty_vec() {
-    assert!(decode_whoi(b"").is_empty());
+    assert_eq!(decode_whoi(b""), Some(Vec::new()));
 }
 
 #[test]

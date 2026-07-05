@@ -4,8 +4,8 @@ pub fn net_u8_clamped(v: i32, max: i32) -> u8 {
 }
 
 #[inline]
-pub fn net_u16_nonneg(v: i32) -> u16 {
-    u16::try_from(v.max(0)).unwrap_or(0)
+pub fn net_u16_nonneg<V: Into<i32>>(v: V) -> u16 {
+    u16::try_from(v.into().max(0)).unwrap_or(0)
 }
 
 #[cfg(test)]

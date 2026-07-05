@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod packets;
 
 #[cfg(test)]

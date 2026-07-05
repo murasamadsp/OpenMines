@@ -37,6 +37,31 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
     });
 }
 
+/// C# `World.Update`: раз в минуту шлёт всем активным игрокам `ON online:0`.
+pub fn spawn_online_count_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.recv() => break,
+            }
+            broadcast_online_count(&state);
+        }
+    });
+}
+
+fn broadcast_online_count(state: &GameState) {
+    let pids: Vec<crate::game::PlayerId> = state.active_players.iter().map(|e| *e.key()).collect();
+    let online_count = i32::try_from(pids.len()).unwrap_or(i32::MAX);
+    let packet = crate::protocol::packets::online(online_count, 0);
+    let wire = crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1);
+    for pid in pids {
+        state.send_to_player(pid, wire.clone());
+    }
+}
+
 /// Сохранение «грязных» игроков в БД.
 pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {
@@ -98,7 +123,7 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
                             crate::metrics::PLAYER_SAVE_TOTAL.inc();
                         }
                         Err(e) => {
-                            tracing::error!(player_id = pid_c, error = ?e, "Periodic save failed for player");
+                            tracing::error!(player_id = %pid_c, error = ?e, "Periodic save failed for player");
                         }
                     }
                 });
@@ -268,7 +293,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 Ok(res) => {
                     if let Err(e) = res {
                         tracing::error!(
-                            player_id = pid,
+                            player_id = %pid,
                             packet = ?ty,
                             error = ?e,
                             "Error processing TY packet"
@@ -277,14 +302,14 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
                 Err(je) if je.is_panic() => {
                     tracing::error!(
-                        player_id = pid,
+                        player_id = %pid,
                         packet = ?ty,
                         "PANIC processing TY packet!"
                     );
                 }
                 Err(je) => {
                     tracing::error!(
-                        player_id = pid,
+                        player_id = %pid,
                         packet = ?ty,
                         "TY packet processing task cancelled or failed: {:?}",
                         je
@@ -348,7 +373,8 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         // Отложенные broadcast'ы из ECS-систем (sand, combat).
         for effect in broadcasts {
             match effect {
-                crate::game::BroadcastEffect::CellUpdate(x, y) => {
+                crate::game::BroadcastEffect::CellUpdate(pos) => {
+                    let (x, y): (i32, i32) = pos.into();
                     crate::game::broadcast_cell_update(&state, x, y);
                 }
                 crate::game::BroadcastEffect::Nearby {
@@ -389,7 +415,8 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             tokio::spawn(async move {
                 let _guard = DbTaskGuard { state: state_clone };
-                for ((bx, by), op) in box_ops {
+                for (pos, op) in box_ops {
+                    let (bx, by): (i32, i32) = pos.into();
                     let r = match op {
                         None => db.delete_box_at(bx, by).await,
                         Some(crystals) => db.upsert_box(bx, by, &crystals).await,
@@ -408,14 +435,17 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             if conv.ticks_left > 1 {
                 conv.ticks_left -= 1;
                 remaining_conversions.push(conv);
-            } else if state.world.valid_coord(conv.x, conv.y)
-                && state.world.get_cell(conv.x, conv.y) == conv.required_cell
-            {
+            } else {
+                let (x, y): (i32, i32) = conv.pos.into();
+                let should_convert = state.world.valid_coord(x, y)
+                    && state.world.get_cell(x, y) == conv.required_cell;
                 // ticks_left == 1: выполняем действие, если guard cell совпадает.
-                state.world.set_cell(conv.x, conv.y, conv.target_cell);
-                state.world.set_durability(conv.x, conv.y, conv.durability);
-                crate::game::broadcast_cell_update(&state, conv.x, conv.y);
-                converted_owners.push(conv.owner_pid);
+                if should_convert {
+                    state.world.set_cell(x, y, conv.target_cell);
+                    state.world.set_durability(x, y, conv.durability);
+                    crate::game::broadcast_cell_update(&state, x, y);
+                    converted_owners.push(conv.owner_pid);
+                }
             }
         }
         // Возвращаем оставшиеся + начисляем 2-й BuildWar-exp за конвертацию
@@ -429,7 +459,8 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 let Some(entity) = state.get_player_entity(owner) else {
                     continue;
                 };
-                if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkills>(entity)
+                if let Some(mut skills) =
+                    ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
                     && crate::game::skills::add_skill_exp(
                         &mut skills.states,
                         crate::game::skills::SkillType::BuildWar.code(),
@@ -444,7 +475,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             }
         }
         for (owner, payload) in buildwar_pkts {
-            if let Some(tx) = state.player_sessions.get(&owner).map(|t| t.clone()) {
+            if let Some(tx) = state.player_tx.get(&owner).map(|t| t.clone()) {
                 let sk = crate::protocol::packets::skills_packet(&payload);
                 let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
             }
@@ -525,7 +556,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             }
             for pid in due {
-                if let Some(tx) = state.player_sessions.get(&pid).map(|t| t.clone()) {
+                if let Some(tx) = state.player_tx.get(&pid).map(|t| t.clone()) {
                     crate::net::session::play::chunks::bots_render(&state, &tx, pid);
                 }
             }
@@ -571,5 +602,87 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             win_max_side = std::time::Duration::ZERO;
             win_max_actions = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn online_count_broadcast_sends_on_to_active_players() {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}", std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("online_count_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut p1 = database.create_player("online-a", "p", "h1").await.unwrap();
+        let mut p2 = database.create_player("online-b", "p", "h2").await.unwrap();
+        p1.x = 5;
+        p1.y = 5;
+        p2.x = 6;
+        p2.y = 5;
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("online_count_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&state, &tx1, &p1, 1);
+        crate::net::session::player::init::connect_in_tick(&state, &tx2, &p2, 2);
+        drain_queued_packets(&mut rx1);
+        drain_queued_packets(&mut rx2);
+
+        broadcast_online_count(&state);
+
+        assert_online_packet(&mut rx1, b"2:0");
+        assert_online_packet(&mut rx2, b"2:0");
+        assert!(rx1.try_recv().is_err());
+        assert!(rx2.try_recv().is_err());
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+    }
+
+    fn drain_queued_packets(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    fn assert_online_packet(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>, expected_payload: &[u8]) {
+        let frame = rx.try_recv().expect("ON frame");
+        let mut buf = BytesMut::from(&frame[..]);
+        let packet = crate::protocol::Packet::try_decode(&mut buf)
+            .expect("valid packet")
+            .expect("decoded packet");
+        assert_eq!(packet.event_str(), "ON");
+        assert_eq!(packet.payload.as_ref(), expected_payload);
+    }
+
+    fn unique_test_nonce() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 }

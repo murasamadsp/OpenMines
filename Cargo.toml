@@ -1,30 +1,14 @@
-[package]
-name = "openmines-server"
-description = "OpenMines — игровой сервер (Rust) и legacy Unity-клиент"
-version = "0.0.2"
-edition = "2024"
-homepage = "https://github.com/murasama/OpenMines"
-repository = "https://github.com/murasama/OpenMines"
-authors = ["OpenMines contributors"]
-keywords = ["game", "server", "rust", "tcp", "sqlite"]
-license = "MIT"
+[workspace]
+resolver = "2"
+members = [
+    "crates/openmines-shared",
+    "server",
+    "tools/loadtest",
+    "tools/proxy",
+]
 
-[[bin]]
-name = "openmines-server"
-path = "server/main.rs"
-
-# Нагрузочный замер (dev-тул): N синтетических wire-клиентов. См. server/bin/loadtest.rs.
-[[bin]]
-name = "loadtest"
-path = "server/bin/loadtest.rs"
-
-# Прокси-сервер для бесшовного обновления
-[[bin]]
-name = "openmines-proxy"
-path = "server/bin/proxy.rs"
-
-[dependencies]
-tokio = { version = "1.52.3", features = ["full"] }
+[workspace.dependencies]
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "io-std", "sync", "time", "signal", "macros", "fs"] }
 bytes = "1.12.0"
 memmap2 = "0.9.10"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -38,7 +22,7 @@ rayon = "1.12.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 tracing-appender = "0.2.5"
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 prometheus = "0.14.0"
 bevy_ecs = "0.18.1"
 base64 = "0.22.1"
@@ -50,7 +34,8 @@ strum = { version = "0.28.0", features = ["derive"] }
 dotnet-rng = "1.0.5"
 clap = { version = "4.5.31", features = ["derive", "env"] }
 
-
+# Internal workspace dependency
+openmines-shared = { path = "crates/openmines-shared" }
 
 [profile.release]
 opt-level = 3
@@ -58,8 +43,5 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
-# Не стрипать proc-macro/build-script dylib: на macOS (ld-1328+) strip ломает
-# выравнивание LINKEDIT и dlopen падает с "mis-aligned LINKEDIT string pool".
-# Финальный бинарь остаётся stripped — эти артефакты в релиз не попадают.
 [profile.release.build-override]
 strip = false

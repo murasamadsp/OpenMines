@@ -1,7 +1,7 @@
 //! Обработка нажатий GUI-кнопок игроком.
 use crate::game::buildings::{
-    BuildingCrafting, BuildingMetadata, BuildingOwnership, BuildingStats, BuildingStorage,
-    GridPosition,
+    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
+    BuildingStorage, GridPosition,
 };
 use crate::game::crafting;
 use crate::game::market;
@@ -9,6 +9,61 @@ use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerSt
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{broadcast_pack_update, modify_pack_with_db};
+
+fn parse_six_i64_fields(data: &str) -> Option<[i64; 6]> {
+    let mut out = [0_i64; 6];
+    let mut parts = data.split(':');
+    for slot in &mut out {
+        let part = parts.next()?;
+        if part.is_empty() {
+            return None;
+        }
+        *slot = part.parse().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(out)
+}
+
+fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
+    let mut fields = std::collections::HashMap::new();
+    if data.is_empty() {
+        return Some(fields);
+    }
+    for pair in data.split('#') {
+        let (key, value) = pair.split_once(':')?;
+        if key.is_empty() || value.is_empty() {
+            return None;
+        }
+        fields.insert(key, value);
+    }
+    Some(fields)
+}
+
+fn parse_settings_pairs(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
+    let mut fields = std::collections::HashMap::new();
+    let trimmed = data.strip_suffix('#').unwrap_or(data);
+    if trimmed.is_empty() {
+        return None;
+    }
+    for pair in trimmed.split('#') {
+        let (key, value) = pair.split_once(':')?;
+        if key.is_empty() || value.is_empty() {
+            return None;
+        }
+        fields.insert(key, value);
+    }
+    Some(fields)
+}
+
+fn parse_rich_bool(value: &str) -> Option<bool> {
+    match value {
+        "1" | "true" => Some(true),
+        "0" | "false" => Some(false),
+        _ => None,
+    }
+}
 
 pub async fn handle_gui_button(
     state: &Arc<GameState>,
@@ -233,16 +288,28 @@ async fn handle_complex_button(
         handle_settings_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("choose:") {
         // Клик item-грида аукциона (клиент хардкодит InvButton="choose").
-        if let Ok(item) = rest.parse::<i32>() {
-            super::auction_gui::open_item_auc(state, tx, pid, item).await;
+        match rest.parse::<i32>() {
+            Ok(item) => super::auction_gui::open_item_auc(state, tx, pid, item).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction choose action");
+                send_market_action_error(tx);
+            }
         }
     } else if let Some(rest) = button.strip_prefix("openorder:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            super::auction_gui::open_order(state, tx, pid, id).await;
+        match rest.parse::<i32>() {
+            Ok(id) => super::auction_gui::open_order(state, tx, pid, id).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction openorder action");
+                send_market_action_error(tx);
+            }
         }
     } else if let Some(rest) = button.strip_prefix("auccreate:") {
-        if let Ok(item) = rest.parse::<i32>() {
-            super::auction_gui::open_order_creation(state, tx, pid, item);
+        match rest.parse::<i32>() {
+            Ok(item) => super::auction_gui::open_order_creation(state, tx, pid, item),
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction create action");
+                send_market_action_error(tx);
+            }
         }
     } else if let Some(rest) = button.strip_prefix("aucsetcost:") {
         // aucsetcost:{item}:{cost}; невалидный cost → закрыть окно (1:1 C#).
@@ -254,6 +321,9 @@ async fn handle_complex_button(
                 }
                 _ => close_player_window(state, tx, pid),
             }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction setcost action");
+            send_market_action_error(tx);
         }
     } else if let Some(rest) = button.strip_prefix("aucsetnum:") {
         // aucsetnum:{item}:{cost}:{num}; невалидный num → закрыть окно (1:1 C#).
@@ -265,22 +335,35 @@ async fn handle_complex_button(
                 }
                 _ => close_player_window(state, tx, pid),
             }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction setnum action");
+            send_market_action_error(tx);
         }
     } else if let Some(rest) = button.strip_prefix("aucminbet:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            super::auction_gui::place_minimal_bet(state, tx, pid, id).await;
+        match rest.parse::<i32>() {
+            Ok(id) => super::auction_gui::place_minimal_bet(state, tx, pid, id).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction minbet action");
+                send_market_action_error(tx);
+            }
         }
     } else if let Some(rest) = button.strip_prefix("aucbet:") {
         // aucbet:{id}:{amount}; невалидная сумма → просто переоткрыть ордер (1:1 C#).
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         if let [id, amount] = parts.as_slice() {
-            if let Ok(id) = id.parse::<i32>() {
-                if let Ok(amount) = amount.parse::<i64>() {
+            match (id.parse::<i32>(), amount.parse::<i64>()) {
+                (Ok(id), Ok(amount)) => {
                     super::auction_gui::place_bet(state, tx, pid, id, amount).await;
-                } else {
-                    super::auction_gui::open_order(state, tx, pid, id).await;
+                }
+                (Ok(id), Err(_)) => super::auction_gui::open_order(state, tx, pid, id).await,
+                (Err(e), _) => {
+                    tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction bet action");
+                    send_market_action_error(tx);
                 }
             }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction bet action");
+            send_market_action_error(tx);
         }
     } else if let Some(rest) = button.strip_prefix("openprog:") {
         if let Ok(id) = rest.parse::<i32>() {
@@ -310,11 +393,18 @@ async fn handle_pack_operation(
 ) {
     let parts: Vec<&str> = op.split(':').collect();
     if parts.len() < 3 {
+        send_pack_action_error(tx);
         return;
     }
     let cmd = parts[0];
-    let x = parts[1].parse::<i32>().unwrap_or(0);
-    let y = parts[2].parse::<i32>().unwrap_or(0);
+    let (x, y) = match (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
+        (Ok(x), Ok(y)) => (x, y),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(player_id = %pid, action = op, error = ?e, "Invalid pack operation coordinates");
+            send_pack_action_error(tx);
+            return;
+        }
+    };
 
     let Some(view) = state.get_pack_at(x, y) else {
         return;
@@ -334,9 +424,11 @@ async fn handle_pack_operation(
     // Only admin operations require ownership.
     if view.pack_type == PackType::Market && cmd == "open" {
         // Only proximity check for Market open
-        if !view
-            .pack_type
-            .building_cells()
+        let Ok(cells) = view.pack_type.building_cells() else {
+            tracing::error!(pack_type = ?view.pack_type, "Missing building config for pack GUI");
+            return;
+        };
+        if !cells
             .iter()
             .any(|(dx, dy, _)| view.x + dx == px && view.y + dy == py)
         {
@@ -424,7 +516,15 @@ pub fn open_pack_gui(
         let pstats = ecs.get::<BuildingStats>(*ent)?;
         Some((pstats.hp, pstats.max_hp))
     });
-    let (hp, mhp) = pstats_info.unwrap_or((0, 0));
+    let Some((hp, mhp)) = pstats_info else {
+        tracing::error!(
+            x = view.x,
+            y = view.y,
+            "Building stats missing for pack GUI"
+        );
+        send_pack_action_error(tx);
+        return;
+    };
 
     let text = format!(
         "Здание: {}\nЗаряд: {:.1}\nПрочность: {}/{}",
@@ -536,32 +636,66 @@ pub fn handle_pack_save(
         return;
     }
 
-    let mut fields: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for pair in richlist_data.split('#') {
-        if let Some((k, v)) = pair.split_once(':') {
-            fields.insert(k, v);
-        }
-    }
+    let Some(fields) = parse_rich_key_values(richlist_data) else {
+        send_pack_action_error(tx);
+        return;
+    };
+    let cost = match fields.get("cost") {
+        Some(raw) => match raw.parse::<i32>() {
+            Ok(cost) if (0..=5000).contains(&cost) => Some(cost),
+            _ => {
+                send_pack_action_error(tx);
+                return;
+            }
+        },
+        None => None,
+    };
+    let clan_enabled = match fields.get("clan") {
+        Some(raw) => match parse_rich_bool(raw) {
+            Some(value) => Some(value),
+            None => {
+                send_pack_action_error(tx);
+                return;
+            }
+        },
+        None => None,
+    };
     let owner_clan = state
         .query_player_opt(pid, |ecs, e| {
             ecs.get::<PlayerStats>(e).and_then(|s| s.clan_id)
         })
         .unwrap_or(0);
 
-    let _ = modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
+    let updated = match modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
+        let mut updated = false;
         if let Some(mut st) = ecs.get_mut::<BuildingStats>(entity) {
-            if let Some(c) = fields.get("cost").and_then(|s| s.parse::<i32>().ok()) {
-                if (0..=5000).contains(&c) {
-                    st.cost = c;
-                }
+            if let Some(cost) = cost {
+                st.cost = cost;
+                updated = true;
             }
+        } else if cost.is_some() {
+            return false;
         }
         if let Some(mut own) = ecs.get_mut::<BuildingOwnership>(entity) {
-            if let Some(clan) = fields.get("clan") {
-                own.clan_id = if *clan == "1" { owner_clan } else { 0 };
+            if let Some(clan_enabled) = clan_enabled {
+                own.clan_id = if clan_enabled { owner_clan } else { 0 };
+                updated = true;
             }
+        } else if clan_enabled.is_some() {
+            return false;
         }
-    });
+        updated
+    }) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(x = pack_x, y = pack_y, error = %e, "Pack save failed");
+            false
+        }
+    };
+    if !updated {
+        send_pack_action_error(tx);
+        return;
+    }
 
     open_pack_admin_gui(state, tx, pid, pack_x, pack_y);
 }
@@ -572,27 +706,49 @@ fn handle_pack_take_money(
     pid: PlayerId,
     view: &PackView,
 ) {
+    if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
+        send_pack_state_error(tx);
+        return;
+    }
+
     let mut amount = 0i64;
-    if modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
-        if let Some(mut s) = ecs.get_mut::<BuildingStorage>(entity) {
-            amount = s.money;
-            s.money = 0;
+    let updated = match modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
+        let mut storage = ecs
+            .get_mut::<BuildingStorage>(entity)
+            .expect("BuildingStorage checked before pack money withdrawal");
+        amount = storage.money;
+        storage.money = 0;
+        true
+    }) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(x = view.x, y = view.y, error = %e, "Pack money withdrawal failed");
+            send_pack_state_error(tx);
+            return;
         }
-    })
-    .is_ok()
-    {
-        if amount > 0 {
-            state.modify_player(pid, |ecs, entity| {
-                // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
-                if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-                    f.dirty = true;
-                }
-                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+    };
+    if !updated {
+        send_pack_action_error(tx);
+        return;
+    }
+
+    if amount > 0 {
+        state.modify_player(pid, |ecs, entity| {
+            // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
+            let (money_now, creds_now) = {
+                let mut s = ecs
+                    .get_mut::<PlayerStats>(entity)
+                    .expect("PlayerStats checked before pack money withdrawal");
                 s.money += amount;
-                send_u_packet(tx, "P$", &money(s.money, s.creds).1);
-                Some(())
-            });
-        }
+                (s.money, s.creds)
+            };
+            let mut f = ecs
+                .get_mut::<PlayerFlags>(entity)
+                .expect("PlayerFlags checked before pack money withdrawal");
+            f.dirty = true;
+            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
+            Some(())
+        });
     }
 }
 
@@ -602,30 +758,69 @@ fn handle_pack_take_crystals(
     pid: PlayerId,
     view: &PackView,
 ) {
+    if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
+        send_pack_state_error(tx);
+        return;
+    }
+
     let mut amount = [0i64; 6];
-    if modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
-        if let Some(mut s) = ecs.get_mut::<BuildingStorage>(entity) {
-            amount = s.crystals;
-            s.crystals = [0; 6];
+    let updated = match modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
+        let mut storage = ecs
+            .get_mut::<BuildingStorage>(entity)
+            .expect("BuildingStorage checked before pack crystal withdrawal");
+        amount = storage.crystals;
+        storage.crystals = [0; 6];
+        true
+    }) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(x = view.x, y = view.y, error = %e, "Pack crystal withdrawal failed");
+            send_pack_state_error(tx);
+            return;
         }
-    })
-    .is_ok()
-    {
-        if amount.iter().sum::<i64>() > 0 {
-            state.modify_player(pid, |ecs, entity| {
-                // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
-                if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-                    f.dirty = true;
-                }
-                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+    };
+    if !updated {
+        send_pack_action_error(tx);
+        return;
+    }
+
+    if amount.iter().sum::<i64>() > 0 {
+        state.modify_player(pid, |ecs, entity| {
+            // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
+            let crystals_now = {
+                let mut s = ecs
+                    .get_mut::<PlayerStats>(entity)
+                    .expect("PlayerStats checked before pack crystal withdrawal");
                 for i in 0..6 {
                     s.crystals[i] += amount[i];
                 }
-                send_u_packet(tx, "@B", &basket(&s.crystals, 1).1);
-                Some(())
-            });
-        }
+                s.crystals
+            };
+            let mut f = ecs
+                .get_mut::<PlayerFlags>(entity)
+                .expect("PlayerFlags checked before pack crystal withdrawal");
+            f.dirty = true;
+            send_u_packet(tx, "@B", &basket(&crystals_now, 1).1);
+            Some(())
+        });
     }
+}
+
+fn pack_withdraw_state_ready(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i32) -> bool {
+    let player_ready = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<PlayerStats>(entity).is_some() && ecs.get::<PlayerFlags>(entity).is_some()
+        })
+        .unwrap_or(false);
+    let building_ready = state
+        .building_index
+        .get(&(x, y))
+        .map(|ent| {
+            let ecs = state.ecs.read();
+            ecs.get::<BuildingStorage>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
+        })
+        .unwrap_or(false);
+    player_ready && building_ready
 }
 
 /// Open Storage-specific GUI with crystal sliders (1:1 with C# `Storage.MainPage`).
@@ -636,22 +831,30 @@ fn open_storage_gui(
     view: &PackView,
 ) {
     // Fetch storage crystals from ECS
-    let storage_crys = state
-        .building_index
-        .get(&(view.x, view.y))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let s = ecs.get::<BuildingStorage>(*ent)?;
-            Some(s.crystals)
-        })
-        .unwrap_or([0; 6]);
+    let storage_crys = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let s = ecs.get::<BuildingStorage>(*ent)?;
+        Some(s.crystals)
+    });
+    let Some(storage_crys) = storage_crys else {
+        tracing::error!(
+            x = view.x,
+            y = view.y,
+            "Building storage missing for storage GUI"
+        );
+        send_pack_action_error(tx);
+        return;
+    };
 
     // Fetch player crystals
-    let player_crys = state
-        .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
-        })
-        .unwrap_or([0; 6]);
+    let player_crys = state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
+    });
+    let Some(player_crys) = player_crys else {
+        tracing::error!(player_id = %pid, "Player stats missing for storage GUI");
+        send_pack_action_error(tx);
+        return;
+    };
 
     // Build crys_lines: each line is "LeftMin:RightMin:Denominator:CurrentValue:Label"
     // C# ref: CrysLine("", 0, 0, p.crys.cry[id] + cry, (int)(cry))
@@ -685,14 +888,9 @@ fn handle_storage_transfer(
     pid: PlayerId,
     slider_data: &str,
 ) {
-    // Parse 6 colon-separated i64 values
-    let sliders: Vec<i64> = slider_data
-        .split(':')
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    if sliders.len() != 6 {
+    let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
-    }
+    };
 
     // Resolve storage coordinates from current_window ("pack:{x}:{y}")
     let coords = state.query_player_opt(pid, |ecs, entity| {
@@ -735,12 +933,22 @@ fn handle_storage_transfer(
     let Some(player_entity) = state.get_player_entity(pid) else {
         return;
     };
+    if !pack_withdraw_state_ready(state, pid, bx, by) {
+        send_pack_state_error(tx);
+        return;
+    }
 
     // Atomic read-validate-write: single ecs.write() lock covers both storage and
     // player — prevents TOCTOU crystal duplication by concurrent clan members.
     let result = modify_pack_with_db(state, bx, by, |ecs, building_entity| {
-        let storage_crys = ecs.get::<BuildingStorage>(building_entity)?.crystals;
-        let player_crys = ecs.get::<PlayerStats>(player_entity)?.crystals;
+        let storage_crys = ecs
+            .get::<BuildingStorage>(building_entity)
+            .expect("BuildingStorage checked before storage transfer")
+            .crystals;
+        let player_crys = ecs
+            .get::<PlayerStats>(player_entity)
+            .expect("PlayerStats checked before storage transfer")
+            .crystals;
 
         let mut new_player = [0i64; 6];
         let mut new_storage = [0i64; 6];
@@ -753,16 +961,27 @@ fn handle_storage_transfer(
             new_storage[i] = sliders[i];
         }
 
-        ecs.get_mut::<BuildingStorage>(building_entity)?.crystals = new_storage;
-        ecs.get_mut::<PlayerStats>(player_entity)?.crystals = new_player;
-        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(player_entity) {
-            f.dirty = true;
-        }
+        ecs.get_mut::<BuildingStorage>(building_entity)
+            .expect("BuildingStorage checked before storage transfer")
+            .crystals = new_storage;
+        ecs.get_mut::<PlayerStats>(player_entity)
+            .expect("PlayerStats checked before storage transfer")
+            .crystals = new_player;
+        let mut f = ecs
+            .get_mut::<PlayerFlags>(player_entity)
+            .expect("PlayerFlags checked before storage transfer");
+        f.dirty = true;
         Some(new_player)
     });
 
-    let Ok(Some(new_player)) = result else {
-        return;
+    let new_player = match result {
+        Ok(Some(new_player)) => new_player,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::error!(x = bx, y = by, error = %e, "Storage transfer failed");
+            send_pack_state_error(tx);
+            return;
+        }
     };
 
     send_u_packet(tx, "@B", &basket(&new_player, 1).1);
@@ -919,11 +1138,21 @@ fn handle_craft_recipe_view(
     let _ = state;
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 3 {
+        send_crafter_action_error(tx);
         return;
     }
-    let recipe_id = parts[0].parse::<i32>().unwrap_or(-1);
-    let bx = parts[1].parse::<i32>().unwrap_or(0);
-    let by = parts[2].parse::<i32>().unwrap_or(0);
+    let (recipe_id, bx, by) = match (
+        parts[0].parse::<i32>(),
+        parts[1].parse::<i32>(),
+        parts[2].parse::<i32>(),
+    ) {
+        (Ok(recipe_id), Ok(bx), Ok(by)) => (recipe_id, bx, by),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            tracing::warn!(action = args, error = ?e, "Invalid craft recipe action");
+            send_crafter_action_error(tx);
+            return;
+        }
+    };
 
     let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
         return;
@@ -966,12 +1195,22 @@ fn handle_craft_start(
 ) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 4 {
+        send_crafter_action_error(tx);
         return;
     }
-    let recipe_id = parts[0].parse::<i32>().unwrap_or(-1);
-    let num = parts[1].parse::<i32>().unwrap_or(0).max(1);
-    let bx = parts[2].parse::<i32>().unwrap_or(0);
-    let by = parts[3].parse::<i32>().unwrap_or(0);
+    let (recipe_id, num, bx, by) = match (
+        parts[0].parse::<i32>(),
+        parts[1].parse::<i32>(),
+        parts[2].parse::<i32>(),
+        parts[3].parse::<i32>(),
+    ) {
+        (Ok(recipe_id), Ok(num), Ok(bx), Ok(by)) => (recipe_id, num.max(1), bx, by),
+        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
+            tracing::warn!(player_id = %pid, action = args, error = ?e, "Invalid craft start action");
+            send_crafter_action_error(tx);
+            return;
+        }
+    };
 
     let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
         return;
@@ -984,15 +1223,31 @@ fn handle_craft_start(
         return;
     }
 
-    let already_crafting = state
-        .building_index
-        .get(&(bx, by))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let c = ecs.get::<BuildingCrafting>(*ent)?;
-            Some(c.recipe_id.is_some())
+    let standing_on_crafter = state
+        .query_player_opt(pid, |ecs, entity| {
+            let pos = ecs.get::<PlayerPosition>(entity)?;
+            Some(pos.x == bx && pos.y == by)
         })
         .unwrap_or(false);
+    if !standing_on_crafter {
+        send_u_packet(tx, "OK", &ok_message("Недостаточно ресов", "...").1);
+        return;
+    }
+
+    let craft_state = state.building_index.get(&(bx, by)).and_then(|ent| {
+        let ecs = state.ecs.read();
+        let c = ecs.get::<BuildingCrafting>(*ent)?;
+        Some(c.recipe_id.is_some())
+    });
+    let Some(already_crafting) = craft_state else {
+        tracing::error!(
+            x = bx,
+            y = by,
+            "Building crafting component missing for craft start"
+        );
+        send_crafter_action_error(tx);
+        return;
+    };
     if already_crafting {
         send_u_packet(tx, "OK", &ok_message("Крафтер", "Крафт уже запущен").1);
         return;
@@ -1000,6 +1255,13 @@ fn handle_craft_start(
 
     let deducted = state
         .modify_player(pid, |ecs, entity| {
+            if ecs.get::<PlayerStats>(entity).is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+                || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
+            {
+                send_crafter_state_error(tx);
+                return None;
+            }
             {
                 let pstats = ecs.get::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
@@ -1034,25 +1296,71 @@ fn handle_craft_start(
                 }
                 send_inventory(tx, &mut inv);
             }
+            let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+            flags.dirty = true;
 
             Some(true)
         })
-        .flatten()
-        .unwrap_or(false);
+        .flatten();
 
+    let Some(deducted) = deducted else {
+        return;
+    };
     if !deducted {
         send_u_packet(tx, "OK", &ok_message("Крафтер", "Недостаточно ресурсов").1);
         return;
     }
 
     let end_ts = now_ts() + i64::from(recipe.time_sec) * i64::from(num);
-    let _ = modify_pack_with_db(state, bx, by, |ecs, entity| {
+    let updated = match modify_pack_with_db(state, bx, by, |ecs, entity| {
         if let Some(mut c) = ecs.get_mut::<BuildingCrafting>(entity) {
             c.recipe_id = Some(recipe_id);
             c.num = num;
             c.end_ts = end_ts;
+            true
+        } else {
+            false
         }
-    });
+    }) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(x = bx, y = by, error = %e, "Craft start failed after resource deduction");
+            false
+        }
+    };
+    if !updated {
+        state.modify_player(pid, |ecs, entity| {
+            if ecs.get::<PlayerStats>(entity).is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+                || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
+            {
+                send_crafter_state_error(tx);
+                return None;
+            }
+            {
+                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+                for c in recipe.cost_crys {
+                    pstats.crystals[c.id as usize] += i64::from(c.num) * i64::from(num);
+                }
+                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
+            }
+
+            if !recipe.cost_res.is_empty() {
+                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                for c in recipe.cost_res {
+                    let entry = inv.items.entry(c.id).or_insert(0);
+                    *entry += c.num * num;
+                }
+                send_inventory(tx, &mut inv);
+            }
+
+            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+            f.dirty = true;
+            Some(())
+        });
+        send_crafter_action_error(tx);
+        return;
+    }
 
     broadcast_pack_update(state, &view);
     show_crafter_progress(tx, &view, recipe_id, num, end_ts);
@@ -1067,10 +1375,17 @@ fn handle_craft_claim(
 ) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 2 {
+        send_crafter_action_error(tx);
         return;
     }
-    let bx = parts[0].parse::<i32>().unwrap_or(0);
-    let by = parts[1].parse::<i32>().unwrap_or(0);
+    let (bx, by) = match (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+        (Ok(bx), Ok(by)) => (bx, by),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(player_id = %pid, action = args, error = ?e, "Invalid craft claim action");
+            send_crafter_action_error(tx);
+            return;
+        }
+    };
 
     let Some(view) = state.get_pack_at(bx, by) else {
         return;
@@ -1098,21 +1413,72 @@ fn handle_craft_claim(
         return;
     };
 
-    state.modify_player(pid, |ecs, entity| {
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        let entry = inv.items.entry(recipe.result.id).or_insert(0);
-        *entry += recipe.result.num * num;
-        send_inventory(tx, &mut inv);
-        Some(())
-    });
+    let Some(player_entity) = state.get_player_entity(pid) else {
+        tracing::error!(player_id = %pid, "Player entity missing for craft claim");
+        send_crafter_action_error(tx);
+        return;
+    };
+    let Some(building_entity) = state
+        .building_index
+        .get(&(bx, by))
+        .map(|entry| *entry.value())
+    else {
+        tracing::error!(player_id = %pid, x = bx, y = by, "Craft building entity missing for claim");
+        send_crafter_action_error(tx);
+        return;
+    };
 
-    let _ = modify_pack_with_db(state, bx, by, |ecs, entity| {
-        if let Some(mut c) = ecs.get_mut::<BuildingCrafting>(entity) {
-            c.recipe_id = None;
-            c.num = 0;
-            c.end_ts = 0;
+    let claimed = {
+        let mut ecs = state.ecs.write();
+        if ecs.get::<PlayerInventory>(player_entity).is_none()
+            || ecs.get::<PlayerFlags>(player_entity).is_none()
+            || ecs.get::<BuildingCrafting>(building_entity).is_none()
+            || ecs.get::<BuildingFlags>(building_entity).is_none()
+        {
+            tracing::error!(player_id = %pid, x = bx, y = by, "Required state missing for craft claim");
+            send_crafter_state_error(tx);
+            return;
         }
-    });
+        let Some(craft) = ecs.get::<BuildingCrafting>(building_entity) else {
+            tracing::error!(player_id = %pid, x = bx, y = by, "Building crafting component missing for claim");
+            return;
+        };
+        if craft.recipe_id != Some(recipe_id) || craft.num != num || craft.end_ts != end_ts {
+            false
+        } else {
+            {
+                let mut inv = ecs
+                    .get_mut::<PlayerInventory>(player_entity)
+                    .expect("PlayerInventory checked before craft claim mutation");
+                let entry = inv.items.entry(recipe.result.id).or_insert(0);
+                *entry += recipe.result.num * num;
+                send_inventory(tx, &mut inv);
+            }
+
+            {
+                let mut craft = ecs
+                    .get_mut::<BuildingCrafting>(building_entity)
+                    .expect("BuildingCrafting checked before craft claim mutation");
+                craft.recipe_id = None;
+                craft.num = 0;
+                craft.end_ts = 0;
+            }
+            let mut flags = ecs
+                .get_mut::<PlayerFlags>(player_entity)
+                .expect("PlayerFlags checked before craft claim mutation");
+            flags.dirty = true;
+            let mut flags = ecs
+                .get_mut::<BuildingFlags>(building_entity)
+                .expect("BuildingFlags checked before craft claim mutation");
+            flags.dirty = true;
+            true
+        }
+    };
+
+    if !claimed {
+        send_crafter_action_error(tx);
+        return;
+    }
 
     broadcast_pack_update(state, &view);
     show_crafter_recipes(tx, &view);
@@ -1159,7 +1525,15 @@ fn open_teleport_gui(
         let pstats = ecs.get::<BuildingStats>(*ent)?;
         Some((pstats.hp, pstats.max_hp))
     });
-    let (hp, mhp) = pstats_info.unwrap_or((0, 0));
+    let Some((hp, mhp)) = pstats_info else {
+        tracing::error!(
+            x = view.x,
+            y = view.y,
+            "Building stats missing for teleport GUI"
+        );
+        send_pack_action_error(tx);
+        return;
+    };
 
     let text = if nearby_tps.is_empty() {
         format!(
@@ -1237,7 +1611,7 @@ fn handle_teleport_action(
 
     let Some(dest_view) = state.get_pack_at(dest_x, dest_y) else {
         tracing::warn!(
-            player_id = pid,
+            player_id = %pid,
             destination_x = dest_x,
             destination_y = dest_y,
             "TP action: destination not found"
@@ -1246,7 +1620,7 @@ fn handle_teleport_action(
     };
     if dest_view.pack_type != PackType::Teleport || dest_view.charge <= 0.0 {
         tracing::warn!(
-            player_id = pid,
+            player_id = %pid,
             destination_x = dest_x,
             destination_y = dest_y,
             "TP action: destination not a valid teleport"
@@ -1268,7 +1642,7 @@ fn handle_teleport_action(
 
     let Some((src_x, src_y)) = src_coords else {
         tracing::warn!(
-            player_id = pid,
+            player_id = %pid,
             "TP action: player not at a teleport window"
         );
         return;
@@ -1305,7 +1679,7 @@ fn handle_teleport_action(
     crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
 
     tracing::info!(
-        player_id = pid,
+        player_id = %pid,
         from_x = src_x,
         from_y = src_y,
         to_x = dest_x,
@@ -1514,13 +1888,9 @@ fn handle_market_sell(
     pid: PlayerId,
     slider_data: &str,
 ) {
-    let sliders: Vec<i64> = slider_data
-        .split(':')
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    if sliders.len() != 6 {
+    let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
-    }
+    };
 
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
@@ -1553,11 +1923,14 @@ fn handle_market_sellall(
     }
 
     // Get player's full crystal array
-    let player_crys = state
-        .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
-        })
-        .unwrap_or([0; 6]);
+    let player_crys = state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
+    });
+    let Some(player_crys) = player_crys else {
+        tracing::error!(player_id = %pid, "Player stats missing for market sellall");
+        send_market_action_error(tx);
+        return;
+    };
 
     let sliders: Vec<i64> = player_crys.to_vec();
     do_market_sell(state, tx, pid, &sliders, bx, by);
@@ -1575,48 +1948,82 @@ fn do_market_sell(
     bx: i32,
     by: i32,
 ) {
-    let mut total_money: i64 = 0;
+    let Some(player_entity) = state.get_player_entity(pid) else {
+        tracing::error!(player_id = %pid, "Player entity missing for market sell");
+        send_market_action_error(tx);
+        return;
+    };
+    let Some(building_entity) = state
+        .building_index
+        .get(&(bx, by))
+        .map(|entry| *entry.value())
+    else {
+        tracing::error!(x = bx, y = by, "Market building entity missing for sell");
+        send_market_action_error(tx);
+        return;
+    };
 
-    // Deduct crystals from player, compute money earned
-    state.modify_player(pid, |ecs, entity| {
-        // B2: пометить dirty — иначе периодический 10s-сейв (только dirty) пропускает
-        // сделку, и при краше до дисконнекта деньги/кристаллы теряются (как auction.rs).
-        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-            f.dirty = true;
+    let sell_result = 'sell: {
+        let mut ecs = state.ecs.write();
+        if ecs.get::<PlayerStats>(player_entity).is_none()
+            || ecs.get::<PlayerFlags>(player_entity).is_none()
+            || ecs.get::<BuildingStorage>(building_entity).is_none()
+            || ecs.get::<BuildingFlags>(building_entity).is_none()
+        {
+            break 'sell None;
         }
-        let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-        for i in 0..6 {
-            let to_sell = sliders[i];
-            if to_sell <= 0 {
-                continue;
-            }
-            // C# RemoveCrys: only succeeds if player has enough
-            if pstats.crystals[i] >= to_sell {
-                let price = market::get_crystal_cost(state, i);
-                let Some(earned) = to_sell.checked_mul(price) else {
+
+        let mut total_money: i64 = 0;
+        let Some((crystals, money_now, creds_now)) = ({
+            let Some(mut pstats) = ecs.get_mut::<PlayerStats>(player_entity) else {
+                break 'sell None;
+            };
+            for i in 0..6 {
+                let to_sell = sliders[i];
+                if to_sell <= 0 {
                     continue;
-                };
-                pstats.crystals[i] -= to_sell;
-                total_money = total_money.saturating_add(earned);
+                }
+                // C# RemoveCrys: only succeeds if player has enough.
+                if pstats.crystals[i] >= to_sell {
+                    let price = market::get_crystal_cost(state, i);
+                    let Some(earned) = to_sell.checked_mul(price) else {
+                        continue;
+                    };
+                    pstats.crystals[i] -= to_sell;
+                    total_money = total_money.saturating_add(earned);
+                }
             }
-        }
-        // Add money to player
-        pstats.money = pstats.money.saturating_add(total_money);
-        // Send updates
-        send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
-        send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
-        Some(())
-    });
+            pstats.money = pstats.money.saturating_add(total_money);
+            Some((pstats.crystals, pstats.money, pstats.creds))
+        }) else {
+            break 'sell None;
+        };
 
-    // Market owner gets 10% commission (C# ref: m.moneyinside += (long)(money * 0.1))
-    if total_money > 0 {
-        let commission = total_money / 10;
-        let _ = modify_pack_with_db(state, bx, by, |ecs, entity| {
-            if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(entity) {
-                storage.money += commission;
-            }
-        });
-    }
+        if total_money > 0 {
+            let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) else {
+                break 'sell None;
+            };
+            storage.money += total_money / 10;
+            let mut flags = ecs
+                .get_mut::<BuildingFlags>(building_entity)
+                .expect("BuildingFlags checked before market sell mutation");
+            flags.dirty = true;
+            let mut flags = ecs
+                .get_mut::<PlayerFlags>(player_entity)
+                .expect("PlayerFlags checked before market sell mutation");
+            flags.dirty = true;
+        }
+
+        Some((crystals, money_now, creds_now))
+    };
+    let Some((crystals, money_now, creds_now)) = sell_result else {
+        tracing::error!(player_id = %pid, x = bx, y = by, "Market sell failed before mutation");
+        send_market_state_error(tx);
+        return;
+    };
+
+    send_u_packet(tx, "@B", &basket(&crystals, 1).1);
+    send_u_packet(tx, "P$", &money(money_now, creds_now).1);
 
     // Re-render sell tab with updated crystal counts
     let Some(view) = state.get_pack_at(bx, by) else {
@@ -1633,13 +2040,9 @@ fn handle_market_buy(
     pid: PlayerId,
     slider_data: &str,
 ) {
-    let sliders: Vec<i64> = slider_data
-        .split(':')
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    if sliders.len() != 6 {
+    let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
-    }
+    };
 
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
@@ -1653,33 +2056,49 @@ fn handle_market_buy(
 
     // Buy crystals: deduct money, add crystals
     // C# ref: for each i: if sliders[i] > 0 && player can afford -> deduct money, add crystals
-    state.modify_player(pid, |ecs, entity| {
-        // B2: пометить dirty (см. do_market_sell) — иначе сделка теряется при краше.
-        if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-            f.dirty = true;
-        }
-        let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-        for i in 0..6 {
-            let to_buy = sliders[i];
-            if to_buy <= 0 {
-                continue;
+    let bought = state
+        .modify_player(pid, |ecs, entity| {
+            if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                send_market_state_error(tx);
+                return Some(false);
             }
-            // checked_mul: protect against overflow in release mode (wrapping mul could yield
-            // negative cost, bypassing the affordability check and granting free crystals/money).
-            let Some(cost) = to_buy.checked_mul(market::get_crystal_buy_price(state, i)) else {
-                continue;
+            let (crystals, money_now, creds_now) = {
+                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+                for i in 0..6 {
+                    let to_buy = sliders[i];
+                    if to_buy <= 0 {
+                        continue;
+                    }
+                    // checked_mul: protect against overflow in release mode (wrapping mul could yield
+                    // negative cost, bypassing the affordability check and granting free crystals/money).
+                    let Some(cost) = to_buy.checked_mul(market::get_crystal_buy_price(state, i))
+                    else {
+                        continue;
+                    };
+                    // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
+                    if pstats.money < cost {
+                        continue;
+                    }
+                    pstats.money -= cost;
+                    pstats.crystals[i] = pstats.crystals[i].saturating_add(to_buy);
+                }
+                (pstats.crystals, pstats.money, pstats.creds)
             };
-            // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
-            if pstats.money < cost {
-                continue;
-            }
-            pstats.money -= cost;
-            pstats.crystals[i] = pstats.crystals[i].saturating_add(to_buy);
-        }
-        send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
-        send_u_packet(tx, "P$", &money(pstats.money, pstats.creds).1);
-        Some(())
-    });
+            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+            f.dirty = true;
+            send_u_packet(tx, "@B", &basket(&crystals, 1).1);
+            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
+            Some(true)
+        })
+        .flatten();
+    let Some(bought) = bought else {
+        send_market_state_error(tx);
+        return;
+    };
+    if !bought {
+        return;
+    }
 
     // Re-render buy tab with updated money
     open_market_gui(state, tx, pid, &view, "buycrys");
@@ -1702,25 +2121,60 @@ fn handle_market_getprofit(
     if view.pack_type != PackType::Market || view.owner_id != pid {
         return;
     }
+    let player_state_ready = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<PlayerStats>(entity).is_some() && ecs.get::<PlayerFlags>(entity).is_some()
+        })
+        .unwrap_or(false);
+    if !player_state_ready {
+        send_market_state_error(tx);
+        return;
+    }
+    let building_state_ready = state
+        .building_index
+        .get(&(bx, by))
+        .map(|ent| {
+            let ecs = state.ecs.read();
+            ecs.get::<BuildingStorage>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
+        })
+        .unwrap_or(false);
+    if !building_state_ready {
+        send_market_state_error(tx);
+        return;
+    }
 
     // Transfer profit from building to player
     let mut amount = 0i64;
-    let _ = modify_pack_with_db(state, bx, by, |ecs, entity| {
-        if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(entity) {
-            amount = storage.money;
-            storage.money = 0;
+    let updated = match modify_pack_with_db(state, bx, by, |ecs, entity| {
+        let mut storage = ecs
+            .get_mut::<BuildingStorage>(entity)
+            .expect("BuildingStorage checked before market profit mutation");
+        amount = storage.money;
+        storage.money = 0;
+        true
+    }) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::error!(x = bx, y = by, error = %e, "Market profit withdrawal failed");
+            send_market_state_error(tx);
+            return;
         }
-    });
+    };
+    if !updated {
+        send_market_action_error(tx);
+        return;
+    }
 
     if amount > 0 {
         state.modify_player(pid, |ecs, entity| {
-            // B2: пометить dirty (см. do_market_sell).
-            if let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) {
-                f.dirty = true;
-            }
-            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-            s.money += amount;
-            send_u_packet(tx, "P$", &money(s.money, s.creds).1);
+            let (money_now, creds_now) = {
+                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                s.money += amount;
+                (s.money, s.creds)
+            };
+            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+            f.dirty = true;
+            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
             Some(())
         });
     }
@@ -1788,57 +2242,188 @@ fn handle_settings_save(
     pid: PlayerId,
     data: &str,
 ) {
-    // RichList macro %R% substitutes to "key=val,key=val,..."
-    let pairs: std::collections::HashMap<&str, &str> = data
-        .split(',')
-        .filter_map(|kv| kv.split_once('='))
-        .collect();
+    // Unity RichList macro %R% substitutes to "key:value#key:value#".
+    let Some(pairs) = parse_settings_pairs(data) else {
+        tracing::warn!(player_id = %pid, payload = data, "Malformed settings payload");
+        send_u_packet(
+            tx,
+            "OK",
+            &ok_message("НАСТРОЙКИ", "Некорректный формат настроек.").1,
+        );
+        return;
+    };
 
-    state.modify_player(pid, |ecs, entity| {
-        let mut s = ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?;
-        if let Some(&v) = pairs.get("isca") {
-            s.isca = v.parse().unwrap_or(s.isca);
+    let parse_i32 = |key: &str| -> Result<Option<i32>, std::num::ParseIntError> {
+        pairs.get(key).map(|v| v.parse::<i32>()).transpose()
+    };
+    let parse_bool = |key: &str| -> Result<Option<bool>, String> {
+        pairs
+            .get(key)
+            .map(|v| match *v {
+                "0" => Ok(false),
+                "1" => Ok(true),
+                other => Err(format!("invalid bool value for {key}: {other}")),
+            })
+            .transpose()
+    };
+
+    let isca = match parse_i32("isca") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = ?e, "Invalid isca setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректный масштаб интерфейса.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("tsca") {
-            s.tsca = v.parse().unwrap_or(s.tsca);
+    };
+    let tsca = match parse_i32("tsca") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = ?e, "Invalid tsca setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректный масштаб территории.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("mous") {
-            s.mous = v == "1";
+    };
+    let mous = match parse_bool("mous") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = %e, "Invalid mous setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("pot") {
-            s.pot = v == "1";
+    };
+    let pot = match parse_bool("pot") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = %e, "Invalid pot setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("frc") {
-            s.frc = v == "1";
+    };
+    let frc = match parse_bool("frc") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = %e, "Invalid frc setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("ctrl") {
-            s.ctrl = v == "1";
+    };
+    let ctrl = match parse_bool("ctrl") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = %e, "Invalid ctrl setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+            );
+            return;
         }
-        if let Some(&v) = pairs.get("mof") {
-            s.mof = v == "1";
+    };
+    let mof = match parse_bool("mof") {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(player_id = %pid, error = %e, "Invalid mof setting");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+            );
+            return;
         }
-        if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-            f.dirty = true;
-        }
-        Some(())
-    });
+    };
+
+    let saved = state
+        .modify_player(pid, |ecs, entity| {
+            if ecs
+                .get::<crate::game::player::PlayerSettings>(entity)
+                .is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                return None;
+            }
+            let mut s = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .expect("PlayerSettings checked before settings save");
+            if let Some(v) = isca {
+                s.isca = v;
+            }
+            if let Some(v) = tsca {
+                s.tsca = v;
+            }
+            if let Some(v) = mous {
+                s.mous = v;
+            }
+            if let Some(v) = pot {
+                s.pot = v;
+            }
+            if let Some(v) = frc {
+                s.frc = v;
+            }
+            if let Some(v) = ctrl {
+                s.ctrl = v;
+            }
+            if let Some(v) = mof {
+                s.mof = v;
+            }
+            ecs.get_mut::<PlayerFlags>(entity)
+                .expect("PlayerFlags checked before settings save")
+                .dirty = true;
+            Some(())
+        })
+        .flatten()
+        .is_some();
+    if !saved {
+        tracing::error!(player_id = %pid, "Player settings state missing for save");
+        send_u_packet(
+            tx,
+            "OK",
+            &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
+        );
+        return;
+    }
 
     // C# ref: SendSettings → send #S with updated values, then re-show GUI
     // For now we send #S with the values and re-open the settings GUI
-    let sett_wire = build_settings_wire(state, pid);
+    let Some(sett_wire) = build_settings_wire(state, pid) else {
+        tracing::error!(player_id = %pid, "Player settings component missing after save");
+        send_u_packet(
+            tx,
+            "OK",
+            &ok_message("НАСТРОЙКИ", "Настройки игрока недоступны.").1,
+        );
+        return;
+    };
     send_u_packet(tx, "#S", &sett_wire);
     crate::net::session::social::misc::handle_sett_ty(state, tx, pid, &[]);
 }
 
 /// Build #S packet payload from player's current settings.
 /// Wire format: `#key#value#key#value...` — 1:1 с `SettingsPacket.Encode()` в C# референсе.
-fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
-    let s = state
-        .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<crate::game::player::PlayerSettings>(entity)
-                .copied()
-        })
-        .unwrap_or_default();
+fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Option<Vec<u8>> {
+    let s = state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<crate::game::player::PlayerSettings>(entity)
+            .copied()
+    })?;
     let pairs: &[(&str, String)] = &[
         ("cc", s.cc.to_string()),
         ("snd", if s.snd { "1" } else { "0" }.to_string()),
@@ -1856,7 +2441,7 @@ fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Vec<u8> {
         .map(|(k, v)| format!("{k}#{v}"))
         .collect::<Vec<_>>()
         .join("#");
-    format!("#{inner}").into_bytes()
+    Some(format!("#{inner}").into_bytes())
 }
 
 // ─── Программатор ────────────────────────────────────────────────────────────
@@ -1876,15 +2461,72 @@ fn open_create_prog_dialog(
         .send(state, tx, pid, "createprog");
 }
 
+fn send_market_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(tx, "OK", &ok_message("МАРКЕТ", "Некорректное действие.").1);
+}
+
+fn send_market_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("МАРКЕТ", "Состояние маркета недоступно.").1,
+    );
+}
+
+fn send_pack_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(tx, "OK", &ok_message("ЗДАНИЕ", "Некорректное действие.").1);
+}
+
+fn send_pack_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ЗДАНИЕ", "Состояние здания недоступно.").1,
+    );
+}
+
+fn send_crafter_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(tx, "OK", &ok_message("КРАФТЕР", "Некорректное действие.").1);
+}
+
+fn send_crafter_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("КРАФТЕР", "Состояние крафтера недоступно.").1,
+    );
+}
+
+fn send_programmator_error(tx: &mpsc::UnboundedSender<Vec<u8>>, message: &str) {
+    send_u_packet(tx, "OK", &ok_message("ПРОГРАММАТОР", message).1);
+}
+
 async fn handle_open_prog(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     prog_id: i32,
 ) {
-    let prog = state.db.get_program(prog_id).await.ok().flatten();
-    let Some(p) = prog else { return };
-    if p.player_id != pid {
+    let p = match state.db.get_program(prog_id).await {
+        Ok(Some(program)) => program,
+        Ok(None) => {
+            send_programmator_error(tx, "Программа не найдена.");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for openprog");
+            send_programmator_error(tx, "Не удалось прочитать программу.");
+            return;
+        }
+    };
+    if p.player_id != pid.as_i32() {
+        tracing::warn!(
+            player_id = %pid,
+            program_id = prog_id,
+            owner_id = p.player_id,
+            "Rejected foreign program open"
+        );
+        send_programmator_error(tx, "Программа недоступна.");
         return;
     }
     state.modify_player(pid, |ecs, entity| {
@@ -1914,15 +2556,13 @@ async fn handle_create_prog(
     if name.is_empty() {
         return;
     }
-    match state.db.insert_program(pid, name, "").await {
+    match state.db.insert_program(pid.into(), name, "").await {
         Ok(prog_id) => {
-            let prog = state.db.get_program(prog_id).await.ok().flatten();
-            let Some(p) = prog else { return };
             state.modify_player(pid, |ecs, entity| {
                 if let Some(mut ps) =
                     ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
                 {
-                    ps.selected_id = Some(p.id);
+                    ps.selected_id = Some(prog_id);
                     ps.selected_data = Some(String::new());
                 }
                 Some(())
@@ -1932,10 +2572,13 @@ async fn handle_create_prog(
             send_u_packet(
                 tx,
                 "#P",
-                &crate::protocol::packets::open_programmator(p.id, &p.name, &p.code).1,
+                &crate::protocol::packets::open_programmator(prog_id, name, "").1,
             );
         }
-        Err(e) => tracing::warn!(player_id = pid, error = ?e, "DB insert failed for createprog"),
+        Err(e) => {
+            tracing::error!(player_id = %pid, error = ?e, "DB insert failed for createprog");
+            send_programmator_error(tx, "Не удалось создать программу.");
+        }
     }
 }
 
@@ -1950,13 +2593,31 @@ async fn handle_rename_prog(
     if name.is_empty() {
         return;
     }
-    let prog = state.db.get_program(prog_id).await.ok().flatten();
-    let Some(p) = prog else { return };
-    if p.player_id != pid {
+    let p = match state.db.get_program(prog_id).await {
+        Ok(Some(program)) => program,
+        Ok(None) => {
+            send_programmator_error(tx, "Программа не найдена.");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for rename program");
+            send_programmator_error(tx, "Не удалось прочитать программу.");
+            return;
+        }
+    };
+    if p.player_id != pid.as_i32() {
+        tracing::warn!(
+            player_id = %pid,
+            program_id = prog_id,
+            owner_id = p.player_id,
+            "Rejected foreign program rename"
+        );
+        send_programmator_error(tx, "Программа недоступна.");
         return;
     }
     if let Err(e) = state.db.rename_program(prog_id, name).await {
-        tracing::warn!(player_id = pid, program_id = prog_id, error = ?e, "DB rename failed for program");
+        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB rename failed for program");
+        send_programmator_error(tx, "Не удалось переименовать программу.");
         return;
     }
     send_u_packet(
@@ -1964,4 +2625,774 @@ async fn handle_rename_prog(
         "#P",
         &crate::protocol::packets::open_programmator(prog_id, name, &p.code).1,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    struct CraftTestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        db_path: std::path::PathBuf,
+        world_name: String,
+        dir: std::path::PathBuf,
+    }
+
+    impl CraftTestState {
+        fn cleanup(&self) {
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(
+                self.dir
+                    .join(format!("{}_durability.mapb", self.world_name)),
+            );
+        }
+    }
+
+    #[test]
+    fn parse_six_i64_fields_accepts_exact_six_values() {
+        assert_eq!(
+            parse_six_i64_fields("1:2:3:4:5:6"),
+            Some([1, 2, 3, 4, 5, 6])
+        );
+        assert_eq!(
+            parse_six_i64_fields("-1:0:10:20:30:40"),
+            Some([-1, 0, 10, 20, 30, 40])
+        );
+    }
+
+    #[test]
+    fn parse_six_i64_fields_rejects_partial_or_malformed_values() {
+        assert_eq!(parse_six_i64_fields("1:2:3:4:5"), None);
+        assert_eq!(parse_six_i64_fields("1:2:3:4:5:6:7"), None);
+        assert_eq!(parse_six_i64_fields("1:x:2:3:4:5:6"), None);
+        assert_eq!(parse_six_i64_fields("1::2:3:4:5"), None);
+    }
+
+    #[test]
+    fn parse_rich_key_values_rejects_malformed_pairs() {
+        let parsed = parse_rich_key_values("cost:10#clan:1").unwrap();
+        assert_eq!(parsed.get("cost"), Some(&"10"));
+        assert_eq!(parsed.get("clan"), Some(&"1"));
+        assert!(parse_rich_key_values("cost").is_none());
+        assert!(parse_rich_key_values("cost:").is_none());
+        assert!(parse_rich_key_values(":10").is_none());
+    }
+
+    #[test]
+    fn parse_settings_pairs_accepts_unity_richlist_payload() {
+        let parsed = parse_settings_pairs("isca:1#mous:0#").unwrap();
+        assert_eq!(parsed.get("isca"), Some(&"1"));
+        assert_eq!(parsed.get("mous"), Some(&"0"));
+    }
+
+    #[test]
+    fn parse_settings_pairs_rejects_missing_or_empty_fields() {
+        assert!(parse_settings_pairs("").is_none());
+        assert!(parse_settings_pairs("isca").is_none());
+        assert!(parse_settings_pairs("isca:").is_none());
+        assert!(parse_settings_pairs(":1").is_none());
+        assert!(parse_settings_pairs("isca:1##mous:0").is_none());
+    }
+
+    #[test]
+    fn parse_settings_pairs_rejects_legacy_equals_comma_payload() {
+        assert!(parse_settings_pairs("isca=1,mous=0").is_none());
+    }
+
+    #[test]
+    fn parse_rich_bool_accepts_only_explicit_bool_values() {
+        assert_eq!(parse_rich_bool("1"), Some(true));
+        assert_eq!(parse_rich_bool("true"), Some(true));
+        assert_eq!(parse_rich_bool("0"), Some(false));
+        assert_eq!(parse_rich_bool("false"), Some(false));
+        assert_eq!(parse_rich_bool("yes"), None);
+    }
+
+    #[tokio::test]
+    async fn settings_save_missing_player_flags_is_explicit_error_without_settings_mutation() {
+        let test = make_craft_test_state("settings_missing_player_flags", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut settings = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .unwrap();
+            settings.isca = 1;
+            settings.mous = false;
+            ecs.entity_mut(entity).remove::<PlayerFlags>();
+        }
+
+        handle_settings_save(&test.state, &tx, pid, "isca:5#mous:1#");
+
+        let saved_settings = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<crate::game::player::PlayerSettings>(entity)?
+                        .to_owned(),
+                )
+            })
+            .unwrap();
+        assert_eq!(saved_settings.isca, 1);
+        assert!(!saved_settings.mous);
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "НАСТРОЙКИ#Состояние настроек недоступно.".as_bytes()
+        );
+        assert!(!events.iter().any(|(event, _)| event == "#S"));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_start_rejects_remote_player_without_deducting_resources() {
+        let test = make_craft_test_state("remote", 5, 5).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(events[0].1, "Недостаточно ресов#...".as_bytes());
+
+        let state_after = craft_state(&test.state, 10, 10);
+        assert_eq!(state_after, (None, 0, 0));
+
+        let crystals = player_crystals(&test.state, test.player.id.into());
+        assert_eq!(crystals[0], 100);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_start_rejects_missing_crafting_component_without_deducting_resources() {
+        let test = make_craft_test_state("missing_component", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<BuildingCrafting>();
+        }
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(events[0].1, "КРАФТЕР#Некорректное действие.".as_bytes());
+
+        let crystals = player_crystals(&test.state, test.player.id.into());
+        assert_eq!(crystals[0], 100);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_start_missing_player_flags_is_explicit_error_without_deducting_resources() {
+        let test = make_craft_test_state("missing_player_flags", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerFlags>();
+        }
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "КРАФТЕР#Состояние крафтера недоступно.".as_bytes()
+        );
+        assert_eq!(player_crystals(&test.state, test.player.id.into())[0], 100);
+        assert_eq!(craft_state(&test.state, 10, 10), (None, 0, 0));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_start_on_crafter_origin_deducts_and_starts_recipe() {
+        let test = make_craft_test_state("local", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+
+        let (recipe_id, num, end_ts) = craft_state(&test.state, 10, 10);
+        assert_eq!(recipe_id, Some(0));
+        assert_eq!(num, 1);
+        assert!(end_ts > 0);
+
+        let crystals = player_crystals(&test.state, test.player.id.into());
+        assert_eq!(crystals[0], 50);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_claim_clears_crafter_before_second_claim_can_duplicate_reward() {
+        let test = make_craft_test_state("claim_once", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        {
+            let entity = *test.state.building_index.get(&(10, 10)).unwrap();
+            let mut ecs = test.state.ecs.write();
+            let mut craft = ecs.get_mut::<BuildingCrafting>(entity).unwrap();
+            craft.end_ts = 0;
+        }
+        drain_events(&mut rx);
+
+        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+
+        assert_eq!(
+            player_inventory_count(&test.state, test.player.id.into(), 0),
+            1
+        );
+        assert_eq!(craft_state(&test.state, 10, 10), (None, 0, 0));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn craft_claim_missing_building_flags_is_explicit_error_without_reward_or_clear() {
+        let test = make_craft_test_state("claim_missing_flags", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        {
+            let entity = *test.state.building_index.get(&(10, 10)).unwrap();
+            let mut ecs = test.state.ecs.write();
+            let mut craft = ecs.get_mut::<BuildingCrafting>(entity).unwrap();
+            craft.end_ts = 0;
+            ecs.entity_mut(entity).remove::<BuildingFlags>();
+        }
+        drain_events(&mut rx);
+
+        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "КРАФТЕР#Состояние крафтера недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_inventory_count(&test.state, test.player.id.into(), 0),
+            0
+        );
+        assert_eq!(craft_state(&test.state, 10, 10).0, Some(0));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn market_sell_missing_building_flags_is_explicit_error_without_money_or_crystal_mutation()
+     {
+        let test = make_market_test_state("sell_missing_building_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(building_entity).remove::<BuildingFlags>();
+        }
+        let before_money = player_money(&test.state, test.player.id.into());
+        let before_crystals = player_crystals(&test.state, test.player.id.into());
+
+        do_market_sell(
+            &test.state,
+            &tx,
+            test.player.id.into(),
+            &[10, 0, 0, 0, 0, 0],
+            10,
+            10,
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "МАРКЕТ#Состояние маркета недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_money(&test.state, test.player.id.into()),
+            before_money
+        );
+        assert_eq!(
+            player_crystals(&test.state, test.player.id.into()),
+            before_crystals
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn market_buy_missing_player_flags_is_explicit_error_without_money_or_crystal_mutation() {
+        let test = make_market_test_state("buy_missing_player_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut ui = ecs.get_mut::<PlayerUI>(player_entity).unwrap();
+            ui.current_window = Some("market:10:10:buycrys".to_string());
+            ecs.entity_mut(player_entity).remove::<PlayerFlags>();
+        }
+        let before_money = player_money(&test.state, test.player.id.into());
+        let before_crystals = player_crystals(&test.state, test.player.id.into());
+
+        handle_market_buy(&test.state, &tx, test.player.id.into(), "1:0:0:0:0:0");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "МАРКЕТ#Состояние маркета недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_money(&test.state, test.player.id.into()),
+            before_money
+        );
+        assert_eq!(
+            player_crystals(&test.state, test.player.id.into()),
+            before_crystals
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn market_getprofit_missing_building_flags_is_explicit_error_without_profit_mutation() {
+        let test = make_market_test_state("getprofit_missing_building_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut ui = ecs.get_mut::<PlayerUI>(player_entity).unwrap();
+            ui.current_window = Some("market:10:10:admin".to_string());
+            let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
+            storage.money = 777;
+            ecs.entity_mut(building_entity).remove::<BuildingFlags>();
+        }
+        let before_money = player_money(&test.state, test.player.id.into());
+
+        handle_market_getprofit(&test.state, &tx, test.player.id.into());
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "МАРКЕТ#Состояние маркета недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_money(&test.state, test.player.id.into()),
+            before_money
+        );
+        assert_eq!(market_storage_money(&test.state, 10, 10), 777);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn pack_take_money_missing_player_flags_is_explicit_error_without_storage_mutation() {
+        let test = make_market_test_state("pack_take_money_missing_player_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
+            storage.money = 777;
+            ecs.entity_mut(player_entity).remove::<PlayerFlags>();
+        }
+        let view = test.state.get_pack_at(10, 10).unwrap();
+        let before_money = player_money(&test.state, test.player.id.into());
+
+        handle_pack_take_money(&test.state, &tx, test.player.id.into(), &view);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "ЗДАНИЕ#Состояние здания недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_money(&test.state, test.player.id.into()),
+            before_money
+        );
+        assert_eq!(market_storage_money(&test.state, 10, 10), 777);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn pack_take_crystals_missing_player_flags_is_explicit_error_without_storage_mutation() {
+        let test = make_market_test_state("pack_take_crystals_missing_player_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
+            storage.crystals = [7, 6, 5, 4, 3, 2];
+            ecs.entity_mut(player_entity).remove::<PlayerFlags>();
+        }
+        let view = test.state.get_pack_at(10, 10).unwrap();
+        let before_crystals = player_crystals(&test.state, test.player.id.into());
+
+        handle_pack_take_crystals(&test.state, &tx, test.player.id.into(), &view);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "ЗДАНИЕ#Состояние здания недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_crystals(&test.state, test.player.id.into()),
+            before_crystals
+        );
+        assert_eq!(
+            market_storage_crystals(&test.state, 10, 10),
+            [7, 6, 5, 4, 3, 2]
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn storage_transfer_missing_player_flags_is_explicit_error_without_crystal_mutation() {
+        let test = make_storage_test_state("storage_transfer_missing_player_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
+        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut ui = ecs.get_mut::<PlayerUI>(player_entity).unwrap();
+            ui.current_window = Some("pack:10:10".to_string());
+            let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
+            storage.crystals = [10, 0, 0, 0, 0, 0];
+            ecs.entity_mut(player_entity).remove::<PlayerFlags>();
+        }
+        let before_player = player_crystals(&test.state, test.player.id.into());
+
+        handle_storage_transfer(&test.state, &tx, test.player.id.into(), "50:0:0:0:0:0");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "ЗДАНИЕ#Состояние здания недоступно.".as_bytes()
+        );
+        assert_eq!(
+            player_crystals(&test.state, test.player.id.into()),
+            before_player
+        );
+        assert_eq!(
+            market_storage_crystals(&test.state, 10, 10),
+            [10, 0, 0, 0, 0, 0]
+        );
+
+        test.cleanup();
+    }
+
+    async fn make_craft_test_state(label: &str, player_x: i32, player_y: i32) -> CraftTestState {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("craft_start_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database
+            .create_player("craft-user", "p", "h")
+            .await
+            .unwrap();
+        player.x = player_x;
+        player.y = player_y;
+        player.crystals[0] = 100;
+
+        let extra = crate::db::BuildingExtra {
+            hp: 1000,
+            max_hp: 1000,
+            ..crate::db::BuildingExtra::default()
+        };
+        let _building_id = database
+            .insert_building("F", 10, 10, player.id, 0, &extra)
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("craft_start_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        CraftTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    async fn make_market_test_state(label: &str) -> CraftTestState {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("market_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database
+            .create_player("market-user", "p", "h")
+            .await
+            .unwrap();
+        player.x = 10;
+        player.y = 10;
+        player.money = 10_000;
+        player.crystals[0] = 100;
+
+        let extra = crate::db::BuildingExtra {
+            hp: 1000,
+            max_hp: 1000,
+            money_inside: 0,
+            ..crate::db::BuildingExtra::default()
+        };
+        database
+            .insert_building("M", 10, 10, player.id, 0, &extra)
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("market_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        CraftTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    async fn make_storage_test_state(label: &str) -> CraftTestState {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("storage_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database
+            .create_player("storage-user", "p", "h")
+            .await
+            .unwrap();
+        player.x = 10;
+        player.y = 10;
+        player.money = 10_000;
+        player.crystals[0] = 100;
+
+        let extra = crate::db::BuildingExtra {
+            hp: 1000,
+            max_hp: 1000,
+            money_inside: 0,
+            ..crate::db::BuildingExtra::default()
+        };
+        database
+            .insert_building("L", 10, 10, player.id, 0, &extra)
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("storage_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        CraftTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    fn craft_state(state: &Arc<GameState>, bx: i32, by: i32) -> (Option<i32>, i32, i64) {
+        state
+            .building_index
+            .get(&(bx, by))
+            .and_then(|ent| {
+                let ecs = state.ecs.read();
+                let craft = ecs.get::<BuildingCrafting>(*ent)?;
+                Some((craft.recipe_id, craft.num, craft.end_ts))
+            })
+            .unwrap()
+    }
+
+    fn player_crystals(state: &Arc<GameState>, pid: PlayerId) -> [i64; 6] {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(ecs.get::<PlayerStats>(entity)?.crystals)
+            })
+            .unwrap()
+    }
+
+    fn player_inventory_count(state: &Arc<GameState>, pid: PlayerId, item_id: i32) -> i32 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<PlayerInventory>(entity)?
+                        .items
+                        .get(&item_id)
+                        .copied()
+                        .unwrap_or(0),
+                )
+            })
+            .unwrap()
+    }
+
+    fn player_money(state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(ecs.get::<PlayerStats>(entity)?.money)
+            })
+            .unwrap()
+    }
+
+    fn market_storage_money(state: &Arc<GameState>, bx: i32, by: i32) -> i64 {
+        state
+            .building_index
+            .get(&(bx, by))
+            .and_then(|ent| {
+                let ecs = state.ecs.read();
+                Some(ecs.get::<BuildingStorage>(*ent)?.money)
+            })
+            .unwrap()
+    }
+
+    fn market_storage_crystals(state: &Arc<GameState>, bx: i32, by: i32) -> [i64; 6] {
+        state
+            .building_index
+            .get(&(bx, by))
+            .and_then(|ent| {
+                let ecs = state.ecs.read();
+                Some(ecs.get::<BuildingStorage>(*ent)?.crystals)
+            })
+            .unwrap()
+    }
+
+    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    fn unique_test_nonce() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    }
 }

@@ -146,8 +146,10 @@ pub fn sand_physics_system(
             world.set_cell(dest_x, dest_y, cell.0);
             world.set_durability(dest_x, dest_y, dur);
 
-            bcast_q.0.push(BroadcastEffect::CellUpdate(sx, sy));
-            bcast_q.0.push(BroadcastEffect::CellUpdate(dest_x, dest_y));
+            bcast_q.0.push(BroadcastEffect::CellUpdate((sx, sy).into()));
+            bcast_q
+                .0
+                .push(BroadcastEffect::CellUpdate((dest_x, dest_y).into()));
         }
     }
 }

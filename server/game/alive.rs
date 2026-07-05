@@ -178,7 +178,9 @@ pub fn alive_physics_system(
     // Apply clears first (e.g., AliveWhite destroying sand above).
     for (cx, cy) in &clears {
         world.set_cell(*cx, *cy, cell_type::EMPTY);
-        bcast_q.0.push(BroadcastEffect::CellUpdate(*cx, *cy));
+        bcast_q
+            .0
+            .push(BroadcastEffect::CellUpdate((*cx, *cy).into()));
     }
 
     // Apply actions.
@@ -189,7 +191,7 @@ pub fn alive_physics_system(
         }
         bcast_q
             .0
-            .push(BroadcastEffect::CellUpdate(action.x, action.y));
+            .push(BroadcastEffect::CellUpdate((action.x, action.y).into()));
     }
 }
 

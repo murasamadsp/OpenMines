@@ -1,10 +1,73 @@
 use crate::db::{PlayerRow, SkillSlots};
 use bevy_ecs::prelude::Component;
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-pub type PlayerId = i32;
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct PlayerId(pub i32);
+
+impl From<i32> for PlayerId {
+    fn from(value: i32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<PlayerId> for i32 {
+    fn from(value: PlayerId) -> Self {
+        value.0
+    }
+}
+
+impl std::borrow::Borrow<i32> for PlayerId {
+    fn borrow(&self) -> &i32 {
+        &self.0
+    }
+}
+
+impl PlayerId {
+    #[must_use]
+    pub const fn as_i32(self) -> i32 {
+        self.0
+    }
+}
+
+impl fmt::Display for PlayerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for PlayerId {
+    type Err = <i32 as std::str::FromStr>::Err;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
+
+impl std::ops::Neg for PlayerId {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self(-self.0)
+    }
+}
+
+impl PartialEq<i32> for PlayerId {
+    fn eq(&self, other: &i32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<PlayerId> for i32 {
+    fn eq(&self, other: &PlayerId) -> bool {
+        *self == other.0
+    }
+}
 
 #[derive(Component)]
 pub struct PlayerPosition {
@@ -41,7 +104,7 @@ pub struct PlayerInventory {
 }
 
 #[derive(Component, Clone)]
-pub struct PlayerSkills {
+pub struct PlayerSkillsComp {
     /// Слотовая модель скиллов (1:1 C# `PlayerSkills`): slot→skill + slots + selectedslot.
     pub states: SkillSlots,
 }
@@ -139,6 +202,14 @@ pub struct PlayerConnection {
     pub tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
+impl PlayerConnection {
+    pub fn send_or_log(&self, data: Vec<u8>) {
+        if let Err(err) = self.tx.send(data) {
+            tracing::debug!("Player connection channel closed during send: {:?}", err);
+        }
+    }
+}
+
 pub struct ActivePlayer {
     pub ecs_entity: bevy_ecs::entity::Entity,
     /// Токен сеанса — идентифицирует конкретное подключение. Guard от
@@ -170,11 +241,11 @@ pub fn extract_player_row(
     let stats = ecs.get::<PlayerStats>(entity)?;
     let meta = ecs.get::<PlayerMetadata>(entity)?;
     let inv = ecs.get::<PlayerInventory>(entity)?;
-    let skills = ecs.get::<PlayerSkills>(entity)?;
+    let skills = ecs.get::<PlayerSkillsComp>(entity)?;
     let settings = ecs.get::<PlayerSettings>(entity)?;
 
     Some(PlayerRow {
-        id: meta.id,
+        id: meta.id.into(),
         name: meta.name.clone(),
         passwd: meta.passwd.clone(),
         hash: meta.hash.clone(),

@@ -7,6 +7,7 @@ pub mod building_damage;
 pub mod buildings;
 pub mod chat;
 pub mod combat;
+pub mod coords;
 pub mod crafting;
 pub mod direction;
 pub mod market;
@@ -18,6 +19,7 @@ pub mod skills;
 use crate::config::Config;
 use crate::db::Database;
 use crate::world::{World, WorldProvider};
+use anyhow::Context as _;
 use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
@@ -28,6 +30,7 @@ pub use buildings::{
     BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
     PackView,
 };
+pub use coords::{ChunkPos, WorldPos};
 pub use player::{
     ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
 };
@@ -42,7 +45,7 @@ pub struct WorldResource(pub Arc<crate::world::World>);
 /// Индекс боксов (crystal loot на земле) — lock-free `DashMap`, общий с `GameState`
 /// для консистентности между ECS-системами и async-хендлерами.
 #[derive(Resource, Clone)]
-pub struct BoxIndexResource(pub Arc<DashMap<(i32, i32), [i64; 6]>>);
+pub struct BoxIndexResource(pub Arc<DashMap<WorldPos, [i64; 6]>>);
 
 /// Очередь персистенции боксов — общая с `GameState`.
 #[derive(Resource, Clone)]
@@ -52,7 +55,7 @@ pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
 pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
 
 pub enum BroadcastEffect {
-    CellUpdate(i32, i32),
+    CellUpdate(WorldPos),
     Nearby {
         cx: u32,
         cy: u32,
@@ -112,8 +115,7 @@ pub struct PendingCellConversions(pub Vec<PendingConversion>);
 pub struct PackResendQueue(pub Vec<(i32, i32)>);
 
 pub struct PendingConversion {
-    pub x: i32,
-    pub y: i32,
+    pub pos: WorldPos,
     pub target_cell: u8,
     pub required_cell: u8,
     pub durability: f32,
@@ -132,7 +134,7 @@ pub type IncomingAction = (
     crate::protocol::packets::TyPacket,
 );
 /// Запись персистенции бокса: (координата, `Some`=upsert | `None`=delete).
-type BoxPersist = ((i32, i32), Option<[i64; 6]>);
+type BoxPersist = (WorldPos, Option<[i64; 6]>);
 /// Пакет в HB-overlay здания: поля именованы для читаемости (IR-3).
 #[derive(Clone, Copy, Debug)]
 pub struct PackOverlay {
@@ -197,11 +199,11 @@ pub struct GameState {
     pub db: Arc<Database>,
     pub config: Config,
     pub active_players: DashMap<PlayerId, ActivePlayer>,
-    pub chunk_players: DashMap<(u32, u32), Vec<PlayerId>>,
+    pub chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
     pub building_index: DashMap<(i32, i32), Entity>,
     pub botspot_index: DashMap<PlayerId, Entity>,
-    pub chunk_botspots: DashMap<(u32, u32), Vec<Entity>>,
-    pub chunk_buildings: DashMap<(u32, u32), Vec<Entity>>,
+    pub chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
+    pub chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     pub ecs: RwLock<EcsWorld>,
     pub schedule: RwLock<Schedule>,
@@ -212,11 +214,11 @@ pub struct GameState {
     pub life_queue: Mutex<Vec<LifeCmd>>,
     /// Монотонный счётчик токенов сеанса (см. `LifeCmd`/`ActivePlayer`).
     session_token_seq: std::sync::atomic::AtomicU64,
-    pub player_sessions: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    pub player_tx: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
     /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
-    pub box_index: Arc<DashMap<(i32, i32), [i64; 6]>>,
+    pub box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
     /// Arc — общий с ECS-ресурсами, чтобы не расходились.
     pub box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
@@ -239,7 +241,11 @@ pub struct GameState {
 impl GameState {
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
 
-    pub async fn new(world: Arc<World>, database: Arc<Database>, config: Config) -> Arc<Self> {
+    pub async fn new(
+        world: Arc<World>,
+        database: Arc<Database>,
+        config: Config,
+    ) -> anyhow::Result<Arc<Self>> {
         let mut schedule = Schedule::default();
         schedule.add_systems(sand::sand_physics_system);
         schedule.add_systems(combat::standing_cell_hazard_system);
@@ -300,7 +306,7 @@ impl GameState {
             incoming_actions: IncomingActionsQueue::new(),
             life_queue: Mutex::new(Vec::new()),
             session_token_seq: std::sync::atomic::AtomicU64::new(1),
-            player_sessions: DashMap::new(),
+            player_tx: DashMap::new(),
             box_index: Arc::new(DashMap::new()),
             box_persist_q: Arc::new(Mutex::new(Vec::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
@@ -314,7 +320,7 @@ impl GameState {
         match state.db.load_all_boxes().await {
             Ok(rows) => {
                 for (bx, by, crystals) in rows {
-                    state.box_index.insert((bx, by), crystals);
+                    state.box_index.insert((bx, by).into(), crystals);
                 }
                 tracing::info!(
                     "Loaded {} boxes into in-memory index",
@@ -340,37 +346,37 @@ impl GameState {
             ecs.insert_resource(PackResendQueue::default());
         }
 
-        Self::load_buildings_into_ecs(&state).await;
-        state
+        Self::load_buildings_into_ecs(&state).await?;
+        Ok(state)
     }
 
     /// Загрузить все здания из БД в ECS (вынесено из `new` — лимит строк).
-    async fn load_buildings_into_ecs(state: &Arc<Self>) {
-        let Ok(all_rows) = state.db.load_all_buildings().await else {
-            return;
-        };
+    async fn load_buildings_into_ecs(state: &Arc<Self>) -> anyhow::Result<()> {
+        let all_rows = state
+            .db
+            .load_all_buildings()
+            .await
+            .context("load buildings from database")?;
         let count = all_rows.len();
         let mut ecs = state.ecs.write();
         let mut spot_count = 0u32;
         for row in all_rows {
-            let entity = buildings::spawn_building_from_row(&mut ecs, &row);
+            let (entity, pack_type) = buildings::spawn_building_from_row(&mut ecs, &row)?;
             state.building_index.insert((row.x, row.y), entity);
             let (cx, cy) = World::chunk_pos(row.x, row.y);
             state
                 .chunk_buildings
-                .entry((cx, cy))
+                .entry((cx, cy).into())
                 .or_default()
                 .push(entity);
 
-            let pack_type =
-                buildings::PackType::from_str(&row.type_code).unwrap_or(buildings::PackType::Resp);
             if pack_type == buildings::PackType::Spot {
                 let botspot_entity = ecs
                     .spawn((
                         botspot::BotSpotMarker,
                         botspot::BotSpotData {
                             bot_id: -row.owner_id,
-                            owner_id: row.owner_id,
+                            owner_id: row.owner_id.into(),
                             clan_id: row.clan_id,
                             x: row.x,
                             y: row.y,
@@ -381,10 +387,12 @@ impl GameState {
                         programmator::ProgrammatorState::new(),
                     ))
                     .id();
-                state.botspot_index.insert(row.owner_id, botspot_entity);
+                state
+                    .botspot_index
+                    .insert(row.owner_id.into(), botspot_entity);
                 state
                     .chunk_botspots
-                    .entry((cx, cy))
+                    .entry((cx, cy).into())
                     .or_default()
                     .push(botspot_entity);
                 spot_count += 1;
@@ -394,6 +402,7 @@ impl GameState {
         tracing::info!(
             "Loaded {count} buildings into ECS from DB ({spot_count} Spot BotSpots spawned)"
         );
+        Ok(())
     }
 
     pub fn get_player_entity(&self, pid: PlayerId) -> Option<Entity> {
@@ -422,7 +431,14 @@ impl GameState {
     {
         let entity = self.get_player_entity(pid)?;
         let ecs = self.ecs.read();
-        Some(f(&ecs, entity))
+        if !ecs.entities().contains(entity) {
+            tracing::warn!(player_id = %pid, ?entity, "Player entity exists in active_players but is missing from ECS world!");
+            drop(ecs);
+            return None;
+        }
+        let res = f(&ecs, entity);
+        drop(ecs);
+        Some(res)
     }
 
     /// Как [`query_player`](Self::query_player), но для замыканий, возвращающих
@@ -435,13 +451,43 @@ impl GameState {
         self.query_player(pid, f).flatten()
     }
 
+    /// Query a player and log a debug message if they are not found (expected to be online).
+    pub fn query_player_expected<F, T>(&self, pid: PlayerId, context: &str, f: F) -> Option<T>
+    where
+        F: FnOnce(&EcsWorld, Entity) -> Option<T>,
+    {
+        let Some(entity) = self.get_player_entity(pid) else {
+            tracing::debug!(player_id = %pid, context = context, "Expected player entity not found in active_players (player offline)");
+            return None;
+        };
+        let ecs = self.ecs.read();
+        if !ecs.entities().contains(entity) {
+            tracing::warn!(player_id = %pid, ?entity, context = context, "Player exists in active_players but entity is missing from ECS world!");
+            drop(ecs);
+            return None;
+        }
+        let res = f(&ecs, entity);
+        drop(ecs);
+        if res.is_none() {
+            tracing::debug!(player_id = %pid, ?entity, context = context, "Player query returned None in expected context");
+        }
+        res
+    }
+
     pub fn modify_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
     where
         F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
         let mut ecs = self.ecs.write();
-        Some(f(&mut ecs, entity))
+        if !ecs.entities().contains(entity) {
+            tracing::warn!(player_id = %pid, ?entity, "Player entity exists in active_players but is missing from ECS world during modify!");
+            drop(ecs);
+            return None;
+        }
+        let res = f(&mut ecs, entity);
+        drop(ecs);
+        Some(res)
     }
 
     pub fn modify_building<F, R>(&self, entity: Entity, f: F) -> R
@@ -532,7 +578,7 @@ impl GameState {
 
     pub(crate) fn find_pack_covering_with(
         ecs: &EcsWorld,
-        chunk_buildings: &DashMap<(u32, u32), Vec<Entity>>,
+        chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,
         x: i32,
         y: i32,
     ) -> Option<(i32, i32)> {
@@ -544,7 +590,7 @@ impl GameState {
             if ncx < 0 || ncy < 0 {
                 continue;
             }
-            let key = (ncx.cast_unsigned(), ncy.cast_unsigned());
+            let key: ChunkPos = (ncx.cast_unsigned(), ncy.cast_unsigned()).into();
             if let Some(entities) = chunk_buildings.get(&key) {
                 for &entity in entities.value() {
                     let Some(pos) = ecs.get::<GridPosition>(entity) else {
@@ -553,7 +599,11 @@ impl GameState {
                     let Some(meta) = ecs.get::<BuildingMetadata>(entity) else {
                         continue;
                     };
-                    for (dx, dy, _) in meta.pack_type.building_cells() {
+                    for (dx, dy, _) in meta
+                        .pack_type
+                        .building_cells()
+                        .expect("loaded building pack type must have config")
+                    {
                         if pos.x + dx == x && pos.y + dy == y {
                             return Some((pos.x, pos.y));
                         }
@@ -580,7 +630,7 @@ impl GameState {
     /// пушки в радиусе 20. `anygun`: есть ЛЮБАЯ пушка в радиусе (для Gate-item).
     pub(crate) fn access_gun_with(
         ecs: &EcsWorld,
-        chunk_buildings: &DashMap<(u32, u32), Vec<Entity>>,
+        chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,
         x: i32,
         y: i32,
         player_clan_id: i32,
@@ -594,7 +644,7 @@ impl GameState {
                     continue;
                 }
                 if let Some(entities) =
-                    chunk_buildings.get(&(ncx.cast_unsigned(), ncy.cast_unsigned()))
+                    chunk_buildings.get(&(ncx.cast_unsigned(), ncy.cast_unsigned()).into())
                 {
                     for &entity in entities.value() {
                         let Some(pos) = ecs.get::<GridPosition>(entity) else {
@@ -612,7 +662,11 @@ impl GameState {
                         if meta.pack_type != PackType::Gun {
                             continue;
                         }
-                        for (dx, dy, _) in meta.pack_type.building_cells() {
+                        for (dx, dy, _) in meta
+                            .pack_type
+                            .building_cells()
+                            .expect("loaded building pack type must have config")
+                        {
                             let bx = pos.x + dx;
                             let by = pos.y + dy;
                             let ddx = f64::from(bx - x);
@@ -650,7 +704,7 @@ impl GameState {
     pub fn get_packs_in_single_chunk(&self, cx: u32, cy: u32) -> Vec<PackOverlay> {
         let mut results = Vec::new();
         let ecs = self.ecs.read();
-        if let Some(entities) = self.chunk_buildings.get(&(cx, cy)) {
+        if let Some(entities) = self.chunk_buildings.get(&(cx, cy).into()) {
             for &entity in entities.value() {
                 let pos = ecs.get::<GridPosition>(entity);
                 let meta = ecs.get::<BuildingMetadata>(entity);
@@ -677,7 +731,7 @@ impl GameState {
         let mut results = Vec::new();
         let ecs = self.ecs.read();
         for (ucx, ucy) in self.visible_chunks_around(cx, cy) {
-            if let Some(entities) = self.chunk_buildings.get(&(ucx, ucy)) {
+            if let Some(entities) = self.chunk_buildings.get(&(ucx, ucy).into()) {
                 for &entity in entities.value() {
                     let pos = ecs.get::<GridPosition>(entity);
                     let meta = ecs.get::<BuildingMetadata>(entity);
@@ -723,7 +777,7 @@ impl GameState {
     }
 
     pub fn send_to_player(&self, pid: PlayerId, data: Vec<u8>) {
-        if let Some(tx) = self.player_sessions.get(&pid) {
+        if let Some(tx) = self.player_tx.get(&pid) {
             let _ = tx.send(data);
         }
     }
@@ -733,17 +787,19 @@ impl GameState {
     /// Атомарно забрать бокс (pickup): удалить из индекса, вернуть кристаллы,
     /// поставить delete в очередь персистенции. Без `SQLite` (lock-free `DashMap`).
     pub fn box_take(&self, x: i32, y: i32) -> Option<[i64; 6]> {
-        let removed = self.box_index.remove(&(x, y)).map(|(_, v)| v);
+        let removed = self.box_index.remove(&(x, y).into()).map(|(_, v)| v);
         if removed.is_some() {
-            self.box_persist_q.lock().push(((x, y), None));
+            self.box_persist_q.lock().push(((x, y).into(), None));
         }
         removed
     }
 
     /// Положить/обновить бокс (death drop): индекс + upsert в очередь.
     pub fn box_put(&self, x: i32, y: i32, crystals: [i64; 6]) {
-        self.box_index.insert((x, y), crystals);
-        self.box_persist_q.lock().push(((x, y), Some(crystals)));
+        self.box_index.insert((x, y).into(), crystals);
+        self.box_persist_q
+            .lock()
+            .push(((x, y).into(), Some(crystals)));
     }
 
     /// Слить очередь персистенции боксов. На hot-path `BoxPersistQueue` дренится
@@ -756,9 +812,9 @@ impl GameState {
 
     pub fn broadcast_to_nearby(&self, cx: u32, cy: u32, data: &[u8], exclude_id: Option<PlayerId>) {
         // PB-2: итерируем напрямую под guard'ом DashMap — не клонируем Vec<PlayerId>.
-        // send_to_player берёт player_sessions (другой DashMap-шард) → дедлок невозможен.
+        // send_to_player берёт player_tx (другой DashMap-шард) → дедлок невозможен.
         for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
-            if let Some(players) = self.chunk_players.get(&(ncx, ncy)) {
+            if let Some(players) = self.chunk_players.get(&(ncx, ncy).into()) {
                 for &pid in players.value() {
                     if Some(pid) == exclude_id {
                         continue;
@@ -787,7 +843,7 @@ impl GameState {
         exclude_id: Option<PlayerId>,
     ) {
         // PB-2: то же — без клонирования Vec под guard'ом.
-        if let Some(players) = self.chunk_players.get(&(cx, cy)) {
+        if let Some(players) = self.chunk_players.get(&(cx, cy).into()) {
             for &pid in players.value() {
                 if Some(pid) == exclude_id {
                     continue;

@@ -152,12 +152,12 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     let res = handle_auth(&state, &tx, &au, &sid, session_token, &mut new_auth).await?;
                                     if let Some(id) = res {
                                         pid = Some(id);
-                                        tracing::Span::current().record("player_id", id);
+                                        tracing::Span::current().record("player_id", id.0);
                                         auth_state = new_auth;
                                         if let Some(kt) = kick_tx_opt.take() {
                                             state.kick_channels.insert(id, kt);
                                         }
-                                        tracing::info!(player_id = id, "Player authenticated");
+                                        tracing::info!(player_id = %id, "Player authenticated");
                                     } else {
                                         // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
                                         auth_state = new_auth;
@@ -177,12 +177,12 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                             let res = handle_gui_auth_flow(&state, &tx, button.as_ref(), session_token, step).await?;
                                             if let Some(id) = res {
                                                 pid = Some(id);
-                                                tracing::Span::current().record("player_id", id);
+                                                tracing::Span::current().record("player_id", id.0);
                                                 auth_state = AuthState::Authenticated;
                                                 if let Some(kt) = kick_tx_opt.take() {
                                                     state.kick_channels.insert(id, kt);
                                                 }
-                                                tracing::info!(player_id = id, "Player registered/logged via GUI");
+                                                tracing::info!(player_id = %id, "Player registered/logged via GUI");
                                             }
                                         }
                                     }
@@ -215,7 +215,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                                     &state_c, &tx_c, id, &ty
                                                 ).await {
                                                     tracing::error!(
-                                                        player_id = id,
+                                                        player_id = %id,
                                                         event = %event_owned,
                                                         error = ?e,
                                                         "Failed to dispatch async TY packet"

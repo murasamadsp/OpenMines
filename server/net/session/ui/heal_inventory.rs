@@ -5,7 +5,8 @@ use crate::game::buildings::{
     BuildingStorage, GridPosition, can_destroy, damage_building, is_damagable,
 };
 use crate::game::player::{
-    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkills, PlayerStats,
+    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
+    PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
 use crate::net::session::play::death::handle_death;
@@ -18,12 +19,28 @@ use crate::net::session::social::buildings::{
 
 // ─── Healing ────────────────────────────────────────────────────────────────
 
+fn send_heal_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ЛЕЧЕНИЕ", "Состояние игрока недоступно.").1,
+    );
+}
+
 pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
     let result = state
         .modify_player(pid, |ecs, entity| {
             let (h, mh, cry2, hx, hy) = {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
-                let pos = ecs.get::<PlayerPosition>(entity)?;
+                let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for heal");
+                    send_heal_state_error(tx);
+                    return None;
+                };
+                let Some(pos) = ecs.get::<PlayerPosition>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for heal");
+                    send_heal_state_error(tx);
+                    return None;
+                };
                 (
                     pstats.health,
                     pstats.max_health,
@@ -33,7 +50,11 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
                 )
             };
             let heal_amount = {
-                let skills = ecs.get::<PlayerSkills>(entity)?;
+                let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for heal");
+                    send_heal_state_error(tx);
+                    return None;
+                };
                 let v = get_player_skill_effect(&skills.states, SkillType::Repair);
                 v as i32
             };
@@ -44,13 +65,21 @@ pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
                 return None;
             }
             let (new_health, new_crys, pid_val) = {
-                let mut pstats_mut = ecs.get_mut::<PlayerStats>(entity)?;
+                let Some(mut pstats_mut) = ecs.get_mut::<PlayerStats>(entity) else {
+                    tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing while applying heal");
+                    send_heal_state_error(tx);
+                    return None;
+                };
                 pstats_mut.crystals[2] -= 1;
                 pstats_mut.health = (h + heal_amount).min(mh);
                 (pstats_mut.health, pstats_mut.crystals, hx)
             };
-            let skill_payload = if let Some(mut skills_mut) = ecs.get_mut::<PlayerSkills>(entity) {
-                add_skill_exp(&mut skills_mut.states, "e", 1.0);
+            let Some(mut skills_mut) = ecs.get_mut::<PlayerSkillsComp>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing while applying heal skill exp");
+                send_heal_state_error(tx);
+                return None;
+            };
+            let skill_payload = if add_skill_exp(&mut skills_mut.states, "e", 1.0) {
                 Some(skill_progress_payload(&skills_mut.states))
             } else {
                 None
@@ -95,6 +124,14 @@ fn is_exempt_item(sel: i32) -> bool {
     sel == 40 || (10..17).contains(&sel) || sel == 34 || sel == 42 || sel == 43 || sel == 46
 }
 
+fn send_inventory_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    send_u_packet(
+        tx,
+        "OK",
+        &ok_message("ИНВЕНТАРЬ", "Состояние инвентаря недоступно.").1,
+    );
+}
+
 pub async fn handle_inventory_use(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -107,28 +144,33 @@ pub async fn handle_inventory_use(
     // ставятся отдельным путём (без Inventory.time); здесь они идут через тот же
     // диспетчер, поэтому делят этот таймер. Benign (предотвращает дабл-плейсмент).
     let now = std::time::Instant::now();
-    let gate_passed = state
-        .modify_player(pid, |ecs, entity| {
-            let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
-            if now.duration_since(cd.last_inventory_use) >= std::time::Duration::from_millis(400) {
-                cd.last_inventory_use = now;
-                Some(true)
-            } else {
-                Some(false)
-            }
-        })
-        .flatten()
-        .unwrap_or(false);
+    let gate_passed = state.modify_player(pid, |ecs, entity| {
+        let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
+        if now.duration_since(cd.last_inventory_use) >= std::time::Duration::from_millis(400) {
+            cd.last_inventory_use = now;
+            Some(true)
+        } else {
+            Some(false)
+        }
+    });
+    let Some(gate_passed) = gate_passed.flatten() else {
+        tracing::error!(player_id = %pid, "Player cooldowns missing for inventory use");
+        send_inventory_state_error(tx);
+        return;
+    };
     if !gate_passed {
         return;
     }
 
-    let (sel, count) = state
-        .query_player_opt(pid, |ecs, entity| {
-            let inv = ecs.get::<PlayerInventory>(entity)?;
-            Some((inv.selected, *inv.items.get(&inv.selected).unwrap_or(&0)))
-        })
-        .unwrap_or((-1, 0));
+    let selected = state.query_player_opt(pid, |ecs, entity| {
+        let inv = ecs.get::<PlayerInventory>(entity)?;
+        Some((inv.selected, *inv.items.get(&inv.selected).unwrap_or(&0)))
+    });
+    let Some((sel, count)) = selected else {
+        tracing::error!(player_id = %pid, "Player inventory missing for inventory use");
+        send_inventory_state_error(tx);
+        return;
+    };
 
     if sel < 0 || count <= 0 {
         return;
@@ -138,25 +180,28 @@ pub async fn handle_inventory_use(
     // ContainsPack(facing) применяется ВСЕГДА (здание на facing блокирует ЛЮБОЙ
     // предмет; невалидные координаты C# трактует как занятые → return true).
     // Exemption ({40, 10-16, 34, 42, 43, 46}) обходит только can_place_over.
-    let check = state.query_player_opt(pid, |ecs, entity| {
+    let position = state.query_player_opt(pid, |ecs, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y, p.dir))
     });
-    if let Some((px, py, pdir)) = check {
-        let (dx, dy) = dir_offset(pdir);
-        let (fx, fy) = (px + dx, py + dy);
-        // C# `ContainsPack` → `Chunk.GetPack`: блок ТОЛЬКО если facing = ORIGIN
-        // здания (SetPack регистрирует Pack лишь в origin-клетке), НЕ footprint-aware.
-        // Раньше был `find_pack_covering` (весь футпринт) → строже C#/клиента.
-        if !state.world.valid_coord(fx, fy) || state.building_index.contains_key(&(fx, fy)) {
+    let Some((px, py, pdir)) = position else {
+        tracing::error!(player_id = %pid, "Player position missing for inventory use");
+        send_inventory_state_error(tx);
+        return;
+    };
+    let (dx, dy) = dir_offset(pdir);
+    let (fx, fy) = (px + dx, py + dy);
+    // C# `ContainsPack` → `Chunk.GetPack`: блок ТОЛЬКО если facing = ORIGIN
+    // здания (SetPack регистрирует Pack лишь в origin-клетке), НЕ footprint-aware.
+    // Раньше был `find_pack_covering` (весь футпринт) → строже C#/клиента.
+    if !state.world.valid_coord(fx, fy) || state.building_index.contains_key(&(fx, fy)) {
+        return;
+    }
+    // can_place_over: обходится только exempt-предметами.
+    if !is_exempt_item(sel) {
+        let cell = state.world.get_cell(fx, fy);
+        if !state.world.cell_defs().get(cell).can_place_over() {
             return;
-        }
-        // can_place_over: обходится только exempt-предметами.
-        if !is_exempt_item(sel) {
-            let cell = state.world.get_cell(fx, fy);
-            if !state.world.cell_defs().get(cell).can_place_over() {
-                return;
-            }
         }
     }
 
@@ -429,10 +474,16 @@ pub async fn place_building_from_item(
     if validate_building_area(state, bx, by, pack_type).is_err() {
         return false;
     }
-    let extra = building_extra_for_pack_type(pack_type);
+    let extra = match building_extra_for_pack_type(pack_type) {
+        Ok(extra) => extra,
+        Err(e) => {
+            tracing::error!(?pack_type, error = ?e, "Missing building config for inventory placement");
+            return false;
+        }
+    };
     let id = state
         .db
-        .insert_building(code, bx, by, pid, building_clan, &extra)
+        .insert_building(code, bx, by, pid.into(), building_clan, &extra)
         .await
         .ok();
     if let Some(db_id) = id {
@@ -475,7 +526,7 @@ pub async fn place_building_from_item(
         let (cx, cy) = crate::world::World::chunk_pos(bx, by);
         state
             .chunk_buildings
-            .entry((cx, cy))
+            .entry((cx, cy).into())
             .or_default()
             .push(entity);
         let view = PackView {
@@ -561,7 +612,7 @@ fn aoe_damage_players(
                     }
                 }
                 // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
-                if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
+                if let Some(mut skills) = ecs.get_mut::<PlayerSkillsComp>(entity) {
                     if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
                         let sk = skills_packet(&skill_progress_payload(&skills.states));
                         let _ = conn_tx
@@ -761,7 +812,7 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
             if let Some((ent, gate_id)) = gate {
                 state.building_index.remove(&(tgt_x, tgt_y));
                 let (gcx, gcy) = crate::world::World::chunk_pos(tgt_x, tgt_y);
-                if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy)) {
+                if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy).into()) {
                     e.retain(|&x| x != ent);
                 }
                 state.ecs.write().despawn(ent);
@@ -965,16 +1016,17 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         }
                     }
                     // Health skill exp (C# Player.Hurt → AddExp("l"))
-                    let skill_pkt = if let Some(mut skills) = ecs.get_mut::<PlayerSkills>(entity) {
-                        if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
-                            let sk = skills_packet(&skill_progress_payload(&skills.states));
-                            Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
+                    let skill_pkt =
+                        if let Some(mut skills) = ecs.get_mut::<PlayerSkillsComp>(entity) {
+                            if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
+                                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                                Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
+                            } else {
+                                None
+                            }
                         } else {
                             None
-                        }
-                    } else {
-                        None
-                    };
+                        };
                     if let Some(pkt) = skill_pkt {
                         if let Some(c) = ecs.get::<PlayerConnection>(entity) {
                             let _ = c.tx.send(pkt);
@@ -1032,4 +1084,242 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    struct TestState {
+        state: Arc<GameState>,
+        player: crate::db::PlayerRow,
+        world_name: String,
+        db_path: std::path::PathBuf,
+    }
+
+    impl TestState {
+        fn cleanup(&self) {
+            let dir = std::env::temp_dir();
+            let _ = std::fs::remove_file(&self.db_path);
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
+            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
+            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
+            let _ = std::fs::remove_file(dir.join(format!("{}_durability.mapb", self.world_name)));
+        }
+    }
+
+    async fn make_test_state(label: &str) -> TestState {
+        let dir = std::env::temp_dir();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let player = database
+            .create_player("inventory-user", "p", "h")
+            .await
+            .unwrap();
+
+        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        TestState {
+            state,
+            player,
+            world_name,
+            db_path,
+        }
+    }
+
+    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+        let mut events = Vec::new();
+        while let Ok(frame) = rx.try_recv() {
+            let mut buf = BytesMut::from(&frame[..]);
+            let packet = crate::protocol::Packet::try_decode(&mut buf)
+                .expect("valid packet")
+                .expect("decoded packet");
+            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn heal_missing_stats_is_explicit_error_not_full_health_fallback() {
+        let test = make_test_state("heal_missing_stats").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerStats>();
+        }
+
+        handle_heal(&test.state, &tx, pid);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn heal_missing_skills_is_explicit_error_not_no_repair_fallback() {
+        let test = make_test_state("heal_missing_skills").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut stats = ecs.get_mut::<PlayerStats>(entity).unwrap();
+            stats.health = 50;
+            stats.max_health = 100;
+            stats.crystals[2] = 1;
+            ecs.entity_mut(entity).remove::<PlayerSkillsComp>();
+        }
+
+        handle_heal(&test.state, &tx, pid);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn heal_without_repair_skill_stays_quiet_noop() {
+        let test = make_test_state("heal_no_repair_skill").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut stats = ecs.get_mut::<PlayerStats>(entity).unwrap();
+            stats.health = 50;
+            stats.max_health = 100;
+            stats.crystals[2] = 1;
+        }
+
+        handle_heal(&test.state, &tx, pid);
+
+        assert!(drain_events(&mut rx).is_empty());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn inventory_use_missing_cooldowns_is_explicit_error_not_cooldown_fallback() {
+        let test = make_test_state("inventory_missing_cooldowns").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.entity_mut(entity).remove::<PlayerCooldowns>();
+        }
+
+        handle_inventory_use(&test.state, &tx, pid).await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние инвентаря недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn inventory_use_missing_inventory_is_explicit_error_not_unselected_fallback() {
+        let test = make_test_state("inventory_missing_inventory").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut cd = ecs.get_mut::<PlayerCooldowns>(entity).unwrap();
+            cd.last_inventory_use -= Duration::from_millis(500);
+            ecs.entity_mut(entity).remove::<PlayerInventory>();
+        }
+
+        handle_inventory_use(&test.state, &tx, pid).await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние инвентаря недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn inventory_use_missing_position_is_explicit_error_not_skipped_facing_checks() {
+        let test = make_test_state("inventory_missing_position").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut cd = ecs.get_mut::<PlayerCooldowns>(entity).unwrap();
+            cd.last_inventory_use -= Duration::from_millis(500);
+            let mut inv = ecs.get_mut::<PlayerInventory>(entity).unwrap();
+            inv.selected = 10;
+            inv.items.insert(10, 1);
+            ecs.entity_mut(entity).remove::<PlayerPosition>();
+        }
+
+        handle_inventory_use(&test.state, &tx, pid).await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние инвентаря недоступно."));
+
+        test.cleanup();
+    }
 }

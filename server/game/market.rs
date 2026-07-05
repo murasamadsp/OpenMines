@@ -62,7 +62,7 @@ pub fn add_dob(state: &GameState, t: usize, dob: i64) {
 }
 
 /// Ежечасный пересчёт цен (C# `World.Update` блок `lastcryupdate`).
-/// p = (summary[i] + Σsummary) / 100; p>20 → mod−1 (пока mod>0); p<10 → mod+1 (пока cost<70).
+/// p = (summary\[i\] + Σsummary) / 100; p>20 → mod−1 (пока mod>0); p<10 → mod+1 (пока cost<70).
 pub fn tick_crystal_prices(state: &GameState) {
     let mut eco = state.crystal_economy.lock();
     if eco.last_update.elapsed() < PRICE_UPDATE_INTERVAL {
@@ -75,7 +75,7 @@ pub fn tick_crystal_prices(state: &GameState) {
 }
 
 /// Чистая логика пересчёта модификатора (без `GameState`, тестируемо).
-/// p = (summary[i] + Σsummary)/100; p>20 → mod−1 (пока mod>0, пол=base);
+/// p = (summary\[i\] + Σsummary)/100; p>20 → mod−1 (пока mod>0, пол=base);
 /// p<10 → mod+1 (пока cost<70).
 fn adjust_cost_mod(cost_mod: &mut [i64; 6], summary: &[i64; 6]) {
     let total: i64 = summary.iter().sum();

@@ -1,14 +1,3 @@
-#![allow(
-    dead_code,
-    clippy::enum_variant_names,
-    clippy::elidable_lifetime_names,
-    clippy::cast_precision_loss,
-    clippy::option_if_let_else,
-    clippy::match_same_arms,
-    clippy::suboptimal_flops,
-    clippy::map_unwrap_or
-)]
-
 use crate::db::SkillSlots;
 use std::collections::HashMap;
 
@@ -285,6 +274,7 @@ pub enum SkillCategory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // Prefixed with 'On' to match C# reference architecture naming conventions
 pub enum SkillEffectType {
     OnDig,
     OnExp,
@@ -297,24 +287,29 @@ pub enum SkillEffectType {
     OnHealth,
 }
 
+#[allow(dead_code)] // Will be used when digging skill hooks are integrated
 pub trait OnDig {
     fn on_dig(&self, current_val: f32) -> f32;
 }
 
+#[allow(dead_code)] // Will be used when digging crystal skill hooks are integrated
 pub trait OnDigCrys {
     fn on_dig_crys(&self, current_val: f32) -> f32;
 }
 
+#[allow(dead_code)] // Will be used when movement speed modifiers are wired into packet handlers
 pub trait OnMove {
     fn on_move(&self, current_val: f32) -> f32;
     fn on_move_road(&self, current_val: f32) -> f32;
 }
 
+#[allow(dead_code)] // Will be used when building construction cost/HP modifiers are integrated
 pub trait OnBld {
     fn on_bld(&self, skill: SkillType, current_cost: f32) -> f32;
     fn on_bld_hp(&self, skill: SkillType, current_hp: f32) -> f32;
 }
 
+#[allow(dead_code)] // Will be used when player health regeneration ticking is implemented
 pub trait OnHealth {
     fn on_health_max(&self, current_max: i32) -> i32;
     fn on_health_regen(&self, current_regen: f32) -> f32;
@@ -324,10 +319,12 @@ pub trait OnHurt {
     fn on_hurt(&self, current_damage: f32) -> f32;
 }
 
+#[allow(dead_code)] // Will be used when pack capacity enhancements are checked during crystal pickups
 pub trait OnPackCrys {
     fn on_pack_crys_capacity(&self, current_capacity: i64) -> i64;
 }
 
+#[allow(dead_code)] // Will be used when experience scaling modifiers are implemented
 pub trait OnExp {
     fn on_exp(&self, current_val: f32) -> f32;
 }
@@ -336,19 +333,23 @@ pub struct PlayerSkills<'a> {
     pub skills: &'a SkillSlots,
 }
 
-impl<'a> OnDig for PlayerSkills<'a> {
+fn level_to_f32(level: i32) -> f32 {
+    level.to_string().parse::<f32>().unwrap_or(0.0)
+}
+
+impl OnDig for PlayerSkills<'_> {
     fn on_dig(&self, _current_val: f32) -> f32 {
         get_player_skill_effect(self.skills, SkillType::Digging)
     }
 }
 
-impl<'a> OnDigCrys for PlayerSkills<'a> {
+impl OnDigCrys for PlayerSkills<'_> {
     fn on_dig_crys(&self, _current_val: f32) -> f32 {
         get_player_skill_effect(self.skills, SkillType::MineGeneral)
     }
 }
 
-impl<'a> OnMove for PlayerSkills<'a> {
+impl OnMove for PlayerSkills<'_> {
     fn on_move(&self, _current_val: f32) -> f32 {
         get_player_skill_effect(self.skills, SkillType::Movement)
     }
@@ -357,7 +358,7 @@ impl<'a> OnMove for PlayerSkills<'a> {
     }
 }
 
-impl<'a> OnBld for PlayerSkills<'a> {
+impl OnBld for PlayerSkills<'_> {
     fn on_bld(&self, skill: SkillType, _current_cost: f32) -> f32 {
         get_player_skill_effect(self.skills, skill)
     }
@@ -369,13 +370,13 @@ impl<'a> OnBld for PlayerSkills<'a> {
             | SkillType::BuildWar => self
                 .skills
                 .find(skill.code())
-                .map_or(1.0, |s| s.level as f32),
+                .map_or(1.0, |s| level_to_f32(s.level)),
             _ => 1.0,
         }
     }
 }
 
-impl<'a> OnHealth for PlayerSkills<'a> {
+impl OnHealth for PlayerSkills<'_> {
     fn on_health_max(&self, _current_max: i32) -> i32 {
         #[allow(clippy::cast_possible_truncation)]
         let val = get_player_skill_effect(self.skills, SkillType::Health) as i32;
@@ -386,7 +387,7 @@ impl<'a> OnHealth for PlayerSkills<'a> {
     }
 }
 
-impl<'a> OnHurt for PlayerSkills<'a> {
+impl OnHurt for PlayerSkills<'_> {
     fn on_hurt(&self, current_damage: f32) -> f32 {
         let anti_gun = get_player_skill_effect(self.skills, SkillType::AntiGun);
         // C# Player.Hurt: `eff = (int)(num * Effect/100); num -= eff` — усекается
@@ -397,7 +398,7 @@ impl<'a> OnHurt for PlayerSkills<'a> {
     }
 }
 
-impl<'a> OnPackCrys for PlayerSkills<'a> {
+impl OnPackCrys for PlayerSkills<'_> {
     fn on_pack_crys_capacity(&self, _current_capacity: i64) -> i64 {
         #[allow(clippy::cast_possible_truncation)]
         let val = get_player_skill_effect(self.skills, SkillType::Packing) as i64;
@@ -405,13 +406,13 @@ impl<'a> OnPackCrys for PlayerSkills<'a> {
     }
 }
 
-impl<'a> OnExp for PlayerSkills<'a> {
+impl OnExp for PlayerSkills<'_> {
     fn on_exp(&self, current_val: f32) -> f32 {
-        if let Some(upgr_state) = self.skills.find(SkillType::Upgrade.code()) {
-            current_val * skill_effect(SkillType::Upgrade, upgr_state.level)
-        } else {
-            current_val
-        }
+        self.skills
+            .find(SkillType::Upgrade.code())
+            .map_or(current_val, |upgr_state| {
+                current_val * skill_effect(SkillType::Upgrade, upgr_state.level)
+            })
     }
 }
 
@@ -424,7 +425,7 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
         SkillType::Digging => x.mul_add(10.0, 100.0),
         // 1:1 ref (`server_reference/.../PlayerSkills.cs`, SkillType.Movement):
         // effectfunc = (x) => 70f - x * 0.05f > 30f ? 70f - x * 0.05f : 30f
-        SkillType::Movement => (70.0 - x * 0.05).max(30.0),
+        SkillType::Movement => x.mul_add(-0.05, 70.0).max(30.0),
         SkillType::MineGeneral => {
             if x <= 0.0 {
                 0.08
@@ -440,7 +441,9 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
             if x <= 0.0 {
                 1.0
             } else {
-                let val = (1.0 + x - x.log10() * x.powf(0.9) / 2.0 - x * 0.098).round();
+                let val = x
+                    .mul_add(-0.098, 1.0 + x - x.log10() * x.powf(0.9) / 2.0)
+                    .round();
                 val.min(92.0)
             }
         }
@@ -453,8 +456,6 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
         | SkillType::BuildWar
         | SkillType::Fridge
         | SkillType::RoadMovement => 1.0,
-        // C# Repair: effectfunc = (x) => x * 1f
-        SkillType::Repair => x,
         _ => x,
     }
 }
@@ -522,7 +523,7 @@ pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {
 pub fn get_skill_requirements(skill: SkillType) -> Option<HashMap<SkillType, i32>> {
     let mut reqs = HashMap::new();
     match skill {
-        SkillType::MineGeneral => {
+        SkillType::MineGeneral | SkillType::BuildRoad => {
             reqs.insert(SkillType::Digging, 5);
         }
         SkillType::MineBlue => {
@@ -555,9 +556,6 @@ pub fn get_skill_requirements(skill: SkillType) -> Option<HashMap<SkillType, i32
             reqs.insert(SkillType::Movement, 10);
         }
 
-        SkillType::BuildRoad => {
-            reqs.insert(SkillType::Digging, 5);
-        }
         SkillType::BuildGreen => {
             reqs.insert(SkillType::BuildRoad, 5);
         }
@@ -582,6 +580,7 @@ pub fn get_skill_requirements(skill: SkillType) -> Option<HashMap<SkillType, i32
     Some(reqs)
 }
 
+#[allow(dead_code)] // Will be used when skill purchase/installation GUI events are wired up in session handlers
 pub fn can_install_skill(player_skills: &SkillSlots, skill: SkillType) -> bool {
     if player_skills.find(skill.code()).is_some() {
         return false;
