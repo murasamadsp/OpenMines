@@ -448,14 +448,12 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
 
             // S3-1: Health skill exp on every hurt (C# Player.Hurt → Health.AddExp)
             if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity) {
-                crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0);
-                // Always send @S after skill exp (C# Skill.AddExp always sends)
-                let sk = crate::protocol::packets::skills_packet(
-                    &crate::game::skills::skill_progress_payload(&skills.states),
-                );
-                if let Some(c) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
-                    let _ =
-                        c.tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                let ctx = crate::game::ExpContext::from_state(state);
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
+                    if let Some(c) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
+                        let _ =
+                            c.tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                    }
                 }
             }
 

@@ -8,7 +8,7 @@ use crate::game::{BroadcastEffect, BroadcastQueue};
 use bevy_ecs::prelude::*;
 use std::time::{Duration, Instant};
 
-const HOURLY_INTERVAL: Duration = Duration::from_secs(3600);
+const HOURLY_INTERVAL: Duration = Duration::from_hours(1);
 /// 0.5s effect tick → упрощено до 1s (game tick granularity, visual-only diff).
 const EFFECT_INTERVAL: Duration = Duration::from_secs(1);
 

@@ -33,6 +33,7 @@ pub fn handle_heal(
     pid: PlayerId,
     programmatic: bool,
 ) {
+    let ctx = crate::game::ExpContext::from_state(state);
     let result = state
         .modify_player(pid, |ecs, entity| {
             let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
@@ -92,11 +93,7 @@ pub fn handle_heal(
                 send_heal_state_error(tx);
                 return None;
             };
-            let skill_payload = if add_skill_exp(&mut skills_mut.states, "e", 1.0) {
-                Some(skill_progress_payload(&skills_mut.states))
-            } else {
-                None
-            };
+            let skill_payload = ctx.add_skill_exp(&mut skills_mut.states, "e", 1.0);
             Some((new_health, mh, new_crys, pid_val, hy, skill_payload))
         })
         .flatten();
@@ -105,8 +102,7 @@ pub fn handle_heal(
         send_u_packet(tx, "@L", &health(h, mh).1);
         send_u_packet(tx, "@B", &basket(&crys, 1).1);
         // Always send @S after skill exp (C# Skill.AddExp always sends)
-        if let Some(sp) = skill_payload {
-            let sk = skills_packet(&sp);
+        if let Some(sk) = skill_payload {
             send_u_packet(tx, sk.0, &sk.1);
         }
         // D20: C# sends coordinates (0, 0) for heal FX
@@ -624,6 +620,7 @@ fn aoe_damage_players(
     damage: i32,
 ) -> Vec<(PlayerId, mpsc::UnboundedSender<Vec<u8>>)> {
     let now = std::time::Instant::now();
+    let ctx = crate::game::ExpContext::from_state(state);
     let mut killed: Vec<(PlayerId, mpsc::UnboundedSender<Vec<u8>>)> = Vec::new();
     for entry in &state.active_players {
         let opid = *entry.key();
@@ -650,8 +647,7 @@ fn aoe_damage_players(
                 }
                 // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
                 if let Some(mut skills) = ecs.get_mut::<PlayerSkillsComp>(entity) {
-                    if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
-                        let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
                         let _ = conn_tx
                             .send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
                     }
@@ -985,6 +981,7 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 
 /// D17: C190 — C# `ShitClass.C190Shot` parity.
 pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
+    let ctx = crate::game::ExpContext::from_state(state);
     let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y, p.dir))
@@ -1037,6 +1034,19 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         // Damage ALL players on this cell: 20 + 60 * c190stacks, then increment
         for entry in &state.active_players {
             let opid = *entry.key();
+            // Can't shoot self or clan members
+            let c_info = state.query_player_opt(pid, |ecs, entity| {
+                let pstats = ecs.get::<PlayerStats>(entity)?;
+                Some(pstats.clan_id.unwrap_or(0))
+            });
+            let o_info = state.query_player_opt(opid, |ecs, entity| {
+                let pstats = ecs.get::<PlayerStats>(entity)?;
+                Some(pstats.clan_id.unwrap_or(0))
+            });
+            if opid == pid || (c_info.is_some() && c_info == o_info) {
+                continue;
+            }
+
             let death_tx = state
                 .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
                     let (prev_x, prev_y) = {
@@ -1055,8 +1065,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                     // Health skill exp (C# Player.Hurt → AddExp("l"))
                     let skill_pkt =
                         if let Some(mut skills) = ecs.get_mut::<PlayerSkillsComp>(entity) {
-                            if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
-                                let sk = skills_packet(&skill_progress_payload(&skills.states));
+                            if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
                                 Some(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1))
                             } else {
                                 None

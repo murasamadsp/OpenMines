@@ -1,0 +1,9 @@
+[profile.default]
+test-threads = "num-cpus"
+failure-output = "immediate-final"
+status-level = "fail"
+final-status-level = "slow"
+
+[profile.default.slow-timeout]
+period = "30s"
+terminate-after = 2

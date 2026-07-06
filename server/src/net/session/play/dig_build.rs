@@ -69,6 +69,7 @@ pub fn handle_dig(
     dir: i32,
     programmatic: bool,
 ) {
+    let ctx = crate::game::ExpContext::from_state(state);
     let player_data = state
         .modify_player(pid, |ecs, entity| {
             let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
@@ -149,8 +150,7 @@ pub fn handle_dig(
                 else {
                     return Some(DigPlayerRead::MissingState("PlayerSkillsComp"));
                 };
-                if add_skill_exp(&mut skills.states, "M", 1.0) {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "M", 1.0) {
                     send_u_packet(tx, sk.0, &sk.1);
                     ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
                         .expect("PlayerFlags checked before dig movement exp")
@@ -398,7 +398,7 @@ pub fn handle_dig(
                         .get_mut::<crate::game::player::PlayerStats>(entity)
                         .expect("PlayerStats checked before crystal mining");
                     p_stats.crystal_carry = carry;
-                    p_stats.crystals[idx] += amount;
+                    p_stats.crystals[idx] += ctx.apply_drop(amount);
                     let c_data = p_stats.crystals;
                     send_u_packet(tx, "@B", &basket(&c_data, 1).1);
                 }
@@ -406,8 +406,7 @@ pub fn handle_dig(
                     let mut skills = ecs
                         .get_mut::<crate::game::player::PlayerSkillsComp>(entity)
                         .expect("PlayerSkillsComp checked before crystal mining");
-                    if add_skill_exp(&mut skills.states, "m", mine_exp) {
-                        let sk = skills_packet(&skill_progress_payload(&skills.states));
+                    if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "m", mine_exp) {
                         send_u_packet(tx, sk.0, &sk.1);
                     }
                 }
@@ -485,8 +484,7 @@ pub fn handle_dig(
     if pushed_boulder {
         state.modify_player(pid, |ecs, entity| {
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-            if add_skill_exp(&mut skills.states, "d", 1.0) {
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
+            if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
                 send_u_packet(tx, sk.0, &sk.1);
                 ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?
                     .dirty = true;
@@ -502,8 +500,7 @@ pub fn handle_dig(
                 // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
                 // на dig-destroy (полоса Digging не обновлялась до след. @S-события).
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-                if add_skill_exp(&mut skills.states, "d", 1.0) {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
                     send_u_packet(tx, sk.0, &sk.1);
                 }
             }
@@ -545,6 +542,7 @@ pub fn handle_build(
     bld: &XbldClient<'_>,
     programmatic: bool,
 ) {
+    let ctx = crate::game::ExpContext::from_state(state);
     // Fix 11: Extract player data including clan_id, skills, and build cooldown check.
     let build_data = state
         .modify_player(pid, |ecs, entity| {
@@ -749,25 +747,21 @@ pub fn handle_build(
                 placed_skill = Some(SkillType::BuildStructure);
             }
         }
-        "V" => {
-            // 1:1 ref C# Player.Build("V"): place MilitaryBlockFrame (80) first, then
-            // World.W.StupidAction(10, x, y, () => convert to MilitaryBlock (81)) after 10 ticks.
-            if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 5, cost) {
-                place_block(state, tgt_x, tgt_y, cell_type::MILITARY_BLOCK_FRAME);
-                // Schedule conversion: frame→block after 10 ticks (1:1 C# StupidAction).
-                let mut ecs = state.ecs.write();
-                ecs.resource_mut::<crate::game::PendingCellConversions>()
-                    .0
-                    .push(crate::game::PendingConversion {
-                        pos: (tgt_x, tgt_y).into(),
-                        ticks_left: 10,
-                        required_cell: cell_type::MILITARY_BLOCK_FRAME,
-                        target_cell: cell_type::MILITARY_BLOCK,
-                        durability,
-                        owner_pid: pid,
-                    });
-                placed_skill = Some(SkillType::BuildWar);
-            }
+        "V" if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 5, cost) => {
+            place_block(state, tgt_x, tgt_y, cell_type::MILITARY_BLOCK_FRAME);
+            // Schedule conversion: frame→block after 10 ticks (1:1 C# StupidAction).
+            let mut ecs = state.ecs.write();
+            ecs.resource_mut::<crate::game::PendingCellConversions>()
+                .0
+                .push(crate::game::PendingConversion {
+                    pos: (tgt_x, tgt_y).into(),
+                    ticks_left: 10,
+                    required_cell: cell_type::MILITARY_BLOCK_FRAME,
+                    target_cell: cell_type::MILITARY_BLOCK,
+                    durability,
+                    owner_pid: pid,
+                });
+            placed_skill = Some(SkillType::BuildWar);
         }
         _ => {}
     }
@@ -778,8 +772,7 @@ pub fn handle_build(
             // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
             // на build (полоса Build* не обновлялась до след. @S-события).
             let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-            if add_skill_exp(&mut skills.states, skill.code(), 1.0) {
-                let sk = skills_packet(&skill_progress_payload(&skills.states));
+            if let Some(sk) = ctx.add_skill_exp(&mut skills.states, skill.code(), 1.0) {
                 send_u_packet(tx, sk.0, &sk.1);
             }
             Some(())

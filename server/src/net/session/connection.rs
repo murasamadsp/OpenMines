@@ -1,11 +1,17 @@
 //! Обработка TCP-подключений и жизненного цикла сессии.
 use crate::net::session::auth::gui_flow::handle_gui_auth_flow;
 use crate::net::session::auth::login::handle_auth;
+use crate::net::session::handshake::InitialHandshake;
+use crate::net::session::heartbeat::SessionHeartbeat;
+use crate::net::session::outbox::flush_outbox;
 use crate::net::session::player::init::on_disconnect;
 use crate::net::session::prelude::*;
+use crate::net::session::state::HeartbeatGate;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+pub use crate::net::session::state::{AuthState, GuiAuthStep};
 
 #[tracing::instrument(
     name = "session",
@@ -27,11 +33,11 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     let mut kick_tx_opt = Some(kick_tx);
     let client_ip = addr.ip();
     let mut auth_state = AuthState::PreAuth;
-    let mut pid: Option<PlayerId> = None;
+    let mut heartbeat_gate = HeartbeatGate::WaitingForAuthResponse;
     // Токен этого сеанса — guard от reconnect-гонки в lifecycle-очереди.
     let session_token = state.next_session_token();
     let mut buf = BytesMut::with_capacity(4096);
-    let mut last_pong = Instant::now();
+    let mut heartbeat_state = SessionHeartbeat::new(Instant::now());
     // Серверно-пейсированный PI (фикс PI-шторма ~17/с): сервер сам шлёт
     // PI раз в HEARTBEAT (400мс), клиент шлёт 1 PO на 1 PI → частота PI
     // = частота тика (НЕ tight-loop PO↔PI на RTT = шторм). `text` =
@@ -47,11 +53,6 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     // ≈ handshake → оценка ≈ клиентский NowTime. Это и есть анти-FREEZE
     // (не частота тика — прошлая версия ставила num2 на раунд позже →
     // постоянный FREEZE).
-    let mut last_pi_sent_at: Option<Instant> = None;
-    let mut last_rtt_ms: i32 = 50;
-    let mut last_pong_ct: i32 = 0;
-    let mut heartbeat_enabled = false;
-    let mut auth_response_pending_flush = false;
     // 400мс: норм. разрыв клиента ≈ RTT/2+400 ≈ 440мс; даже
     // пропущенный/сдвоенный тик под нагрузкой (~800-1200мс) остаётся
     // < 1500мс (клиентский порог «FREEZE»). 2.5 PI/с — НЕ шторм.
@@ -62,23 +63,13 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     // `PI` before the mandatory first post-auth `cf` packet.
     heartbeat.tick().await;
 
-    // Референс: OnConnected шлёт ST → AU → PI (именно в таком порядке).
-    let sid = GameState::generate_session_id();
+    let handshake = InitialHandshake::build();
+    let sid = handshake.session_id;
     tracing::Span::current().record("session_id", &sid);
 
-    // 1:1 ref: `SendU(new StatusPacket("черный хуй в твоей жопе"))`
-    let st = status("черный хуй в твоей жопе");
-    let st_pkt = make_u_packet_bytes(st.0, &st.1);
-
-    let au_init = au_session(&sid);
-    let au_pkt = make_u_packet_bytes(au_init.0, &au_init.1);
-
-    let pi = ping(0, 0, "");
-    let pi_pkt = make_u_packet_bytes(pi.0, &pi.1);
-
-    stream.write_all(&st_pkt).await?;
-    stream.write_all(&au_pkt).await?;
-    stream.write_all(&pi_pkt).await?;
+    for packet in &handshake.packets {
+        stream.write_all(packet).await?;
+    }
     stream.flush().await?;
     tracing::debug!("Sent ST+AU+PI handshake");
 
@@ -87,18 +78,18 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
 
         tokio::select! {
             _ = &mut kick_rx => {
-                tracing::info!(player_id = ?pid, "Player kicked via admin console");
+                tracing::info!(player_id = ?auth_state.player_id(), "Player kicked via admin console");
                 break;
             }
             _ = heartbeat.tick() => {
-                if !heartbeat_enabled {
+                if !heartbeat_gate.is_enabled() {
                     continue;
                 }
                 // Дисконнект мёртвого клиента: нет PO >30s (ref-порог
                 // `Session.CheckDisconnected`). Реальный разрыв также
                 // ловится `read_buf`==0 ниже.
-                let idle = Instant::now().saturating_duration_since(last_pong);
-                if idle > Duration::from_secs(30) {
+                let now = Instant::now();
+                if heartbeat_state.is_timed_out(now, Duration::from_secs(30)) {
                     tracing::warn!("Pong timeout (>30s). Closing connection");
                     break;
                 }
@@ -106,19 +97,8 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 // ЭКСТРАПОЛИРОВАННЫЕ текущие часы клиента (анти-FREEZE,
                 // см. коммент у last_pi_sent_at): last_pong_ct + мс с
                 // момента того PO. `text` = реальный RTT.
-                let since_pong_ms = i32::try_from(
-                    Instant::now()
-                        .saturating_duration_since(last_pong)
-                        .as_millis(),
-                )
-                .unwrap_or(i32::MAX);
-                let num2 = last_pong_ct
-                    .saturating_add(since_pong_ms)
-                    .saturating_add(1);
-                let text = format!("{last_rtt_ms} ");
-                let pi = ping(52, num2, &text);
+                let pi = heartbeat_state.next_ping_packet(now);
                 send_u_packet(&tx, pi.0, &pi.1);
-                last_pi_sent_at = Some(Instant::now());
             }
             result = stream.read_buf(&mut buf) => {
                 let n = result?;
@@ -141,13 +121,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                             // liveness, измерение РЕАЛЬНОГО RTT (now −
                             // момент отправки того PI) для показа, и время
                             // клиента для num2 след. PI. PI шлёт heartbeat.
-                            last_pong = Instant::now();
-                            if let Some(sent) = last_pi_sent_at {
-                                let rtt_ms = last_pong.saturating_duration_since(sent).as_millis();
-                                last_rtt_ms =
-                                    i32::try_from(rtt_ms).unwrap_or(i32::MAX).clamp(1, 99_999);
-                            }
-                            last_pong_ct = pong.current_time;
+                            heartbeat_state.record_pong(&pong, Instant::now());
                         }
                         continue;
                     }
@@ -160,10 +134,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     let mut new_auth = auth_state.clone();
                                     let res = handle_auth(&state, &tx, &au, &sid, session_token, &mut new_auth).await?;
                                     if let Some(id) = res {
-                                        pid = Some(id);
                                         tracing::Span::current().record("player_id", id.0);
                                         auth_state = new_auth;
-                                        auth_response_pending_flush = true;
+                                        heartbeat_gate.mark_auth_response_queued();
                                         if let Some(kt) = kick_tx_opt.take() {
                                             state.kick_channels.insert(id, kt);
                                         }
@@ -171,7 +144,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     } else {
                                         // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
                                         auth_state = new_auth;
-                                        auth_response_pending_flush = true;
+                                        heartbeat_gate.mark_auth_response_queued();
                                         tracing::warn!("Auth failed");
                                         let wait = state.record_auth_failure_by_addr(&client_ip, now);
                                         if wait.is_some() { break; }
@@ -187,10 +160,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         if let Some(button) = decode_gui_button(&ty.sub_payload) {
                                             let res = handle_gui_auth_flow(&state, &tx, button.as_ref(), session_token, step).await?;
                                             if let Some(id) = res {
-                                                pid = Some(id);
                                                 tracing::Span::current().record("player_id", id.0);
-                                                auth_state = AuthState::Authenticated;
-                                                auth_response_pending_flush = true;
+                                                auth_state = AuthState::Authenticated { player_id: id };
+                                                heartbeat_gate.mark_auth_response_queued();
                                                 if let Some(kt) = kick_tx_opt.take() {
                                                     state.kick_channels.insert(id, kt);
                                                 }
@@ -201,8 +173,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 }
                             }
                         }
-                        AuthState::Authenticated => {
-                            if let Some(id) = pid {
+                        AuthState::Authenticated { player_id: id } => {
                                 if ev == "TY" {
                                     if let Some(ty) = TyPacket::decode(&packet.payload) {
                                         let event = ty.event_str();
@@ -237,7 +208,6 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                         }
@@ -264,15 +234,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 }
             }
             Some(out_packet) = rx.recv() => {
-                stream.write_all(&out_packet).await?;
-                while let Ok(more) = rx.try_recv() {
-                    stream.write_all(&more).await?;
-                }
-                stream.flush().await?;
-                if auth_response_pending_flush {
-                    auth_response_pending_flush = false;
-                    heartbeat_enabled = true;
-                    last_pong = Instant::now();
+                flush_outbox(&mut stream, out_packet, &mut rx).await?;
+                if heartbeat_gate.enable_if_auth_response_flushed() {
+                    heartbeat_state.reset_liveness(Instant::now());
                 }
             }
         }
@@ -284,32 +248,11 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
         }
     }
 
-    if let Some(id) = pid {
+    if let Some(id) = auth_state.player_id() {
         state.kick_channels.remove(&id);
         on_disconnect(&state, id, session_token);
     }
     Ok(())
-}
-
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub enum AuthState {
-    PreAuth,
-    GuiAuth(GuiAuthStep),
-    Authenticated,
-}
-
-/// Sub-state of the GUI auth flow (registration / login through client GUI).
-/// 1:1 with C# `Auth` class state machine.
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub enum GuiAuthStep {
-    /// Default window: "Новый акк" / "ok" (nick input).
-    MainMenu,
-    /// Player found by nick, waiting for password input.
-    LoginPassword { nick: String },
-    /// Creating new account — waiting for nick input.
-    RegisterNick,
-    /// Creating new account — nick accepted, waiting for password.
-    RegisterPassword { nick: String },
 }
 
 fn is_tick_action(event: &str) -> bool {

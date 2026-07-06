@@ -42,7 +42,7 @@ pub fn standing_cell_hazard_system(
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
         if cooldowns
             .last_c190_hit
-            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(60))
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_mins(1))
         {
             cooldowns.c190_stacks = 1;
             cooldowns.last_c190_hit = Some(std::time::Instant::now());

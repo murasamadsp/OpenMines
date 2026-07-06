@@ -16,7 +16,7 @@ const CRYS_COST_BASE: [i64; 6] = [8, 16, 24, 26, 24, 40];
 const CRYS_COST_MOD_DEFAULT: [i64; 6] = [10, 10, 15, 10, 15, 15];
 
 /// Интервал пересчёта цен. C# `TimeSpan.FromHours(1)`.
-const PRICE_UPDATE_INTERVAL: Duration = Duration::from_secs(3600);
+const PRICE_UPDATE_INTERVAL: Duration = Duration::from_hours(1);
 
 /// Динамическое состояние цен (C# `World.cryscostmod` + `summary` + `lastcryupdate`).
 #[derive(Debug)]

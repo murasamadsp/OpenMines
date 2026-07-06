@@ -1,6 +1,6 @@
-# rustc 1.94 = toolchain разработки/CI (bevy_ecs 0.18.1 требует ≥ 1.89).
+# rustc 1.96 = toolchain разработки/CI (bevy_ecs 0.18.1 требует ≥ 1.89).
 # Держать синхронно с .github/workflows/ci.yml.
-FROM rust:1.94-bookworm AS builder
+FROM rust:1.96-bookworm AS builder
 
 WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.

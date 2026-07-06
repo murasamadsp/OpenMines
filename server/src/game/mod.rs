@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 pub use actors::player::{
     ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
 };
+pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
     BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
     PackView,
@@ -209,6 +210,10 @@ pub struct GameState {
     pub chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
     pub chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
+    /// Активные игровые ивенты (множители опыта, дропа и т.д.).
+    /// Хранится в `GameState` (не в ECS), чтобы HTTP-API мог менять их
+    /// без конкуренции с `ecs.write()` из сессий.
+    pub active_events: RwLock<ActiveEvents>,
     pub ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
@@ -362,6 +367,7 @@ impl GameState {
             chunk_botspots: DashMap::new(),
             chunk_buildings: DashMap::new(),
             chat_channels: RwLock::new(default_channels),
+            active_events: RwLock::new(ActiveEvents::default()),
             ecs: RwLock::new(EcsWorld::new()),
             schedules,
             auth_failures: DashMap::new(),
@@ -390,6 +396,37 @@ impl GameState {
                 );
             }
             Err(e) => tracing::error!(error = ?e, "Failed to load boxes into index"),
+        }
+
+        match state.db.load_all_events().await {
+            Ok(rows) => {
+                let mut events = state.active_events.write();
+                for r in rows {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(&r.config_json).unwrap_or_default();
+                    let xp_mult = parsed
+                        .get("xp_mult")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(1.0);
+                    let drop_mult = parsed
+                        .get("drop_mult")
+                        .and_then(serde_json::Value::as_f64)
+                        .unwrap_or(1.0);
+                    events.list.push(ActiveEvent {
+                        id: r.id,
+                        title: r.title,
+                        starts_at: r.starts_at,
+                        ends_at: r.ends_at,
+                        xp_mult,
+                        drop_mult,
+                    });
+                }
+                tracing::info!(
+                    count = events.list.len(),
+                    "Loaded active events from database"
+                );
+            }
+            Err(e) => tracing::error!(error = ?e, "Failed to load active events from database"),
         }
 
         {

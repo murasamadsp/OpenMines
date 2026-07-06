@@ -16,7 +16,6 @@ use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::money;
 use anyhow::{Result, bail};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 /// C# `TimeSpan.FromMinutes(5)` — таймаут после последней ставки до финализации.
@@ -28,10 +27,7 @@ const BET_TIMEOUT_SECS: i64 = 300;
 const CHECK_INTERVAL_SECS: u64 = 5;
 
 pub fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
+    crate::time::now_unix()
 }
 
 pub fn spawn_auction_finalize_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {

@@ -33,9 +33,23 @@ sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "macros", "mi
 strum = { version = "0.28.0", features = ["derive"] }
 dotnet-rng = "1.0.5"
 clap = { version = "4.5.31", features = ["derive", "env"] }
+axum = "0.7.9"
+tower-http = { version = "0.5.2", features = ["cors", "fs", "trace"] }
+rust-embed = "8.5.0"
+mime_guess = "2.0.5"
+num-traits = "0.2.19"
 
 # Internal workspace dependency
 openmines-shared = { path = "crates/openmines-shared" }
+
+[profile.dev]
+debug = 1
+codegen-units = 32
+
+[profile.test]
+debug = 1
+codegen-units = 32
+incremental = false
 
 [profile.release]
 opt-level = 3

@@ -1,6 +1,9 @@
 # Общие шаги для ci-quality.sh и pre-commit.sh
 # shellcheck shell=bash
 
+: "${SCCACHE_CACHE_SIZE:=8G}"
+export SCCACHE_CACHE_SIZE
+
 # Авто-форматирование ПЕРЕД линтерами: форматируем только застейдженные .rs
 # (чужой незакоммиченный WIP в working tree не трогаем) и ре-стейджим их, чтобы
 # отформатированная версия попала в коммит и rustfmt --check ниже прошёл.
@@ -21,7 +24,12 @@ quality_run_rustfmt_check() {
 
 quality_run_clippy_strict() {
   echo "==> Running clippy strict checks"
-  cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
+  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
+}
+
+quality_run_arch_guard() {
+  echo "==> Running architecture guard"
+  scripts/arch-guard.sh
 }
 
 quality_run_deny_if_available() {
@@ -79,12 +87,41 @@ quality_run_bloat_if_available() {
 }
 
 quality_run_tests() {
-  echo "==> Running tests"
-  cargo test --all-targets --all-features
+  echo "==> Running tests with cargo-nextest"
+  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo nextest run --all-targets --all-features
+}
+
+quality_run_wire_smoke() {
+  echo "==> Running local wire smoke"
+  scripts/dev-smoke.sh
 }
 
 quality_run_docs() {
   echo "==> Running docs build"
-  cargo doc --no-deps --all-features
+  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo doc --no-deps --all-features
 }
 
+quality_run_feature_matrix() {
+  echo "==> Running feature matrix with cargo-hack"
+  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo hack check --workspace --all-targets --feature-powerset --depth 2
+}
+
+quality_run_dependency_shear() {
+  echo "==> Running dependency placement check with cargo-shear"
+  cargo shear
+}
+
+quality_run_coverage() {
+  echo "==> Running LLVM coverage"
+  RUSTC_WRAPPER=sccache cargo llvm-cov nextest --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info
+}
+
+quality_run_mutants() {
+  echo "==> Running mutation tests"
+  RUSTC_WRAPPER=sccache cargo mutants --workspace --in-place
+}
+
+quality_run_vet() {
+  echo "==> Running supply-chain audit with cargo-vet"
+  cargo vet
+}

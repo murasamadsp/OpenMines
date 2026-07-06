@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenMines Admin Panel</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0a0c10;
+            --bg-surface: #121620;
+            --bg-element: #1a2030;
+            --primary: #5865f2;
+            --primary-hover: #4752c4;
+            --success: #23a55a;
+            --danger: #da373c;
+            --text-main: #f2f3f5;
+            --text-muted: #949ba4;
+            --border: #2f3542;
+            --glow: rgba(88, 101, 242, 0.15);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+        }
+
+        header {
+            background-color: var(--bg-surface);
+            border-bottom: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        header h1 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc, var(--primary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .auth-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        input, select, button {
+            font-family: inherit;
+            font-size: 0.95rem;
+            border-radius: 8px;
+            outline: none;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        input, select {
+            background-color: var(--bg-element);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.6rem 1rem;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--glow);
+        }
+
+        button {
+            cursor: pointer;
+            border: none;
+            font-weight: 600;
+            padding: 0.6rem 1.2rem;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-danger {
+            background-color: var(--danger);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            opacity: 0.9;
+        }
+
+        .container {
+            flex: 1;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            background-color: var(--bg-surface);
+            padding: 0.4rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            width: fit-content;
+        }
+
+        .tab-btn {
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 8px;
+            padding: 0.6rem 1.5rem;
+        }
+
+        .tab-btn.active {
+            background-color: var(--bg-element);
+            color: var(--text-main);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .tab-content {
+            display: none;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Cards/Grid */
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .card {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: flex;
+            flex-direction: column;
+            gap: 1.2rem;
+        }
+
+        .card-title {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 1.2rem;
+            font-weight: 700;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.6rem;
+            color: #a5b4fc;
+        }
+
+        /* Stats */
+        .stat-value {
+            font-size: 2.2rem;
+            font-weight: 800;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        th, td {
+            padding: 0.8rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        tr:hover td {
+            background-color: rgba(255,255,255,0.02);
+        }
+
+        /* Game Map Canvas */
+        .map-wrapper {
+            position: relative;
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+            height: 600px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #map-canvas {
+            background-color: #0b0d19;
+            cursor: grab;
+        }
+
+        #map-canvas:active {
+            cursor: grabbing;
+        }
+
+        /* Forms */
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .form-row .form-group {
+            flex: 1;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Market */
+        .market-inputs {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        .crystal-badge {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 6px;
+            font-weight: 700;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+
+        .cry-0 { background-color: #23a55a; color: white; } /* Green */
+        .cry-1 { background-color: #5865f2; color: white; } /* Blue */
+        .cry-2 { background-color: #da373c; color: white; } /* Red */
+        .cry-3 { background-color: #9b59b6; color: white; } /* Violet */
+        .cry-4 { background-color: #f1c40f; color: black; } /* Yellow/Gold/White */
+        .cry-5 { background-color: #00d2d3; color: white; } /* Cyan */
+    </style>
+</head>
+<body>
+    <header>
+        <h1>OpenMines Admin Console</h1>
+        <div class="auth-container">
+            <input type="password" id="auth-token" placeholder="Enter Admin Token" value="admin">
+            <button class="btn-primary" id="btn-login">Login</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('stats')">Statistics</button>
+            <button class="tab-btn" onclick="switchTab('map')">Game Map</button>
+            <button class="tab-btn" onclick="switchTab('events')">Events</button>
+            <button class="tab-btn" onclick="switchTab('market')">Market</button>
+        </div>
+
+        <!-- STATISTICS TAB -->
+        <div id="tab-stats" class="tab-content active">
+            <div class="grid">
+                <div class="card">
+                    <div class="card-title">Online Players</div>
+                    <div class="stat-value" id="stat-online">0</div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Active Events</div>
+                    <div class="stat-value" id="stat-events-count">0</div>
+                </div>
+            </div>
+
+            <div class="card" style="margin-top: 1.5rem;">
+                <div class="card-title">Active Players List</div>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Name</th>
+                                <th>Position</th>
+                                <th>Health</th>
+                                <th>Money</th>
+                                <th>Crystals (G/B/R/V/W/C)</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="players-table-body">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- GAME MAP TAB -->
+        <div id="tab-map" class="tab-content">
+            <div class="map-wrapper">
+                <canvas id="map-canvas" width="1000" height="580"></canvas>
+            </div>
+        </div>
+
+        <!-- EVENTS TAB -->
+        <div id="tab-events" class="tab-content">
+            <div class="grid" style="grid-template-columns: 1fr 2fr;">
+                <!-- Event Creator -->
+                <div class="card">
+                    <div class="card-title">Manage Event</div>
+                    <form id="event-form" onsubmit="saveEvent(event)">
+                        <div class="form-group">
+                            <label>Event ID</label>
+                            <input type="text" id="event-id" required placeholder="e.g. double_xp">
+                        </div>
+                        <div class="form-group" style="margin-top: 1rem;">
+                            <label>Title</label>
+                            <input type="text" id="event-title" required placeholder="Double XP Weekend">
+                        </div>
+                        <div class="form-row" style="margin-top: 1rem;">
+                            <div class="form-group">
+                                <label>Starts At (Unix Epoch)</label>
+                                <input type="number" id="event-start" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Ends At (Unix Epoch)</label>
+                                <input type="number" id="event-end" required>
+                            </div>
+                        </div>
+                        <div class="form-row" style="margin-top: 1rem;">
+                            <div class="form-group">
+                                <label>XP Multiplier</label>
+                                <input type="number" step="0.1" id="event-xp-mult" required value="2.0">
+                            </div>
+                            <div class="form-group">
+                                <label>Drop Multiplier</label>
+                                <input type="number" step="0.1" id="event-drop-mult" required value="1.0">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Save Event</button>
+                    </form>
+                </div>
+
+                <!-- Events List -->
+                <div class="card">
+                    <div class="card-title">Active / Scheduled Events</div>
+                    <div style="overflow-x: auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Title</th>
+                                    <th>Start</th>
+                                    <th>End</th>
+                                    <th>XP Mult</th>
+                                    <th>Drop Mult</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="events-table-body">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MARKET TAB -->
+        <div id="tab-market" class="tab-content">
+            <div class="grid">
+                <!-- Market Pricing Modifiers -->
+                <div class="card">
+                    <div class="card-title">Crystal Price Modifiers (cost_mod)</div>
+                    <form id="market-form" onsubmit="saveMarket(event)">
+                        <div class="market-inputs">
+                            <div class="form-group">
+                                <label><span class="crystal-badge cry-0">Green</span> Mod</label>
+                                <input type="number" id="mod-0" required value="10">
+                            </div>
+                            <div class="form-group">
+                                <label><span class="crystal-badge cry-1">Blue</span> Mod</label>
+                                <input type="number" id="mod-1" required value="10">
+                            </div>
+                            <div class="form-group">
+                                <label><span class="crystal-badge cry-2">Red</span> Mod</label>
+                                <input type="number" id="mod-2" required value="15">
+                            </div>
+                            <div class="form-group" style="margin-top: 1rem;">
+                                <label><span class="crystal-badge cry-3">Violet</span> Mod</label>
+                                <input type="number" id="mod-3" required value="10">
+                            </div>
+                            <div class="form-group" style="margin-top: 1rem;">
+                                <label><span class="crystal-badge cry-4">White</span> Mod</label>
+                                <input type="number" id="mod-4" required value="15">
+                            </div>
+                            <div class="form-group" style="margin-top: 1rem;">
+                                <label><span class="crystal-badge cry-5">Cyan</span> Mod</label>
+                                <input type="number" id="mod-5" required value="15">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Update Modifiers</button>
+                    </form>
+                </div>
+
+                <!-- Current Market Rates -->
+                <div class="card">
+                    <div class="card-title">Current Rates Summary</div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Crystal</th>
+                                <th>Modifier</th>
+                                <th>Sell Price</th>
+                                <th>Buy Price</th>
+                            </tr>
+                        </thead>
+                        <tbody id="market-rates-body">
+                            <!-- Dynamic rates -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

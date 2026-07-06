@@ -46,6 +46,7 @@ pub fn handle_move(
     // C# `Player.cs:414-415`: Ctrl-move шлёт `(dir+10)` — снять флаг (клиент
     // `ClientController.cs:1022`). `dir==-1` (autoDig-в-стену) проходит без изменений.
     let dir = if dir > 9 { dir - 10 } else { dir };
+    let ctx = crate::game::ExpContext::from_state(state);
 
     let tp_back = |reason: &str,
                    txc: &mpsc::UnboundedSender<Vec<u8>>,
@@ -266,11 +267,9 @@ pub fn handle_move(
                 flags_mut.dirty = true;
             }
 
-            // Exp and skills
             {
                 let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-                if add_skill_exp(&mut skills.states, "M", 1.0) {
-                    let sk = skills_packet(&skill_progress_payload(&skills.states));
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "M", 1.0) {
                     send_u_packet(tx, sk.0, &sk.1);
                 }
             }

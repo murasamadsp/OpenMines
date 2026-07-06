@@ -175,17 +175,11 @@ try:
     if len(sid) != 5:
         raise RuntimeError(f"session id length mismatch: {sid!r}")
 
+    time.sleep(1.5)
     write_u("AU", "smoke_NO_AUTH")
 
     expected = ["cf", "BI", "HB", "GU"]
-    observed = []
-    auth_deadline = time.monotonic() + 10
-    while time.monotonic() < auth_deadline and len(observed) < len(expected):
-        data_type, event, payload = read_packet()
-        if event == "PI":
-            continue
-        observed.append(event)
-
+    observed = [read_packet()[1] for _ in expected]
     if observed != expected:
         raise RuntimeError(f"auth-failure events mismatch: {observed!r}")
 finally:

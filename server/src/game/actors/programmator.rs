@@ -1501,10 +1501,8 @@ fn handle_label_result(action: &PAction, label: &str, prog: &mut ProgrammatorSta
                 }
             }
         }
-        ActionType::RunOnRespawn => {
-            if prog.current_prog.contains_key(label) {
-                prog.goto_death = Some(label.to_string());
-            }
+        ActionType::RunOnRespawn if prog.current_prog.contains_key(label) => {
+            prog.goto_death = Some(label.to_string());
         }
         _ => {}
     }

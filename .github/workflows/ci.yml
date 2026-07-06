@@ -48,26 +48,35 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Пин 1.94 = локальный toolchain разработки (clippy nursery/pedantic
+      # Пин 1.96 = локальный toolchain разработки (clippy nursery/pedantic
       # version-sensitive; на 1.89 фаерят другие линты). Бампать синхронно с
       # ops/Dockerfile при обновлении.
-      - name: Install Rust 1.94
+      - name: Install Rust 1.96
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable (toolchain pinned via `with` below)
         with:
-          toolchain: "1.94"
+          toolchain: "1.96"
           components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: install cargo-nextest
+        run: cargo install --locked cargo-nextest
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 
-      - name: clippy (strict)
-        run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
+      - name: architecture guard
+        run: scripts/arch-guard.sh
 
-      - name: test
-        run: cargo test --all-targets --all-features
+      - name: clippy (strict)
+        run: CARGO_INCREMENTAL=0 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
+
+      - name: test (nextest)
+        run: CARGO_INCREMENTAL=0 cargo nextest run --all-targets --all-features
+
+      - name: wire smoke
+        run: scripts/dev-smoke.sh
 
       - name: bench (release, ~5s)
         run: cargo test --release -- bench_tick --ignored --nocapture

@@ -52,6 +52,9 @@ echo "Unity Editor:"
 echo "    OpenMines -> Environment -> Local"
 echo "    then press Play. The client reads Assets/Resources/OpenMines/EnvironmentCatalog.asset."
 echo
+echo "Wire smoke:"
+echo "    scripts/dev-smoke.sh"
+echo
 
 cd "$WORK_DIR"
 exec env \

@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 /// Периодический flush mmap-слоёв мира.
 pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -40,7 +40,7 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
 /// C# `World.Update`: раз в минуту шлёт всем активным игрокам `ON online:0`.
 pub fn spawn_online_count_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_mins(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -483,7 +483,8 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         }
         // Возвращаем оставшиеся + начисляем 2-й BuildWar-exp за конвертацию
         // frame→block (1:1 C# Player.Build("V"): AddExp на frame И в колбэке).
-        let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, Vec<(String, i32)>)> =
+        let ctx = crate::game::ExpContext::from_state(&state);
+        let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, (&'static str, Vec<u8>))> =
             Vec::new();
         {
             let mut ecs = state.ecs.write();
@@ -494,23 +495,21 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 };
                 if let Some(mut skills) =
                     ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
-                    && crate::game::skills::add_skill_exp(
+                    && let Some(sk) = ctx.add_skill_exp(
                         &mut skills.states,
                         crate::game::skills::SkillType::BuildWar.code(),
                         1.0,
                     )
                 {
-                    buildwar_pkts.push((
-                        owner,
-                        crate::game::skills::skill_progress_payload(&skills.states),
-                    ));
+                    buildwar_pkts.push((owner, sk));
                 }
             }
         }
-        for (owner, payload) in buildwar_pkts {
+        for (owner, sk_pkt) in buildwar_pkts {
             if let Some(tx) = state.player_tx.get(&owner).map(|t| t.clone()) {
-                let sk = crate::protocol::packets::skills_packet(&payload);
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                    sk_pkt.0, &sk_pkt.1,
+                ));
             }
         }
 

@@ -59,6 +59,14 @@ pub struct Args {
     /// Override the state directory (e.g. `data_dir` in config)
     #[arg(long, env = "M3R_DATA_DIR")]
     pub data_dir: Option<String>,
+
+    /// Port for Admin HTTP server
+    #[arg(long, env = "M3R_ADMIN_PORT", default_value = "8091")]
+    pub admin_port: u16,
+
+    /// Secret authorization token for Admin Panel
+    #[arg(long, env = "M3R_ADMIN_TOKEN", default_value = "admin")]
+    pub admin_token: String,
 }
 
 impl Args {
@@ -90,6 +98,8 @@ mod tests {
             "M3R_USE_CTRL_C",
             "M3R_GRANT_ADMIN",
             "M3R_DATA_DIR",
+            "M3R_ADMIN_PORT",
+            "M3R_ADMIN_TOKEN",
         ];
         unsafe {
             for var in &env_vars_to_clear {

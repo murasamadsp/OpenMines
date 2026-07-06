@@ -1,0 +1,4 @@
+# Optional local Rust compiler cache. Scripts set RUSTC_WRAPPER explicitly; this
+# file is only for developers who use direnv and want the same behavior manually.
+export RUSTC_WRAPPER=sccache
+export SCCACHE_CACHE_SIZE=8G

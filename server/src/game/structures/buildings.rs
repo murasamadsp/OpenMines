@@ -256,7 +256,7 @@ impl PackType {
             "W" | "Levi" => Some(Self::Levi),
             "J" | "Jobs" => Some(Self::Jobs),
             "Y" | "Zalupa" => Some(Self::Zalupa),
-            "D" | "Clans" | "FLAGBLYAT" => Some(Self::Clans),
+            "D" | "Clans" => Some(Self::Clans),
             _ => None,
         }
     }
@@ -332,7 +332,7 @@ pub fn can_destroy(stats: &BuildingStats) -> bool {
     stats.hp == 0
         && stats
             .broken_timer
-            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(8 * 3600))
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_hours(8))
 }
 
 /// `IDamagable.NeedEffect()` — вероятность разрушительного FX (вероятнее в начале 8-часового окна).

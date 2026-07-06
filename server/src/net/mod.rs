@@ -1,4 +1,5 @@
 pub mod session;
+pub mod web;
 
 use crate::game::GameState;
 use anyhow::Result;

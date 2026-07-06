@@ -2,6 +2,7 @@ pub mod boxes;
 pub mod buildings;
 pub mod chats;
 pub mod clans;
+pub mod events;
 pub mod orders;
 pub mod players;
 pub mod programs;
@@ -11,6 +12,7 @@ pub use boxes::pick_box_coord;
 pub use buildings::{BuildingExtra, BuildingRow};
 pub use chats::ChatRow;
 pub use clans::{ClanRank, ClanRow};
+pub use events::EventRow;
 pub use players::{PlayerRow, Role, SkillEntry, SkillSlots};
 pub use programs::ProgramRow;
 

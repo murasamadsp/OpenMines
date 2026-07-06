@@ -28,3 +28,6 @@ lzma-rs = { workspace = true }
 tokio-cron-scheduler = { workspace = true }
 strum = { workspace = true }
 clap = { workspace = true }
+axum = { workspace = true }
+rust-embed = { workspace = true }
+mime_guess = { workspace = true }

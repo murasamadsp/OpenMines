@@ -28,9 +28,13 @@ pub mod wire;
 
 mod auth;
 mod connection;
+mod handshake;
+mod heartbeat;
+mod outbox;
 pub mod play;
 pub mod player;
 pub mod social;
+mod state;
 pub mod ui;
 
 pub use connection::handle;

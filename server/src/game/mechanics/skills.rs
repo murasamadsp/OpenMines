@@ -487,7 +487,7 @@ pub fn add_skill_exp(skills: &mut SkillSlots, code: &str, amount: f32) -> bool {
         .map_or(1.0, |s| skill_effect(SkillType::Upgrade, s.level));
 
     if let Some(entry) = skills.find_mut(code) {
-        entry.exp += amount * upgrade_mult;
+        entry.exp = amount.mul_add(upgrade_mult, entry.exp);
         true
     } else {
         false

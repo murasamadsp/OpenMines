@@ -4,6 +4,7 @@ pub use openmines_shared::env_config;
 pub use openmines_shared::logging;
 pub use openmines_shared::metrics;
 pub use openmines_shared::protocol;
+pub use openmines_shared::time;
 pub use openmines_shared::world;
 
 mod bootstrap;
@@ -155,6 +156,19 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         if let Err(e) = console::run_repl(repl_state, repl_shutdown).await {
             tracing::error!(error = ?e, "REPL console error");
+        }
+    });
+
+    // Spawning admin web server
+    let admin_state = std::sync::Arc::clone(&game_state);
+    let admin_shutdown_rx = shutdown_tx.subscribe();
+    let admin_port = args.admin_port;
+    let admin_token = args.admin_token.clone();
+    tokio::spawn(async move {
+        if let Err(e) =
+            net::web::run_web_server(admin_state, admin_shutdown_rx, admin_port, admin_token).await
+        {
+            tracing::error!(error = ?e, "Admin web server error");
         }
     });
 

@@ -282,8 +282,7 @@ fn drain_frames(
             let now = u32::try_from(
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_millis())
-                    .unwrap_or(0),
+                    .map_or(0, |d| d.as_millis()),
             )
             .unwrap_or(u32::MAX);
             let _ = out.send(u_frame(*b"PO", &format!("0:{now}")));
