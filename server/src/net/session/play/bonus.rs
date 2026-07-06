@@ -96,6 +96,29 @@ pub fn handle_bonus_claim(
                 "Бонус",
                 &format!("Вы получили {BONUS_REWARD}$!\nВозвращайтесь через {hours} часов."),
             );
+
+            // Срочное сохранение в БД (write-through) для гарантированной сохранности при аварийном падении
+            let row = state
+                .modify_player(pid, |ecs, entity| {
+                    crate::game::player::extract_player_row(ecs, entity)
+                })
+                .flatten();
+            if let Some(r) = row {
+                let db = state.db.clone();
+                let state_c = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = db.save_player(&r).await {
+                        tracing::error!(player_id = %pid, error = ?e, "Failed to write-through save player after daily bonus");
+                    } else {
+                        state_c.modify_player(pid, |ecs, entity| {
+                            if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity)
+                            {
+                                flags.dirty = false;
+                            }
+                        });
+                    }
+                });
+            }
         }
         Some(ClaimOutcome::NotReady { remaining }) => {
             let hours = remaining / 3600;
