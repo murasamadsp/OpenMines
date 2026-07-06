@@ -160,14 +160,21 @@ pub fn handle_dig(
             };
             // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
             // Move с target == own position просто обновляет направление, не перемещает игрока.
-            {
+            let dir_changed = {
                 let Some(mut pos_mut) = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)
                 else {
                     return Some(DigPlayerRead::MissingState("PlayerPosition"));
                 };
-                if (0..=3).contains(&dir) {
+                let dir_changed = (0..=3).contains(&dir) && pos_mut.dir != dir;
+                if dir_changed {
                     pos_mut.dir = dir;
                 }
+                dir_changed
+            };
+            if dir_changed {
+                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before dig direction update")
+                    .dirty = true;
             }
             {
                 let Some(mut cd_mut) = ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
@@ -643,14 +650,21 @@ pub fn handle_build(
                 .find(SkillType::BuildRed.code())
                 .map_or(1.0_f32, |s| s.level as f32);
 
-            {
+            let dir_changed = {
                 let Some(mut pos_mut) = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)
                 else {
                     return Some(BuildPlayerRead::MissingState("PlayerPosition"));
                 };
-                if (0..=3).contains(&bld.direction) {
+                let dir_changed = (0..=3).contains(&bld.direction) && pos_mut.dir != bld.direction;
+                if dir_changed {
                     pos_mut.dir = bld.direction;
                 }
+                dir_changed
+            };
+            if dir_changed {
+                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before build direction update")
+                    .dirty = true;
             }
             {
                 let Some(mut cd_mut) = ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
@@ -1198,6 +1212,91 @@ mod tests {
             basket_amount >= 100,
             "test must exercise event/drop multiplier, got {basket_amount}"
         );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn build_turn_marks_player_dirty_even_when_build_does_not_happen() {
+        let test = make_test_state("build_turn_dirty").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .unwrap()
+                .dirty = false;
+        }
+        test.state.world.set_cell(9, 10, cell_type::EMPTY);
+
+        let bld = XbldClient {
+            direction: 1,
+            block_type: "G",
+        };
+        handle_build(&test.state, &tx, pid, &bld, false);
+
+        let (dir, dirty) = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                let flags = ecs.get::<crate::game::player::PlayerFlags>(entity)?;
+                Some((pos.dir, flags.dirty))
+            })
+            .unwrap();
+        assert_eq!(dir, 1);
+        assert!(dirty);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn dig_turn_marks_player_dirty_even_without_crystal_gain() {
+        let test = make_test_state("dig_turn_dirty").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
+                .unwrap()
+                .last_dig -= Duration::from_millis(500);
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .unwrap()
+                .dirty = false;
+        }
+        test.state.world.set_cell(9, 10, cell_type::EMPTY);
+
+        handle_dig(&test.state, &tx, pid, 1, false);
+
+        let (dir, dirty) = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                let flags = ecs.get::<crate::game::player::PlayerFlags>(entity)?;
+                Some((pos.dir, flags.dirty))
+            })
+            .unwrap();
+        assert_eq!(dir, 1);
+        assert!(dirty);
 
         test.cleanup();
     }
