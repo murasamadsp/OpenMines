@@ -28,6 +28,19 @@ pub struct Config {
 pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
     pub skills: SkillsConfig,
+    pub spawn: SpawnConfig,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct SpawnConfig {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Default for SpawnConfig {
+    fn default() -> Self {
+        Self { x: 10, y: 10 }
+    }
 }
 
 /// Тюнинг скиллов. `upgrade_cost_base` — цена апгрейда в деньгах:
@@ -151,6 +164,36 @@ impl Config {
             anyhow::bail!("data_dir is empty");
         }
         self.logging.validate()?;
+        self.gameplay
+            .validate(self.world_chunks_w, self.world_chunks_h)?;
+        Ok(())
+    }
+}
+
+impl GameplayConfig {
+    fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
+        self.spawn.validate(world_chunks_w, world_chunks_h)?;
+        Ok(())
+    }
+}
+
+impl SpawnConfig {
+    fn validate(self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
+        const SPAWN_MARGIN: i32 = 10;
+        let world_cells_w = i32::try_from(world_chunks_w)
+            .ok()
+            .and_then(|v| v.checked_mul(32))
+            .context("world_chunks_w is too large")?;
+        let world_cells_h = i32::try_from(world_chunks_h)
+            .ok()
+            .and_then(|v| v.checked_mul(32))
+            .context("world_chunks_h is too large")?;
+        if self.x < SPAWN_MARGIN || self.y < SPAWN_MARGIN {
+            anyhow::bail!("gameplay.spawn must leave a {SPAWN_MARGIN}-cell margin");
+        }
+        if self.x + SPAWN_MARGIN >= world_cells_w || self.y + SPAWN_MARGIN >= world_cells_h {
+            anyhow::bail!("gameplay.spawn does not fit inside configured world");
+        }
         Ok(())
     }
 }
@@ -185,7 +228,8 @@ mod tests {
         "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
         "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
-                     "skills": {"upgrade_cost_base": 100}}
+                     "skills": {"upgrade_cost_base": 100},
+                     "spawn": {"x": 12, "y": 13}}
     }"#;
 
     #[test]
@@ -196,6 +240,8 @@ mod tests {
         assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
         assert_eq!(c.gameplay.cooldowns.build_ms, 300);
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
+        assert_eq!(c.gameplay.spawn.x, 12);
+        assert_eq!(c.gameplay.spawn.y, 13);
         assert!(c.cron.hourly_log_enabled);
     }
 
@@ -206,7 +252,8 @@ mod tests {
         // Нет секции gameplay целиком.
         let no_gameplay = FULL.replace(
             r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
-                     "skills": {"upgrade_cost_base": 100}}"#,
+                     "skills": {"upgrade_cost_base": 100},
+                     "spawn": {"x": 12, "y": 13}}"#,
             r#""x": 0"#,
         );
         assert!(
@@ -218,6 +265,15 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(&no_build).is_err(),
             "пропущенный build_ms должен быть ошибкой"
+        );
+        let mut no_spawn: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_spawn["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("spawn");
+        assert!(
+            serde_json::from_value::<Config>(no_spawn).is_err(),
+            "пропущенный spawn должен быть ошибкой"
         );
     }
 
@@ -273,6 +329,21 @@ mod tests {
             raw.as_object_mut().unwrap().insert(key.to_string(), value);
             let cfg: Config = serde_json::from_value(raw).unwrap();
             assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_spawn_values_are_errors() {
+        for spawn in [
+            serde_json::json!({"x": 9, "y": 13}),
+            serde_json::json!({"x": 12, "y": 9}),
+            serde_json::json!({"x": 118, "y": 13}),
+            serde_json::json!({"x": 12, "y": 118}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["spawn"] = spawn;
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid spawn must be rejected");
         }
     }
 

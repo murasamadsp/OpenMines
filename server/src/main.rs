@@ -96,7 +96,8 @@ async fn main() -> Result<()> {
 
     let database = db::Database::open(state_dir.join(DB_FILENAME)).await?;
     if args.regen {
-        bootstrap::regen_clear_world_state(&database).await?;
+        bootstrap::regen_clear_world_state(&database, cfg.gameplay.spawn.x, cfg.gameplay.spawn.y)
+            .await?;
     }
     bootstrap::bootstrap_grant_admin(&database, args.grant_admin.as_deref()).await?;
     tracing::info!("Database ready");
@@ -138,7 +139,13 @@ async fn main() -> Result<()> {
 
     // 1:1 C# CreateSpawns: стартовые здания + площадка золотой дороги при пустой
     // таблице зданий (fresh / после --regen).
-    bootstrap::create_spawns(&database, &world).await?;
+    bootstrap::create_spawns(
+        &database,
+        &world,
+        cfg.gameplay.spawn.x,
+        cfg.gameplay.spawn.y,
+    )
+    .await?;
 
     let game_state = game::GameState::new(
         std::sync::Arc::new(world),

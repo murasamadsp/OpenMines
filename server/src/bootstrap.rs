@@ -29,9 +29,11 @@ pub fn remove_world_files(state_dir: &Path, world_name: &str) {
 }
 
 /// Полная очистка позиционно-привязанного состояния при регене мира.
-pub async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
-    const SPAWN_X: i32 = 10;
-    const SPAWN_Y: i32 = 10;
+pub async fn regen_clear_world_state(
+    database: &db::Database,
+    spawn_x: i32,
+    spawn_y: i32,
+) -> Result<()> {
     let n = database.delete_all_buildings().await?;
     tracing::info!(count = n, "World regen: cleared building rows from DB");
 
@@ -54,12 +56,12 @@ pub async fn regen_clear_world_state(database: &db::Database) -> Result<()> {
     );
 
     let np = database
-        .reset_all_players_to_spawn(SPAWN_X, SPAWN_Y)
+        .reset_all_players_to_spawn(spawn_x, spawn_y)
         .await?;
     tracing::info!(
         count = np,
-        spawn_x = SPAWN_X,
-        spawn_y = SPAWN_Y,
+        spawn_x,
+        spawn_y,
         "World regen: reset player positions to spawn"
     );
 
@@ -91,12 +93,15 @@ pub async fn bootstrap_grant_admin(
 }
 
 /// Создание стартовых зданий и площадки золотой дороги.
-pub async fn create_spawns(database: &db::Database, world: &world::World) -> Result<()> {
+pub async fn create_spawns(
+    database: &db::Database,
+    world: &world::World,
+    spawn_x: i32,
+    spawn_y: i32,
+) -> Result<()> {
     use crate::game::buildings::PackType;
     use crate::net::session::social::buildings::building_extra_for_pack_type;
 
-    const SPAWN_X: i32 = 10;
-    const SPAWN_Y: i32 = 10;
     const GOLDEN_ROAD: u8 = 36;
 
     if !database.load_all_buildings().await?.is_empty() {
@@ -105,14 +110,14 @@ pub async fn create_spawns(database: &db::Database, world: &world::World) -> Res
 
     for rx in -10..=10 {
         for ry in -10..=10 {
-            world.set_cell(SPAWN_X + rx, SPAWN_Y + ry, GOLDEN_ROAD);
+            world.set_cell(spawn_x + rx, spawn_y + ry, GOLDEN_ROAD);
         }
     }
 
     let spawns = [
-        (PackType::Market, "M", SPAWN_X - 7, SPAWN_Y - 4),
-        (PackType::Resp, "R", SPAWN_X - 8, SPAWN_Y + 7),
-        (PackType::Up, "U", SPAWN_X, SPAWN_Y - 4),
+        (PackType::Market, "M", spawn_x - 7, spawn_y - 4),
+        (PackType::Resp, "R", spawn_x - 8, spawn_y + 7),
+        (PackType::Up, "U", spawn_x, spawn_y - 4),
     ];
     for (pack_type, code, ox, oy) in spawns {
         let extra = building_extra_for_pack_type(pack_type)?;
@@ -121,7 +126,11 @@ pub async fn create_spawns(database: &db::Database, world: &world::World) -> Res
             world.set_cell(ox + dx, oy + dy, cell);
         }
     }
-    tracing::info!("CreateSpawns: площадка 21×21 + Market/Resp/Up на спавне (10,10)");
+    tracing::info!(
+        spawn_x,
+        spawn_y,
+        "CreateSpawns: площадка 21×21 + Market/Resp/Up на спавне"
+    );
     Ok(())
 }
 
@@ -175,7 +184,7 @@ mod tests {
             .await
             .unwrap();
 
-        regen_clear_world_state(&database).await.unwrap();
+        regen_clear_world_state(&database, 10, 10).await.unwrap();
 
         // Всё позиционное снесено.
         assert!(
@@ -235,25 +244,25 @@ mod tests {
         ));
 
         // Fresh world → создаёт Market/Resp/Up + площадку.
-        create_spawns(&database, &world).await.unwrap();
+        create_spawns(&database, &world, 20, 20).await.unwrap();
         assert_eq!(
             database.load_all_buildings().await.unwrap().len(),
             3,
             "Market/Resp/Up должны быть созданы на пустом мире"
         );
         assert_eq!(
-            world.get_cell(15, 5),
+            world.get_cell(25, 15),
             36,
             "клетка площадки = золотая дорога (36)"
         );
         assert_eq!(
-            world.get_cell(10, 6),
+            world.get_cell(20, 16),
             37,
             "Up origin = дверь (37), футпринт перекрыл площадку"
         );
 
         // Непустой мир → no-op (1:1 C# gate), повтор не плодит здания.
-        create_spawns(&database, &world).await.unwrap();
+        create_spawns(&database, &world, 20, 20).await.unwrap();
         assert_eq!(
             database.load_all_buildings().await.unwrap().len(),
             3,
