@@ -371,20 +371,14 @@ pub async fn handle_prog_ty(
                         return;
                     }
                 };
-                // ДЕВИАЦИЯ от C# (порядок @P↔#p), эталон — js_reference (оригинал):
-                // там `SendBotProgramStatus` обновляет окно ТОЛЬКО если оно уже открыто
-                // юзером — запуск программы окно НЕ открывает. Unity-клиент же на
-                // `@P "1"` зовёт `ChangeProgTo(true)` (открывает редактор), а `#p`
-                // (`UpdateProgramm(realId)`) в конце делает `SetActive(false)` (закрывает).
-                // Поэтому шлём СНАЧАЛА `@P` (ставит isProgrammator/playing + откроет окно),
-                // а СЛЕДОМ `#p` — его `SetActive(false)` закрывает окно последним.
-                // Итог = поведение оригинала: прога бежит, ввод гейтнут (сервер сам
-                // режет ручной ход при prog_running), кнопка стоп есть, окно закрыто.
+                // Successful start must stay light: Unity already hides the editor before
+                // sending PROG, while #p forces a synchronous LoadFromString(source) on the
+                // main thread. Large programs freeze the client if echoed back here.
                 send_programmator_start_position(tx, server_pos, running);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
                 send_u_packet(tx, "BH", &hand_mode(false).1);
-                send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                 if !running {
+                    send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                     send_u_packet(
                         tx,
                         "OK",
@@ -856,8 +850,6 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        // Порядок @P ПЕРЕД #p (девиация от C#, эталон js_reference): #p своим
-        // `SetActive(false)` закрывает окно ПОСЛЕДНИМ → запуск не открывает редактор.
         assert_eq!(names, vec!["Gu", "@P", "BH", "#p", "OK"]);
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"0");
@@ -903,16 +895,11 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@T", "@P", "BH", "#p"]);
+        assert_eq!(names, vec!["Gu", "@T", "@P", "BH"]);
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"17:23");
         assert_eq!(events[2].1, b"1");
         assert_eq!(events[3].1, b"0");
-
-        let update_json: serde_json::Value = serde_json::from_slice(&events[4].1).unwrap();
-        assert_eq!(update_json["id"], prog_id);
-        assert_eq!(update_json["title"], "main");
-        assert_eq!(update_json["source"], "$z");
 
         test.cleanup();
     }
