@@ -294,32 +294,47 @@ cargo fmt --all
 
 ## Архитектура Rust-сервера
 
-Единый бинарник `openmines-server`, entry point — `server/main.rs`.
+Проект разделен на две основные части: общую разделяемую библиотеку `openmines-shared` и исполняемый файл игрового сервера `openmines-server`. Entry point игрового сервера — `server/src/main.rs`.
 
-### Ключевые модули (`server/`)
+### Структура `crates/openmines-shared/src/` (Общая логика)
+- **`config.rs`** — загрузка файлов конфигурации: `config.json`, `cells.json`, `buildings.json`.
+- **`world/`** — мир на mmap-слоях (`.mapb`): cells, road, durability. Чанки 32×32. Dirty-tracking + атомарные бэкапы чанков.
+- **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
+- **`protocol/`** — бинарный кодек сетевых пакетов: сериализация и десериализация пакетов, золотые тесты байт-в-байт.
+- **`time.rs`** — утилиты для работы со временем.
 
-- **`config.rs`** — загрузка `config.json`, `cells.json`, `buildings.json`
-- **`world/`** — мир на mmap-слоях (`.mapb`): cells, road, durability. Чанки 32×32. Dirty-tracking + atomic backup
-- **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs
-- **`game/`** — игровая логика на Bevy ECS
-  - `mod.rs` — `GameState` (центральный Arc-объект), ECS-системы, очереди broadcast/programmator
-  - `player.rs` — ECS-компоненты игрока (12+: Position, Stats, Inventory, Skills, Cooldowns, Connection и др.)
-  - `buildings.rs` — ECS-компоненты зданий, `PackType` enum (15 вариантов), `PackResendQueue` для HB-ресенда
-  - `building_damage.rs` — IDamagable система: `brokentimer`, hourly tick, `NeedEffect` FX, разрушение с дропом кристаллов
-  - `combat.rs` — `standing_cell_hazard_system`, `gun_firing_system`, charge-depleted HB resend
-  - `sand.rs` — `sand_physics_system` (гравитация песка)
-  - `programmator.rs` — `programmator_system` (парсер + исполнение)
-  - `skills.rs` — 58 типов навыков
-  - `crafting.rs` — 8 рецептов (определены, не подключены к сессии)
-- **`net/`** — TCP-сервер + сессии
-  - `lifecycle.rs` — фоновые циклы: world flush (60s), player save (10s), building save (45s), game tick (1s)
-  - `session/connection.rs` — главный цикл сессии
-  - `session/dispatch/ty.rs` — диспетчер TY-событий (25+)
-  - `session/auth/` → `play/` → `outbound/` → `social/` → `ui/` → `player/`
-- **`protocol/`** — бинарный кодек пакетов
-- **`cron.rs`** — планировщик фоновых задач
-- **`metrics.rs`** — Prometheus через Axum HTTP
-- **`logging.rs`** — tracing с ротацией файлов
+### Структура `server/src/` (Игровой сервер)
+- **`game/`** — игровая логика на Bevy ECS:
+  - `mod.rs` — `GameState` (центральный Arc-объект), Bevy ECS-системы, очереди broadcast/programmator.
+  - `actors/` — ECS-компоненты сущностей:
+    - `player.rs` — компоненты игрока (Position, Stats, Inventory, Skills, Cooldowns, Connection и др.).
+    - `botspot.rs` — компоненты спавнеров ботов.
+    - `alive.rs` — компоненты и логика Alive-сущностей.
+    - `programmator.rs` — исполняемый парсер и среда выполнения программатора.
+  - `economy/` — экономическая модель:
+    - `market.rs` — динамическое ценообразование кристаллов (стоимость рассчитывается динамически из объемов добычи).
+  - `mechanics/` — игровые механики:
+    - `building_damage.rs` — система повреждения зданий IDamagable: hourly tick, Brokentimer, FX эффекты.
+    - `combat.rs` — система боя, урона ганов, standing_cell_hazard_system.
+    - `events.rs` — ExpContext (инкапсулирует ивентные множители опыта и дропа, единственный источник их применения).
+    - `skills.rs` — 58 типов навыков, их описание и уровни.
+  - `structures/` — строения мира:
+    - `buildings.rs` — ECS-компоненты зданий, `PackType` (15 типов строений) и `PackResendQueue`.
+- **`net/`** — TCP-сервер + HTTP-веб API:
+  - `web.rs` — Axum HTTP-сервер для админ-панели (SPA на HTML/JS), статистика, API карты, управление активными событиями и рынком.
+  - `session/` — жизненный цикл сетевых подключений:
+    - `connection.rs` — главный цикл TCP-сессии, heartbeat_gate для предотвращения PI-шторма.
+    - `handshake.rs` — OnConnected инициализация сетевого приветствия.
+    - `outbox.rs`, `heartbeat.rs`, `state.rs`, `prelude.rs` — инфраструктура сетевой сессии.
+    - `auth/` (например, `login.rs`) —rate-limit авторизации, MD5/SHA256 токены.
+    - `play/` — игровые действия в сессии (`death.rs`, `dig_build.rs`, `movement.rs`, `geo.rs`, `packs.rs`, `chunks.rs`).
+    - `outbound/` — синхронизация исходящих данных (`chat_sync.rs`, `inventory_sync.rs`, `player_sync.rs`).
+    - `social/` — социальное взаимодействие (`clans.rs`, `misc.rs`, `commands.rs`, `chat.rs`, `buildings.rs`).
+    - `ui/` — внутриигровой интерфейс HORB (`auction_gui.rs`, `gui_buttons.rs`, `heal_inventory.rs`, `horb.rs`, `up_building.rs`).
+- **`tasks/`** — фоновые асинхронные задачи Bevy/Tokio:
+  - `auction.rs` — фоновый планировщик аукционов и покупок.
+  - `lifecycle.rs` — фоновые циклы: world flush (60s), player save (10s), building save (45s), game tick (1s).
+- **`cli.rs`**, **`console.rs`**, **`migrations.rs`**, **`shutdown.rs`** — системные модули инициализации и завершения работы.
 
 ### GameState — центральный объект
 
@@ -329,12 +344,22 @@ GameState {
     db: Arc<Database>                         // SQLite
     config: Config
     active_players: DashMap<PlayerId, ActivePlayer>    // онлайн игроки
-    chunk_players: DashMap<(u32,u32), Vec<PlayerId>>   // пространственный индекс
+    chunk_players: DashMap<ChunkPos, Vec<PlayerId>>    // пространственный индекс
     building_index: DashMap<(i32,i32), Entity>         // здания по координатам
-    chat_channels: RwLock<Vec<ChatChannel>>            // FED, DNO, LOC
+    botspot_index: DashMap<PlayerId, Entity>           // боты по ID
+    chunk_botspots: DashMap<ChunkPos, Vec<Entity>>     // боты по чанкам
+    chunk_buildings: DashMap<ChunkPos, Vec<Entity>>    // здания по чанкам
+    chat_channels: RwLock<Vec<ChatChannel>>            // FED, DNO, CLAN, LOC
+    active_events: RwLock<ActiveEvents>                // активные ивенты (множители)
     ecs: RwLock<EcsWorld>                              // Bevy ECS
-    schedule: RwLock<Schedule>                         // ECS-системы
+    schedules: Vec<GameSchedule>                       // ECS-системы
     auth_failures: DashMap<IpAddr, (u32, Instant)>     // rate limiting
+    incoming_actions: IncomingActionsQueue             // входящие действия игроков
+    life_queue: Mutex<Vec<LifeCmd>>                    // очередь подключения/отключения
+    player_tx: DashMap<PlayerId, UnboundedSender>      // каналы отправки клиентам
+    box_index: Arc<DashMap<WorldPos, [i64; 6]>>        // боксы (клетка 90) в памяти
+    box_persist_q: Arc<Mutex<Vec<BoxPersist>>>         // очередь сохранения боксов
+    crystal_economy: Mutex<CrystalEconomy>             // динамическое ценообразование кристаллов
 }
 ```
 
@@ -396,8 +421,13 @@ GameState {
 | Протокол (кодек) | `protocol/` | Билдеры/декодеры, golden-тесты байт-в-байт |
 | БД (схема) | `db/` | Схема + миграции, SQLite WAL |
 | Аутентификация | `auth/login.rs` | MD5/SHA256 токены, rate-limit |
-| Движение | `play/movement.rs` | Ходит, гейты, дистанция (но прорисовка чанков/видимости структурно кривая) |
+| Движение | `play/movement.rs` | Ходит, гейты, дистанция |
 | Спавн игрока | `player/init.rs` | Порядок пакетов в основном 1:1, вход работает |
+| Кланы | `social/clans.rs` | Создание кланов, управление рангами, вступление/выход/исключение |
+| Скиллы и апгрейды | `ui/up_building.rs` | Установка/удаление скиллов в слоты строений, прокачка за кристаллы |
+| Инвентарь и лечение | `ui/heal_inventory.rs` | Использование лазера C190, лечение, применение предметов |
+| Рынок кристаллов | `economy/market.rs` | Динамические цены (tick_crystal_prices) и купля/продажа кристаллов |
+| Админ-панель (Веб) | `net/web.rs`, `admin/` | SPA-панель администрирования: статистика, Canvas карта, CRUD ивентов и цен |
 
 ### Сломано / недоделано / не доведено
 
@@ -405,23 +435,15 @@ GameState {
 | - | - |
 | Копание/Стройка | Недоделано — не доверять |
 | Чат | Барахлит И на клиенте, И на сервере |
-| Кланы | По сути не работает |
-| Инвентарь | Недоделано |
-| Смерть/Респавн | Отчасти |
 | Чанки/Видимость | Неправильная структура прорисовки (HB refresh) |
 | Мир/Ячейки | Модель/физика по сути не та |
 | Бой | Далёкая тема, не приоритет |
 | Синхронизация (`outbound/`) | Далёкая тема |
-| Здания | Размещение/снос/Gun/Gate/IDamagable/Razryadka есть; GUI зданий нет |
-| Скиллы | Дерево/формулы/exp/@S/@LV есть; нет Up-GUI (установка/удаление/слоты) |
 | Настройки | Stub, полный RichList не портирован |
 | GUI-регистрация | Stub, `handle_gui_auth_flow()` — TODO |
 | Песок/Боулдеры | Падение вниз/диагональ есть; нет прохода через Gate |
 | Программатор | Ядро (ход/копка/автокопа/петли/окно/стоп) заработало после фиксов 2026-06-24. Нет: постройка по типу (опкоды 162-165 B1/B2/B3/VB), hand mode (179/180), полная проверка If/Loop |
-| Building GUIs | Телепорт (список+TP), Маркет (купля/продажа), Склад (депозит), Крафтер (рецепты+таймер), Респ (заправка), Ап (скиллы) — нет |
 | Alive-клетки | 7 типов поведения (AliveCyan flood, AliveBlack colony, …) — нет ECS-системы |
-| Маркет | Динамические цены + купля/продажа кристаллов — нет. Сейчас зовётся «auction», но это **маркетплейс**; настоящий аукцион — продажа фед-баз за кредиты |
-| Кислота | Выпилена (была галлюцинация). Потом — только для фиолетовой слизи (распространение) |
 
 ---
 
