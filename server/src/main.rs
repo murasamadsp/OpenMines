@@ -9,11 +9,11 @@ pub use openmines_shared::world;
 mod bootstrap;
 mod cli;
 mod console;
-mod cron;
 mod game;
 mod migrations;
 mod net;
 mod shutdown;
+mod tasks;
 
 use crate::world::WorldProvider;
 use anyhow::Result;
@@ -146,8 +146,8 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // Cron system.
-    cron::CronManager::new(std::sync::Arc::clone(&game_state), shutdown_tx.clone()).spawn();
+    // Background tasks (cron + lifecycle loops + auction loop)
+    tasks::spawn_background_tasks(&game_state, &shutdown_tx);
 
     // Spawning console REPL
     let repl_state = std::sync::Arc::clone(&game_state);

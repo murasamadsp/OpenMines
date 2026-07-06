@@ -7,11 +7,11 @@
 //! Окно держим `market:{x}:{y}:auc` на всех страницах — координаты сохраняются
 //! для табов и навигации (кнопка «НАЗАД» = action `auc`/`choose:{item}`).
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats, PlayerUI};
-use crate::net::auction::{credit_money, now_unix};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 use crate::net::session::ui::gui_buttons::{market_tabs, resolve_market_window};
 use crate::net::session::ui::horb::{Button, Horb, ListRow};
+use crate::tasks::auction::{credit_money, now_unix};
 
 /// C# `MarketSystem.PackName` — имена 51 типа предмета (индекс = `item_id`).
 const PACK_NAMES: [&str; 51] = [

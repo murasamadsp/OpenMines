@@ -6,9 +6,9 @@
 //! кулдаун. Параметры (7 часов / 1 000 000 $) заданы пользователем.
 
 use crate::game::player::{PlayerFlags, PlayerStats};
-use crate::net::auction::now_unix;
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
+use crate::tasks::auction::now_unix;
 
 /// Кулдаун между клеймами бонуса (7 часов, в секундах).
 const BONUS_COOLDOWN_SECS: i64 = 7 * 3600;
