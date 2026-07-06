@@ -7,7 +7,7 @@ default-run = "openmines-server"
 
 [[bin]]
 name = "openmines-server"
-path = "main.rs"
+path = "src/main.rs"
 
 [dependencies]
 openmines-shared = { workspace = true }

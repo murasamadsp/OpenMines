@@ -86,7 +86,7 @@ static RECIPES: &[Recipe] = &[
         cost_crys: &[Cost { id: 5, num: 50 }],
         cost_res: &[],
         time_sec: 20,
-        title: "C190",
+        title: "C-190",
     },
     Recipe {
         id: 7,
