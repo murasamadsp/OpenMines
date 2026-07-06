@@ -1,20 +1,17 @@
 //! Главный модуль игры: состояние мира, игроки, здания и ECS-системы.
 //! Архитектура стремится к 1:1 соответствию логике C# сервера (World.cs, MServer.cs).
 
-pub mod alive;
-pub mod botspot;
-pub mod building_damage;
-pub mod buildings;
-pub mod chat;
-pub mod combat;
-pub mod coords;
-pub mod crafting;
-pub mod direction;
-pub mod market;
-pub mod player;
-pub mod programmator;
-pub mod sand;
-pub mod skills;
+pub mod actors;
+pub mod economy;
+pub mod mechanics;
+pub mod structures;
+pub mod world;
+
+pub use actors::{alive, botspot, player, programmator};
+pub use economy::{crafting, market};
+pub use mechanics::{building_damage, chat, combat, skills};
+pub use structures::buildings;
+pub use world::{direction, sand};
 
 use crate::config::Config;
 use crate::db::Database;
@@ -26,14 +23,14 @@ use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub use buildings::{
+pub use actors::player::{
+    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
+};
+pub use structures::buildings::{
     BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
     PackView,
 };
-pub use coords::{ChunkPos, WorldPos};
-pub use player::{
-    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
-};
+pub use world::coords::{ChunkPos, WorldPos};
 
 // ─── ECS Resources (вместо Arc<GameState> для ECS-систем) ───────────────────
 
