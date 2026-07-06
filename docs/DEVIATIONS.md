@@ -25,7 +25,7 @@
 | `server/src/net/session/ui/heal_inventory.rs` | building-items `{0,1,2,3,24,26,29}` обрабатываются, хотя в C# не входят в `typeditems` | паритет с КЛИЕНТОМ (эталон), а не с неполным C# |
 | `server/src/net/session/ui/gui_buttons.rs` | Порядок кнопок маркета: «Продать» → «Продать всё» | **[UX]** удобнее; wire-нейтрально |
 | `server/src/game/mechanics/combat.rs` | Урон пушки — округлённый каст, клампится `[0,60]` | float→int без потери паритета |
-| `server/src/game/actors/programmator.rs` | Пол 20ms на шаг программы (в C# пола нет) | **[SAFETY]** анти-infinite-loop / CPU-stall |
+| `server/src/game/actors/programmator.rs` + `gameplay.programmator.min_move_delay_ms` | Настраиваемый floor задержки движения программы (в C# пола нет) | **[SAFETY]** анти-infinite-loop / CPU-stall |
 | `server/src/game/actors/programmator.rs` | `MacrosBuild` (id 142) намеренно не в этой ветке | 1:1 C# `PAction.Execute` его не имеет |
 | `server/src/net/session/ui/up_building.rs` `handle_skill_upgrade` | Апгрейд скилла СТОИТ денег (`cost = gameplay.skills.upgrade_cost_base * уровень`), списывает + блокирует при нехватке. В C# `Skill.Up` бесплатный (только exp) | **[USER]** «каждый апгрейд стоит денег» — экономика, конфиг-тюнинг |
 

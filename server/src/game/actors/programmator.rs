@@ -2,17 +2,21 @@ use crate::game::player::{
     PlayerConnection, PlayerMetadata, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
 use crate::game::skills::{SkillType, get_player_skill_effect};
-use crate::game::{ProgrammatorAction, ProgrammatorQueue, WorldResource};
+use crate::game::{
+    ProgrammatorAction, ProgrammatorConfigResource, ProgrammatorQueue, WorldResource,
+};
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-const ACTION_DELAY: Duration = Duration::from_micros(333_333);
-
 const fn delay_millis(ms: u64) -> Duration {
     Duration::from_millis(ms)
+}
+
+const fn direct_action_delay(timing: crate::config::ProgrammatorConfig) -> Duration {
+    Duration::from_micros(timing.direct_action_delay_us)
 }
 
 // ─── ActionType — 1:1 with C# reference ─────────────────────────────────────
@@ -1294,6 +1298,7 @@ type ProgrammatorQuery<'w, 's> = Query<
 )]
 pub fn programmator_system(
     world_res: Res<WorldResource>,
+    timing_res: Res<ProgrammatorConfigResource>,
     mut prog_q: ResMut<ProgrammatorQueue>,
     mut query: ProgrammatorQuery<'_, '_>,
 ) {
@@ -1364,6 +1369,7 @@ pub fn programmator_system(
             &mut prog_q,
             &mut delay,
             geo.0.len(),
+            timing_res.0,
         );
 
         // Process result (matching C# `ProgrammatorData.Step()`)
@@ -1407,6 +1413,7 @@ fn execute_action(
     prog_q: &mut ProgrammatorQueue,
     delay: &mut Option<Duration>,
     geo_count: usize,
+    timing: crate::config::ProgrammatorConfig,
 ) -> ExecResult {
     // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
     let on_road = crate::world::cells::is_road(world.get_cell(pos.x, pos.y));
@@ -1418,28 +1425,32 @@ fn execute_action(
         // Повороты (Rotate*) ниже остаются с явным dir — у них нулевая дельта.
         ActionType::MoveDown => {
             *delay = Some(delay_millis(
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y + 1),
+                speed_pause(skills, on_road, timing)
+                    + move_block_penalty(world, pos.x, pos.y + 1, timing),
             ));
             push_move(prog_q, meta, conn, pos.x, pos.y + 1, -1);
             ExecResult::None
         }
         ActionType::MoveUp => {
             *delay = Some(delay_millis(
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y - 1),
+                speed_pause(skills, on_road, timing)
+                    + move_block_penalty(world, pos.x, pos.y - 1, timing),
             ));
             push_move(prog_q, meta, conn, pos.x, pos.y - 1, -1);
             ExecResult::None
         }
         ActionType::MoveRight => {
             *delay = Some(delay_millis(
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + 1, pos.y),
+                speed_pause(skills, on_road, timing)
+                    + move_block_penalty(world, pos.x + 1, pos.y, timing),
             ));
             push_move(prog_q, meta, conn, pos.x + 1, pos.y, -1);
             ExecResult::None
         }
         ActionType::MoveLeft => {
             *delay = Some(delay_millis(
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x - 1, pos.y),
+                speed_pause(skills, on_road, timing)
+                    + move_block_penalty(world, pos.x - 1, pos.y, timing),
             ));
             push_move(prog_q, meta, conn, pos.x - 1, pos.y, -1);
             ExecResult::None
@@ -1447,7 +1458,8 @@ fn execute_action(
         ActionType::MoveForward => {
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
             *delay = Some(delay_millis(
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + dx, pos.y + dy),
+                speed_pause(skills, on_road, timing)
+                    + move_block_penalty(world, pos.x + dx, pos.y + dy, timing),
             ));
             push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, -1);
             ExecResult::None
@@ -1455,27 +1467,27 @@ fn execute_action(
 
         // ─── Rotation ────────────────────────────────────────────────────
         ActionType::RotateDown => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 0);
             ExecResult::None
         }
         ActionType::RotateUp => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 2);
             ExecResult::None
         }
         ActionType::RotateLeft => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 1);
             ExecResult::None
         }
         ActionType::RotateRight => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 3);
             ExecResult::None
         }
         ActionType::RotateLeftRelative => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             let d = match pos.dir {
                 0 => 3,
                 2 => 1,
@@ -1487,7 +1499,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRightRelative => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             let d = match pos.dir {
                 0 => 1,
                 1 => 2,
@@ -1499,7 +1511,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRandom => {
-            *delay = Some(delay_millis(speed_pause(skills, on_road)));
+            *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
             let d = rand::random_range(0..4);
             push_move(prog_q, meta, conn, pos.x, pos.y, d);
             ExecResult::None
@@ -1507,7 +1519,7 @@ fn execute_action(
 
         // ─── Dig / Build ─────────────────────────────────────────────────
         ActionType::Dig => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Dig {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1518,7 +1530,7 @@ fn execute_action(
         // MacrosBuild (id 142) намеренно НЕ здесь: C# `PAction.Execute` не имеет
         // для него case → no-op (падает в `_ => None`). 1:1 с референсом.
         ActionType::BuildBlock => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1528,7 +1540,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildPillar => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1538,7 +1550,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildRoad => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1548,7 +1560,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildMilitaryBlock => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1558,7 +1570,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::Geology => {
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Geo {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1570,7 +1582,7 @@ fn execute_action(
                 pid: meta.id,
                 tx: conn.tx.clone(),
             });
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             ExecResult::None
         }
         ActionType::Stop => {
@@ -1988,7 +2000,7 @@ fn execute_action(
             {
                 let diggable = world.cell_defs().get(world.get_cell(tx, ty)).is_diggable();
                 if diggable {
-                    *delay = Some(ACTION_DELAY);
+                    *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
                         tx: conn.tx.clone(),
@@ -2007,7 +2019,7 @@ fn execute_action(
                     pid: meta.id,
                     tx: conn.tx.clone(),
                 });
-                *delay = Some(ACTION_DELAY);
+                *delay = Some(direct_action_delay(timing));
                 return ExecResult::BoolResult(true);
             }
             ExecResult::None
@@ -2021,7 +2033,7 @@ fn execute_action(
             if prog.macros_template.is_some() {
                 let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
                 if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
-                    *delay = Some(ACTION_DELAY);
+                    *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
                         tx: conn.tx.clone(),
@@ -2035,7 +2047,7 @@ fn execute_action(
             for (dir_key, (dx, dy)) in DIRZ {
                 if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
                     if pos.dir == dir_key {
-                        *delay = Some(ACTION_DELAY);
+                        *delay = Some(direct_action_delay(timing));
                         prog.macros_template = Some(dir_key);
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
@@ -2043,7 +2055,7 @@ fn execute_action(
                             dir: pos.dir,
                         });
                     } else {
-                        *delay = Some(delay_millis(speed_pause(skills, on_road)));
+                        *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
                         push_move(prog_q, meta, conn, pos.x, pos.y, dir_key);
                     }
                     return ExecResult::BoolResult(true);
@@ -2057,7 +2069,7 @@ fn execute_action(
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
             let gx = pos.x + dx;
             let gy = pos.y + dy;
-            *delay = Some(ACTION_DELAY);
+            *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::FillGun {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -2079,14 +2091,14 @@ fn execute_action(
                 let cy = pos.y + dy;
                 if crate::world::cells::is_crystal(world.get_cell(cx, cy)) {
                     if pos.dir == check_dir {
-                        *delay = Some(ACTION_DELAY);
+                        *delay = Some(direct_action_delay(timing));
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
                             tx: conn.tx.clone(),
                             dir: pos.dir,
                         });
                     } else {
-                        *delay = Some(delay_millis(speed_pause(skills, on_road)));
+                        *delay = Some(delay_millis(speed_pause(skills, on_road, timing)));
                         push_move(prog_q, meta, conn, pos.x, pos.y, check_dir);
                     }
                     found = true;
@@ -2401,15 +2413,24 @@ fn push_move(
 /// непустой клеткой (ветка `dir==-1`, PAction.cs:143-176). Это чистый read-only
 /// предикат от состояния целевой клетки — мутацию делает очередь хода, дублировать
 /// её не нужно. Клетка ворот (тип 30) пустая → штрафа нет (как и C# `return false`).
-fn move_block_penalty(world: &crate::world::World, tx: i32, ty: i32) -> u64 {
+fn move_block_penalty(
+    world: &crate::world::World,
+    tx: i32,
+    ty: i32,
+    timing: crate::config::ProgrammatorConfig,
+) -> u64 {
     if world.valid_coord(tx, ty) && !world.is_empty(tx, ty) {
-        200 //TODO: что за 200?
+        timing.blocked_move_penalty_ms
     } else {
         0
     }
 }
 
-fn speed_pause(skills: &PlayerSkillsComp, on_road: bool) -> u64 {
+fn speed_pause(
+    skills: &PlayerSkillsComp,
+    on_road: bool,
+    timing: crate::config::ProgrammatorConfig,
+) -> u64 {
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
     // 1:1 ref Player.cs:155: ServerPause = (OnRoad ? pause*5*0.80 : pause*5) * 1.4 / 1000.
     // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
@@ -2418,12 +2439,11 @@ fn speed_pause(skills: &PlayerSkillsComp, on_road: bool) -> u64 {
     let pause_units = (move_effect * 100.0).to_u64().unwrap_or(0);
     // off-road: pause*5*1.4 = pause*7; on-road (×0.80): pause*5.6 = pause*56/10000.
     let server_pause_ms = if on_road {
-        pause_units * 56 / 10000 //TODO: что за числа? лол
+        pause_units * 56 / 10000
     } else {
         pause_units * 7 / 1000
     };
-    // Minimum 20ms to prevent infinite loops / CPU stall (намеренная девиация: C# без пола)
-    server_pause_ms.max(20) //TODO: почему именно 20 мс? у нас +есть своя система задержок schedule
+    server_pause_ms.max(timing.min_move_delay_ms)
 }
 
 #[cfg(test)]
@@ -2446,8 +2466,9 @@ mod tests {
         // C# Player.cs:155: на дороге ServerPause ×0.80 → меньше пауза.
         // Movement lvl0 effect=70 → pause_units=7000; off=49ms, on=39ms.
         let skills = empty_skills();
-        let off = speed_pause(&skills, false);
-        let on = speed_pause(&skills, true);
+        let timing = crate::config::ProgrammatorConfig::default();
+        let off = speed_pause(&skills, false, timing);
+        let on = speed_pause(&skills, true, timing);
         assert_eq!(off, 49);
         assert_eq!(on, 39);
         assert!(on < off, "on-road должно быть быстрее off-road");
@@ -2512,8 +2533,12 @@ mod tests {
     }
 
     #[test]
-    fn programmator_direct_action_delay_is_three_per_second() {
-        assert_eq!(ACTION_DELAY, Duration::from_micros(333_333));
+    fn programmator_direct_action_delay_comes_from_config() {
+        let timing = crate::config::ProgrammatorConfig {
+            direct_action_delay_us: 123_456,
+            ..Default::default()
+        };
+        assert_eq!(direct_action_delay(timing), Duration::from_micros(123_456));
     }
 
     #[test]

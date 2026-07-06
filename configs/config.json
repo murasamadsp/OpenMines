@@ -23,6 +23,11 @@
     "spawn": {
       "x": 10,
       "y": 10
+    },
+    "programmator": {
+      "direct_action_delay_us": 333333,
+      "blocked_move_penalty_ms": 200,
+      "min_move_delay_ms": 20
     }
   }
 }

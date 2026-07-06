@@ -14,6 +14,7 @@ pub use structures::buildings;
 pub use world::{direction, sand};
 
 use crate::config::Config;
+use crate::config::ProgrammatorConfig;
 use crate::db::Database;
 use crate::world::{World, WorldProvider};
 use anyhow::Context as _;
@@ -39,6 +40,9 @@ pub use world::coords::{ChunkPos, WorldPos};
 /// от всего `GameState`. Каждая система берёт только то, что реально использует.
 #[derive(Resource)]
 pub struct WorldResource(pub Arc<crate::world::World>);
+
+#[derive(Resource, Clone, Copy)]
+pub struct ProgrammatorConfigResource(pub ProgrammatorConfig);
 
 /// Индекс боксов (crystal loot на земле) — lock-free `DashMap`, общий с `GameState`
 /// для консистентности между ECS-системами и async-хендлерами.
@@ -446,6 +450,9 @@ impl GameState {
         {
             let mut ecs = state.ecs.write();
             ecs.insert_resource(WorldResource(state.world.clone()));
+            ecs.insert_resource(ProgrammatorConfigResource(
+                state.config.gameplay.programmator,
+            ));
             ecs.insert_resource(BoxIndexResource(state.box_index.clone()));
             ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
             ecs.insert_resource(combat::DeathQueue::default());

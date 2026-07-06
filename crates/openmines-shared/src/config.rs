@@ -29,6 +29,7 @@ pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
     pub skills: SkillsConfig,
     pub spawn: SpawnConfig,
+    pub programmator: ProgrammatorConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -40,6 +41,27 @@ pub struct SpawnConfig {
 impl Default for SpawnConfig {
     fn default() -> Self {
         Self { x: 10, y: 10 }
+    }
+}
+
+/// Настройки серверного исполнения программатора.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ProgrammatorConfig {
+    /// Задержка для прямых действий программы: копание/стройка/геология/хил.
+    pub direct_action_delay_us: u64,
+    /// Штраф за попытку хода в занятую клетку.
+    pub blocked_move_penalty_ms: u64,
+    /// Минимальная задержка движения, чтобы программа не крутила busy-loop.
+    pub min_move_delay_ms: u64,
+}
+
+impl Default for ProgrammatorConfig {
+    fn default() -> Self {
+        Self {
+            direct_action_delay_us: 333_333,
+            blocked_move_penalty_ms: 200,
+            min_move_delay_ms: 20,
+        }
     }
 }
 
@@ -173,6 +195,7 @@ impl Config {
 impl GameplayConfig {
     fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
+        self.programmator.validate()?;
         Ok(())
     }
 }
@@ -193,6 +216,18 @@ impl SpawnConfig {
         }
         if self.x + SPAWN_MARGIN >= world_cells_w || self.y + SPAWN_MARGIN >= world_cells_h {
             anyhow::bail!("gameplay.spawn does not fit inside configured world");
+        }
+        Ok(())
+    }
+}
+
+impl ProgrammatorConfig {
+    fn validate(self) -> Result<()> {
+        if self.direct_action_delay_us == 0 {
+            anyhow::bail!("gameplay.programmator.direct_action_delay_us must be greater than 0");
+        }
+        if self.min_move_delay_ms == 0 {
+            anyhow::bail!("gameplay.programmator.min_move_delay_ms must be greater than 0");
         }
         Ok(())
     }
@@ -229,7 +264,12 @@ mod tests {
         "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
                      "skills": {"upgrade_cost_base": 100},
-                     "spawn": {"x": 12, "y": 13}}
+                     "spawn": {"x": 12, "y": 13},
+                     "programmator": {
+                       "direct_action_delay_us": 333333,
+                       "blocked_move_penalty_ms": 200,
+                       "min_move_delay_ms": 20
+                     }}
     }"#;
 
     #[test]
@@ -242,6 +282,9 @@ mod tests {
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
         assert_eq!(c.gameplay.spawn.x, 12);
         assert_eq!(c.gameplay.spawn.y, 13);
+        assert_eq!(c.gameplay.programmator.direct_action_delay_us, 333_333);
+        assert_eq!(c.gameplay.programmator.blocked_move_penalty_ms, 200);
+        assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
         assert!(c.cron.hourly_log_enabled);
     }
 
@@ -253,7 +296,12 @@ mod tests {
         let no_gameplay = FULL.replace(
             r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
                      "skills": {"upgrade_cost_base": 100},
-                     "spawn": {"x": 12, "y": 13}}"#,
+                     "spawn": {"x": 12, "y": 13},
+                     "programmator": {
+                       "direct_action_delay_us": 333333,
+                       "blocked_move_penalty_ms": 200,
+                       "min_move_delay_ms": 20
+                     }}"#,
             r#""x": 0"#,
         );
         assert!(
@@ -274,6 +322,15 @@ mod tests {
         assert!(
             serde_json::from_value::<Config>(no_spawn).is_err(),
             "пропущенный spawn должен быть ошибкой"
+        );
+        let mut no_programmator: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_programmator["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("programmator");
+        assert!(
+            serde_json::from_value::<Config>(no_programmator).is_err(),
+            "пропущенный programmator должен быть ошибкой"
         );
     }
 
@@ -344,6 +401,25 @@ mod tests {
             raw["gameplay"]["spawn"] = spawn;
             let cfg: Config = serde_json::from_value(raw).unwrap();
             assert!(cfg.validate().is_err(), "invalid spawn must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_programmator_values_are_errors() {
+        for patch in [
+            serde_json::json!({"direct_action_delay_us": 0}),
+            serde_json::json!({"min_move_delay_ms": 0}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["programmator"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid programmator config must be rejected"
+            );
         }
     }
 
