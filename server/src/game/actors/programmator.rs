@@ -7,11 +7,17 @@ use crate::world::WorldProvider;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+const ACTION_DELAY: Duration = Duration::from_micros(333_333);
+
+const fn delay_millis(ms: u64) -> Duration {
+    Duration::from_millis(ms)
+}
 
 // ─── ActionType — 1:1 with C# reference ─────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub enum ActionType {
     None,
@@ -213,14 +219,14 @@ const fn get_action_type(id: u8) -> ActionType {
 
 // ─── PAction / PFunction ─────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PAction {
     pub action_type: ActionType,
     pub label: String,
     pub num: i32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PFunction {
     pub actions: Vec<PAction>,
     pub current: usize,
@@ -249,6 +255,25 @@ impl PFunction {
 }
 
 // ─── ProgrammatorState — ECS component ──────────────────────────────────────
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ProgrammatorSnapshot {
+    pub running: bool,
+    pub current_prog: HashMap<String, PFunction>,
+    pub function_order: Vec<String>,
+    pub current_function: String,
+    pub selected_id: Option<i32>,
+    pub selected_data: Option<String>,
+    pub shift_x: i32,
+    pub shift_y: i32,
+    pub check_x: i32,
+    pub check_y: i32,
+    pub flip_state: bool,
+    pub startpoint: (String, usize),
+    pub goto_death: Option<String>,
+    pub macros_template: Option<i32>,
+    pub hand_mode_active: bool,
+}
 
 #[derive(Component, Debug)]
 pub struct ProgrammatorState {
@@ -307,6 +332,46 @@ impl ProgrammatorState {
         } else {
             true
         }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ProgrammatorSnapshot {
+        ProgrammatorSnapshot {
+            running: self.running,
+            current_prog: self.current_prog.clone(),
+            function_order: self.function_order.clone(),
+            current_function: self.current_function.clone(),
+            selected_id: self.selected_id,
+            selected_data: self.selected_data.clone(),
+            shift_x: self.shift_x,
+            shift_y: self.shift_y,
+            check_x: self.check_x,
+            check_y: self.check_y,
+            flip_state: self.flip_state,
+            startpoint: self.startpoint.clone(),
+            goto_death: self.goto_death.clone(),
+            macros_template: self.macros_template,
+            hand_mode_active: self.hand_mode_active,
+        }
+    }
+
+    pub fn restore_snapshot(&mut self, snapshot: ProgrammatorSnapshot) {
+        self.running = snapshot.running;
+        self.current_prog = snapshot.current_prog;
+        self.function_order = snapshot.function_order;
+        self.current_function = snapshot.current_function;
+        self.delay = Instant::now();
+        self.selected_id = snapshot.selected_id;
+        self.selected_data = snapshot.selected_data;
+        self.shift_x = snapshot.shift_x;
+        self.shift_y = snapshot.shift_y;
+        self.check_x = snapshot.check_x;
+        self.check_y = snapshot.check_y;
+        self.flip_state = snapshot.flip_state;
+        self.startpoint = snapshot.startpoint;
+        self.goto_death = snapshot.goto_death;
+        self.macros_template = snapshot.macros_template;
+        self.hand_mode_active = snapshot.hand_mode_active;
     }
 
     /// Parse PROG payload from client: [4B len i32 LE][4B id i32 LE][...][UTF-8 source]
@@ -458,13 +523,551 @@ impl ProgrammatorState {
         Some((functions, function_order))
     }
 
+    fn parse_label_until(context: &str, start: usize, delimiter: char) -> Option<(&str, usize)> {
+        let rest = context.get(start..)?;
+        let end = rest.find(delimiter)?;
+        Some((&rest[..end], start + end + delimiter.len_utf8()))
+    }
+
+    fn push_text_action(
+        functions: &mut HashMap<String, PFunction>,
+        current_func: &str,
+        action_type: ActionType,
+    ) {
+        if let Some(f) = functions.get_mut(current_func) {
+            f.actions.push(PAction {
+                action_type,
+                label: String::new(),
+                num: 0,
+            });
+        }
+    }
+
+    fn push_text_label_action(
+        functions: &mut HashMap<String, PFunction>,
+        current_func: &str,
+        action_type: ActionType,
+        label: &str,
+    ) {
+        if let Some(f) = functions.get_mut(current_func) {
+            f.actions.push(PAction {
+                action_type,
+                label: label.to_string(),
+                num: 0,
+            });
+        }
+    }
+
+    fn push_text_state_action(
+        functions: &mut HashMap<String, PFunction>,
+        current_func: &str,
+        action_type: ActionType,
+        label: &str,
+        num: i32,
+    ) {
+        if let Some(f) = functions.get_mut(current_func) {
+            f.actions.push(PAction {
+                action_type,
+                label: label.to_string(),
+                num,
+            });
+        }
+    }
+
+    /// Parse current Unity text format from `ProgrammerView.SaveToStringNew()`.
+    #[allow(clippy::too_many_lines)]
+    pub fn parse_text(data: &str) -> Option<(HashMap<String, PFunction>, Vec<String>)> {
+        let context = data.strip_prefix('$')?;
+        let mut functions: HashMap<String, PFunction> = HashMap::new();
+        let mut function_order = vec![String::new()];
+        functions.insert(String::new(), PFunction::new());
+        let mut current_func = String::new();
+        let mut i = 0;
+
+        while i < context.len() {
+            let current = context.get(i..)?;
+            if current.starts_with("CCW;") {
+                Self::push_text_action(
+                    &mut functions,
+                    &current_func,
+                    ActionType::RotateLeftRelative,
+                );
+                i += 4;
+            } else if current.starts_with("CW;") {
+                Self::push_text_action(
+                    &mut functions,
+                    &current_func,
+                    ActionType::RotateRightRelative,
+                );
+                i += 3;
+            } else if current.starts_with("RAND;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::RotateRandom);
+                i += 5;
+            } else if current.starts_with("DIGG;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::MacrosDig);
+                i += 5;
+            } else if current.starts_with("BUILD;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::MacrosBuild);
+                i += 6;
+            } else if current.starts_with("HEAL;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::MacrosHeal);
+                i += 5;
+            } else if current.starts_with("MINE;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::MacrosMine);
+                i += 5;
+            } else if current.starts_with("FLIP;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::Flip);
+                i += 5;
+            } else if current.starts_with("BEEP;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::Beep);
+                i += 5;
+            } else if current.starts_with("AUT+") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::EnableAutoDig);
+                i += 4;
+            } else if current.starts_with("AUT-") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::DisableAutoDig);
+                i += 4;
+            } else if current.starts_with("AGR+") || current.starts_with("ARG+") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::EnableAgression);
+                i += 4;
+            } else if current.starts_with("AGR-") || current.starts_with("ARG-") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::DisableAgression);
+                i += 4;
+            } else if current.starts_with("=hp50") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::IsHpLower50);
+                i += 5;
+            } else if current.starts_with("=hp-") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::IsHpLower100);
+                i += 4;
+            } else if current.starts_with("B1;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::BuildBlock);
+                i += 3;
+            } else if current.starts_with("B2;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::BuildPillar);
+                i += 3;
+            } else if current.starts_with("B3;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::BuildRoad);
+                i += 3;
+            } else if current.starts_with("VB;") {
+                Self::push_text_action(
+                    &mut functions,
+                    &current_func,
+                    ActionType::BuildMilitaryBlock,
+                );
+                i += 3;
+            } else if current.starts_with("GEO;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::Geology);
+                i += 4;
+            } else if current.starts_with("Hand+") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::HandModeOn);
+                i += 5;
+            } else if current.starts_with("Hand-") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::HandModeOff);
+                i += 5;
+            } else if current.starts_with("OR") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::Or);
+                i += 2;
+            } else if current.starts_with("AND") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::And);
+                i += 3;
+            } else if let Some(ch) = current.chars().next() {
+                match ch {
+                    'w' => {
+                        Self::push_text_action(&mut functions, &current_func, ActionType::RotateUp);
+                    }
+                    'a' => Self::push_text_action(
+                        &mut functions,
+                        &current_func,
+                        ActionType::RotateLeft,
+                    ),
+                    's' => Self::push_text_action(
+                        &mut functions,
+                        &current_func,
+                        ActionType::RotateDown,
+                    ),
+                    'd' => Self::push_text_action(
+                        &mut functions,
+                        &current_func,
+                        ActionType::RotateRight,
+                    ),
+                    'z' => {
+                        Self::push_text_action(&mut functions, &current_func, ActionType::Dig);
+                    }
+                    'b' => Self::push_text_action(
+                        &mut functions,
+                        &current_func,
+                        ActionType::BuildBlock,
+                    ),
+                    'q' => Self::push_text_action(
+                        &mut functions,
+                        &current_func,
+                        ActionType::BuildPillar,
+                    ),
+                    'r' => {
+                        Self::push_text_action(
+                            &mut functions,
+                            &current_func,
+                            ActionType::BuildRoad,
+                        );
+                    }
+                    'g' => {
+                        Self::push_text_action(&mut functions, &current_func, ActionType::Geology);
+                    }
+                    'h' => Self::push_text_action(&mut functions, &current_func, ActionType::Heal),
+                    ',' => {
+                        Self::push_text_action(&mut functions, &current_func, ActionType::NextRow);
+                    }
+                    '?' => {
+                        if let Some((label, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), '<')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunIfFalse,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '(' => {
+                        if let Some((expr, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), ')')
+                        {
+                            if let Some((label, num)) = expr.split_once('=') {
+                                if let Ok(num) = num.parse::<i32>() {
+                                    Self::push_text_state_action(
+                                        &mut functions,
+                                        &current_func,
+                                        ActionType::WritableState,
+                                        label,
+                                        num,
+                                    );
+                                }
+                            } else if let Some((label, num)) = expr.split_once('<') {
+                                if let Ok(num) = num.parse::<i32>() {
+                                    Self::push_text_state_action(
+                                        &mut functions,
+                                        &current_func,
+                                        ActionType::WritableStateLower,
+                                        label,
+                                        num,
+                                    );
+                                }
+                            } else if let Some((label, num)) = expr.split_once('>')
+                                && let Ok(num) = num.parse::<i32>()
+                            {
+                                Self::push_text_state_action(
+                                    &mut functions,
+                                    &current_func,
+                                    ActionType::WritableStateMore,
+                                    label,
+                                    num,
+                                );
+                            }
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '!' => {
+                        let after_bang = i + ch.len_utf8();
+                        if context
+                            .get(after_bang..)
+                            .is_some_and(|s| s.starts_with('?'))
+                        {
+                            if let Some((label, next)) =
+                                Self::parse_label_until(context, after_bang + '?'.len_utf8(), '<')
+                            {
+                                Self::push_text_label_action(
+                                    &mut functions,
+                                    &current_func,
+                                    ActionType::RunIfTrue,
+                                    label,
+                                );
+                                i = next;
+                                continue;
+                            }
+                        } else if context
+                            .get(after_bang..)
+                            .is_some_and(|s| s.starts_with('{'))
+                            && let Some((label, next)) =
+                                Self::parse_label_until(context, after_bang + '{'.len_utf8(), '}')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunIfTrue,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '[' => {
+                        if let Some((option, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), ']')
+                        {
+                            let action = match option {
+                                "W" => Some(ActionType::CheckUp),
+                                "A" => Some(ActionType::CheckLeft),
+                                "S" => Some(ActionType::CheckDown),
+                                "D" => Some(ActionType::CheckRight),
+                                "w" => Some(ActionType::ShiftUp),
+                                "a" => Some(ActionType::ShiftLeft),
+                                "s" => Some(ActionType::ShiftDown),
+                                "d" => Some(ActionType::ShiftRight),
+                                "AS" => Some(ActionType::CheckDownLeft),
+                                "WA" => Some(ActionType::CheckUpLeft),
+                                "DW" => Some(ActionType::CheckUpRight),
+                                "SD" => Some(ActionType::CheckDownRight),
+                                "F" => Some(ActionType::CheckForward),
+                                "f" => Some(ActionType::ShiftForward),
+                                "r" => Some(ActionType::CheckRightRelative),
+                                "l" => Some(ActionType::CheckLeftRelative),
+                                _ => None,
+                            };
+                            if let Some(action) = action {
+                                Self::push_text_action(&mut functions, &current_func, action);
+                            }
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '#' => {
+                        let after_hash = i + ch.len_utf8();
+                        if context
+                            .get(after_hash..)
+                            .is_some_and(|s| s.starts_with('S'))
+                        {
+                            Self::push_text_action(&mut functions, &current_func, ActionType::Stop);
+                            i = after_hash + 'S'.len_utf8();
+                            continue;
+                        }
+                        if context
+                            .get(after_hash..)
+                            .is_some_and(|s| s.starts_with('E'))
+                        {
+                            Self::push_text_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::Start,
+                            );
+                            i = after_hash + 'E'.len_utf8();
+                            continue;
+                        }
+                        if context
+                            .get(after_hash..)
+                            .is_some_and(|s| s.starts_with('R'))
+                            && let Some((label, next)) =
+                                Self::parse_label_until(context, after_hash + 'R'.len_utf8(), '<')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunOnRespawn,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    ':' => {
+                        let after_colon = i + ch.len_utf8();
+                        if context
+                            .get(after_colon..)
+                            .is_some_and(|s| s.starts_with('>'))
+                            && let Some((label, next)) =
+                                Self::parse_label_until(context, after_colon + '>'.len_utf8(), '>')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunSub,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '-' => {
+                        let after_dash = i + ch.len_utf8();
+                        if context
+                            .get(after_dash..)
+                            .is_some_and(|s| s.starts_with('>'))
+                            && let Some((label, next)) =
+                                Self::parse_label_until(context, after_dash + '>'.len_utf8(), '>')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunFunction,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '=' => {
+                        let after_eq = i + ch.len_utf8();
+                        if context.get(after_eq..).is_some_and(|s| s.starts_with('>'))
+                            && let Some((label, next)) =
+                                Self::parse_label_until(context, after_eq + '>'.len_utf8(), '>')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunState,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                        if let Some(kind) = context.get(after_eq..).and_then(|s| s.chars().next()) {
+                            let action = match kind {
+                                'n' => Some(ActionType::IsNotEmpty),
+                                'e' => Some(ActionType::IsEmpty),
+                                'f' => Some(ActionType::IsFalling),
+                                'c' => Some(ActionType::IsCrystal),
+                                'a' => Some(ActionType::IsLivingCrystal),
+                                'b' => Some(ActionType::IsBoulder),
+                                's' => Some(ActionType::IsSand),
+                                'k' => Some(ActionType::IsBreakableRock),
+                                'd' => Some(ActionType::IsUnbreakable),
+                                'A' => Some(ActionType::IsAcid),
+                                'B' => Some(ActionType::IsRedRock),
+                                'K' => Some(ActionType::IsBlackRock),
+                                'g' => Some(ActionType::IsGreenBlock),
+                                'y' => Some(ActionType::IsYellowBlock),
+                                'r' => Some(ActionType::IsRedBlock),
+                                'o' => Some(ActionType::IsPillar),
+                                'q' => Some(ActionType::IsQuadBlock),
+                                'R' => Some(ActionType::IsRoad),
+                                'x' => Some(ActionType::IsBox),
+                                'G' => Some(ActionType::CheckGun),
+                                _ => None,
+                            };
+                            if let Some(action) = action {
+                                Self::push_text_action(&mut functions, &current_func, action);
+                                i = after_eq + kind.len_utf8();
+                                continue;
+                            }
+                        }
+                    }
+                    '>' => {
+                        if let Some((label, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), '|')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::GoTo,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '|' => {
+                        if let Some((label, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), ':')
+                        {
+                            current_func = label.to_string();
+                            if !functions.contains_key(&current_func) {
+                                functions.insert(current_func.clone(), PFunction::new());
+                                function_order.push(current_func.clone());
+                            }
+                            i = next;
+                            continue;
+                        }
+                    }
+                    '<' => {
+                        let after_lt = i + ch.len_utf8();
+                        if context.get(after_lt..).is_some_and(|s| s.starts_with('|')) {
+                            Self::push_text_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::Return,
+                            );
+                            i = after_lt + '|'.len_utf8();
+                            continue;
+                        }
+                        if context.get(after_lt..).is_some_and(|s| s.starts_with("-|")) {
+                            Self::push_text_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::ReturnFunction,
+                            );
+                            i = after_lt + "-|".len();
+                            continue;
+                        }
+                        if context.get(after_lt..).is_some_and(|s| s.starts_with("=|")) {
+                            Self::push_text_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::ReturnState,
+                            );
+                            i = after_lt + "=|".len();
+                            continue;
+                        }
+                    }
+                    '^' => {
+                        let after_caret = i + ch.len_utf8();
+                        if let Some(kind) =
+                            context.get(after_caret..).and_then(|s| s.chars().next())
+                        {
+                            let action = match kind {
+                                'W' => Some(ActionType::MoveUp),
+                                'A' => Some(ActionType::MoveLeft),
+                                'S' => Some(ActionType::MoveDown),
+                                'D' => Some(ActionType::MoveRight),
+                                'F' => Some(ActionType::MoveForward),
+                                _ => None,
+                            };
+                            if let Some(action) = action {
+                                Self::push_text_action(&mut functions, &current_func, action);
+                                i = after_caret + kind.len_utf8();
+                                continue;
+                            }
+                        }
+                    }
+                    '{' => {
+                        if let Some((label, next)) =
+                            Self::parse_label_until(context, i + ch.len_utf8(), '}')
+                        {
+                            Self::push_text_label_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::RunIfFalse,
+                                label,
+                            );
+                            i = next;
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+                i += ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+
+        Some((functions, function_order))
+    }
+
     /// Start running a program (equivalent to C# `ProgrammatorData.Run(Program p)`).
     pub fn run_program(&mut self, data: &str) -> bool {
         self.running = false;
         self.current_prog.clear();
         self.function_order.clear();
         self.current_function.clear();
-        if let Some((functions, order)) = Self::parse_normal(data) {
+        let parsed = if data.starts_with('$') {
+            Self::parse_text(data)
+        } else {
+            Self::parse_normal(data)
+        };
+        if let Some((functions, order)) = parsed {
             let total_actions: usize = functions.values().map(|f| f.actions.len()).sum();
             tracing::info!(
                 "PROGDIAG run_program: parse OK funcs={} order={} actions={total_actions}",
@@ -497,15 +1100,9 @@ impl ProgrammatorState {
         }
     }
 
-    /// Toggle run/stop (equivalent to C# `ProgrammatorData.Run()` no-arg).
-    pub fn toggle_run(&mut self) {
-        if self.running || self.selected_data.is_none() {
-            self.running = false;
-            return;
-        }
-        if let Some(data) = self.selected_data.clone() {
-            self.run_program(&data);
-        }
+    pub fn stop_program(&mut self) {
+        self.running = false;
+        self.drop_state();
     }
 
     fn drop_state(&mut self) {
@@ -600,6 +1197,21 @@ fn check_cell(
 
 // ─── Main ECS system ─────────────────────────────────────────────────────────
 
+type ProgrammatorQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static PlayerMetadata,
+        &'static PlayerPosition,
+        &'static PlayerConnection,
+        &'static PlayerStats,
+        &'static PlayerSkillsComp,
+        &'static mut crate::game::player::PlayerFlags,
+        &'static mut ProgrammatorState,
+        &'static crate::game::player::PlayerGeoStack,
+    ),
+>;
+
 #[allow(
     clippy::needless_pass_by_value,
     clippy::too_many_lines,
@@ -608,19 +1220,11 @@ fn check_cell(
 pub fn programmator_system(
     world_res: Res<WorldResource>,
     mut prog_q: ResMut<ProgrammatorQueue>,
-    mut query: Query<(
-        &PlayerMetadata,
-        &PlayerPosition,
-        &PlayerConnection,
-        &PlayerStats,
-        &PlayerSkillsComp,
-        &mut ProgrammatorState,
-        &crate::game::player::PlayerGeoStack,
-    )>,
+    mut query: ProgrammatorQuery<'_, '_>,
 ) {
     let now = Instant::now();
 
-    for (meta, pos, conn, stats, skills, mut prog, geo) in &mut query {
+    for (meta, pos, conn, stats, skills, mut flags, mut prog, geo) in &mut query {
         if !prog.running {
             continue;
         }
@@ -669,7 +1273,7 @@ pub fn programmator_system(
             pos.y
         );
 
-        let mut delay_ms: u64 = 0;
+        let mut delay = None;
 
         // Execute action and get result
         let result = execute_action(
@@ -682,7 +1286,7 @@ pub fn programmator_system(
             meta,
             conn,
             &mut prog_q,
-            &mut delay_ms,
+            &mut delay,
             geo.0.len(),
         );
 
@@ -700,9 +1304,10 @@ pub fn programmator_system(
         }
 
         // Set delay
-        if delay_ms > 0 {
-            prog.delay = now + std::time::Duration::from_millis(delay_ms);
+        if let Some(delay) = delay {
+            prog.delay = now + delay;
         }
+        flags.dirty = true;
     }
 }
 
@@ -723,7 +1328,7 @@ fn execute_action(
     meta: &PlayerMetadata,
     conn: &PlayerConnection,
     prog_q: &mut ProgrammatorQueue,
-    delay_ms: &mut u64,
+    delay: &mut Option<Duration>,
     geo_count: usize,
 ) -> ExecResult {
     // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
@@ -735,56 +1340,65 @@ fn execute_action(
         // `dir == -1 && auto_dig`). С явным dir 0-3 автокопа в программе НЕ работала.
         // Повороты (Rotate*) ниже остаются с явным dir — у них нулевая дельта.
         ActionType::MoveDown => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y + 1);
+            *delay = Some(delay_millis(
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y + 1),
+            ));
             push_move(prog_q, meta, conn, pos.x, pos.y + 1, -1);
             ExecResult::None
         }
         ActionType::MoveUp => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y - 1);
+            *delay = Some(delay_millis(
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x, pos.y - 1),
+            ));
             push_move(prog_q, meta, conn, pos.x, pos.y - 1, -1);
             ExecResult::None
         }
         ActionType::MoveRight => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x + 1, pos.y);
+            *delay = Some(delay_millis(
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + 1, pos.y),
+            ));
             push_move(prog_q, meta, conn, pos.x + 1, pos.y, -1);
             ExecResult::None
         }
         ActionType::MoveLeft => {
-            *delay_ms = speed_pause(skills, on_road) + move_block_penalty(world, pos.x - 1, pos.y);
+            *delay = Some(delay_millis(
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x - 1, pos.y),
+            ));
             push_move(prog_q, meta, conn, pos.x - 1, pos.y, -1);
             ExecResult::None
         }
         ActionType::MoveForward => {
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
-            *delay_ms =
-                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + dx, pos.y + dy);
+            *delay = Some(delay_millis(
+                speed_pause(skills, on_road) + move_block_penalty(world, pos.x + dx, pos.y + dy),
+            ));
             push_move(prog_q, meta, conn, pos.x + dx, pos.y + dy, -1);
             ExecResult::None
         }
 
         // ─── Rotation ────────────────────────────────────────────────────
         ActionType::RotateDown => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 0);
             ExecResult::None
         }
         ActionType::RotateUp => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 2);
             ExecResult::None
         }
         ActionType::RotateLeft => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 1);
             ExecResult::None
         }
         ActionType::RotateRight => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             push_move(prog_q, meta, conn, pos.x, pos.y, 3);
             ExecResult::None
         }
         ActionType::RotateLeftRelative => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             let d = match pos.dir {
                 0 => 3,
                 2 => 1,
@@ -796,7 +1410,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRightRelative => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             let d = match pos.dir {
                 0 => 1,
                 1 => 2,
@@ -808,7 +1422,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::RotateRandom => {
-            *delay_ms = speed_pause(skills, on_road);
+            *delay = Some(delay_millis(speed_pause(skills, on_road)));
             let d = rand::random_range(0..4);
             push_move(prog_q, meta, conn, pos.x, pos.y, d);
             ExecResult::None
@@ -816,7 +1430,7 @@ fn execute_action(
 
         // ─── Dig / Build ─────────────────────────────────────────────────
         ActionType::Dig => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Dig {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -827,7 +1441,7 @@ fn execute_action(
         // MacrosBuild (id 142) намеренно НЕ здесь: C# `PAction.Execute` не имеет
         // для него case → no-op (падает в `_ => None`). 1:1 с референсом.
         ActionType::BuildBlock => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -837,7 +1451,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildPillar => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -847,7 +1461,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildRoad => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -857,7 +1471,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::BuildMilitaryBlock => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -867,7 +1481,7 @@ fn execute_action(
             ExecResult::None
         }
         ActionType::Geology => {
-            *delay_ms = 100;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::Geo {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -878,6 +1492,15 @@ fn execute_action(
             prog_q.0.push(ProgrammatorAction::Heal {
                 pid: meta.id,
                 tx: conn.tx.clone(),
+            });
+            *delay = Some(ACTION_DELAY);
+            ExecResult::None
+        }
+        ActionType::Stop => {
+            prog.stop_program();
+            prog_q.0.push(ProgrammatorAction::SetProgrammatorStatus {
+                tx: conn.tx.clone(),
+                running: false,
             });
             ExecResult::None
         }
@@ -1252,7 +1875,7 @@ fn execute_action(
             {
                 let diggable = world.cell_defs().get(world.get_cell(tx, ty)).is_diggable();
                 if diggable {
-                    *delay_ms = 200;
+                    *delay = Some(ACTION_DELAY);
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
                         tx: conn.tx.clone(),
@@ -1271,7 +1894,7 @@ fn execute_action(
                     pid: meta.id,
                     tx: conn.tx.clone(),
                 });
-                *delay_ms = 200;
+                *delay = Some(ACTION_DELAY);
                 return ExecResult::BoolResult(true);
             }
             ExecResult::None
@@ -1285,7 +1908,7 @@ fn execute_action(
             if prog.macros_template.is_some() {
                 let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
                 if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
-                    *delay_ms = 200;
+                    *delay = Some(ACTION_DELAY);
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
                         tx: conn.tx.clone(),
@@ -1299,7 +1922,7 @@ fn execute_action(
             for (dir_key, (dx, dy)) in DIRZ {
                 if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
                     if pos.dir == dir_key {
-                        *delay_ms = 200;
+                        *delay = Some(ACTION_DELAY);
                         prog.macros_template = Some(dir_key);
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
@@ -1307,7 +1930,7 @@ fn execute_action(
                             dir: pos.dir,
                         });
                     } else {
-                        *delay_ms = speed_pause(skills, on_road);
+                        *delay = Some(delay_millis(speed_pause(skills, on_road)));
                         push_move(prog_q, meta, conn, pos.x, pos.y, dir_key);
                     }
                     return ExecResult::BoolResult(true);
@@ -1321,7 +1944,7 @@ fn execute_action(
             let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
             let gx = pos.x + dx;
             let gy = pos.y + dy;
-            *delay_ms = 200;
+            *delay = Some(ACTION_DELAY);
             prog_q.0.push(ProgrammatorAction::FillGun {
                 pid: meta.id,
                 tx: conn.tx.clone(),
@@ -1343,14 +1966,14 @@ fn execute_action(
                 let cy = pos.y + dy;
                 if crate::world::cells::is_crystal(world.get_cell(cx, cy)) {
                     if pos.dir == check_dir {
-                        *delay_ms = 200; //TODO: почему 200? хардкод? что за число 200????? бляяя
+                        *delay = Some(ACTION_DELAY);
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
                             tx: conn.tx.clone(),
                             dir: pos.dir,
                         });
                     } else {
-                        *delay_ms = speed_pause(skills, on_road);
+                        *delay = Some(delay_millis(speed_pause(skills, on_road)));
                         push_move(prog_q, meta, conn, pos.x, pos.y, check_dir);
                     }
                     found = true;
@@ -1371,7 +1994,7 @@ fn execute_action(
             // C# PAction.CallWSAction: "del"→задержка (null, без state);
             // "geo"→сравнение geo.Count с num; прочее→false.
             let res: Option<bool> = if action.label.eq_ignore_ascii_case("del") {
-                *delay_ms = u64::try_from(action.num).unwrap_or(0);
+                *delay = Some(delay_millis(u64::try_from(action.num).unwrap_or(0)));
                 None
             } else if action.label.eq_ignore_ascii_case("geo") {
                 let count = i32::try_from(geo_count).unwrap_or(i32::MAX);
@@ -1609,9 +2232,6 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
                 prog.current_function = caller;
             }
         }
-        ActionType::Stop => {
-            prog.toggle_run();
-        }
         ActionType::Start => {
             let cf = prog.current_function.clone();
             let pos = prog.current_prog.get(&cf).map_or(0, |f| f.current);
@@ -1726,6 +2346,68 @@ mod tests {
             ProgrammatorState::decode_prog_packet(&payload),
             Some((42, String::new()))
         );
+    }
+
+    #[test]
+    fn parse_text_format_maps_basic_programmator_actions() {
+        let (functions, order) = ProgrammatorState::parse_text("$zgh^W").unwrap();
+        assert_eq!(order, vec![String::new()]);
+        let actions: Vec<ActionType> = functions[""]
+            .actions
+            .iter()
+            .map(|a| a.action_type)
+            .collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                ActionType::Dig,
+                ActionType::Geology,
+                ActionType::Heal,
+                ActionType::MoveUp
+            ]
+        );
+    }
+
+    #[test]
+    fn run_program_accepts_current_unity_text_format() {
+        let mut state = ProgrammatorState::new();
+
+        assert!(state.run_program("$z"));
+        assert!(state.running);
+        assert_eq!(
+            state.current_prog[""].actions[0].action_type,
+            ActionType::Dig
+        );
+    }
+
+    #[test]
+    fn programmator_snapshot_roundtrips_runtime_state() {
+        let mut state = ProgrammatorState::new();
+        assert!(state.run_program("$zg"));
+        state.current_prog.get_mut("").unwrap().current = 1;
+        state.shift_x = 2;
+        state.check_y = -1;
+        state.hand_mode_active = true;
+        state.selected_id = Some(7);
+        state.selected_data = Some("$zg".to_string());
+
+        let encoded = serde_json::to_string(&state.snapshot()).unwrap();
+        let snapshot = serde_json::from_str(&encoded).unwrap();
+        let mut restored = ProgrammatorState::new();
+        restored.restore_snapshot(snapshot);
+
+        assert!(restored.running);
+        assert_eq!(restored.current_prog[""].current, 1);
+        assert_eq!(
+            restored.current_prog[""].actions[1].action_type,
+            ActionType::Geology
+        );
+        assert_eq!(restored.shift_x, 2);
+        assert_eq!(restored.check_y, -1);
+        assert!(restored.hand_mode_active);
+        assert_eq!(restored.selected_id, Some(7));
+        assert_eq!(restored.selected_data.as_deref(), Some("$zg"));
     }
 
     #[test]

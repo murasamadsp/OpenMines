@@ -39,7 +39,7 @@ pub fn handle_geo(
                     send_geo_state_error(tx);
                     return None;
                 };
-                if cd.last_geo.elapsed() < Duration::from_millis(200) {
+                if !programmatic && cd.last_geo.elapsed() < Duration::from_millis(200) {
                     return None;
                 }
             }

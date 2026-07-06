@@ -78,10 +78,47 @@ pub fn connect_in_tick(
         state.broadcast_to_nearby(old_cx, old_cy, &hb_data, None);
         // Despawn old ECS entity.
         state.ecs.write().despawn(old_entity);
+        state.player_entities.remove(&pid);
         tracing::warn!(
             player_id = %pid,
             "Player reconnected — old ECS entity cleaned up"
         );
+    }
+
+    if let Some(entity) = state.player_entities.get(&pid).map(|e| *e) {
+        let mut sync_row = {
+            let mut ecs = state.ecs.write();
+            if !ecs.entities().contains(entity) {
+                drop(ecs);
+                state.player_entities.remove(&pid);
+                None
+            } else {
+                if let Some(mut conn) = ecs.get_mut::<PlayerConnection>(entity) {
+                    conn.tx = tx.clone();
+                }
+                if let Some(mut view) = ecs.get_mut::<PlayerView>(entity) {
+                    view.last_chunk = None;
+                    view.visible_chunks.clear();
+                }
+                crate::game::player::extract_player_row(&ecs, entity)
+            }
+        };
+        if let Some(mut row) = sync_row.take() {
+            row.selected_program_id = player.selected_program_id;
+            row.selected_program = player.selected_program.clone();
+            state.active_players.insert(
+                pid,
+                ActivePlayer {
+                    ecs_entity: entity,
+                    session_token: token,
+                    last_bots_render: std::time::Instant::now(),
+                },
+            );
+            state.player_tx.insert(pid, tx.clone());
+            send_initial_sync(state, tx, &row);
+            tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
+            return;
+        }
     }
 
     let now = std::time::Instant::now();
@@ -152,7 +189,26 @@ pub fn connect_in_tick(
                 last_c190_hit: None,
             },
             PlayerGeoStack::default(),
-            ProgrammatorState::new(),
+            {
+                let mut ps = ProgrammatorState::new();
+                if let Some(program) = &player.selected_program {
+                    ps.selected_id = Some(program.id);
+                    ps.selected_data = Some(program.code.clone());
+                }
+                if let Some(snapshot) = &player.programmator_snapshot {
+                    match serde_json::from_str(snapshot) {
+                        Ok(snapshot) => ps.restore_snapshot(snapshot),
+                        Err(e) => {
+                            tracing::error!(player_id = %pid, error = ?e, "Failed to restore programmator snapshot");
+                        }
+                    }
+                } else if player.programmator_running
+                    && let Some(program) = &player.selected_program
+                {
+                    ps.run_program(&program.code);
+                }
+                ps
+            },
             PlayerSettings {
                 auto_dig: player.auto_dig,
                 ..PlayerSettings::default()
@@ -169,6 +225,7 @@ pub fn connect_in_tick(
             last_bots_render: std::time::Instant::now(),
         },
     );
+    state.player_entities.insert(pid, entity);
 
     state.player_tx.insert(pid, tx.clone());
 
@@ -209,14 +266,17 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
 
     // Берём чанк и row из ECS (sync), затем save_player отдаём в отдельный
     // таск — БД НЕ должна блокировать 10ms tick-цикл.
-    let (cx, cy, row) = {
+    let (cx, cy, row, keep_offline) = {
         let ecs = state.ecs.read();
         let chunk = ecs
             .get::<PlayerPosition>(entity)
             .map(|pos| (pos.chunk_x(), pos.chunk_y()))
             .unwrap_or((0, 0));
         let row = crate::game::player::extract_player_row(&ecs, entity);
-        (chunk.0, chunk.1, row)
+        let keep_offline = ecs
+            .get::<ProgrammatorState>(entity)
+            .is_some_and(|prog| prog.running);
+        (chunk.0, chunk.1, row, keep_offline)
     };
     if let Some(row) = row {
         struct DbTaskGuard {
@@ -275,11 +335,19 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
     let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
     state.broadcast_to_nearby(cx, cy, &hb_data, None);
 
-    state.ecs.write().despawn(entity);
-    tracing::info!(
-        player_id = %pid,
-        "Player disconnected and ECS entity despawned"
-    );
+    if keep_offline {
+        tracing::info!(
+            player_id = %pid,
+            "Player disconnected; running programmator entity kept offline"
+        );
+    } else {
+        state.ecs.write().despawn(entity);
+        state.player_entities.remove(&pid);
+        tracing::info!(
+            player_id = %pid,
+            "Player disconnected and ECS entity despawned"
+        );
+    }
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
@@ -408,10 +476,23 @@ fn send_initial_sync(
     }
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    // 17. UpdateProg (#p) — на свежем логине `ProgrammatorState::new()` ⇒
-    // `selected_id`=None, из БД не гидрируется ⇒ if-ветка `#p` не берётся.
-    // C# ref эквивалент: при `selected==null` шлётся только `@P false`.
-    send_u_packet(tx, "@P", &programmator_status(false).1);
+    let prog_running = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<ProgrammatorState>(entity)
+                .is_some_and(|prog| prog.running)
+        })
+        .unwrap_or(false);
+    send_u_packet(tx, "@P", &programmator_status(prog_running).1);
+    // 17. UpdateProg (#p) — C# ref: если программа выбрана, клиент получает
+    // текущий исходник до статуса программатора.
+    if let Some(program) = &player.selected_program {
+        send_u_packet(
+            tx,
+            "#p",
+            &crate::protocol::packets::open_programmator(program.id, &program.name, &program.code)
+                .1,
+        );
+    }
     // 18. DR — индикатор ежедневного бонуса (мигание кнопки БОНУСЫ): "1" если
     // доступен (прошло ≥ кулдауна с последнего клейма), иначе "0".
     let dr = if crate::net::session::play::bonus::bonus_available(player.last_bonus_at) {
@@ -483,6 +564,10 @@ mod tests {
                 total_slots: 20,
             },
             role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
             clan_rank: 0,
             last_bonus_at: 0,
         };
@@ -501,12 +586,98 @@ mod tests {
         assert_eq!(state.world.get_cell(5, 5), cell_type::MILITARY_BLOCK_FRAME);
 
         // We clean up from active_players first to allow reconnecting
-        state.active_players.remove(&1);
+        if let Some((_, active)) = state.active_players.remove(&1) {
+            state.ecs.write().despawn(active.ecs_entity);
+        }
+        state.player_entities.remove(&1);
         connect_in_tick(&state, &tx, &player, 124);
 
         assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
 
         // Cleanup
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+    }
+
+    #[tokio::test]
+    async fn disconnect_keeps_running_programmator_entity_offline() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("test_prog_disconnect_db_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("test_prog_disconnect_world_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let player = PlayerRow {
+            id: 1,
+            name: "TestPlayer".to_string(),
+            passwd: "123".to_string(),
+            hash: "hash".to_string(),
+            x: 5,
+            y: 5,
+            dir: 0,
+            health: 100,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            skin: 0,
+            auto_dig: false,
+            crystals: [0; 6],
+            clan_id: None,
+            resp_x: None,
+            resp_y: None,
+            inventory: std::collections::HashMap::new(),
+            skills: crate::db::SkillSlots {
+                skills: std::collections::HashMap::new(),
+                total_slots: 20,
+            },
+            role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
+            clan_rank: 0,
+            last_bonus_at: 0,
+        };
+
+        connect_in_tick(&state, &tx, &player, 123);
+        let pid = PlayerId(1);
+        let entity = state.get_player_entity(pid).unwrap();
+        state.modify_player(pid, |ecs, entity| {
+            let mut prog = ecs.get_mut::<ProgrammatorState>(entity)?;
+            prog.running = true;
+            Some(())
+        });
+
+        disconnect_in_tick(&state, pid, 123);
+
+        assert!(!state.active_players.contains_key(&pid));
+        assert_eq!(state.get_player_entity(pid), Some(entity));
+        let still_running = {
+            let ecs = state.ecs.read();
+            ecs.get::<ProgrammatorState>(entity)
+                .is_some_and(|prog| prog.running)
+        };
+        assert!(still_running);
+
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
@@ -566,6 +737,10 @@ mod tests {
                 total_slots: 20,
             },
             role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
             clan_rank: 0,
             last_bonus_at: 0,
         }; // временная система

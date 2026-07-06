@@ -1,4 +1,4 @@
-use super::{Database, clans::ClanRank};
+use super::{Database, clans::ClanRank, programs::ProgramRow};
 use anyhow::{Context as _, Result, bail};
 use sqlx::Row;
 use std::collections::HashMap;
@@ -165,6 +165,10 @@ pub struct PlayerRow {
     pub inventory: HashMap<i32, i32>,
     pub skills: SkillSlots,
     pub role: i32,
+    pub selected_program_id: Option<i32>,
+    pub selected_program: Option<ProgramRow>,
+    pub programmator_running: bool,
+    pub programmator_snapshot: Option<String>,
     pub clan_rank: i32,
     /// Время последнего клейма ежедневного бонуса (`GDon`), unix-секунды; 0 = ни разу.
     pub last_bonus_at: i64,
@@ -208,6 +212,23 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow> {
     let inv_str: String = r.try_get("inventory")?;
     let skills_str: String = r.try_get("skills")?;
     let auto_dig_val: i32 = r.try_get("auto_dig")?;
+    let programmator_running_val: i32 = r.try_get("programmator_running")?;
+    let selected_program_id = r.try_get("selected_program_id")?;
+    let selected_program_name: Option<String> = r.try_get("selected_program_name")?;
+    let selected_program_code: Option<String> = r.try_get("selected_program_code")?;
+    let selected_program = match (
+        selected_program_id,
+        selected_program_name,
+        selected_program_code,
+    ) {
+        (Some(program_id), Some(name), Some(code)) => Some(ProgramRow {
+            id: program_id,
+            player_id: id,
+            name,
+            code,
+        }),
+        _ => None,
+    };
     Ok(PlayerRow {
         id,
         name: r.try_get("name")?,
@@ -236,6 +257,10 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow> {
         resp_x: r.try_get("resp_x")?,
         resp_y: r.try_get("resp_y")?,
         role: r.try_get("role")?,
+        selected_program_id,
+        selected_program,
+        programmator_running: programmator_running_val != 0,
+        programmator_snapshot: r.try_get("programmator_snapshot")?,
         clan_rank: r.try_get("clan_rank")?,
         last_bonus_at: r.try_get("last_bonus_at")?,
     })
@@ -283,6 +308,10 @@ impl Database {
             inventory: HashMap::new(),
             skills: default_skills(),
             role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
             last_bonus_at: 0,
         })
     }
@@ -311,12 +340,29 @@ impl Database {
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn set_selected_program(
+        &self,
+        player_id: i32,
+        program_id: Option<i32>,
+    ) -> Result<bool> {
+        let result = sqlx::query("UPDATE players SET selected_program_id = ?1 WHERE id = ?2")
+            .bind(program_id)
+            .bind(player_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn get_player_by_id(&self, id: i32) -> Result<Option<PlayerRow>> {
         let row = sqlx::query(
-            "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
-                    inventory, skills, resp_x, resp_y, role, clan_rank, last_bonus_at
-             FROM players WHERE id = ?1"
+                    inventory, skills, resp_x, resp_y, role, selected_program_id,
+                    sp.name AS selected_program_name, sp.code AS selected_program_code,
+                    programmator_running, programmator_snapshot, clan_rank, last_bonus_at
+             FROM players
+             LEFT JOIN programs sp ON sp.id = players.selected_program_id AND sp.player_id = players.id
+             WHERE players.id = ?1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -330,10 +376,14 @@ impl Database {
             return Ok(None);
         }
         let row = sqlx::query(
-            "SELECT id, name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
-                    inventory, skills, resp_x, resp_y, role, clan_rank, last_bonus_at
-             FROM players WHERE lower(trim(name)) = lower(?1) ORDER BY id LIMIT 1"
+                    inventory, skills, resp_x, resp_y, role, selected_program_id,
+                    sp.name AS selected_program_name, sp.code AS selected_program_code,
+                    programmator_running, programmator_snapshot, clan_rank, last_bonus_at
+             FROM players
+             LEFT JOIN programs sp ON sp.id = players.selected_program_id AND sp.player_id = players.id
+             WHERE lower(trim(players.name)) = lower(?1) ORDER BY players.id LIMIT 1"
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -348,7 +398,8 @@ impl Database {
             "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
              skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
              cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
-             resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24
+             resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24, programmator_running=?25,
+             programmator_snapshot=?26
              WHERE id=?20",
         )
         .bind(p.x)
@@ -375,6 +426,8 @@ impl Database {
         .bind(p.resp_y)
         .bind(p.clan_rank)
         .bind(p.last_bonus_at)
+        .bind(i32::from(p.programmator_running))
+        .bind(&p.programmator_snapshot)
         .execute(&self.pool)
         .await?;
         if result.rows_affected() != 1 {
@@ -399,7 +452,8 @@ impl Database {
                 "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
                  skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
                  cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
-                 resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24
+                 resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24, programmator_running=?25,
+                 programmator_snapshot=?26
                  WHERE id=?20",
             )
             .bind(p.x)
@@ -426,6 +480,8 @@ impl Database {
             .bind(p.resp_y)
             .bind(p.clan_rank)
             .bind(p.last_bonus_at)
+            .bind(i32::from(p.programmator_running))
+            .bind(&p.programmator_snapshot)
             .execute(&mut *tx)
             .await?;
             if result.rows_affected() != 1 {

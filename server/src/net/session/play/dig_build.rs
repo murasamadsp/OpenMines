@@ -101,12 +101,13 @@ pub fn handle_dig(
             }
             // 1:1 ref `Session.cs:230` `DigHandler => TryAct(..., 200)`;
             // дефолт 200ms, тюнится `gameplay.cooldowns.dig_ms`.
-            if cd.last_dig.elapsed().as_millis()
-                < u128::from(state.config.gameplay.cooldowns.dig_ms)
+            if !programmatic
+                && cd.last_dig.elapsed().as_millis()
+                    < u128::from(state.config.gameplay.cooldowns.dig_ms)
             {
                 return Some(DigPlayerRead::Blocked);
             }
-            if ui.current_window.is_some() {
+            if ui.current_window.is_some() && !programmatic {
                 return Some(DigPlayerRead::Blocked);
             }
             let dp =
@@ -227,7 +228,8 @@ pub fn handle_dig(
         actual_dir as u8,
         0,
     );
-    state.broadcast_hb_at(px, py, &[fx], Some(pid));
+    let exclude_self = if programmatic { None } else { Some(pid) };
+    state.broadcast_hb_at(px, py, &[fx], exclude_self);
 
     // Fix 2: BOX (90) special case — pick up crystals and destroy.
     // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
@@ -302,7 +304,7 @@ pub fn handle_dig(
             net_u16_nonneg(clan_id),
             tail,
         );
-        state.broadcast_hb_at(px, py, &[bot], Some(pid));
+        state.broadcast_hb_at(px, py, &[bot], exclude_self);
         return;
     }
 
@@ -325,7 +327,7 @@ pub fn handle_dig(
             net_u16_nonneg(clan_id),
             tail,
         );
-        state.broadcast_hb_at(px, py, &[bot], Some(pid));
+        state.broadcast_hb_at(px, py, &[bot], exclude_self);
         return;
     }
 
@@ -534,7 +536,7 @@ pub fn handle_dig(
         net_u16_nonneg(clan_id),
         tail,
     );
-    state.broadcast_hb_at(px, py, &[bot], Some(pid));
+    state.broadcast_hb_at(px, py, &[bot], exclude_self);
 }
 
 pub fn handle_build(
@@ -566,7 +568,7 @@ pub fn handle_build(
             let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
                 return Some(BuildPlayerRead::MissingState("ProgrammatorState"));
             };
-            if ui.current_window.is_some() {
+            if !programmatic && ui.current_window.is_some() {
                 return Some(BuildPlayerRead::Blocked);
             }
             if !programmatic && !prog.is_manual_control_allowed() {
@@ -574,8 +576,9 @@ pub fn handle_build(
             }
             // 1:1 ref `Session.cs:233` `BuildHandler => TryAct(..., 200)`;
             // дефолт 200ms, тюнится `gameplay.cooldowns.build_ms`.
-            if cd.last_build.elapsed().as_millis()
-                < u128::from(state.config.gameplay.cooldowns.build_ms)
+            if !programmatic
+                && cd.last_build.elapsed().as_millis()
+                    < u128::from(state.config.gameplay.cooldowns.build_ms)
             {
                 return Some(BuildPlayerRead::Blocked);
             }
@@ -1031,6 +1034,54 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn programmatic_dig_ignores_open_gui_but_manual_dig_does_not() {
+        let test = make_test_state("programmatic_dig_window").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .unwrap()
+                .current_window = Some("prog".to_string());
+        }
+        test.state.world.set_cell(10, 11, cell_type::GREEN);
+        test.state.world.set_durability(10, 11, 100.0);
+
+        handle_dig(&test.state, &tx, pid, 0, false);
+        assert!(!drain_events(&mut rx).iter().any(|(event, _)| event == "@B"));
+
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
+                .unwrap()
+                .last_dig -= Duration::from_millis(500);
+        }
+        handle_dig(&test.state, &tx, pid, 0, true);
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|(event, _)| event == "@B"),
+            "programmatic Dig must call Bz even while programmator GUI state is open"
+        );
+        assert!(
+            events.iter().any(|(event, _)| event == "HB"),
+            "programmatic Dig must send self HB for programmator visual sync"
+        );
 
         test.cleanup();
     }

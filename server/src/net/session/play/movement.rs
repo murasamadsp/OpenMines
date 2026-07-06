@@ -58,7 +58,9 @@ pub fn handle_move(
         tracing::debug!(
             "[Move] TP back reason={reason} pid={pid} from=({from_x},{from_y}) to=({to_x},{to_y}) {extra}"
         );
-        send_u_packet(txc, "@T", &tp(from_x, from_y).1);
+        if !programmatic {
+            send_u_packet(txc, "@T", &tp(from_x, from_y).1);
+        }
     };
 
     let result = state
@@ -475,6 +477,62 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "@T");
         assert_eq!(events[0].1, b"10:10");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn programmatic_move_reject_does_not_send_tp_back() {
+        let test = make_test_state("programmatic_move_distance_reject").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_move(
+            &test.state,
+            &tx,
+            PlayerId(test.player.id),
+            0,
+            15,
+            10,
+            3,
+            true,
+        );
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().all(|(event, _)| event != "@T"),
+            "server-driven programmator move must not rubber-band the client"
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn programmatic_autodig_sends_self_hb_without_tp_back() {
+        let test = make_test_state("programmatic_autodig_self_hb").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerSettings>(entity)?
+                .auto_dig = true;
+            Some(())
+        });
+        test.state.world.set_cell(10, 11, cell_type::ROCK);
+        test.state.world.set_durability(10, 11, 0.0);
+
+        handle_move(&test.state, &tx, pid, 0, 10, 11, -1, true);
+
+        assert_eq!(test.state.world.get_cell(10, 11), cell_type::EMPTY);
+        let events = drain_events(&mut rx);
+        assert!(events.iter().all(|(event, _)| event != "@T"));
+        assert!(
+            events.iter().any(|(event, _)| event == "HB"),
+            "programmatic autodig must notify the owning client through HB"
+        );
 
         test.cleanup();
     }

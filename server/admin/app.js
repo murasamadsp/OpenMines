@@ -2,16 +2,17 @@ let token = localStorage.getItem('admin_token') || 'admin';
 document.getElementById('auth-token').value = token;
 
 const API_BASE = '/api';
+const ROLE_LABELS = ['Player', 'Moderator', 'Admin'];
 
 // Tab Switching
 function switchTab(tabId) {
     document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-    
+
     // Find active button
     event.currentTarget.classList.add('active');
     document.getElementById(`tab-${tabId}`).classList.add('active');
-    
+
     if (tabId === 'map') {
         loadMap();
     } else {
@@ -24,7 +25,7 @@ async function apiFetch(url, options = {}) {
     const headers = options.headers || {};
     headers['Authorization'] = `Bearer ${token}`;
     headers['Content-Type'] = 'application/json';
-    
+
     const response = await fetch(API_BASE + url, { ...options, headers });
     if (response.status === 401) {
         alert('Unauthorized! Please check your token.');
@@ -36,11 +37,11 @@ async function apiFetch(url, options = {}) {
 async function loadData() {
     const data = await apiFetch('/stats');
     if (!data) return;
-    
+
     // Update stats counters
     document.getElementById('stat-online').textContent = data.online_count;
     document.getElementById('stat-events-count').textContent = data.active_events.length;
-    
+
     // Update players list
     const playersBody = document.getElementById('players-table-body');
     playersBody.innerHTML = '';
@@ -52,6 +53,11 @@ async function loadData() {
             <td>${p.x}:${p.y}</td>
             <td>${p.health}/${p.max_health} HP</td>
             <td>$${p.money}</td>
+            <td>
+                <select onchange="setPlayerRole(${p.id}, this.value)">
+                    ${ROLE_LABELS.map((label, role) => `<option value="${role}" ${p.role === role ? 'selected' : ''}>${label}</option>`).join('')}
+                </select>
+            </td>
             <td>${p.crystals.join(' / ')}</td>
             <td>
                 <button class="btn-danger" onclick="kickPlayer(${p.id})">Kick</button>
@@ -59,7 +65,7 @@ async function loadData() {
         `;
         playersBody.appendChild(row);
     });
-    
+
     // Update events list
     const eventsBody = document.getElementById('events-table-body');
     eventsBody.innerHTML = '';
@@ -78,7 +84,7 @@ async function loadData() {
         `;
         eventsBody.appendChild(row);
     });
-    
+
     // Update market rates table
     const crystalNames = ['Green', 'Blue', 'Red', 'Violet', 'White', 'Cyan'];
     const ratesBody = document.getElementById('market-rates-body');
@@ -88,7 +94,7 @@ async function loadData() {
         const mod = data.cost_mod[i];
         const sell = data.market_prices[i];
         const buy = sell * 10;
-        
+
         row.innerHTML = `
             <td><span class="crystal-badge cry-${i}">${crystalNames[i]}</span></td>
             <td>+${mod}</td>
@@ -96,9 +102,19 @@ async function loadData() {
             <td><strong>${buy}</strong></td>
         `;
         ratesBody.appendChild(row);
-        
+
         // Pre-fill modifier inputs
         document.getElementById(`mod-${i}`).value = mod;
+    }
+}
+
+async function setPlayerRole(id, role) {
+    const res = await apiFetch(`/players/${id}/role`, {
+        method: 'POST',
+        body: JSON.stringify({ role: parseInt(role) })
+    });
+    if (!res || !res.success) {
+        loadData();
     }
 }
 
@@ -128,7 +144,7 @@ async function saveEvent(event) {
         xp_mult: parseFloat(document.getElementById('event-xp-mult').value),
         drop_mult: parseFloat(document.getElementById('event-drop-mult').value),
     };
-    
+
     const res = await apiFetch('/events', {
         method: 'POST',
         body: JSON.stringify(payload)
@@ -145,7 +161,7 @@ async function saveMarket(event) {
     for (let i = 0; i < 6; i++) {
         cost_mod.push(parseInt(document.getElementById(`mod-${i}`).value));
     }
-    
+
     const res = await apiFetch('/market', {
         method: 'POST',
         body: JSON.stringify({ cost_mod })
@@ -160,14 +176,14 @@ async function saveMarket(event) {
 async function loadMap() {
     const data = await apiFetch('/map');
     if (!data) return;
-    
+
     const canvas = document.getElementById('map-canvas');
     const ctx = canvas.getContext('2d');
-    
+
     // Clear canvas
     ctx.fillStyle = '#0b0d19';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
+
     // Draw grid
     ctx.strokeStyle = '#1e223b';
     ctx.lineWidth = 0.5;
@@ -184,11 +200,11 @@ async function loadMap() {
         ctx.lineTo(canvas.width, y);
         ctx.stroke();
     }
-    
+
     // Normalize coordinates to fit map viewport
     const scaleX = canvas.width / Math.max(data.width * 32, 100);
     const scaleY = canvas.height / Math.max(data.height * 32, 100);
-    
+
     // Draw buildings
     data.buildings.forEach(b => {
         ctx.fillStyle = b.pack_type === 'Gun' ? '#da373c' : '#a5b4fc';
@@ -197,14 +213,14 @@ async function loadMap() {
         ctx.font = '8px sans-serif';
         ctx.fillText(b.pack_type[0] || 'B', b.x * scaleX + 2, b.y * scaleY + 9);
     });
-    
+
     // Draw players
     data.players.forEach(p => {
         ctx.fillStyle = '#23a55a';
         ctx.beginPath();
         ctx.arc(p.x * scaleX + 6, p.y * scaleY + 6, 6, 0, 2 * Math.PI);
         ctx.fill();
-        
+
         ctx.fillStyle = '#f2f3f5';
         ctx.font = 'bold 9px sans-serif';
         ctx.fillText(p.name, p.x * scaleX - 10, p.y * scaleY - 4);

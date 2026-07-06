@@ -102,6 +102,9 @@ impl Database {
 
     /// Save (upsert) program: update code if program exists, otherwise insert.
     pub async fn save_program(&self, player_id: i32, prog_id: i32, code: &str) -> Result<()> {
+        if prog_id <= 0 {
+            bail!("program id={prog_id}: invalid client program id");
+        }
         let result = sqlx::query("UPDATE programs SET code = ?1 WHERE id = ?2 AND player_id = ?3")
             .bind(code)
             .bind(prog_id)

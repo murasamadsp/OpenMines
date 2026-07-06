@@ -103,6 +103,10 @@ pub enum ProgrammatorAction {
         x: i32,
         y: i32,
     },
+    SetProgrammatorStatus {
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        running: bool,
+    },
 }
 
 #[derive(Resource, Default)]
@@ -204,6 +208,7 @@ pub struct GameState {
     pub db: Arc<Database>,
     pub config: Config,
     pub active_players: DashMap<PlayerId, ActivePlayer>,
+    pub player_entities: DashMap<PlayerId, Entity>,
     pub chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
     pub building_index: DashMap<(i32, i32), Entity>,
     pub botspot_index: DashMap<PlayerId, Entity>,
@@ -361,6 +366,7 @@ impl GameState {
             db: database,
             config,
             active_players: DashMap::new(),
+            player_entities: DashMap::new(),
             chunk_players: DashMap::new(),
             building_index: DashMap::new(),
             botspot_index: DashMap::new(),
@@ -504,7 +510,7 @@ impl GameState {
     }
 
     pub fn get_player_entity(&self, pid: PlayerId) -> Option<Entity> {
-        self.active_players.get(&pid).map(|p| p.ecs_entity)
+        self.player_entities.get(&pid).map(|p| *p)
     }
 
     /// Выдать новый токен сеанса (монотонный, уникальный на процесс).

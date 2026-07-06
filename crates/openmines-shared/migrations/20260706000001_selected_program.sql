@@ -1,0 +1,1 @@
+ALTER TABLE players ADD COLUMN selected_program_id INTEGER DEFAULT NULL;

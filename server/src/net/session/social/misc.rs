@@ -29,6 +29,15 @@ fn send_settings_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
+fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+            ui.current_window = None;
+        }
+        Some(())
+    });
+}
+
 enum AutoDigMutation {
     Changed(bool),
     Unchanged,
@@ -142,12 +151,48 @@ pub async fn handle_prog_ty(
         "PROG" => {
             let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
             if let Some((prog_id, source)) = decoded {
+                if prog_id <= 0 {
+                    let has_selected = state
+                        .query_player(pid, |ecs, entity| {
+                            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                                .is_some_and(|ps| ps.selected_id.is_some())
+                        })
+                        .unwrap_or(false);
+                    if has_selected {
+                        tracing::error!(player_id = %pid, program_id = prog_id, "PROG received invalid id while server has selected program");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Некорректный идентификатор программы.").1,
+                        );
+                    } else {
+                        crate::net::session::social::buildings::handle_programmator_pope_menu(
+                            state, tx, pid,
+                        )
+                        .await;
+                    }
+                    send_u_packet(tx, "@P", &programmator_status(false).1);
+                    return;
+                }
                 if let Err(e) = state.db.save_program(pid.into(), prog_id, &source).await {
                     tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB save failed");
                     send_u_packet(
                         tx,
                         "OK",
                         &ok_message("ПРОГРАММАТОР", "Не удалось сохранить программу.").1,
+                    );
+                    return;
+                }
+                if let Err(e) = state
+                    .db
+                    .set_selected_program(pid.into(), Some(prog_id))
+                    .await
+                {
+                    tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB selected program update failed for PROG");
+                    send_u_packet(
+                        tx,
+                        "OK",
+                        &ok_message("ПРОГРАММАТОР", "Не удалось выбрать программу.").1,
                     );
                     return;
                 }
@@ -250,35 +295,39 @@ pub async fn handle_prog_ty(
             }
         }
         "pRST" => {
-            // C# ref Session.Prst:
-            //   if (selected != null && !ProgRunning) → OpenProg (send #P editor)
-            //   if (ProgRunning) → RunProgramm() (stops it)
-            //   then ProgStatus()
+            // Unity `@P 0` hides the programmator GameObject but does not clear
+            // `ProgrammerView.active`. Therefore stopped pRST must not emit `@P 0`:
+            // the client uses pRST as a pre-open signal in `OnProgButton()`.
+            // Only a real running->stopped transition sends `@P 0`.
             let result = state
                 .modify_player(pid, |ecs, entity| {
                     let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
                     let was_running = ps.running;
-                    let open_editor = !was_running && ps.selected_id.is_some();
-                    let editor_data = if open_editor {
+                    let server_prog_window_open = ecs
+                        .get::<crate::game::player::PlayerUI>(entity)
+                        .and_then(|ui| ui.current_window.as_deref())
+                        .is_some_and(|w| w == "prog" || w.starts_with("pren:"));
+                    let editor_data = if !was_running && server_prog_window_open {
                         ps.selected_id.zip(ps.selected_data.clone())
                     } else {
                         None
                     };
                     if was_running {
                         ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
-                            .running = false;
+                            .stop_program();
                     }
-                    Some((false, editor_data, was_running))
+                    if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                        ui.current_window = None;
+                    }
+                    Some((editor_data, was_running))
                 })
                 .flatten();
-            let Some((running, editor_data, was_running)) = result else {
+            let Some((editor_data, was_running)) = result else {
                 tracing::error!(player_id = %pid, "Programmator state missing for pRST");
                 send_u_packet(tx, "@P", &programmator_status(false).1);
                 send_programmator_state_error(tx);
                 return;
             };
-            // C# Prst: if (selected && !running) OpenProg (#P); if (running) RunProgramm (Gu close);
-            // затем ProgStatus (@P). Ветки взаимоисключающие.
             if let Some((prog_id, source)) = editor_data {
                 let name = match load_owned_program_name(state, pid, prog_id).await {
                     Ok(Some(name)) => name,
@@ -293,7 +342,6 @@ pub async fn handle_prog_ty(
                             "OK",
                             &ok_message("ПРОГРАММАТОР", "Выбранная программа недоступна.").1,
                         );
-                        send_u_packet(tx, "@P", &programmator_status(running).1);
                         return;
                     }
                     Err(e) => {
@@ -303,17 +351,18 @@ pub async fn handle_prog_ty(
                             "OK",
                             &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
                         );
-                        send_u_packet(tx, "@P", &programmator_status(running).1);
                         return;
                     }
                 };
                 send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
+                return;
             }
             if was_running {
                 // RunProgramm() закрывает окно перед остановкой.
+                clear_programmator_window(state, pid);
                 send_u_packet(tx, "Gu", &gu_close().1);
+                send_u_packet(tx, "@P", &programmator_status(false).1);
             }
-            send_u_packet(tx, "@P", &programmator_status(running).1);
         }
         "PDEL" => {
             if let Ok(id_str) = std::str::from_utf8(payload) {
@@ -343,18 +392,28 @@ pub async fn handle_prog_ty(
                             return;
                         }
                     }
-                    state.modify_player(pid, |ecs, entity| {
-                        if let Some(mut ps) =
-                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
-                        {
-                            if ps.selected_id == Some(prog_id) {
-                                ps.running = false;
-                                ps.selected_id = None;
-                                ps.selected_data = None;
+                    let cleared_selected = state
+                        .modify_player(pid, |ecs, entity| {
+                            let mut cleared = false;
+                            if let Some(mut ps) =
+                                ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                            {
+                                if ps.selected_id == Some(prog_id) {
+                                    ps.running = false;
+                                    ps.selected_id = None;
+                                    ps.selected_data = None;
+                                    cleared = true;
+                                }
                             }
-                        }
-                        Some(())
-                    });
+                            Some(cleared)
+                        })
+                        .flatten()
+                        .unwrap_or(false);
+                    if cleared_selected
+                        && let Err(e) = state.db.set_selected_program(pid.into(), None).await
+                    {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB selected program clear failed after delete");
+                    }
                 }
             }
             // C# Pdel: StaticGUI.DeleteProg() только удаляет из БД — НИ одного пакета
@@ -781,7 +840,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prst_reopens_selected_stopped_program_with_uppercase_open_packet() {
+    async fn prst_from_open_program_list_reopens_selected_stopped_program() {
         let test = make_test_state("prst_state_machine").await;
         let (tx, mut rx) = mpsc::unbounded_channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
@@ -799,20 +858,65 @@ mod tests {
             ps.selected_id = Some(prog_id);
             ps.selected_data = Some(String::new());
             ps.running = false;
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)?
+                .current_window = Some("prog".to_string());
+            Some(())
+        });
+
+        handle_prog_ty(&test.state, &tx, pid, "pRST", b"").await;
+
+        let window_after = test.state.query_player_opt(pid, |ecs, entity| {
+            Some(
+                ecs.get::<crate::game::player::PlayerUI>(entity)?
+                    .current_window
+                    .clone(),
+            )
+        });
+        assert_eq!(window_after, Some(None));
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["#P"]);
+
+        let open_json: serde_json::Value = serde_json::from_slice(&events[0].1).unwrap();
+        assert_eq!(open_json["id"], prog_id);
+        assert_eq!(open_json["title"], "main");
+        assert_eq!(open_json["source"], "");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prst_preopen_signal_for_hydrated_editor_sends_no_packets() {
+        let test = make_test_state("prst_preopen_no_packets").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "")
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.selected_id = Some(prog_id);
+            ps.selected_data = Some(String::new());
+            ps.running = false;
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)?
+                .current_window = None;
             Some(())
         });
 
         handle_prog_ty(&test.state, &tx, pid, "pRST", b"").await;
 
         let events = drain_events(&mut rx);
-        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["#P", "@P"]);
-        assert_eq!(events[1].1, b"0");
-
-        let open_json: serde_json::Value = serde_json::from_slice(&events[0].1).unwrap();
-        assert_eq!(open_json["id"], prog_id);
-        assert_eq!(open_json["title"], "main");
-        assert_eq!(open_json["source"], "");
+        assert!(
+            events.is_empty(),
+            "stopped pre-open pRST must not emit @P 0"
+        );
 
         test.cleanup();
     }

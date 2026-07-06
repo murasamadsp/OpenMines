@@ -1,0 +1,1 @@
+ALTER TABLE players ADD COLUMN programmator_running INTEGER NOT NULL DEFAULT 0;

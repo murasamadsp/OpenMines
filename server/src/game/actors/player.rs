@@ -241,6 +241,9 @@ pub fn extract_player_row(
     let inv = ecs.get::<PlayerInventory>(entity)?;
     let skills = ecs.get::<PlayerSkillsComp>(entity)?;
     let settings = ecs.get::<PlayerSettings>(entity)?;
+    let prog = ecs.get::<crate::game::programmator::ProgrammatorState>(entity);
+    let programmator_running = prog.is_some_and(|p| p.running);
+    let programmator_snapshot = prog.and_then(|p| serde_json::to_string(&p.snapshot()).ok());
 
     Some(PlayerRow {
         id: meta.id.into(),
@@ -264,6 +267,10 @@ pub fn extract_player_row(
         // Слотовая модель сериализуется целиком (skills + total_slots); __slots-хак удалён.
         skills: skills.states.clone(),
         role: stats.role,
+        selected_program_id: prog.and_then(|p| p.selected_id),
+        selected_program: None,
+        programmator_running,
+        programmator_snapshot,
         clan_rank: stats.clan_rank,
         last_bonus_at: stats.last_bonus_at,
     })

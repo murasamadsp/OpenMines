@@ -50,6 +50,7 @@ See [workflow/taste.md](workflow/taste.md)
 # code-style
 - Use `query_player_opt` helper to eliminate `.flatten()` boilerplate on `query_player` calls that return `Option<Option<T>>`. Confidence: 0.70
 - Use `broadcast_hb_at` helper instead of repeating chunk_pos + broadcast_to_nearby + encode_hb_bundle + hb_bundle pattern. Confidence: 0.70
+- Charge/max_charge and similar battery/power values should use integer types (u32, i32, u64), not float. Confidence: 0.65
 
 # git
 - Never commit directories: /Users/murasama/Projects/games/OpenMines/client and /Users/murasama/Projects/games/OpenMines/server_reference. Confidence: 0.85
@@ -69,6 +70,7 @@ See [workflow/taste.md](workflow/taste.md)
 
 # validation
 - Add fail-fast validation on config/data load: check invariants (non-empty, non-negative, range bounds, no duplicates) with descriptive error messages naming the offending key and value. Confidence: 0.70
+- Missing config files (cells.json, buildings.json, config.json) must produce a hard error — never silently auto-generate default files. Confidence: 0.85
 
 # verification
 - Independently verify completed work — don't assume it functions correctly. User reports many "done" features are actually broken (e.g., FED chat). Verify empirically before declaring completion. User gets frustrated when told to verify things himself ("всам проверяй. заебал"). Confidence: 0.80

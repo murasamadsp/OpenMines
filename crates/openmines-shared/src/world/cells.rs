@@ -231,60 +231,38 @@ pub struct CellDefs {
 impl CellDefs {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let path_ref = path.as_ref();
-        if let Ok(data) = fs::read_to_string(path_ref) {
-            let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
+        let data = fs::read_to_string(path_ref)?;
+        let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
 
-            // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
-            // We normalize the loaded file into a dense 126-slot table keyed by `type` to preserve
-            // client expectations even if the JSON order is shuffled or has holes.
-            let mut cells: Vec<CellDef> = (0..126u8)
-                .map(|i| CellDef {
-                    cell_type: i,
-                    ..Default::default()
-                })
-                .collect();
-            // Валидация: все типы должны быть 0..125, дубликаты — ошибка.
-            let mut seen = HashSet::new();
-            for def in &parsed {
-                if def.cell_type >= 126 {
-                    anyhow::bail!(
-                        "Cell type {} out of range [0..125] in cells.json",
-                        def.cell_type
-                    );
-                }
-                if !seen.insert(def.cell_type) {
-                    anyhow::bail!("Duplicate cell type {} in cells.json", def.cell_type);
-                }
+        // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
+        // We normalize the loaded file into a dense 126-slot table keyed by `type` to preserve
+        // client expectations even if the JSON order is shuffled or has holes.
+        let mut cells: Vec<CellDef> = (0..126u8)
+            .map(|i| CellDef {
+                cell_type: i,
+                ..Default::default()
+            })
+            .collect();
+        // Валидация: все типы должны быть 0..125, дубликаты — ошибка.
+        let mut seen = HashSet::new();
+        for def in &parsed {
+            if def.cell_type >= 126 {
+                anyhow::bail!(
+                    "Cell type {} out of range [0..125] in cells.json",
+                    def.cell_type
+                );
             }
-
-            for mut def in parsed {
-                let idx = def.cell_type as usize;
-                def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
-                cells[idx] = def;
+            if !seen.insert(def.cell_type) {
+                anyhow::bail!("Duplicate cell type {} in cells.json", def.cell_type);
             }
-            Ok(Self { cells })
-        } else {
-            let cells: Vec<CellDef> = (0..126u8)
-                .map(|i| CellDef {
-                    cell_type: i,
-                    presence: CellDefPresence {
-                        is_empty: i == 0 || i == 32 || i == 36 || i == 37 || i == 39,
-                    },
-                    physical: CellDefPhysical {
-                        is_diggable: i != 0 && i != 36 && i != 37,
-                        is_destructible: true,
-                        can_place_over: i == 0 || i == 32,
-                    },
-                    durability: match i {
-                        0 | 32 | 36 | 37 | 39 => 0.0,
-                        _ => 10.0,
-                    },
-                    ..Default::default()
-                })
-                .collect();
-            fs::write(path_ref, serde_json::to_string_pretty(&cells)?)?;
-            Ok(Self { cells })
         }
+
+        for mut def in parsed {
+            let idx = def.cell_type as usize;
+            def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
+            cells[idx] = def;
+        }
+        Ok(Self { cells })
     }
 
     #[inline]

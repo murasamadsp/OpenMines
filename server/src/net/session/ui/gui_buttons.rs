@@ -2501,6 +2501,15 @@ fn send_programmator_error(tx: &mpsc::UnboundedSender<Vec<u8>>, message: &str) {
     send_u_packet(tx, "OK", &ok_message("ПРОГРАММАТОР", message).1);
 }
 
+fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = None;
+        }
+        Some(())
+    });
+}
+
 async fn handle_open_prog(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -2529,10 +2538,18 @@ async fn handle_open_prog(
         send_programmator_error(tx, "Программа недоступна.");
         return;
     }
+    if let Err(e) = state.db.set_selected_program(pid.into(), Some(p.id)).await {
+        tracing::error!(player_id = %pid, program_id = p.id, error = ?e, "DB selected program update failed for openprog");
+        send_programmator_error(tx, "Не удалось выбрать программу.");
+        return;
+    }
     state.modify_player(pid, |ecs, entity| {
         if let Some(mut ps) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
             ps.selected_id = Some(p.id);
             ps.selected_data = Some(p.code.clone());
+        }
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = None;
         }
         Some(())
     });
@@ -2558,12 +2575,24 @@ async fn handle_create_prog(
     }
     match state.db.insert_program(pid.into(), name, "").await {
         Ok(prog_id) => {
+            if let Err(e) = state
+                .db
+                .set_selected_program(pid.into(), Some(prog_id))
+                .await
+            {
+                tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB selected program update failed for createprog");
+                send_programmator_error(tx, "Не удалось выбрать программу.");
+                return;
+            }
             state.modify_player(pid, |ecs, entity| {
                 if let Some(mut ps) =
                     ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
                 {
                     ps.selected_id = Some(prog_id);
                     ps.selected_data = Some(String::new());
+                }
+                if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+                    ui.current_window = None;
                 }
                 Some(())
             });
@@ -2620,9 +2649,10 @@ async fn handle_rename_prog(
         send_programmator_error(tx, "Не удалось переименовать программу.");
         return;
     }
+    clear_programmator_window(state, pid);
     send_u_packet(
         tx,
-        "#P",
+        "#p",
         &crate::protocol::packets::open_programmator(prog_id, name, &p.code).1,
     );
 }
@@ -2713,6 +2743,91 @@ mod tests {
         assert_eq!(parse_rich_bool("0"), Some(false));
         assert_eq!(parse_rich_bool("false"), Some(false));
         assert_eq!(parse_rich_bool("yes"), None);
+    }
+
+    #[tokio::test]
+    async fn programmator_open_button_clears_server_window_state() {
+        let test = make_craft_test_state("prog_open_window_state", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "source")
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<PlayerUI>(entity)?.current_window = Some("prog".to_string());
+            Some(())
+        });
+
+        handle_gui_button(&test.state, &tx, pid, &format!("openprog:{prog_id}")).await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Gu", "#P", "Gu"]);
+        assert_eq!(current_window(&test.state, pid), None);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn programmator_create_button_clears_server_window_state() {
+        let test = make_craft_test_state("prog_create_window_state", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<PlayerUI>(entity)?.current_window = Some("prog".to_string());
+            Some(())
+        });
+
+        handle_gui_button(&test.state, &tx, pid, "createprog:main").await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Gu", "#P", "Gu"]);
+        assert_eq!(current_window(&test.state, pid), None);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn programmator_rename_confirms_with_update_packet_and_closes_horb() {
+        let test = make_craft_test_state("prog_rename_window_state", 10, 10).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "old", "source")
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<PlayerUI>(entity)?.current_window = Some(format!("pren:{prog_id}"));
+            Some(())
+        });
+
+        handle_gui_button(&test.state, &tx, pid, &format!("rename:{prog_id}:new")).await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["#p", "Gu"]);
+        assert_eq!(current_window(&test.state, pid), None);
+        let update_json: serde_json::Value = serde_json::from_slice(&events[0].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "new");
+        assert_eq!(update_json["source"], "source");
+
+        test.cleanup();
     }
 
     #[tokio::test]
@@ -3399,6 +3514,12 @@ mod tests {
             events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
         }
         events
+    }
+
+    fn current_window(state: &Arc<GameState>, pid: PlayerId) -> Option<String> {
+        state.query_player_opt(pid, |ecs, entity| {
+            Some(ecs.get::<PlayerUI>(entity)?.current_window.clone())
+        })?
     }
 
     fn unique_test_nonce() -> u128 {

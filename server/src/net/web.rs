@@ -1,4 +1,4 @@
-use crate::db::events::EventRow;
+use crate::db::{events::EventRow, players::Role};
 use crate::game::{ActiveEvent, GameState};
 use crate::world::WorldProvider;
 use anyhow::Result;
@@ -39,6 +39,7 @@ struct ActivePlayerInfo {
     crystals: [i64; 6],
     money: i64,
     creds: i64,
+    role: i32,
 }
 
 #[derive(Serialize)]
@@ -75,6 +76,11 @@ struct AuthRequest {
 #[derive(Deserialize)]
 struct MarketUpdate {
     cost_mod: [i64; 6],
+}
+
+#[derive(Deserialize)]
+struct RoleUpdate {
+    role: i32,
 }
 
 async fn auth_middleware(
@@ -143,6 +149,7 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
                 crystals: p_stats.crystals,
                 money: p_stats.money,
                 creds: p_stats.creds,
+                role: p_stats.role,
             });
         }
     }
@@ -229,6 +236,43 @@ async fn handle_kick(
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "success": false, "message": "Player not found or offline" })),
         )
+    }
+}
+
+async fn handle_set_role(
+    State(state): State<Arc<GameState>>,
+    Path(pid_val): Path<i32>,
+    Json(payload): Json<RoleUpdate>,
+) -> impl IntoResponse {
+    let role = Role::from_db(payload.role);
+    match state.db.set_player_role(pid_val, role).await {
+        Ok(true) => {
+            let pid = crate::game::player::PlayerId(pid_val);
+            state.modify_player(pid, |ecs, entity| {
+                if let Some(mut stats) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
+                    stats.role = role as i32;
+                }
+                if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
+                    flags.dirty = true;
+                }
+                Some(())
+            });
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "success": true, "role": role as i32 })),
+            )
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "success": false, "message": "Player not found" })),
+        ),
+        Err(e) => {
+            tracing::error!(player_id = pid_val, role = payload.role, error = ?e, "Failed to set player role");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "success": false, "message": e.to_string() })),
+            )
+        }
     }
 }
 
@@ -348,6 +392,7 @@ pub async fn run_web_server(
         .route("/stats", get(handle_stats))
         .route("/map", get(handle_map))
         .route("/players/:id/kick", post(handle_kick))
+        .route("/players/:id/role", post(handle_set_role))
         .route("/events", get(handle_get_events).post(handle_save_event))
         .route("/events/:id", delete(handle_delete_event))
         .route("/market", post(handle_update_market))

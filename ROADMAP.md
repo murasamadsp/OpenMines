@@ -4,7 +4,6 @@
 > This roadmap is stale and tends to overstate implementation progress.
 > Refer to the "Implementation Status" ("Статус реализации") section in [CLAUDE.md](file:///Users/murasama/Projects/games/OpenMines/CLAUDE.md) as the single honest source of truth.
 
-
 Восстановление Mines 3. Клиент: Unity 2019.4.10f1. Сервер: Rust + SQLite + mmap, TCP-binary.
 Все пункты верифицируются по C# референсу (`server_reference/`).
 
@@ -24,6 +23,7 @@ inventory, clans, chat, movement — читали клиент+C#+Rust) подт
 
 Найдено и **исправлено** (13 коммитов, каждый прошёл pre-commit; выделенные требуют
 live-проверки в клиенте):
+
 - market: dirty-флаг при сделках (теряли деньги при краше); chat: Locl весь payload
   = сообщение (эвристика резала «5:hi»); death P$/@B порядок; BuildWar 2-й exp; +ниже.
 

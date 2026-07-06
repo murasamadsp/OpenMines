@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenMines Admin Panel</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap"
+        rel="stylesheet">
     <style>
         :root {
             --bg-base: #0a0c10;
@@ -45,7 +48,7 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
         }
 
         header h1 {
@@ -64,7 +67,9 @@
             gap: 1rem;
         }
 
-        input, select, button {
+        input,
+        select,
+        button {
             font-family: inherit;
             font-size: 0.95rem;
             border-radius: 8px;
@@ -72,14 +77,16 @@
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
-        input, select {
+        input,
+        select {
             background-color: var(--bg-element);
             border: 1px solid var(--border);
             color: var(--text-main);
             padding: 0.6rem 1rem;
         }
 
-        input:focus, select:focus {
+        input:focus,
+        select:focus {
             border-color: var(--primary);
             box-shadow: 0 0 0 3px var(--glow);
         }
@@ -141,7 +148,7 @@
         .tab-btn.active {
             background-color: var(--bg-element);
             color: var(--text-main);
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
         }
 
         .tab-content {
@@ -154,8 +161,15 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         /* Cards/Grid */
@@ -170,7 +184,7 @@
             border: 1px solid var(--border);
             border-radius: 16px;
             padding: 1.5rem;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             display: flex;
             flex-direction: column;
             gap: 1.2rem;
@@ -199,7 +213,8 @@
             text-align: left;
         }
 
-        th, td {
+        th,
+        td {
             padding: 0.8rem 1rem;
             border-bottom: 1px solid var(--border);
         }
@@ -210,7 +225,7 @@
         }
 
         tr:hover td {
-            background-color: rgba(255,255,255,0.02);
+            background-color: rgba(255, 255, 255, 0.02);
         }
 
         /* Game Map Canvas */
@@ -275,14 +290,45 @@
             text-transform: uppercase;
         }
 
-        .cry-0 { background-color: #23a55a; color: white; } /* Green */
-        .cry-1 { background-color: #5865f2; color: white; } /* Blue */
-        .cry-2 { background-color: #da373c; color: white; } /* Red */
-        .cry-3 { background-color: #9b59b6; color: white; } /* Violet */
-        .cry-4 { background-color: #f1c40f; color: black; } /* Yellow/Gold/White */
-        .cry-5 { background-color: #00d2d3; color: white; } /* Cyan */
+        .cry-0 {
+            background-color: #23a55a;
+            color: white;
+        }
+
+        /* Green */
+        .cry-1 {
+            background-color: #5865f2;
+            color: white;
+        }
+
+        /* Blue */
+        .cry-2 {
+            background-color: #da373c;
+            color: white;
+        }
+
+        /* Red */
+        .cry-3 {
+            background-color: #9b59b6;
+            color: white;
+        }
+
+        /* Violet */
+        .cry-4 {
+            background-color: #f1c40f;
+            color: black;
+        }
+
+        /* Yellow/Gold/White */
+        .cry-5 {
+            background-color: #00d2d3;
+            color: white;
+        }
+
+        /* Cyan */
     </style>
 </head>
+
 <body>
     <header>
         <h1>OpenMines Admin Console</h1>
@@ -324,6 +370,7 @@
                                 <th>Position</th>
                                 <th>Health</th>
                                 <th>Money</th>
+                                <th>Role</th>
                                 <th>Crystals (G/B/R/V/W/C)</th>
                                 <th>Actions</th>
                             </tr>
@@ -378,7 +425,8 @@
                                 <input type="number" step="0.1" id="event-drop-mult" required value="1.0">
                             </div>
                         </div>
-                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Save Event</button>
+                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Save
+                            Event</button>
                     </form>
                 </div>
 
@@ -440,7 +488,8 @@
                                 <input type="number" id="mod-5" required value="15">
                             </div>
                         </div>
-                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Update Modifiers</button>
+                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Update
+                            Modifiers</button>
                     </form>
                 </div>
 
@@ -467,4 +516,5 @@
 
     <script src="app.js"></script>
 </body>
+
 </html>

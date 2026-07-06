@@ -78,7 +78,7 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
             // иначе держим ref `active_players` + `ecs.write()` — легко словить взаимную блокировку
             // с сессией (`query_player` / `broadcast_to_nearby`) и «зависание» всего сервера ~10 с.
             let pids: Vec<crate::game::PlayerId> =
-                state.active_players.iter().map(|e| *e.key()).collect();
+                state.player_entities.iter().map(|e| *e.key()).collect();
 
             // Extract dirty rows WITHOUT clearing dirty yet — clearing happens only after
             // a successful save so that a concurrent disconnect save or a save failure
@@ -555,6 +555,12 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
                 crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
                     crate::net::session::play::packs::handle_gun_fill_prog(&state, &tx, pid, x, y);
+                }
+                crate::game::ProgrammatorAction::SetProgrammatorStatus { tx, running } => {
+                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                        "@P",
+                        &crate::protocol::packets::programmator_status(running).1,
+                    ));
                 }
             }
         }

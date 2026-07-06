@@ -1,14 +1,19 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/openmines-shared",
-    "server",
-    "tools/loadtest",
-    "tools/proxy",
-]
+members = ["crates/openmines-shared", "server", "tools/loadtest", "tools/proxy"]
 
 [workspace.dependencies]
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "io-std", "sync", "time", "signal", "macros", "fs"] }
+tokio = { version = "1.52.3", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "io-std",
+    "sync",
+    "time",
+    "signal",
+    "macros",
+    "fs",
+] }
 bytes = "1.12.0"
 memmap2 = "0.9.10"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -29,7 +34,12 @@ base64 = "0.22.1"
 lzma-rs = "0.3.0"
 tokio-cron-scheduler = "0.13.0"
 binrw = "0.14.0"
-sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+sqlx = { version = "0.8.3", features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+] }
 strum = { version = "0.28.0", features = ["derive"] }
 dotnet-rng = "1.0.5"
 clap = { version = "4.5.31", features = ["derive", "env"] }
