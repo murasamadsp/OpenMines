@@ -3,6 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::fs;
 
+const CELL_TYPE_COUNT: u8 = 126;
+
 fn deserialize_name_or_null<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -237,7 +239,7 @@ impl CellDefs {
         // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
         // We normalize the loaded file into a dense 126-slot table keyed by `type` to preserve
         // client expectations even if the JSON order is shuffled or has holes.
-        let mut cells: Vec<CellDef> = (0..126u8)
+        let mut cells: Vec<CellDef> = (0..CELL_TYPE_COUNT)
             .map(|i| CellDef {
                 cell_type: i,
                 ..Default::default()
@@ -246,7 +248,7 @@ impl CellDefs {
         // Валидация: все типы должны быть 0..125, дубликаты — ошибка.
         let mut seen = HashSet::new();
         for def in &parsed {
-            if def.cell_type >= 126 {
+            if def.cell_type >= CELL_TYPE_COUNT {
                 anyhow::bail!(
                     "Cell type {} out of range [0..125] in cells.json",
                     def.cell_type
@@ -257,9 +259,8 @@ impl CellDefs {
             }
         }
 
-        for mut def in parsed {
+        for def in parsed {
             let idx = def.cell_type as usize;
-            def.cell_type = u8::try_from(idx).unwrap_or(def.cell_type);
             cells[idx] = def;
         }
         Ok(Self { cells })
@@ -267,7 +268,9 @@ impl CellDefs {
 
     #[inline]
     pub fn get(&self, cell_type: u8) -> &CellDef {
-        self.cells.get(cell_type as usize).unwrap_or(&self.cells[0])
+        self.cells
+            .get(cell_type as usize)
+            .expect("unknown cell type id")
     }
 
     #[inline]
@@ -400,5 +403,23 @@ mod tests {
         let green = CellType::new(cell_type::GREEN);
         assert!(green.is_crystal());
         assert_eq!(green.crystal_type(), Some(0));
+    }
+
+    #[test]
+    fn cell_defs_get_rejects_unknown_cell_id_instead_of_falling_back_to_zero() {
+        let defs = CellDefs {
+            cells: (0..CELL_TYPE_COUNT)
+                .map(|cell_type| CellDef {
+                    cell_type,
+                    ..Default::default()
+                })
+                .collect(),
+        };
+
+        assert_eq!(defs.get(0).cell_type, 0);
+        assert!(
+            std::panic::catch_unwind(|| defs.get(CELL_TYPE_COUNT)).is_err(),
+            "unknown cell id must fail fast, not read cell 0"
+        );
     }
 }
