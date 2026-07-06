@@ -55,6 +55,10 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     // < 1500мс (клиентский порог «FREEZE»). 2.5 PI/с — НЕ шторм.
     let mut heartbeat = tokio::time::interval(Duration::from_millis(400));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // `tokio::time::interval` fires its first tick immediately. If we do not
+    // consume it here, pre-auth heartbeat can race ahead of AU handling and send
+    // `PI` before the mandatory first post-auth `cf` packet.
+    heartbeat.tick().await;
 
     // Референс: OnConnected шлёт ST → AU → PI (именно в таком порядке).
     let sid = GameState::generate_session_id();
