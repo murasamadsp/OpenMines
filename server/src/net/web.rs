@@ -67,6 +67,10 @@ struct MapBuilding {
     clan_id: i32,
 }
 
+fn player_web_id(pid: crate::game::player::PlayerId) -> Option<u16> {
+    u16::try_from(pid.0).ok()
+}
+
 #[derive(Deserialize)]
 struct AuthRequest {
     token: String,
@@ -128,13 +132,16 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
     let ecs = state.ecs.read();
     for entry in &state.active_players {
         let pid = *entry.key();
+        let Some(id) = player_web_id(pid) else {
+            continue;
+        };
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
             && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
         {
             active_players.push(ActivePlayerInfo {
-                id: u16::try_from(pid.0).unwrap_or(0),
+                id,
                 name: meta.name.clone(),
                 x: pos.x,
                 y: pos.y,
@@ -163,27 +170,32 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
     })
 }
 
-#[allow(clippy::significant_drop_tightening)]
 async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let width = state.world.cells_width();
     let height = state.world.cells_height();
 
-    let mut players = Vec::new();
-    let ecs = state.ecs.read();
-    for entry in &state.active_players {
-        let pid = *entry.key();
-        if let Some(entity) = state.get_player_entity(pid)
-            && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
-            && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
-        {
-            players.push(MapPlayer {
-                id: u16::try_from(pid.0).unwrap_or(0),
-                name: meta.name.clone(),
-                x: pos.x,
-                y: pos.y,
-            });
+    let players = {
+        let mut list = Vec::new();
+        let ecs = state.ecs.read();
+        for entry in &state.active_players {
+            let pid = *entry.key();
+            let Some(id) = player_web_id(pid) else {
+                continue;
+            };
+            if let Some(entity) = state.get_player_entity(pid)
+                && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
+                && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
+            {
+                list.push(MapPlayer {
+                    id,
+                    name: meta.name.clone(),
+                    x: pos.x,
+                    y: pos.y,
+                });
+            }
         }
-    }
+        list
+    };
 
     let buildings = {
         let mut ecs = state.ecs.write();
@@ -205,6 +217,8 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
                 clan_id: ownership.clan_id,
             });
         }
+        drop(b_query);
+        drop(ecs);
         list
     };
 

@@ -1,6 +1,7 @@
 use crate::db::SkillSlots;
 use crate::game::skills::{add_skill_exp, skill_progress_payload};
 use crate::protocol::packets::skills_packet;
+use num_traits::ToPrimitive;
 
 // ─── ActiveEvent / ActiveEvents ───────────────────────────────────────────────
 
@@ -51,12 +52,11 @@ pub struct ExpContext {
 
 impl ExpContext {
     /// Вычислить контекст из текущего состояния ивентов.
-    #[allow(clippy::cast_possible_truncation)]
     pub fn from_state(state: &crate::game::GameState) -> Self {
         let now = crate::time::now_unix();
         let events = state.active_events.read();
         Self {
-            xp_mult: events.get_xp_multiplier(now) as f32,
+            xp_mult: events.get_xp_multiplier(now).to_f32().unwrap_or(1.0),
             drop_mult: events.get_drop_multiplier(now),
         }
     }
@@ -78,8 +78,10 @@ impl ExpContext {
     }
 
     /// Применить drop-множитель к базовому количеству кристаллов.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
     pub fn apply_drop(&self, base_amount: i64) -> i64 {
-        ((base_amount as f64) * self.drop_mult).trunc() as i64
+        base_amount
+            .to_f64()
+            .and_then(|base| (base * self.drop_mult).trunc().to_i64())
+            .unwrap_or(base_amount)
     }
 }

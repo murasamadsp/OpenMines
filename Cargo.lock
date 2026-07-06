@@ -1647,6 +1647,7 @@ dependencies = [
  "lzma-rs",
  "md5",
  "mime_guess",
+ "num-traits",
  "openmines-shared",
  "parking_lot",
  "rand 0.9.4",
