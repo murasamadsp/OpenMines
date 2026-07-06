@@ -402,23 +402,22 @@ impl GameState {
             Ok(rows) => {
                 let mut events = state.active_events.write();
                 for r in rows {
-                    let parsed: serde_json::Value =
-                        serde_json::from_str(&r.config_json).unwrap_or_default();
-                    let xp_mult = parsed
-                        .get("xp_mult")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(1.0);
-                    let drop_mult = parsed
-                        .get("drop_mult")
-                        .and_then(serde_json::Value::as_f64)
-                        .unwrap_or(1.0);
+                    #[derive(serde::Deserialize)]
+                    struct Config {
+                        xp_mult: f64,
+                        drop_mult: f64,
+                    }
+                    let cfg: Config = serde_json::from_str(&r.config_json).unwrap_or(Config {
+                        xp_mult: 1.0,
+                        drop_mult: 1.0,
+                    });
                     events.list.push(ActiveEvent {
                         id: r.id,
                         title: r.title,
                         starts_at: r.starts_at,
                         ends_at: r.ends_at,
-                        xp_mult,
-                        drop_mult,
+                        xp_mult: cfg.xp_mult,
+                        drop_mult: cfg.drop_mult,
                     });
                 }
                 tracing::info!(

@@ -67,8 +67,8 @@ struct MapBuilding {
     clan_id: i32,
 }
 
-fn player_web_id(pid: crate::game::player::PlayerId) -> Option<u16> {
-    u16::try_from(pid.0).ok()
+fn player_web_id(pid: crate::game::player::PlayerId) -> u16 {
+    u16::try_from(pid.0).unwrap_or(0)
 }
 
 #[derive(Deserialize)]
@@ -132,9 +132,7 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
     let ecs = state.ecs.read();
     for entry in &state.active_players {
         let pid = *entry.key();
-        let Some(id) = player_web_id(pid) else {
-            continue;
-        };
+        let id = player_web_id(pid);
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
@@ -179,9 +177,7 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let mut players = Vec::new();
     for entry in &state.active_players {
         let pid = *entry.key();
-        let Some(id) = player_web_id(pid) else {
-            continue;
-        };
+        let id = player_web_id(pid);
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
