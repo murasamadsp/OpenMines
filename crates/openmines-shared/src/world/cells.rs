@@ -258,6 +258,12 @@ impl CellDefs {
                 anyhow::bail!("Duplicate cell type {} in cells.json", def.cell_type);
             }
         }
+        if seen.len() != usize::from(CELL_TYPE_COUNT) {
+            let missing = (0..CELL_TYPE_COUNT)
+                .find(|cell_type| !seen.contains(cell_type))
+                .expect("cell_defs missing count did not identify a missing type");
+            anyhow::bail!("Missing cell type {missing} in cells.json");
+        }
 
         for def in parsed {
             let idx = def.cell_type as usize;
@@ -421,5 +427,28 @@ mod tests {
             std::panic::catch_unwind(|| defs.get(CELL_TYPE_COUNT)).is_err(),
             "unknown cell id must fail fast, not read cell 0"
         );
+    }
+
+    #[test]
+    fn load_rejects_missing_cell_type_instead_of_filling_default() {
+        let path = std::env::temp_dir().join(format!(
+            "openmines_cells_missing_{}_{}.json",
+            std::process::id(),
+            CELL_TYPE_COUNT
+        ));
+        let defs: Vec<_> = (0..CELL_TYPE_COUNT - 1)
+            .map(|cell_type| serde_json::json!({ "type": cell_type }))
+            .collect();
+        std::fs::write(&path, serde_json::to_vec(&defs).unwrap()).unwrap();
+
+        let Err(err) = CellDefs::load(&path) else {
+            panic!("missing cell type must be rejected");
+        };
+        assert!(
+            err.to_string().contains("Missing cell type 125"),
+            "unexpected error: {err}"
+        );
+
+        let _ = std::fs::remove_file(path);
     }
 }
