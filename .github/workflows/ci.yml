@@ -170,26 +170,17 @@ jobs:
             cd "$STACK"
             # Самодостаточный prod-compose (image-based — VPS не собирает Rust).
             # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды.
-            # proxy держит публичный 8090 и переживает рестарт сервера (zero-downtime
-            # обновление); server слушает 8090 внутри, наружу не публикуется.
-            # Образ один — оба бинаря внутри (ops/Dockerfile), proxy через entrypoint.
-            echo "[deploy] write compose.yml (proxy + server, 1337 admin)"
+            # Публичный 8090 временно держит сам сервер: proxy отключён, пока
+            # его auth-ordering не доказан wire-smoke тестом.
+            echo "[deploy] write compose.yml (server-only, 1337 admin)"
             cat > compose.yml <<COMPOSE
             services:
-              proxy:
-                image: ${IMAGE}:${IMAGE_SHA}
-                init: true
-                restart: unless-stopped
-                entrypoint: ["/usr/local/bin/openmines-proxy"]
-                command: ["--bind", "0.0.0.0:8090", "--backend", "server:8090", "--reconnect-timeout", "90"]
-                ports:
-                  - "8090:8090"
-                depends_on:
-                  - server
               server:
                 image: ${IMAGE}:${IMAGE_SHA}
                 init: true
                 restart: unless-stopped
+                ports:
+                  - "8090:8090"
                 environment:
                   - RUST_BACKTRACE=1
                   - M3R_DATA_DIR=/data

@@ -50,6 +50,8 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     let mut last_pi_sent_at: Option<Instant> = None;
     let mut last_rtt_ms: i32 = 50;
     let mut last_pong_ct: i32 = 0;
+    let mut heartbeat_enabled = false;
+    let mut auth_response_pending_flush = false;
     // 400мс: норм. разрыв клиента ≈ RTT/2+400 ≈ 440мс; даже
     // пропущенный/сдвоенный тик под нагрузкой (~800-1200мс) остаётся
     // < 1500мс (клиентский порог «FREEZE»). 2.5 PI/с — НЕ шторм.
@@ -89,6 +91,9 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 break;
             }
             _ = heartbeat.tick() => {
+                if !heartbeat_enabled {
+                    continue;
+                }
                 // Дисконнект мёртвого клиента: нет PO >30s (ref-порог
                 // `Session.CheckDisconnected`). Реальный разрыв также
                 // ловится `read_buf`==0 ниже.
@@ -158,6 +163,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         pid = Some(id);
                                         tracing::Span::current().record("player_id", id.0);
                                         auth_state = new_auth;
+                                        auth_response_pending_flush = true;
                                         if let Some(kt) = kick_tx_opt.take() {
                                             state.kick_channels.insert(id, kt);
                                         }
@@ -165,6 +171,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                     } else {
                                         // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
                                         auth_state = new_auth;
+                                        auth_response_pending_flush = true;
                                         tracing::warn!("Auth failed");
                                         let wait = state.record_auth_failure_by_addr(&client_ip, now);
                                         if wait.is_some() { break; }
@@ -183,6 +190,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                                 pid = Some(id);
                                                 tracing::Span::current().record("player_id", id.0);
                                                 auth_state = AuthState::Authenticated;
+                                                auth_response_pending_flush = true;
                                                 if let Some(kt) = kick_tx_opt.take() {
                                                     state.kick_channels.insert(id, kt);
                                                 }
@@ -261,6 +269,11 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                     stream.write_all(&more).await?;
                 }
                 stream.flush().await?;
+                if auth_response_pending_flush {
+                    auth_response_pending_flush = false;
+                    heartbeat_enabled = true;
+                    last_pong = Instant::now();
+                }
             }
         }
         if let Some(rem) = blocked_remaining {
