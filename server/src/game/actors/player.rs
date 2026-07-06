@@ -87,8 +87,6 @@ pub struct PlayerStats {
     pub skin: i32,
     pub clan_id: Option<i32>,
     pub clan_rank: i32,
-    /// Дробный аккумулятор кристаллов (как `cb` в C# `Player.Mine()`).
-    pub crystal_carry: f32,
     /// Время последнего клейма ежедневного бонуса (`GDon`), unix-секунды; 0 = ни разу.
     pub last_bonus_at: i64,
 }

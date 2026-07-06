@@ -122,7 +122,6 @@ pub fn connect_in_tick(
                 skin: player.skin,
                 clan_id: player.clan_id,
                 clan_rank: player.clan_rank,
-                crystal_carry: 0.0,
                 last_bonus_at: player.last_bonus_at,
             },
             PlayerInventory {

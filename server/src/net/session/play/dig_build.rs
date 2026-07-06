@@ -39,10 +39,10 @@ struct DigPlayerData {
     y: i32,
     dir: i32,
     dig_power: f32,
-    mine_mult: f32,
+    mine_general: f32,
+    mine_by_crystal: [f32; 6],
     skin: i32,
     clan_id: i32,
-    crystal_carry: f32,
 }
 
 enum DigPlayerRead {
@@ -115,15 +115,23 @@ pub fn handle_dig(
                 &skills.states,
                 SkillType::MineGeneral,
             );
+            let mine_by_crystal = [
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineGreen),
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineBlue),
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineRed),
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineViolet),
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineWhite),
+                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineCyan),
+            ];
             let data = DigPlayerData {
                 x: pos.x,
                 y: pos.y,
                 dir,
                 dig_power: dp,
-                mine_mult: mm,
+                mine_general: mm,
+                mine_by_crystal,
                 skin: p_stats.skin,
                 clan_id: p_stats.clan_id.unwrap_or(0),
-                crystal_carry: p_stats.crystal_carry,
             };
             // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
             // Move с target == own position просто обновляет направление, не перемещает игрока.
@@ -179,10 +187,10 @@ pub fn handle_dig(
         y: py,
         dir: actual_dir,
         dig_power,
-        mine_mult,
+        mine_general,
+        mine_by_crystal,
         skin,
         clan_id,
-        crystal_carry: crystal_carry_init,
     } = player_data;
 
     let (dx, dy) = dir_offset(actual_dir);
@@ -368,17 +376,12 @@ pub fn handle_dig(
     // D8+D9: Crystal mining happens on EVERY hit (1:1 with C# Player.Bz → Mine(cell,x,y)).
     // Dig exp happens only on destroy. MineGeneral exp happens every hit with crystals.
     let mined_amount = cry_idx.map_or(0_i64, |idx| {
-        // cb fractional crystal accumulator.
-        let mut carry = crystal_carry_init;
-        let pre_mult_dob = 1.0_f32 + carry.trunc() + mine_mult;
-        let mine_exp = pre_mult_dob.trunc();
-        let dob = pre_mult_dob * cell.crystal_multiplier() as f32;
-        carry -= carry.trunc();
-        let odob = dob.trunc() as i64;
-        carry += dob - odob as f32;
-        let amount = odob.max(1);
+        let mining_amount = 1.0_f32 + mine_general + mine_by_crystal[idx];
+        let mine_exp = mining_amount;
+        let dob = mining_amount * cell.crystal_multiplier() as f32;
+        let amount = crate::game::mechanics::random::probabilistic_i64(dob).max(1);
 
-        // Update crystal_carry + add crystals + MineGeneral exp on every hit.
+        // Add crystals + MineGeneral exp on every hit.
         let mined = state
             .modify_player(pid, |ecs, entity| {
                 if ecs
@@ -397,7 +400,6 @@ pub fn handle_dig(
                     let mut p_stats = ecs
                         .get_mut::<crate::game::player::PlayerStats>(entity)
                         .expect("PlayerStats checked before crystal mining");
-                    p_stats.crystal_carry = carry;
                     p_stats.crystals[idx] += ctx.apply_drop(amount);
                     let c_data = p_stats.crystals;
                     send_u_packet(tx, "@B", &basket(&c_data, 1).1);

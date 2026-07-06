@@ -176,7 +176,7 @@ pub fn apply_player_death_core(
             // money>cost (строгое, как C#). Иначе → ребинд на случайный публичный
             // (бесплатный) респ — здравый смысл вместо патологической C#-рекурсии
             // `p.resp = null; p.resp.OnRespawn(p)`.
-            let respawn_here = owner_id == 0 || (charge > 0.0 && money > resp_cost);
+            let respawn_here = owner_id == 0 || (charge > 0 && money > resp_cost);
             if respawn_here {
                 if owner_id > PlayerId(0) {
                     // Платный owned-респ: списать cost, заряд--, добавить в копилку.
@@ -193,7 +193,7 @@ pub fn apply_player_death_core(
                     let mut bld_stats = ecs
                         .get_mut::<crate::game::buildings::BuildingStats>(bld_ent)
                         .ok_or(DeathCoreError::RespState("BuildingStats"))?;
-                    bld_stats.charge -= 1.0;
+                    bld_stats.charge -= 1;
                     let mut bld_storage = ecs
                         .get_mut::<crate::game::buildings::BuildingStorage>(bld_ent)
                         .ok_or(DeathCoreError::RespState("BuildingStorage"))?;

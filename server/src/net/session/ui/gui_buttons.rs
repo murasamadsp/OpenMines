@@ -1510,7 +1510,7 @@ fn open_teleport_gui(
                     return None;
                 }
                 let pstats = ecs.get::<BuildingStats>(entity)?;
-                if pstats.charge <= 0.0 {
+                if pstats.charge <= 0 {
                     return None;
                 }
                 Some((pos.x, pos.y))
@@ -1537,12 +1537,12 @@ fn open_teleport_gui(
 
     let text = if nearby_tps.is_empty() {
         format!(
-            "Заряд: {:.0}\nПрочность: {}/{}\n\nНет доступных телепортов поблизости.",
+            "Заряд: {}\nПрочность: {}/{}\n\nНет доступных телепортов поблизости.",
             view.charge, hp, mhp
         )
     } else {
         format!(
-            "Заряд: {:.0}\nПрочность: {}/{}\n\nДоступные телепорты:",
+            "Заряд: {}\nПрочность: {}/{}\n\nДоступные телепорты:",
             view.charge, hp, mhp
         )
     };
@@ -1618,7 +1618,7 @@ fn handle_teleport_action(
         );
         return;
     };
-    if dest_view.pack_type != PackType::Teleport || dest_view.charge <= 0.0 {
+    if dest_view.pack_type != PackType::Teleport || dest_view.charge <= 0 {
         tracing::warn!(
             player_id = %pid,
             destination_x = dest_x,
@@ -1651,7 +1651,7 @@ fn handle_teleport_action(
     let Some(src_view) = state.get_pack_at(src_x, src_y) else {
         return;
     };
-    if src_view.pack_type != PackType::Teleport || src_view.charge <= 0.0 {
+    if src_view.pack_type != PackType::Teleport || src_view.charge <= 0 {
         return;
     }
 

@@ -942,7 +942,7 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
             } else {
                 damage_building(&mut pstats, 10);
                 // C#: if (pack.charge == 0) ResendPack
-                if pstats.charge == 0.0 {
+                if pstats.charge == 0 {
                     resend_charge_zero.push((bpos.x, bpos.y));
                 }
             }

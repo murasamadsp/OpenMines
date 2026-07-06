@@ -174,7 +174,7 @@ pub fn gun_firing_system(
     fire_timer.0 = now;
 
     for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {
-        if meta.pack_type != PackType::Gun || b_stats.charge <= 0.0 {
+        if meta.pack_type != PackType::Gun || b_stats.charge <= 0 {
             continue;
         }
 
@@ -243,10 +243,8 @@ pub fn gun_firing_system(
                 &crate::protocol::packets::health(stats.health, stats.max_health).1,
             ));
 
-            // Charge cost: C# `basecrys = 0.5f`, и ТОЛЬКО при наличии у жертвы
-            // скилла Induction домножается на `Effect/100`. Без Induction (у
-            // большинства) charge_cost = 0.5 — иначе `0.5 * 0 = 0` и заряд НЕ
-            // убывал бы вовсе (выглядело как «самоперезарядка»/вечный заряд).
+            // Charge cost: дробная часть не хранится в BuildingStats, а применяется
+            // как шанс списать ещё 1 единицу.
             let induction_effect = crate::game::skills::get_player_skill_effect(
                 &p_sk.states,
                 crate::game::skills::SkillType::Induction,
@@ -256,14 +254,15 @@ pub fn gun_firing_system(
             } else {
                 0.5
             };
-            if b_stats.charge - charge_cost > 0.0 {
-                b_stats.charge -= charge_cost;
-            } else if b_stats.charge > 0.0 {
-                // Charge just depleted — broadcast HB O update (C# `ResendPack`)
-                b_stats.charge = 0.0;
-                pack_resend_q.0.push((b_pos.x, b_pos.y));
-            } else {
-                b_stats.charge = 0.0;
+            let charge_cost = crate::game::mechanics::random::probabilistic_i32(charge_cost);
+            if charge_cost > 0 {
+                if b_stats.charge > charge_cost {
+                    b_stats.charge -= charge_cost;
+                } else if b_stats.charge > 0 {
+                    // Charge just depleted — broadcast HB O update (C# `ResendPack`)
+                    b_stats.charge = 0;
+                    pack_resend_q.0.push((b_pos.x, b_pos.y));
+                }
             }
 
             // C# `Gun.Update`: `player.SendDFToBots(7, gun.x, gun.y, player.id, 1)` —

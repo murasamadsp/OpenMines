@@ -3,8 +3,8 @@
     "Resp": {
       "code": "R",
       "cost": 5000,
-      "charge": 100.0,
-      "max_charge": 1000.0,
+      "charge": 100,
+      "max_charge": 1000,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -28,8 +28,8 @@
     "Teleport": {
       "code": "T",
       "cost": 3000,
-      "charge": 1000.0,
-      "max_charge": 10000.0,
+      "charge": 1000,
+      "max_charge": 10000,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -43,8 +43,8 @@
     "Up": {
       "code": "U",
       "cost": 4000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -61,8 +61,8 @@
     "Market": {
       "code": "M",
       "cost": 6000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -86,8 +86,8 @@
     "Gun": {
       "code": "G",
       "cost": 8000,
-      "charge": 1000.0,
-      "max_charge": 10000.0,
+      "charge": 1000,
+      "max_charge": 10000,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -101,8 +101,8 @@
     "Storage": {
       "code": "L",
       "cost": 4000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -116,8 +116,8 @@
     "Craft": {
       "code": "F",
       "cost": 5000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -131,8 +131,8 @@
     "Spot": {
       "code": "O",
       "cost": 3000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -142,8 +142,8 @@
     "Gate": {
       "code": " ",
       "cost": 2000,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [
@@ -153,8 +153,8 @@
     "Clans": {
       "code": "D",
       "cost": 0,
-      "charge": 0.0,
-      "max_charge": 0.0,
+      "charge": 0,
+      "max_charge": 0,
       "hp": 1000,
       "max_hp": 1000,
       "cells": [

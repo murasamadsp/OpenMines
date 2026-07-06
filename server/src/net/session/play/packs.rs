@@ -119,7 +119,7 @@ fn apply_charge_fill(
     }
     let requested = match request {
         FillRequest::Fixed(value) => value,
-        FillRequest::Max => (max_charge - charge) as i64,
+        FillRequest::Max => i64::from(max_charge - charge),
     };
     if requested <= 0 {
         return FillResult::Noop;
@@ -145,8 +145,11 @@ fn apply_charge_fill(
         let mut building_stats = ecs
             .get_mut::<BuildingStats>(building_entity)
             .expect("BuildingStats checked before charge fill");
-        building_stats.charge =
-            (building_stats.charge + to_take as f32).min(building_stats.max_charge);
+        let to_take_i32 = i32::try_from(to_take).unwrap_or(i32::MAX);
+        building_stats.charge = building_stats
+            .charge
+            .saturating_add(to_take_i32)
+            .min(building_stats.max_charge);
     }
     ecs.get_mut::<PlayerFlags>(player_entity)
         .expect("PlayerFlags checked before charge fill")
@@ -345,9 +348,9 @@ pub fn open_resp_admin_gui(
     };
 
     // Build fill bar: percent, label, crystal type, button actions
-    let charge_i = charge as i32;
-    let max_charge_i = max_charge as i32;
-    let percent = if max_charge_i > 0 {
+    let charge_i = charge;
+    let max_charge_i = max_charge;
+    let percent = if max_charge > 0 {
         (f64::from(charge) / (f64::from(max_charge) / 100.0)).round() as i32
     } else {
         0
@@ -742,9 +745,9 @@ pub fn open_gun_gui(
         })
         .unwrap_or(0);
 
-    let charge_i = charge as i32;
-    let max_charge_i = max_charge as i32;
-    let percent = if max_charge_i > 0 {
+    let charge_i = charge;
+    let max_charge_i = max_charge;
+    let percent = if max_charge > 0 {
         (f64::from(charge) / (f64::from(max_charge) / 100.0)).round() as i32
     } else {
         0
@@ -852,8 +855,11 @@ pub fn handle_gun_fill_prog(
         let mut pk_stats = ecs
             .get_mut::<BuildingStats>(entity)
             .expect("BuildingStats checked before programmator gun fill");
-        let increment = (pk_stats.max_charge * 0.05).max(10.0);
-        pk_stats.charge = (pk_stats.charge + increment).min(pk_stats.max_charge);
+        let increment = (pk_stats.max_charge / 20).max(10);
+        pk_stats.charge = pk_stats
+            .charge
+            .saturating_add(increment)
+            .min(pk_stats.max_charge);
         true
     });
     if !matches!(updated, Ok(true)) {
@@ -916,7 +922,7 @@ mod tests {
             player_crystals(&test.state, test.player.id.into()),
             before_crystals
         );
-        assert!((building_charge(&test.state, 10, 10) - before_charge).abs() < f32::EPSILON);
+        assert_eq!(building_charge(&test.state, 10, 10), before_charge);
 
         test.cleanup();
     }
@@ -971,7 +977,7 @@ mod tests {
             player_crystals(&test.state, test.player.id.into()),
             before_crystals
         );
-        assert!((building_charge(&test.state, 10, 10) - before_charge).abs() < f32::EPSILON);
+        assert_eq!(building_charge(&test.state, 10, 10), before_charge);
 
         test.cleanup();
     }
@@ -1125,8 +1131,8 @@ mod tests {
         player.crystals[crystal_index] = crystal_amount;
 
         let extra = crate::db::BuildingExtra {
-            charge: 0.0,
-            max_charge: 1000.0,
+            charge: 0,
+            max_charge: 1000,
             hp: 1000,
             max_hp: 1000,
             ..crate::db::BuildingExtra::default()
@@ -1185,7 +1191,7 @@ mod tests {
             .unwrap()
     }
 
-    fn building_charge(state: &Arc<GameState>, x: i32, y: i32) -> f32 {
+    fn building_charge(state: &Arc<GameState>, x: i32, y: i32) -> i32 {
         state
             .building_index
             .get(&(x, y))

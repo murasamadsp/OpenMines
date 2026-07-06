@@ -729,7 +729,7 @@ pub async fn destroy_damagable_building(
     // C# `<Building>.Destroy()`: дроп кристаллов в Box.
     // Teleport — White по charge (`[0,0,0,0,charge,0]`); Storage — crysinside.
     match view.pack_type {
-        PackType::Teleport if view.charge > 0.0 => {
+        PackType::Teleport if view.charge > 0 => {
             drop_destroy_box(state, bx, by, [0, 0, 0, 0, charge_to_crys(view.charge), 0]);
         }
         PackType::Storage => {
@@ -792,11 +792,10 @@ const fn shpaak_item_index(pt: PackType) -> Option<i32> {
     }
 }
 
-/// `charge` (f32, всегда целое неотрицательное кол-во) → кол-во кристаллов для Box.
+/// `charge` → кол-во кристаллов для Box.
 /// 1:1 с C# `(long)charge`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-const fn charge_to_crys(charge: f32) -> i64 {
-    if charge <= 0.0 { 0 } else { charge as i64 }
+const fn charge_to_crys(charge: i32) -> i64 {
+    if charge <= 0 { 0 } else { charge as i64 }
 }
 
 /// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).

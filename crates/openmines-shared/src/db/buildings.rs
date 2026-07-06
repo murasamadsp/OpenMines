@@ -10,8 +10,8 @@ pub struct BuildingRow {
     pub y: i32,
     pub owner_id: i32,
     pub clan_id: i32,
-    pub charge: f32,
-    pub max_charge: f32,
+    pub charge: i32,
+    pub max_charge: i32,
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
@@ -26,8 +26,8 @@ pub struct BuildingRow {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct BuildingExtra {
-    pub charge: f32,
-    pub max_charge: f32,
+    pub charge: i32,
+    pub max_charge: i32,
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
@@ -316,8 +316,8 @@ mod tests {
     async fn load_all_buildings_accepts_complete_data() {
         let database = temp_database("building_complete_data").await;
         let extra = BuildingExtra {
-            charge: 0.0,
-            max_charge: 100.0,
+            charge: 0,
+            max_charge: 100,
             cost: 10,
             hp: 100,
             max_hp: 100,
@@ -339,12 +339,31 @@ mod tests {
         assert_eq!(buildings[0].hp, 100);
     }
 
+    #[test]
+    fn building_extra_rejects_float_charge_state() {
+        let json = r#"{
+            "charge": 0.5,
+            "max_charge": 100,
+            "cost": 10,
+            "hp": 100,
+            "max_hp": 100,
+            "money_inside": 0,
+            "crystals_inside": [0,0,0,0,0,0],
+            "items_inside": {},
+            "craft_recipe_id": null,
+            "craft_num": 0,
+            "craft_end_ts": 0,
+            "clanzone": 0
+        }"#;
+        assert!(serde_json::from_str::<BuildingExtra>(json).is_err());
+    }
+
     #[tokio::test]
     async fn delete_and_update_reject_missing_building() {
         let database = temp_database("building_missing_update").await;
         let extra = BuildingExtra {
-            charge: 0.0,
-            max_charge: 100.0,
+            charge: 0,
+            max_charge: 100,
             cost: 10,
             hp: 100,
             max_hp: 100,

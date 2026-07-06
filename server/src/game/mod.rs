@@ -783,7 +783,7 @@ impl GameState {
                             if ddx.hypot(ddy) <= 20.0 {
                                 // C# anygun ставится для любой пушки (до проверки charge).
                                 anygun = true;
-                                if stats.charge > 0.0 {
+                                if stats.charge > 0 {
                                     ret = ret && own.clan_id == player_clan_id;
                                 }
                             }
@@ -827,7 +827,7 @@ impl GameState {
                         x: u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
                         y: u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
                         clan: u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
-                        charged: u8::from(stats.charge > 0.0),
+                        charged: u8::from(stats.charge > 0),
                     });
                 }
             }
@@ -854,7 +854,7 @@ impl GameState {
                             x: u16::try_from(pos.x.rem_euclid(65536)).unwrap_or(0),
                             y: u16::try_from(pos.y.rem_euclid(65536)).unwrap_or(0),
                             clan: u8::try_from(own.clan_id.clamp(0, 255)).unwrap_or(0),
-                            charged: u8::from(stats.charge > 0.0),
+                            charged: u8::from(stats.charge > 0),
                         });
                     }
                 }

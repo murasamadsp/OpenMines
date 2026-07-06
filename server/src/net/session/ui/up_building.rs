@@ -1029,8 +1029,8 @@ mod tests {
             y: 10,
             owner_id: PlayerId(1),
             clan_id: 0,
-            charge: 0.0,
-            max_charge: 0.0,
+            charge: 0,
+            max_charge: 0,
             hp: 123,
             max_hp: 1000,
         };
@@ -1080,8 +1080,8 @@ mod tests {
             y: 10,
             owner_id: test.player.id.into(),
             clan_id: 0,
-            charge: 0.0,
-            max_charge: 0.0,
+            charge: 0,
+            max_charge: 0,
             hp: 1000,
             max_hp: 1000,
         };
@@ -1128,8 +1128,8 @@ mod tests {
             y: 10,
             owner_id: test.player.id.into(),
             clan_id: 0,
-            charge: 0.0,
-            max_charge: 0.0,
+            charge: 0,
+            max_charge: 0,
             hp: 1000,
             max_hp: 1000,
         };
@@ -1414,8 +1414,8 @@ mod tests {
             y: 10,
             owner_id: pid,
             clan_id: 0,
-            charge: 0.0,
-            max_charge: 0.0,
+            charge: 0,
+            max_charge: 0,
             hp: 1000,
             max_hp: 1000,
         };

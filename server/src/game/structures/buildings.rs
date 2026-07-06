@@ -21,8 +21,8 @@ pub struct BuildingConfig {
     #[allow(dead_code)]
     pub code: String,
     pub cost: i64,
-    pub charge: f32,
-    pub max_charge: f32,
+    pub charge: i32,
+    pub max_charge: i32,
     pub hp: i32,
     pub max_hp: i32,
     pub cells: Vec<BuildingCellConfig>,
@@ -79,19 +79,10 @@ impl BuildingConfig {
         if self.cost < 0 {
             anyhow::bail!("Building '{key}' has negative cost {}", self.cost);
         }
-        if !self.charge.is_finite() {
-            anyhow::bail!("Building '{key}' has non-finite charge {}", self.charge);
-        }
-        if !self.max_charge.is_finite() {
-            anyhow::bail!(
-                "Building '{key}' has non-finite max_charge {}",
-                self.max_charge
-            );
-        }
-        if self.charge < 0.0 {
+        if self.charge < 0 {
             anyhow::bail!("Building '{key}' has negative charge {}", self.charge);
         }
-        if self.max_charge < 0.0 {
+        if self.max_charge < 0 {
             anyhow::bail!(
                 "Building '{key}' has negative max_charge {}",
                 self.max_charge
@@ -282,8 +273,8 @@ pub struct BuildingMetadata {
 
 #[derive(Component)]
 pub struct BuildingStats {
-    pub charge: f32,
-    pub max_charge: f32,
+    pub charge: i32,
+    pub max_charge: i32,
     pub cost: i32,
     pub hp: i32,
     pub max_hp: i32,
@@ -314,16 +305,16 @@ pub const fn is_damagable(pack_type: PackType) -> bool {
 pub fn damage_building(stats: &mut BuildingStats, i: i32) -> bool {
     let charge_before = stats.charge;
     if i > 5 {
-        stats.charge = (stats.charge - 100.0).max(0.0);
+        stats.charge = (stats.charge - 100).max(0);
     }
     if stats.hp == 0 {
-        return (stats.charge - charge_before).abs() > f32::EPSILON;
+        return stats.charge != charge_before;
     }
     stats.hp = (stats.hp - i).max(0);
     if stats.hp == 0 && stats.broken_timer.is_none() {
         stats.broken_timer = Some(std::time::Instant::now());
     }
-    (stats.charge - charge_before).abs() > f32::EPSILON
+    stats.charge != charge_before
 }
 
 /// `IDamagable.CanDestroy()` — hp==0 И 8 часов истекло.
@@ -474,10 +465,10 @@ pub struct PackView {
     pub y: i32,
     pub owner_id: PlayerId,
     pub clan_id: i32,
-    pub charge: f32,
+    pub charge: i32,
     // TODO: max_charge/hp/max_hp will be used when building UI/status packets are fully wired
     #[allow(dead_code)]
-    pub max_charge: f32,
+    pub max_charge: i32,
     #[allow(dead_code)]
     pub hp: i32,
     #[allow(dead_code)]
@@ -488,7 +479,7 @@ impl PackView {
     // TODO: will be used when pack on/off state is needed for network overlay
     #[allow(dead_code)]
     pub fn off(&self) -> u8 {
-        u8::from(self.charge > 0.0)
+        u8::from(self.charge > 0)
     }
 }
 
@@ -503,8 +494,8 @@ mod tests {
         BuildingConfig {
             code: code.to_string(),
             cost: 10,
-            charge: 0.0,
-            max_charge: 100.0,
+            charge: 0,
+            max_charge: 100,
             hp: 100,
             max_hp: 100,
             cells: vec![BuildingCellConfig {
@@ -534,7 +525,7 @@ mod tests {
     #[test]
     fn building_config_rejects_ambiguous_numeric_invariants() {
         let mut b = valid_building("A");
-        b.charge = 101.0;
+        b.charge = 101;
         assert!(b.validate("A").is_err());
 
         let mut b = valid_building("A");
@@ -544,6 +535,24 @@ mod tests {
         let mut b = valid_building("A");
         b.max_hp = 0;
         assert!(b.validate("A").is_err());
+    }
+
+    #[test]
+    fn buildings_config_rejects_float_charge_state() {
+        let json = r#"{
+            "buildings": {
+                "A": {
+                    "code": "A",
+                    "cost": 10,
+                    "charge": 0.5,
+                    "max_charge": 100,
+                    "hp": 100,
+                    "max_hp": 100,
+                    "cells": [{"dx": 0, "dy": 0, "type": 37}]
+                }
+            }
+        }"#;
+        assert!(serde_json::from_str::<BuildingsConfig>(json).is_err());
     }
 
     #[test]
@@ -577,8 +586,8 @@ mod tests {
             y: 20,
             owner_id: 1,
             clan_id: 0,
-            charge: 0.0,
-            max_charge: 100.0,
+            charge: 0,
+            max_charge: 100,
             cost: 10,
             hp: 100,
             max_hp: 100,
