@@ -30,7 +30,7 @@ struct ServerStats {
 
 #[derive(Serialize)]
 struct ActivePlayerInfo {
-    id: u16,
+    id: i32,
     name: String,
     x: i32,
     y: i32,
@@ -51,7 +51,7 @@ struct MapData {
 
 #[derive(Serialize)]
 struct MapPlayer {
-    id: u16,
+    id: i32,
     name: String,
     x: i32,
     y: i32,
@@ -65,10 +65,6 @@ struct MapBuilding {
     hp: i32,
     max_hp: i32,
     clan_id: i32,
-}
-
-fn player_web_id(pid: crate::game::player::PlayerId) -> u16 {
-    u16::try_from(pid.0).unwrap_or(0)
 }
 
 #[derive(Deserialize)]
@@ -132,14 +128,13 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
     let ecs = state.ecs.read();
     for entry in &state.active_players {
         let pid = *entry.key();
-        let id = player_web_id(pid);
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
             && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
         {
             active_players.push(ActivePlayerInfo {
-                id,
+                id: pid.0,
                 name: meta.name.clone(),
                 x: pos.x,
                 y: pos.y,
@@ -177,13 +172,12 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let mut players = Vec::new();
     for entry in &state.active_players {
         let pid = *entry.key();
-        let id = player_web_id(pid);
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
         {
             players.push(MapPlayer {
-                id,
+                id: pid.0,
                 name: meta.name.clone(),
                 x: pos.x,
                 y: pos.y,
@@ -222,9 +216,9 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
 
 async fn handle_kick(
     State(state): State<Arc<GameState>>,
-    Path(pid_val): Path<u16>,
+    Path(pid_val): Path<i32>,
 ) -> impl IntoResponse {
-    let pid = crate::game::player::PlayerId(i32::from(pid_val));
+    let pid = crate::game::player::PlayerId(pid_val);
     if state.kick_channels.remove(&pid).is_some() {
         (
             StatusCode::OK,
