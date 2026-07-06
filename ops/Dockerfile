@@ -12,9 +12,9 @@ COPY tools/proxy/Cargo.toml ./tools/proxy/Cargo.toml
 
 # Предварительная сборка зависимостей (deps layer). Workspace members должны
 # существовать, иначе Cargo падает на резолве путей.
-RUN mkdir -p crates/openmines-shared/src server tools/loadtest/src tools/proxy/src && \
+RUN mkdir -p crates/openmines-shared/src server/src tools/loadtest/src tools/proxy/src && \
     echo "" > crates/openmines-shared/src/lib.rs && \
-    echo "fn main() {}" > server/main.rs && \
+    echo "fn main() {}" > server/src/main.rs && \
     echo "fn main() {}" > tools/loadtest/src/main.rs && \
     echo "fn main() {}" > tools/proxy/src/main.rs && \
     cargo build --release --bin openmines-server --bin openmines-proxy && \
