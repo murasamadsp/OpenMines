@@ -558,6 +558,12 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                         &state, &tx, pid, enabled,
                     );
                 }
+                crate::game::ProgrammatorAction::SetHandMode { tx, enabled } => {
+                    let packet = crate::protocol::packets::hand_mode(enabled);
+                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                        packet.0, &packet.1,
+                    ));
+                }
                 crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
                     crate::net::session::play::packs::handle_gun_fill_prog(&state, &tx, pid, x, y);
                 }

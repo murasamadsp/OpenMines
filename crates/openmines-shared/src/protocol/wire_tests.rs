@@ -183,6 +183,16 @@ fn aggression_false_is_zero() {
 }
 
 #[test]
+fn hand_mode_true_is_one() {
+    assert_eq!(hand_mode(true), ("BH", b"1".to_vec()));
+}
+
+#[test]
+fn hand_mode_false_is_zero() {
+    assert_eq!(hand_mode(false), ("BH", b"0".to_vec()));
+}
+
+#[test]
 fn programmator_status_true_is_one() {
     assert_eq!(programmator_status(true), ("@P", b"1".to_vec()));
 }

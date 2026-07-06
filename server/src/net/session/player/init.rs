@@ -478,13 +478,14 @@ fn send_initial_sync(
     }
     // 16. ConfigPacket
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    let prog_running = state
+    let (prog_running, hand_mode_active) = state
         .query_player(pid, |ecs, entity| {
             ecs.get::<ProgrammatorState>(entity)
-                .is_some_and(|prog| prog.running)
+                .map_or((false, false), |prog| (prog.running, prog.hand_mode_active))
         })
-        .unwrap_or(false);
+        .unwrap_or((false, false));
     send_u_packet(tx, "@P", &programmator_status(prog_running).1);
+    send_u_packet(tx, "BH", &hand_mode(hand_mode_active).1);
     // 17. UpdateProg (#p) — C# ref: если программа выбрана, клиент получает
     // текущий исходник до статуса программатора.
     if let Some(program) = &player.selected_program {

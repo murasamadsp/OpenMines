@@ -102,6 +102,10 @@ pub enum ProgrammatorAction {
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
         enabled: bool,
     },
+    SetHandMode {
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        enabled: bool,
+    },
     FillGun {
         pid: PlayerId,
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,

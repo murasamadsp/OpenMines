@@ -38,6 +38,16 @@ fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
+fn send_programmator_start_position(
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    server_pos: (i32, i32),
+    running: bool,
+) {
+    if running {
+        send_u_packet(tx, "@T", &tp(server_pos.0, server_pos.1).1);
+    }
+}
+
 enum AutoDigMutation {
     Changed(bool),
     Unchanged,
@@ -297,8 +307,11 @@ pub async fn handle_prog_ty(
                     return;
                 }
 
-                let running = state
+                let run_state = state
                     .modify_player(pid, |ecs, entity| {
+                        let server_pos = ecs
+                            .get::<crate::game::player::PlayerPosition>(entity)
+                            .map(|pos| (pos.x, pos.y))?;
                         // На запуске окно программатора закрывается (ниже шлём `Gu`).
                         // ОБЯЗАТЕЛЬНО синхронизируем серверный `current_window=None`:
                         // иначе после стопа гард `window_open` в `handle_move` режет
@@ -313,11 +326,11 @@ pub async fn handle_prog_ty(
                         ps.selected_id = Some(prog_id);
                         ps.selected_data = Some(source.clone());
                         ps.run_program(&source);
-                        Some(ps.running)
+                        Some((ps.running, server_pos))
                     })
                     .flatten();
 
-                let Some(running) = running else {
+                let Some((running, server_pos)) = run_state else {
                     tracing::error!(player_id = %pid, program_id = prog_id, "Programmator state missing for PROG");
                     send_u_packet(tx, "@P", &programmator_status(false).1);
                     send_programmator_state_error(tx);
@@ -367,7 +380,9 @@ pub async fn handle_prog_ty(
                 // а СЛЕДОМ `#p` — его `SetActive(false)` закрывает окно последним.
                 // Итог = поведение оригинала: прога бежит, ввод гейтнут (сервер сам
                 // режет ручной ход при prog_running), кнопка стоп есть, окно закрыто.
+                send_programmator_start_position(tx, server_pos, running);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
+                send_u_packet(tx, "BH", &hand_mode(false).1);
                 send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                 if !running {
                     send_u_packet(
@@ -462,6 +477,7 @@ pub async fn handle_prog_ty(
                 clear_programmator_window(state, pid);
                 send_u_packet(tx, "Gu", &gu_close().1);
                 send_u_packet(tx, "@P", &programmator_status(false).1);
+                send_u_packet(tx, "BH", &hand_mode(false).1);
             }
         }
         "PDEL" => {
@@ -842,11 +858,12 @@ mod tests {
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
         // Порядок @P ПЕРЕД #p (девиация от C#, эталон js_reference): #p своим
         // `SetActive(false)` закрывает окно ПОСЛЕДНИМ → запуск не открывает редактор.
-        assert_eq!(names, vec!["Gu", "@P", "#p", "OK"]);
+        assert_eq!(names, vec!["Gu", "@P", "BH", "#p", "OK"]);
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"0");
+        assert_eq!(events[2].1, b"0");
 
-        let update_json: serde_json::Value = serde_json::from_slice(&events[2].1).unwrap();
+        let update_json: serde_json::Value = serde_json::from_slice(&events[3].1).unwrap();
         // #p с РЕАЛЬНЫМ id. Клиент `UpdateProgramm(realId)` грузит исходник и в конце
         // `SetActive(false)` — окно скрывается (механизм закрытия на запуске).
         assert_eq!(update_json["id"], prog_id);
@@ -855,6 +872,47 @@ mod tests {
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prog_running_start_syncs_authoritative_position_before_status() {
+        let test = make_test_state("prog_start_position_sync").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "old")
+            .await
+            .unwrap();
+        let payload = prog_payload(0, prog_id, &[], "$z");
+
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut pos = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)?;
+            pos.x = 17;
+            pos.y = 23;
+            Some(())
+        });
+
+        handle_prog_ty(&test.state, &tx, pid, "PROG", &payload).await;
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Gu", "@T", "@P", "BH", "#p"]);
+        assert_eq!(events[0].1, b"_");
+        assert_eq!(events[1].1, b"17:23");
+        assert_eq!(events[2].1, b"1");
+        assert_eq!(events[3].1, b"0");
+
+        let update_json: serde_json::Value = serde_json::from_slice(&events[4].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "$z");
 
         test.cleanup();
     }
@@ -1059,6 +1117,39 @@ mod tests {
             events.is_empty(),
             "stopped pre-open pRST must not emit @P 0"
         );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prst_stops_running_program_and_clears_hand_mode_wire_state() {
+        let test = make_test_state("prst_stop_clears_hand_mode").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.running = true;
+            ps.hand_mode_active = true;
+            Some(())
+        });
+
+        handle_prog_ty(&test.state, &tx, pid, "pRST", b"").await;
+
+        let state_after = test.state.query_player_opt(pid, |ecs, entity| {
+            let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+            Some((ps.running, ps.hand_mode_active))
+        });
+        assert_eq!(state_after, Some((false, false)));
+
+        let events = drain_events(&mut rx);
+        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["Gu", "@P", "BH"]);
+        assert_eq!(events[0].1, b"_");
+        assert_eq!(events[1].1, b"0");
+        assert_eq!(events[2].1, b"0");
 
         test.cleanup();
     }

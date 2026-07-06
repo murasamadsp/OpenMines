@@ -206,11 +206,11 @@ const fn get_action_type(id: u8) -> ActionType {
         159 => ActionType::DisableAutoDig,
         160 => ActionType::EnableAgression,
         161 => ActionType::DisableAgression,
-        162 => ActionType::HandModeOn,
-        163 => ActionType::HandModeOff,
         164 => ActionType::MacrosGun,
         165 => ActionType::MacrosDigAround,
         166 => ActionType::RunOnRespawn,
+        179 => ActionType::HandModeOn,
+        180 => ActionType::HandModeOff,
         98 => ActionType::IsSlime,
         106 => ActionType::IsInGun,
         _ => ActionType::None,
@@ -1505,6 +1505,10 @@ fn execute_action(
                 tx: conn.tx.clone(),
                 running: false,
             });
+            prog_q.0.push(ProgrammatorAction::SetHandMode {
+                tx: conn.tx.clone(),
+                enabled: false,
+            });
             ExecResult::None
         }
 
@@ -1880,6 +1884,22 @@ fn execute_action(
         ActionType::DisableAgression => {
             prog_q.0.push(ProgrammatorAction::SetAggression {
                 pid: meta.id,
+                tx: conn.tx.clone(),
+                enabled: false,
+            });
+            ExecResult::None
+        }
+        ActionType::HandModeOn => {
+            prog.hand_mode_active = true;
+            prog_q.0.push(ProgrammatorAction::SetHandMode {
+                tx: conn.tx.clone(),
+                enabled: true,
+            });
+            ExecResult::None
+        }
+        ActionType::HandModeOff => {
+            prog.hand_mode_active = false;
+            prog_q.0.push(ProgrammatorAction::SetHandMode {
                 tx: conn.tx.clone(),
                 enabled: false,
             });
@@ -2280,12 +2300,6 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
         ActionType::Flip => {
             prog.flip_state = !prog.flip_state;
         }
-        ActionType::HandModeOn => {
-            prog.hand_mode_active = true;
-        }
-        ActionType::HandModeOff => {
-            prog.hand_mode_active = false;
-        }
         _ => {}
     }
 }
@@ -2409,6 +2423,14 @@ mod tests {
                 ActionType::MoveUp
             ]
         );
+    }
+
+    #[test]
+    fn unity_hand_mode_bytecodes_map_to_hand_mode_actions() {
+        assert_eq!(get_action_type(179), ActionType::HandModeOn);
+        assert_eq!(get_action_type(180), ActionType::HandModeOff);
+        assert_ne!(get_action_type(162), ActionType::HandModeOn);
+        assert_ne!(get_action_type(163), ActionType::HandModeOff);
     }
 
     #[test]
