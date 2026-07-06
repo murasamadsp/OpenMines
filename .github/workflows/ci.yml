@@ -173,8 +173,8 @@ jobs:
             # proxy держит публичный 8090 и переживает рестарт сервера (zero-downtime
             # обновление); server слушает 8090 внутри, наружу не публикуется.
             # Образ один — оба бинаря внутри (ops/Dockerfile), proxy через entrypoint.
-            echo "[deploy] write docker-compose.yml (proxy + server, 1337 admin)"
-            cat > docker-compose.yml <<COMPOSE
+            echo "[deploy] write compose.yml (proxy + server, 1337 admin)"
+            cat > compose.yml <<COMPOSE
             services:
               proxy:
                 image: ${IMAGE}:${IMAGE_SHA}
@@ -191,7 +191,10 @@ jobs:
                 init: true
                 restart: unless-stopped
                 environment:
+                  - RUST_BACKTRACE=1
+                  - M3R_DATA_DIR=/data
                   - M3R_GRANT_ADMIN=1337
+                  - M3R_REGEN_WORLD=0
                   - M3R_USE_CTRL_C=false
                 volumes:
                   - server_data:/data
