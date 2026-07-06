@@ -346,39 +346,10 @@ pub async fn handle_prog_ty(
                 );
 
                 send_u_packet(tx, "Gu", &gu_close().1);
-                let name = match load_owned_program_name(state, pid, prog_id).await {
-                    Ok(Some(name)) => name,
-                    Ok(None) => {
-                        tracing::error!(
-                            player_id = %pid,
-                            program_id = prog_id,
-                            "Program saved but owned row is missing"
-                        );
-                        send_u_packet(
-                            tx,
-                            "OK",
-                            &ok_message("ПРОГРАММАТОР", "Сохранённая программа недоступна.").1,
-                        );
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed after save");
-                        send_u_packet(
-                            tx,
-                            "OK",
-                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
-                        );
-                        return;
-                    }
-                };
-                // Successful start must stay light: Unity already hides the editor before
-                // sending PROG, while #p forces a synchronous LoadFromString(source) on the
-                // main thread. Large programs freeze the client if echoed back here.
                 send_programmator_start_position(tx, server_pos, running);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
                 send_u_packet(tx, "BH", &hand_mode(false).1);
                 if !running {
-                    send_u_packet(tx, "#p", &open_programmator(prog_id, &name, &source).1);
                     send_u_packet(
                         tx,
                         "OK",
@@ -850,17 +821,10 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@P", "BH", "#p", "OK"]);
+        assert_eq!(names, vec!["Gu", "@P", "BH", "OK"]);
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"0");
         assert_eq!(events[2].1, b"0");
-
-        let update_json: serde_json::Value = serde_json::from_slice(&events[3].1).unwrap();
-        // #p с РЕАЛЬНЫМ id. Клиент `UpdateProgramm(realId)` грузит исходник и в конце
-        // `SetActive(false)` — окно скрывается (механизм закрытия на запуске).
-        assert_eq!(update_json["id"], prog_id);
-        assert_eq!(update_json["title"], "main");
-        assert_eq!(update_json["source"], "");
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "");

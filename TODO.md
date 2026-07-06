@@ -1,3 +1,21 @@
+# TODO
+
+## Tickprof: детализировать `side`-стадию игрового тика
+
+Проблема: лог вида
+`OVER-BUDGET tick: total=32.760416ms dispatch=2.25µs schedule=1.002791ms side=31.7485ms actions=0`
+показывает, что тик вышел за бюджет 10ms не из-за входящих TY-пакетов и не из-за ECS schedule, а из-за post-ECS side-effects.
+
+Нужно:
+- разбить `side` в `server/src/tasks/lifecycle.rs` на измеряемые секции: `broadcasts`, `pack_resends`, `programmator_actions`, `box_persist`, `death`, `bots_render`;
+- логировать slow-секции с throttling, без флуда;
+- подтвердить или исключить `bots_render` как источник пиков;
+- после нахождения причины оптимизировать конкретный hot path, а не увеличивать tick budget.
+
+Критерий готовности: по логам `tickprof` видно, какая именно side-секция съедает миллисекунды в over-budget тиках.
+
+---
+
 # Сравнение программатора: Rust-сервер vs C# референс-сервер
 
 Проведен детальный построчный аудит серверной реализации программатора на **Rust-сервере** ([programmator.rs](file:///Users/murasama/Projects/games/OpenMines/server/game/programmator.rs)) в сравнении с оригинальным **C# сервером** ([ProgrammatorData.cs](file:///Users/murasama/Projects/games/OpenMines/server_reference/GameShit/Programmator/ProgrammatorData.cs)).

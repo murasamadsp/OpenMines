@@ -914,7 +914,11 @@ impl ProgrammatorState {
                             .get(after_hash..)
                             .is_some_and(|s| s.starts_with('S'))
                         {
-                            Self::push_text_action(&mut functions, &current_func, ActionType::Stop);
+                            Self::push_text_action(
+                                &mut functions,
+                                &current_func,
+                                ActionType::Start,
+                            );
                             i = after_hash + 'S'.len_utf8();
                             continue;
                         }
@@ -922,11 +926,7 @@ impl ProgrammatorState {
                             .get(after_hash..)
                             .is_some_and(|s| s.starts_with('E'))
                         {
-                            Self::push_text_action(
-                                &mut functions,
-                                &current_func,
-                                ActionType::Start,
-                            );
+                            Self::push_text_action(&mut functions, &current_func, ActionType::Stop);
                             i = after_hash + 'E'.len_utf8();
                             continue;
                         }
@@ -2497,6 +2497,23 @@ mod tests {
                 ActionType::MoveUp
             ]
         );
+    }
+
+    #[test]
+    fn parse_text_format_maps_start_and_end_symbols_in_unity_order() {
+        let (functions, _) = ProgrammatorState::parse_text("$#S#E").unwrap();
+        let actions: Vec<ActionType> = functions[""]
+            .actions
+            .iter()
+            .map(|a| a.action_type)
+            .collect();
+
+        assert_eq!(actions, vec![ActionType::Start, ActionType::Stop]);
+    }
+
+    #[test]
+    fn programmator_direct_action_delay_is_three_per_second() {
+        assert_eq!(ACTION_DELAY, Duration::from_micros(333_333));
     }
 
     #[test]
