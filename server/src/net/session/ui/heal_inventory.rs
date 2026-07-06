@@ -1036,12 +1036,12 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
             let opid = *entry.key();
             // Can't shoot self or clan members
             let c_info = state.query_player_opt(pid, |ecs, entity| {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
-                Some(pstats.clan_id.unwrap_or(0))
+                let shooter_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(shooter_stats.clan_id.unwrap_or(0))
             });
             let o_info = state.query_player_opt(opid, |ecs, entity| {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
-                Some(pstats.clan_id.unwrap_or(0))
+                let target_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(target_stats.clan_id.unwrap_or(0))
             });
             if opid == pid || (c_info.is_some() && c_info == o_info) {
                 continue;
