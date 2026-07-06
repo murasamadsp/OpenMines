@@ -20,23 +20,23 @@
 
 | Где | Девиация | Причина |
 |-----|----------|---------|
-| `server/net/session/play/geo.rs:28` | Поведение геологии изменено относительно C# | **[USER]** прямое требование |
-| `server/net/session/play/bonus.rs:3` | `GDonPacket` реализован (в C# — заглушка, декод без эффекта) | **[UX]** ежедневный бонус нужен живым |
-| `server/net/session/ui/heal_inventory.rs:106` | building-items `{0,1,2,3,24,26,29}` обрабатываются, хотя в C# не входят в `typeditems` | паритет с КЛИЕНТОМ (эталон), а не с неполным C# |
-| `server/net/session/ui/gui_buttons.rs:1410` | Порядок кнопок маркета: «Продать» → «Продать всё» | **[UX]** удобнее; wire-нейтрально |
-| `server/game/combat.rs:229` | Урон пушки — округлённый каст, клампится `[0,60]` | float→int без потери паритета |
-| `server/game/programmator.rs:1634` | Пол 20ms на шаг программы (в C# пола нет) | **[SAFETY]** анти-infinite-loop / CPU-stall |
-| `server/game/programmator.rs:781` | `MacrosBuild` (id 142) намеренно не в этой ветке | 1:1 C# `PAction.Execute` его не имеет |
-| `server/net/session/ui/up_building.rs` `handle_skill_upgrade` | Апгрейд скилла СТОИТ денег (`cost = gameplay.skills.upgrade_cost_base * уровень`), списывает + блокирует при нехватке. В C# `Skill.Up` бесплатный (только exp) | **[USER]** «каждый апгрейд стоит денег» — экономика, конфиг-тюнинг |
+| `server/src/net/session/play/geo.rs` | Поведение геологии изменено относительно C# | **[USER]** прямое требование |
+| `server/src/net/session/play/bonus.rs` | `GDonPacket` реализован (в C# — заглушка, декод без эффекта) | **[UX]** ежедневный бонус нужен живым |
+| `server/src/net/session/ui/heal_inventory.rs` | building-items `{0,1,2,3,24,26,29}` обрабатываются, хотя в C# не входят в `typeditems` | паритет с КЛИЕНТОМ (эталон), а не с неполным C# |
+| `server/src/net/session/ui/gui_buttons.rs` | Порядок кнопок маркета: «Продать» → «Продать всё» | **[UX]** удобнее; wire-нейтрально |
+| `server/src/game/mechanics/combat.rs` | Урон пушки — округлённый каст, клампится `[0,60]` | float→int без потери паритета |
+| `server/src/game/actors/programmator.rs` | Пол 20ms на шаг программы (в C# пола нет) | **[SAFETY]** анти-infinite-loop / CPU-stall |
+| `server/src/game/actors/programmator.rs` | `MacrosBuild` (id 142) намеренно не в этой ветке | 1:1 C# `PAction.Execute` его не имеет |
+| `server/src/net/session/ui/up_building.rs` `handle_skill_upgrade` | Апгрейд скилла СТОИТ денег (`cost = gameplay.skills.upgrade_cost_base * уровень`), списывает + блокирует при нехватке. В C# `Skill.Up` бесплатный (только exp) | **[USER]** «каждый апгрейд стоит денег» — экономика, конфиг-тюнинг |
 
 ## Производительность / живучесть
 
 | Где | Девиация | Причина |
 |-----|----------|---------|
-| `server/net/lifecycle.rs` `spawn_game_tick_loop` | game-tick под supervisor'ом, респавн при панике (backoff 200ms) | **[SAFETY]** паника не должна превращать сервер в «зомби» |
-| `server/net/auction.rs:25` | БД-скан аукциона реже, чем «каждый тик» C# | нагрузка на БД |
-| `server/net/session/play/chunks.rs:317` | Пустой HB-бандл не шлём (C# шлёт всегда) | безвредно, экономит трафик |
-| `server/net/session/play/chunks.rs:192` | HB без активных расходников при пересечении | намеренно (см. коммент) |
+| `server/src/tasks/lifecycle.rs` `spawn_game_tick_loop` | game-tick под supervisor'ом, респавн при панике (backoff 200ms) | **[SAFETY]** паника не должна превращать сервер в «зомби» |
+| `server/src/tasks/auction.rs` | БД-скан аукциона реже, чем «каждый тик» C# | нагрузка на БД |
+| `server/src/net/session/play/chunks.rs` | Пустой HB-бандл не шлём (C# шлёт всегда) | безвредно, экономит трафик |
+| `server/src/net/session/play/chunks.rs` | HB без активных расходников при пересечении | намеренно (см. коммент) |
 | PI-ответ (история) | Убран `Thread.Sleep(200)` из C# PI-ответа | **[UX]** убирал 200ms лаг |
 
 ## Worldgen (детали — в `WORLDGEN_PARITY.md`)
@@ -52,7 +52,7 @@
 | Где | Девиация | Причина |
 |-----|----------|---------|
 | `crates/openmines-shared/src/db/clans.rs:39` | `clan_id == icon`, диапазон 1..=218, иначе отказ | 1:1 C#-модель (клиент рисует иконку по id) |
-| `server/main.rs` `regen_clear_world_state` | При `--regen` позиции игроков сбрасываются на спавн (10,10) | **[SAFETY]** старые `x/y` указывают внутрь нового рельефа → смерть на спавне |
+| `server/src/bootstrap.rs` `regen_clear_world_state` | При `--regen` позиции игроков сбрасываются на `gameplay.spawn` | **[SAFETY]** старые `x/y` указывают внутрь нового рельефа → смерть на спавне |
 
 ---
 
