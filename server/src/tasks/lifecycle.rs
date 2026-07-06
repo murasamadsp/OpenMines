@@ -228,6 +228,29 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: broadcast::Sender<(
 // единый горячий цикл со связанным win_*-инструментарием диагностики фриза;
 // механическое дробление ради лимита строк рискует регрессиями фриза
 // (см. историю tickprof). Точечный allow в конвенции db/mod.rs / skills.rs.
+#[derive(Clone, Copy, Default)]
+struct SideProfile {
+    broadcasts: std::time::Duration,
+    pack_resends: std::time::Duration,
+    box_persist: std::time::Duration,
+    cell_conversions: std::time::Duration,
+    programmator_actions: std::time::Duration,
+    death: std::time::Duration,
+    bots_render: std::time::Duration,
+}
+
+impl SideProfile {
+    fn update_max(&mut self, other: Self) {
+        self.broadcasts = self.broadcasts.max(other.broadcasts);
+        self.pack_resends = self.pack_resends.max(other.pack_resends);
+        self.box_persist = self.box_persist.max(other.box_persist);
+        self.cell_conversions = self.cell_conversions.max(other.cell_conversions);
+        self.programmator_actions = self.programmator_actions.max(other.programmator_actions);
+        self.death = self.death.max(other.death);
+        self.bots_render = self.bots_render.max(other.bots_render);
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     // ── Stage 0 instrumentation (self-throttled; диагностика фриза, target=tickprof) ──
@@ -245,6 +268,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
     let mut win_max_dispatch = std::time::Duration::ZERO;
     let mut win_max_schedule = std::time::Duration::ZERO;
     let mut win_max_side = std::time::Duration::ZERO;
+    let mut win_max_side_profile = SideProfile::default();
     let mut win_max_actions: usize = 0;
     let mut last_warn = Instant::now()
         .checked_sub(std::time::Duration::from_secs(1))
@@ -402,8 +426,10 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
 
         // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
         let side_t0 = Instant::now();
+        let mut side_profile = SideProfile::default();
 
         // Отложенные broadcast'ы из ECS-систем (sand, combat).
+        let section_t0 = Instant::now();
         for effect in broadcasts {
             match effect {
                 crate::game::BroadcastEffect::CellUpdate(pos) => {
@@ -420,15 +446,19 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             }
         }
+        side_profile.broadcasts = section_t0.elapsed();
 
         // Перерасылка HB O для зданий у которых обнулился charge (C# `ResendPack`).
+        let section_t0 = Instant::now();
         for (px, py) in pack_resends {
             if let Some(view) = state.get_pack_at(px, py) {
                 crate::net::session::social::buildings::broadcast_pack_update(&state, &view);
             }
         }
+        side_profile.pack_resends = section_t0.elapsed();
 
         // Персистенция боксов (BoxPersistQueue уже дренирован внутри ecs.write).
+        let section_t0 = Instant::now();
         if !box_ops.is_empty() {
             struct DbTaskGuard {
                 state: Arc<GameState>,
@@ -460,8 +490,10 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             });
         }
+        side_profile.box_persist = section_t0.elapsed();
 
         // StupidAction 1:1 с C# `World.W.StupidAction(10, x, y, action)` — отложенная конвертация клеток.
+        let section_t0 = Instant::now();
         let mut remaining_conversions: Vec<crate::game::PendingConversion> = Vec::new();
         let mut converted_owners: Vec<crate::game::player::PlayerId> = Vec::new();
         for mut conv in cell_conversions {
@@ -512,8 +544,10 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 ));
             }
         }
+        side_profile.cell_conversions = section_t0.elapsed();
 
         // Отложенные команды программатора.
+        let section_t0 = Instant::now();
         for action in prog_actions {
             match action {
                 crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
@@ -575,6 +609,9 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             }
         }
+        side_profile.programmator_actions = section_t0.elapsed();
+
+        let section_t0 = Instant::now();
         for (pid, rx, ry, mh, bcast) in pending {
             crate::net::session::play::death::run_death_broadcasts(&state, &bcast, pid);
             let tx = state.query_player_opt(pid, |ecs, entity| {
@@ -588,6 +625,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
             }
         }
+        side_profile.death = section_t0.elapsed();
 
         // Периодический BotsRender (1:1 C# `Player.BotsRender`, каждые 4с):
         // заново шлёт `X` всех видимых ботов каждому игроку. Без этого
@@ -595,6 +633,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         // простаивающих ботов — они мигают при ходьбе и исчезают в покое.
         // Таймер per-player в `ActivePlayer`; due-список собираем заранее и
         // отпускаем шард `active_players` ДО рендера (он берёт `ecs.read()`).
+        let section_t0 = Instant::now();
         {
             let now_render = Instant::now();
             let mut due: Vec<crate::game::player::PlayerId> = Vec::new();
@@ -612,6 +651,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             }
         }
+        side_profile.bots_render = section_t0.elapsed();
 
         // ── Stage 0: агрегация и throttled-вывод (target=tickprof) ──
         let dt_side = side_t0.elapsed();
@@ -624,6 +664,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         win_max_dispatch = win_max_dispatch.max(dt_dispatch);
         win_max_schedule = win_max_schedule.max(dt_schedule);
         win_max_side = win_max_side.max(dt_side);
+        win_max_side_profile.update_max(side_profile);
         win_max_actions = win_max_actions.max(n_actions);
 
         // Индивидуальный over-budget тик — не чаще 1 раза/500мс (сам не флудит).
@@ -632,7 +673,17 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             tracing::warn!(
                 target: "tickprof",
                 "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
-                 schedule={dt_schedule:?} side={dt_side:?} actions={n_actions}"
+                 schedule={dt_schedule:?} side={dt_side:?} actions={n_actions} \
+                 side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
+                 side_cell_conversions={:?} side_programmator_actions={:?} \
+                 side_death={:?} side_bots_render={:?}",
+                side_profile.broadcasts,
+                side_profile.pack_resends,
+                side_profile.box_persist,
+                side_profile.cell_conversions,
+                side_profile.programmator_actions,
+                side_profile.death,
+                side_profile.bots_render,
             );
         }
         // Сводка раз в ~5с.
@@ -642,7 +693,17 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 "5s summary: ticks={win_ticks} over_budget={win_over} \
                  max_total={win_max_total:?} max_dispatch={win_max_dispatch:?} \
                  max_schedule={win_max_schedule:?} max_side={win_max_side:?} \
-                 max_actions={win_max_actions}"
+                 max_actions={win_max_actions} max_side_broadcasts={:?} \
+                 max_side_pack_resends={:?} max_side_box_persist={:?} \
+                 max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
+                 max_side_death={:?} max_side_bots_render={:?}",
+                win_max_side_profile.broadcasts,
+                win_max_side_profile.pack_resends,
+                win_max_side_profile.box_persist,
+                win_max_side_profile.cell_conversions,
+                win_max_side_profile.programmator_actions,
+                win_max_side_profile.death,
+                win_max_side_profile.bots_render,
             );
             win_start = Instant::now();
             win_ticks = 0;
@@ -651,6 +712,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             win_max_dispatch = std::time::Duration::ZERO;
             win_max_schedule = std::time::Duration::ZERO;
             win_max_side = std::time::Duration::ZERO;
+            win_max_side_profile = SideProfile::default();
             win_max_actions = 0;
         }
     }
@@ -662,6 +724,43 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn side_profile_update_max_keeps_per_section_maximums() {
+        let mut profile = SideProfile {
+            broadcasts: std::time::Duration::from_millis(1),
+            pack_resends: std::time::Duration::from_millis(5),
+            box_persist: std::time::Duration::from_millis(2),
+            cell_conversions: std::time::Duration::from_millis(4),
+            programmator_actions: std::time::Duration::from_millis(3),
+            death: std::time::Duration::from_millis(7),
+            bots_render: std::time::Duration::from_millis(6),
+        };
+
+        profile.update_max(SideProfile {
+            broadcasts: std::time::Duration::from_millis(9),
+            pack_resends: std::time::Duration::from_millis(1),
+            box_persist: std::time::Duration::from_millis(8),
+            cell_conversions: std::time::Duration::from_millis(2),
+            programmator_actions: std::time::Duration::from_millis(10),
+            death: std::time::Duration::from_millis(1),
+            bots_render: std::time::Duration::from_millis(11),
+        });
+
+        assert_eq!(profile.broadcasts, std::time::Duration::from_millis(9));
+        assert_eq!(profile.pack_resends, std::time::Duration::from_millis(5));
+        assert_eq!(profile.box_persist, std::time::Duration::from_millis(8));
+        assert_eq!(
+            profile.cell_conversions,
+            std::time::Duration::from_millis(4)
+        );
+        assert_eq!(
+            profile.programmator_actions,
+            std::time::Duration::from_millis(10)
+        );
+        assert_eq!(profile.death, std::time::Duration::from_millis(7));
+        assert_eq!(profile.bots_render, std::time::Duration::from_millis(11));
+    }
 
     #[tokio::test]
     async fn online_count_broadcast_sends_on_to_active_players() {

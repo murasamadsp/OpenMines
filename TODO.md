@@ -1,18 +1,22 @@
 # TODO
 
-## Tickprof: детализировать `side`-стадию игрового тика
+## Tickprof: оптимизировать найденный `side` hot path
 
-Проблема: лог вида
+Статус: первичная детализация сделана. `server/src/tasks/lifecycle.rs` теперь
+пишет в `tickprof` per-section timings для `side`-стадии: `broadcasts`,
+`pack_resends`, `box_persist`, `cell_conversions`, `programmator_actions`, `death`,
+`bots_render`.
+
+Исходная проблема: лог вида
 `OVER-BUDGET tick: total=32.760416ms dispatch=2.25µs schedule=1.002791ms side=31.7485ms actions=0`
 показывает, что тик вышел за бюджет 10ms не из-за входящих TY-пакетов и не из-за ECS schedule, а из-за post-ECS side-effects.
 
-Нужно:
-- разбить `side` в `server/src/tasks/lifecycle.rs` на измеряемые секции: `broadcasts`, `pack_resends`, `programmator_actions`, `box_persist`, `death`, `bots_render`;
-- логировать slow-секции с throttling, без флуда;
+Осталось:
+- собрать реальные `tickprof`-логи с новым разбиением;
 - подтвердить или исключить `bots_render` как источник пиков;
-- после нахождения причины оптимизировать конкретный hot path, а не увеличивать tick budget.
+- оптимизировать конкретный hot path, а не увеличивать tick budget.
 
-Критерий готовности: по логам `tickprof` видно, какая именно side-секция съедает миллисекунды в over-budget тиках.
+Критерий готовности: после живого лога есть конкретная секция-виновник и отдельный фикс этой секции.
 
 ---
 
