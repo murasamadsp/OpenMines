@@ -174,53 +174,47 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let width = state.world.cells_width();
     let height = state.world.cells_height();
 
-    let players = {
-        let mut list = Vec::new();
-        let ecs = state.ecs.read();
-        for entry in &state.active_players {
-            let pid = *entry.key();
-            let Some(id) = player_web_id(pid) else {
-                continue;
-            };
-            if let Some(entity) = state.get_player_entity(pid)
-                && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
-                && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
-            {
-                list.push(MapPlayer {
-                    id,
-                    name: meta.name.clone(),
-                    x: pos.x,
-                    y: pos.y,
-                });
-            }
-        }
-        list
-    };
+    let mut ecs = state.ecs.write();
 
-    let buildings = {
-        let mut ecs = state.ecs.write();
-        let mut b_query = ecs.query::<(
-            &crate::game::buildings::GridPosition,
-            &crate::game::buildings::BuildingMetadata,
-            &crate::game::buildings::BuildingStats,
-            &crate::game::buildings::BuildingOwnership,
-        )>();
-
-        let mut list = Vec::new();
-        for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
-            list.push(MapBuilding {
-                x: grid_pos.x,
-                y: grid_pos.y,
-                pack_type: format!("{:?}", metadata.pack_type),
-                hp: stats.hp,
-                max_hp: stats.max_hp,
-                clan_id: ownership.clan_id,
+    let mut players = Vec::new();
+    for entry in &state.active_players {
+        let pid = *entry.key();
+        let Some(id) = player_web_id(pid) else {
+            continue;
+        };
+        if let Some(entity) = state.get_player_entity(pid)
+            && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
+            && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
+        {
+            players.push(MapPlayer {
+                id,
+                name: meta.name.clone(),
+                x: pos.x,
+                y: pos.y,
             });
         }
-        drop(b_query);
-        drop(ecs);
-        list
-    };
+    }
+
+    let mut b_query = ecs.query::<(
+        &crate::game::buildings::GridPosition,
+        &crate::game::buildings::BuildingMetadata,
+        &crate::game::buildings::BuildingStats,
+        &crate::game::buildings::BuildingOwnership,
+    )>();
+
+    let mut buildings = Vec::new();
+    for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
+        buildings.push(MapBuilding {
+            x: grid_pos.x,
+            y: grid_pos.y,
+            pack_type: format!("{:?}", metadata.pack_type),
+            hp: stats.hp,
+            max_hp: stats.max_hp,
+            clan_id: ownership.clan_id,
+        });
+    }
+
+    drop(ecs);
 
     Json(MapData {
         width,
