@@ -13,6 +13,7 @@ use crate::net::session::outbound::player_sync::{
 };
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
+use num_traits::ToPrimitive;
 
 /// Conn-таск: ставит вход игрока в lifecycle-очередь. Сам ecs не трогает —
 /// spawn entity + Init-пакеты выполняет game-tick (`connect_in_tick`), чтобы
@@ -177,10 +178,7 @@ pub fn connect_in_tick(
         let max_health = {
             let skills = ecs.get::<PlayerSkillsComp>(entity)?;
             let effect = get_player_skill_effect(&skills.states, SkillType::Health);
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                effect as i32
-            }
+            effect.to_i32().unwrap_or(0)
         };
         let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
         stats.max_health = max_health;

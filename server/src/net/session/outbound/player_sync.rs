@@ -1,11 +1,7 @@
-#![allow(dead_code, unused_imports)]
-
 use crate::game::player::{PlayerSkillsComp as PlayerSkillsComponent, PlayerStats};
-use crate::game::skills::{
-    OnHealth, OnMove, OnPackCrys, PlayerSkills as PlayerSkillsHelper, SkillType,
-    skill_progress_payload,
-};
+use crate::game::skills::{SkillType, skill_progress_payload};
 use crate::net::session::prelude::*;
+use num_traits::ToPrimitive;
 
 pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
     // 1:1 ref (`pSenders.SendSpeed`):
@@ -15,10 +11,12 @@ pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSki
     // where `p.pause = (int)(Movement.Effect * 100)`.
     let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
     // D24: C# does `int pause = (int)(Movement.Effect * 100)` — truncate to int first.
-    #[allow(clippy::cast_possible_truncation)]
-    let pause = f64::from((move_effect * 100.0) as i32);
-    let xy_pause = (pause * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
-    let road_pause = (pause * 0.80 * 5.0 * 1.4 / 1000.0 * 1.7) as i32;
+    let pause_i32 = (move_effect * 100.0).to_i32().unwrap_or(0);
+    let pause = f64::from(pause_i32);
+    let xy_pause = (pause * 5.0 * 1.4 / 1000.0 * 1.7).to_i32().unwrap_or(0);
+    let road_pause = (pause * 0.80 * 5.0 * 1.4 / 1000.0 * 1.7)
+        .to_i32()
+        .unwrap_or(0);
     send_u_packet(tx, "sp", &speed(xy_pause, road_pause, 100_000).1);
 }
 
@@ -47,16 +45,4 @@ pub fn send_player_basket(
     // `on_pack_crys_capacity(1000)` → клиент показывал «120% бакета»; dig-путь
     // слал 1 (верно, «1%»). Шлём 1 (1:1 C#).
     send_u_packet(tx, "@B", &basket(&stats.crystals, 1).1);
-}
-
-pub fn send_all_skill_updates(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    stats: &PlayerStats,
-    skills: &PlayerSkillsComponent,
-) {
-    send_player_level(tx, skills);
-    send_player_skills(tx, skills);
-    send_player_speed(tx, skills);
-    send_player_health(tx, stats);
-    send_player_basket(tx, stats, skills);
 }

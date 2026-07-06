@@ -5,6 +5,7 @@ use crate::game::skills::{SkillType, get_player_skill_effect};
 use crate::game::{ProgrammatorAction, ProgrammatorQueue, WorldResource};
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::{Component, Query, Res, ResMut};
+use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -1666,8 +1667,7 @@ fn speed_pause(skills: &PlayerSkillsComp, on_road: bool) -> u64 {
     // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
     // (1:1 с C#, нельзя в int без потери паритета); каст намеренный,
     // move_effect ≥ 0. Та же конвенция, что skills.rs.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pause_units = (move_effect * 100.0) as u64;
+    let pause_units = (move_effect * 100.0).to_u64().unwrap_or(0);
     // off-road: pause*5*1.4 = pause*7; on-road (×0.80): pause*5.6 = pause*56/10000.
     let server_pause_ms = if on_road {
         pause_units * 56 / 10000 //TODO: что за числа? лол
