@@ -159,6 +159,7 @@ pub struct PlayerMetadata {
 #[derive(Component, Clone, Copy)]
 pub struct PlayerSettings {
     pub auto_dig: bool,
+    pub aggression: bool,
     // C# ref Settings.cs fields:
     pub cc: i32,
     pub snd: bool,
@@ -176,6 +177,7 @@ impl Default for PlayerSettings {
     fn default() -> Self {
         Self {
             auto_dig: false,
+            aggression: false,
             cc: 10,
             snd: false,
             mus: false,
@@ -259,6 +261,7 @@ pub fn extract_player_row(
         creds: stats.creds,
         skin: stats.skin,
         auto_dig: settings.auto_dig,
+        aggression: settings.aggression,
         crystals: stats.crystals,
         clan_id: stats.clan_id,
         resp_x: meta.resp_x,

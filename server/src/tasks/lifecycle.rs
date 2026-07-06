@@ -553,6 +553,11 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                         &state, &tx, pid, enabled,
                     );
                 }
+                crate::game::ProgrammatorAction::SetAggression { pid, tx, enabled } => {
+                    crate::net::session::social::misc::handle_aggression_set(
+                        &state, &tx, pid, enabled,
+                    );
+                }
                 crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
                     crate::net::session::play::packs::handle_gun_fill_prog(&state, &tx, pid, x, y);
                 }

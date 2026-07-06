@@ -158,6 +158,7 @@ pub struct PlayerRow {
     pub creds: i64,
     pub skin: i32,
     pub auto_dig: bool,
+    pub aggression: bool,
     pub crystals: [i64; 6],
     pub clan_id: Option<i32>,
     pub resp_x: Option<i32>,
@@ -212,6 +213,7 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow> {
     let inv_str: String = r.try_get("inventory")?;
     let skills_str: String = r.try_get("skills")?;
     let auto_dig_val: i32 = r.try_get("auto_dig")?;
+    let aggression_val: i32 = r.try_get("aggression")?;
     let programmator_running_val: i32 = r.try_get("programmator_running")?;
     let selected_program_id = r.try_get("selected_program_id")?;
     let selected_program_name: Option<String> = r.try_get("selected_program_name")?;
@@ -243,6 +245,7 @@ fn row_to_player(r: &sqlx::sqlite::SqliteRow) -> Result<PlayerRow> {
         creds: r.try_get("creds")?,
         skin: r.try_get("skin")?,
         auto_dig: auto_dig_val != 0,
+        aggression: aggression_val != 0,
         crystals: [
             r.try_get("cry_green")?,
             r.try_get("cry_blue")?,
@@ -300,6 +303,7 @@ impl Database {
             creds: 0,
             skin: 0,
             auto_dig: false,
+            aggression: false,
             crystals: [0; 6],
             clan_id: None,
             clan_rank: 0,
@@ -355,7 +359,7 @@ impl Database {
 
     pub async fn get_player_by_id(&self, id: i32) -> Result<Option<PlayerRow>> {
         let row = sqlx::query(
-            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig, aggression,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
                     inventory, skills, resp_x, resp_y, role, selected_program_id,
                     sp.name AS selected_program_name, sp.code AS selected_program_code,
@@ -376,7 +380,7 @@ impl Database {
             return Ok(None);
         }
         let row = sqlx::query(
-            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig,
+            "SELECT players.id AS id, players.name AS name, passwd, hash, x, y, dir, health, max_health, money, creds, skin, auto_dig, aggression,
                     cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan, clan_id,
                     inventory, skills, resp_x, resp_y, role, selected_program_id,
                     sp.name AS selected_program_name, sp.code AS selected_program_code,
@@ -396,7 +400,7 @@ impl Database {
         let skills_json = serde_json::to_string(&p.skills)?;
         let result = sqlx::query(
             "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
-             skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
+             skin=?8, auto_dig=?9, aggression=?27, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
              cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
              resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24, programmator_running=?25,
              programmator_snapshot=?26
@@ -428,6 +432,7 @@ impl Database {
         .bind(p.last_bonus_at)
         .bind(i32::from(p.programmator_running))
         .bind(&p.programmator_snapshot)
+        .bind(i32::from(p.aggression))
         .execute(&self.pool)
         .await?;
         if result.rows_affected() != 1 {
@@ -450,7 +455,7 @@ impl Database {
             let skills_json = serde_json::to_string(&p.skills)?;
             let result = sqlx::query(
                 "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
-                 skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
+                 skin=?8, auto_dig=?9, aggression=?27, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
                  cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
                  resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24, programmator_running=?25,
                  programmator_snapshot=?26
@@ -482,6 +487,7 @@ impl Database {
             .bind(p.last_bonus_at)
             .bind(i32::from(p.programmator_running))
             .bind(&p.programmator_snapshot)
+            .bind(i32::from(p.aggression))
             .execute(&mut *tx)
             .await?;
             if result.rows_affected() != 1 {

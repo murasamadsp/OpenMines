@@ -97,6 +97,11 @@ pub enum ProgrammatorAction {
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
         enabled: bool,
     },
+    SetAggression {
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        enabled: bool,
+    },
     FillGun {
         pid: PlayerId,
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,

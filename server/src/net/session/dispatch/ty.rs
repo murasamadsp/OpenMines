@@ -14,7 +14,7 @@ use crate::net::session::social::chat::{
 use crate::net::session::social::clans::handle_clan_menu;
 use crate::net::session::social::commands::{is_admin_command, send_admin_help, send_ok};
 use crate::net::session::social::misc::{
-    handle_auto_dig_toggle, handle_prog_ty, handle_sett_ty, handle_whoi,
+    handle_aggression_toggle, handle_auto_dig_toggle, handle_prog_ty, handle_sett_ty, handle_whoi,
 };
 use crate::net::session::ui::gui_buttons::handle_gui_button;
 use crate::net::session::ui::heal_inventory::{
@@ -82,6 +82,9 @@ pub async fn dispatch_ty_packet(
         }
         "TADG" => {
             handle_auto_dig_toggle(state, tx, pid);
+        }
+        "TAGR" => {
+            handle_aggression_toggle(state, tx, pid);
         }
         "Whoi" => {
             if let Some(ids) = decode_whoi(&packet.sub_payload) {
@@ -221,8 +224,8 @@ pub async fn dispatch_ty_packet(
             handle_prog_ty(state, tx, pid, packet.event_str(), &packet.sub_payload).await;
         }
         // `Miss` / `Rndm`: в `Session.TY` нет case — падают в default (как здесь).
-        // `TAGR` / `TAUR`: `Agr` / `Taur` в референсе пустые.
-        "Miss" | "Rndm" | "TAGR" | "TAUR" => {
+        // `TAUR`: `Taur` в референсе пустой.
+        "Miss" | "Rndm" | "TAUR" => {
             tracing::debug!(pid = %pid, event, "known no-op TY event");
         }
         _ => {

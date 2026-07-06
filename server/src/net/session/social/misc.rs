@@ -44,6 +44,12 @@ enum AutoDigMutation {
     MissingState(&'static str),
 }
 
+enum AggressionMutation {
+    Changed(bool),
+    Unchanged,
+    MissingState(&'static str),
+}
+
 pub fn handle_auto_dig_toggle(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -134,6 +140,100 @@ pub fn handle_auto_dig_set(
         }
         None => {
             tracing::error!(player_id = %pid, "Player entity missing for auto-dig set");
+            send_settings_state_error(tx);
+        }
+    }
+}
+
+pub fn handle_aggression_toggle(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+) {
+    let changed = state
+        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if ecs
+                .get::<crate::game::player::PlayerSettings>(entity)
+                .is_none()
+            {
+                return Some(AggressionMutation::MissingState("PlayerSettings"));
+            }
+            if ecs
+                .get::<crate::game::player::PlayerFlags>(entity)
+                .is_none()
+            {
+                return Some(AggressionMutation::MissingState("PlayerFlags"));
+            }
+            let mut settings = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .expect("PlayerSettings checked before aggression toggle");
+            settings.aggression = !settings.aggression;
+            let val = settings.aggression;
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .expect("PlayerFlags checked before aggression toggle")
+                .dirty = true;
+            Some(AggressionMutation::Changed(val))
+        })
+        .flatten();
+
+    match changed {
+        Some(AggressionMutation::Changed(val)) => send_u_packet(tx, "BA", &aggression(val).1),
+        Some(AggressionMutation::Unchanged) => {}
+        Some(AggressionMutation::MissingState(component)) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for aggression toggle");
+            send_settings_state_error(tx);
+        }
+        None => {
+            tracing::error!(player_id = %pid, "Player entity missing for aggression toggle");
+            send_settings_state_error(tx);
+        }
+    }
+}
+
+pub fn handle_aggression_set(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    enabled: bool,
+) {
+    let changed = state
+        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if ecs
+                .get::<crate::game::player::PlayerSettings>(entity)
+                .is_none()
+            {
+                return Some(AggressionMutation::MissingState("PlayerSettings"));
+            }
+            if ecs
+                .get::<crate::game::player::PlayerFlags>(entity)
+                .is_none()
+            {
+                return Some(AggressionMutation::MissingState("PlayerFlags"));
+            }
+            let mut settings = ecs
+                .get_mut::<crate::game::player::PlayerSettings>(entity)
+                .expect("PlayerSettings checked before aggression set");
+            if settings.aggression != enabled {
+                settings.aggression = enabled;
+                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before aggression set")
+                    .dirty = true;
+                Some(AggressionMutation::Changed(enabled))
+            } else {
+                Some(AggressionMutation::Unchanged)
+            }
+        })
+        .flatten();
+
+    match changed {
+        Some(AggressionMutation::Changed(val)) => send_u_packet(tx, "BA", &aggression(val).1),
+        Some(AggressionMutation::Unchanged) => {}
+        Some(AggressionMutation::MissingState(component)) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for aggression set");
+            send_settings_state_error(tx);
+        }
+        None => {
+            tracing::error!(player_id = %pid, "Player entity missing for aggression set");
             send_settings_state_error(tx);
         }
     }
@@ -835,6 +935,48 @@ mod tests {
         assert!(!events.iter().any(|(event, _)| event == "BD"));
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние настроек недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn aggression_toggle_updates_state_and_sends_ba() {
+        let test = make_test_state("aggression_toggle").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        handle_aggression_toggle(&test.state, &tx, pid);
+
+        let (aggression, dirty) = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let settings = ecs.get::<crate::game::player::PlayerSettings>(entity)?;
+                let flags = ecs.get::<crate::game::player::PlayerFlags>(entity)?;
+                Some((settings.aggression, flags.dirty))
+            })
+            .unwrap();
+        assert!(aggression);
+        assert!(dirty);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events, vec![("BA".to_string(), b"1".to_vec())]);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn aggression_set_unchanged_is_silent() {
+        let test = make_test_state("aggression_set_unchanged").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        handle_aggression_set(&test.state, &tx, pid, false);
+
+        assert!(drain_events(&mut rx).is_empty());
 
         test.cleanup();
     }

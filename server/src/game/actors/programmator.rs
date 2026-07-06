@@ -1206,6 +1206,7 @@ type ProgrammatorQuery<'w, 's> = Query<
         &'static PlayerConnection,
         &'static PlayerStats,
         &'static PlayerSkillsComp,
+        &'static crate::game::player::PlayerSettings,
         &'static mut crate::game::player::PlayerFlags,
         &'static mut ProgrammatorState,
         &'static crate::game::player::PlayerGeoStack,
@@ -1224,7 +1225,7 @@ pub fn programmator_system(
 ) {
     let now = Instant::now();
 
-    for (meta, pos, conn, stats, skills, mut flags, mut prog, geo) in &mut query {
+    for (meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo) in &mut query {
         if !prog.running {
             continue;
         }
@@ -1282,6 +1283,7 @@ pub fn programmator_system(
             pos,
             stats,
             skills,
+            settings,
             &world_res.0,
             meta,
             conn,
@@ -1324,6 +1326,7 @@ fn execute_action(
     pos: &PlayerPosition,
     stats: &PlayerStats,
     skills: &PlayerSkillsComp,
+    settings: &crate::game::player::PlayerSettings,
     world: &crate::world::World,
     meta: &PlayerMetadata,
     conn: &PlayerConnection,
@@ -1866,6 +1869,22 @@ fn execute_action(
             });
             ExecResult::None
         }
+        ActionType::EnableAgression => {
+            prog_q.0.push(ProgrammatorAction::SetAggression {
+                pid: meta.id,
+                tx: conn.tx.clone(),
+                enabled: true,
+            });
+            ExecResult::None
+        }
+        ActionType::DisableAgression => {
+            prog_q.0.push(ProgrammatorAction::SetAggression {
+                pid: meta.id,
+                tx: conn.tx.clone(),
+                enabled: false,
+            });
+            ExecResult::None
+        }
 
         // ─── Macros (simplified) ────────────────────────────────────────
         ActionType::MacrosDig => {
@@ -2002,6 +2021,27 @@ fn execute_action(
                     ActionType::WritableStateLower => count < action.num,
                     ActionType::WritableStateMore => count > action.num,
                     _ => count == action.num,
+                })
+            } else if action.label.eq_ignore_ascii_case("aut") {
+                let val = i32::from(settings.auto_dig);
+                Some(match action.action_type {
+                    ActionType::WritableStateLower => val < action.num,
+                    ActionType::WritableStateMore => val > action.num,
+                    _ => val == action.num,
+                })
+            } else if action.label.eq_ignore_ascii_case("agr") {
+                let val = i32::from(settings.aggression);
+                Some(match action.action_type {
+                    ActionType::WritableStateLower => val < action.num,
+                    ActionType::WritableStateMore => val > action.num,
+                    _ => val == action.num,
+                })
+            } else if action.label.eq_ignore_ascii_case("hnd") {
+                let val = i32::from(prog.hand_mode_active);
+                Some(match action.action_type {
+                    ActionType::WritableStateLower => val < action.num,
+                    ActionType::WritableStateMore => val > action.num,
+                    _ => val == action.num,
                 })
             } else {
                 Some(false)
@@ -2350,7 +2390,7 @@ mod tests {
 
     #[test]
     fn parse_text_format_maps_basic_programmator_actions() {
-        let (functions, order) = ProgrammatorState::parse_text("$zgh^W").unwrap();
+        let (functions, order) = ProgrammatorState::parse_text("$zghAGR+AGR-^W").unwrap();
         assert_eq!(order, vec![String::new()]);
         let actions: Vec<ActionType> = functions[""]
             .actions
@@ -2364,6 +2404,8 @@ mod tests {
                 ActionType::Dig,
                 ActionType::Geology,
                 ActionType::Heal,
+                ActionType::EnableAgression,
+                ActionType::DisableAgression,
                 ActionType::MoveUp
             ]
         );

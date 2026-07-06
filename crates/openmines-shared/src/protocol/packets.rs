@@ -106,6 +106,18 @@ pub fn auto_digg(enabled: bool) -> (&'static str, Vec<u8>) {
     )
 }
 
+/// Encode an aggression packet (BA): "0" or "1".
+pub fn aggression(enabled: bool) -> (&'static str, Vec<u8>) {
+    (
+        "BA",
+        if enabled {
+            b"1".to_vec()
+        } else {
+            b"0".to_vec()
+        },
+    )
+}
+
 /// Encode a Geo packet (GE): имя региона (строка), НЕ координаты.
 /// Ref: `pSenders.cs:28` — `World.GetProp(p.geo.Peek()).name`
 /// Клиент отображает payload как текст: `GUIManager.THIS.GeoTF.text = " " + msg + " "`

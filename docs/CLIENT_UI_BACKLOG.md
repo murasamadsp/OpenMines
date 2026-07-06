@@ -261,7 +261,7 @@ client-only fix или product decision.
 - Статус: закрыто по dispatch-контракту. `GDon` уже реализован как ежедневный
   бонус; `Help` возвращает явный `OK`, пока серверная справка не подключена;
   `Miso` шлёт `MM` с пустым text и скрывает mission panel штатным клиентским
-  путём; `THID`, `Miss`, `Rndm`, `TAGR`, `TAUR` заведены как известные no-op с
+  путём; `THID`, `Miss`, `Rndm`, `TAUR` заведены как известные no-op с
   debug-логом.
 
 ### UI-012. Help/Wiki/Donation завязаны на устаревшие URL/продуктовые решения

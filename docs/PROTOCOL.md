@@ -127,7 +127,7 @@
 | `OK`  | Модальное сообщение   | `"title#message"`                            | `OKPacket`                 |
 | `IN`  | Инвентарь             | `"show:total:selected:k#v#..."` / `"close:"` | `InventoryPacket`          |
 | `BC`  | Плохие ячейки         | данные                                       | `BadCellsPacket`           |
-| `BA`  | Агрессия              | данные                                       | `AgressionPacket`          |
+| `BA`  | Агрессия              | `"0"` / `"1"`                                | `AgressionPacket`          |
 | `BD`  | Авто-копание          | `"0"` / `"1"`                                | `AutoDiggPacket`           |
 | `SP`  | Панель состояния      | данные                                       | `StatePanelPacket`         |
 | `GE`  | Геолокация            | **строка** (имя региона, НЕ координаты!)     | `GeoPacket`                |

@@ -16,12 +16,13 @@ pub use crate::game::skills::{SkillType, get_player_skill_effect};
 pub use crate::game::{GameState, PlayerId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
-    AuAuthType, AuClientPacket, LoclClient, PongClient, TyPacket, XbldClient, auto_digg, basket,
-    bot_info, chat_color, chat_current, chat_list, chat_messages, chat_notification, clan_hide,
-    clan_show, config_packet, decode_gui_button, decode_whoi, decode_xdig, decode_xmov, geo,
-    gu_close, hb_bot, hb_bot_del, hb_bundle, hb_cell, hb_chat, hb_directed_fx, hb_fx, hb_map,
-    hb_packs, health, inventory_choose, inventory_close, inventory_full, level, money, ok_message,
-    programmator_status, settings_default_wire, skills_packet, speed, tp, world_info,
+    AuAuthType, AuClientPacket, LoclClient, PongClient, TyPacket, XbldClient, aggression,
+    auto_digg, basket, bot_info, chat_color, chat_current, chat_list, chat_messages,
+    chat_notification, clan_hide, clan_show, config_packet, decode_gui_button, decode_whoi,
+    decode_xdig, decode_xmov, geo, gu_close, hb_bot, hb_bot_del, hb_bundle, hb_cell, hb_chat,
+    hb_directed_fx, hb_fx, hb_map, hb_packs, health, inventory_choose, inventory_close,
+    inventory_full, level, money, ok_message, programmator_status, settings_default_wire,
+    skills_packet, speed, tp, world_info,
 };
 pub use crate::world::cells::{cell_type, is_crystal};
 pub use crate::world::{World, WorldProvider};

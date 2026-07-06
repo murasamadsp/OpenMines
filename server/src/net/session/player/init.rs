@@ -211,6 +211,7 @@ pub fn connect_in_tick(
             },
             PlayerSettings {
                 auto_dig: player.auto_dig,
+                aggression: player.aggression,
                 ..PlayerSettings::default()
             },
             PlayerFlags { dirty: false },
@@ -368,6 +369,7 @@ fn send_initial_sync(
 
         // 1. SendAutoDigg
         send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
+        send_u_packet(tx, "BA", &aggression(player.aggression).1);
         // 2. SendGeo (`pSenders.cs` — `World.GetProp(geo.Peek()).name` или "")
         let geo_label = ecs
             .get::<PlayerGeoStack>(entity)
@@ -554,6 +556,7 @@ mod tests {
             creds: 0,
             skin: 0,
             auto_dig: false,
+            aggression: false,
             crystals: [0; 6],
             clan_id: None,
             resp_x: None,
@@ -640,6 +643,7 @@ mod tests {
             creds: 0,
             skin: 0,
             auto_dig: false,
+            aggression: false,
             crystals: [0; 6],
             clan_id: None,
             resp_x: None,
@@ -727,6 +731,7 @@ mod tests {
             creds: 0,
             skin: 0,
             auto_dig: false,
+            aggression: false,
             crystals: [0; 6],
             clan_id: None,
             resp_x: Some(10), // Respawn position
