@@ -804,18 +804,26 @@ fn parse_i32_text(data: &[u8]) -> Option<i32> {
     std::str::from_utf8(data).ok()?.trim().parse().ok()
 }
 
-/// Decode GUI_ button press (inside TY `sub_payload`): JSON `{"b":"button_name"}`
-/// Референс `GUI_Packet.Decode`: `JSON.Parse(UTF8.GetString(data))["b"]`
+/// Decode GUI_ button press (inside TY `sub_payload`).
+///
+/// C# reference `GUI_Packet.Decode` reads JSON `{"b":"button_name"}`.
+/// The current Unity HORB path can also send the button action as raw UTF-8
+/// text, so both shapes are part of the observed client wire contract.
 pub fn decode_gui_button(data: &[u8]) -> Option<Cow<'_, str>> {
-    let s = std::str::from_utf8(data).ok()?;
-    if s.trim().is_empty() {
-        None
-    } else {
-        let v = serde_json::from_str::<serde_json::Value>(s).ok()?;
-        v.get("b")
-            .and_then(|b| b.as_str())
-            .map(|b| Cow::Owned(b.to_string()))
+    let s = std::str::from_utf8(data).ok()?.trim();
+    if s.is_empty() {
+        return None;
     }
+
+    if s.starts_with('{') {
+        let v = serde_json::from_str::<serde_json::Value>(s).ok()?;
+        return v
+            .get("b")
+            .and_then(|b| b.as_str())
+            .map(|b| Cow::Owned(b.to_string()));
+    }
+
+    Some(Cow::Borrowed(s))
 }
 
 /// Decode local chat (inside TY `sub_payload`): the whole payload is UTF-8 text.

@@ -685,8 +685,15 @@ fn gui_button_rejects_blank() {
 }
 
 #[test]
-fn gui_button_rejects_non_json_payload() {
-    assert_eq!(decode_gui_button(b"exit"), None);
+fn gui_button_parses_raw_horb_action() {
+    assert_eq!(
+        decode_gui_button(b"exit"),
+        Some(std::borrow::Cow::Borrowed("exit"))
+    );
+    assert_eq!(
+        decode_gui_button(b"nick:Player"),
+        Some(std::borrow::Cow::Borrowed("nick:Player"))
+    );
 }
 
 #[test]
