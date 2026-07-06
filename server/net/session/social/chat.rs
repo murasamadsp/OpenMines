@@ -62,6 +62,22 @@ pub async fn handle_local_chat(
     pid: PlayerId,
     msg: &str,
 ) {
+    let Some(window_open) = state.query_player_opt(pid, |ecs, entity| {
+        let Some(ui) = ecs.get::<crate::game::player::PlayerUI>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for local chat");
+            return None;
+        };
+        Some(ui.current_window.is_some())
+    }) else {
+        send_chat_state_error(tx);
+        return;
+    };
+    if window_open {
+        return;
+    }
+    if msg == "console" || (msg.starts_with('>') && msg.len() > 1) {
+        return;
+    }
     handle_chat_text(state, tx, pid, msg).await;
 }
 
@@ -118,24 +134,19 @@ fn broadcast_player_chat(
             tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for local chat");
             return None;
         };
-        let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity) else {
-            tracing::error!(player_id = %pid, component = "PlayerMetadata", "Player component missing for local chat");
-            return None;
-        };
-        Some((pos.x, pos.y, meta.name.clone()))
+        Some((pos.x, pos.y))
     });
 
-    let Some((px, py, name)) = data else {
+    let Some((px, py)) = data else {
         send_chat_state_error(tx);
         return;
     };
 
-    let text = format!("{name}: {msg}");
     let chat_sub = hb_chat(
         net_u16_nonneg(pid),
         net_u16_nonneg(px),
         net_u16_nonneg(py),
-        &text,
+        msg,
     );
     state.broadcast_hb_at(px, py, &[chat_sub], None);
 }
@@ -544,7 +555,9 @@ mod tests {
         let database = crate::db::Database::open(&db_path).await.unwrap();
         let player = database.create_player("chat-user", "p", "h").await.unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -579,6 +592,12 @@ mod tests {
             events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
         }
         events
+    }
+
+    fn single_hb_chat_text(payload: &[u8]) -> &str {
+        assert_eq!(payload[0], b'C');
+        let len = u16::from_le_bytes([payload[7], payload[8]]) as usize;
+        std::str::from_utf8(&payload[9..9 + len]).unwrap()
     }
 
     #[test]
@@ -637,6 +656,64 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние чата недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn local_chat_hb_bubble_uses_raw_message_not_name_prefix() {
+        let test = make_test_state("local_chat_raw_bubble").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        handle_local_chat(&test.state, &tx, PlayerId(test.player.id), "5:hi").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "HB");
+        assert_eq!(single_hb_chat_text(&events[0].1), "5:hi");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn local_chat_with_open_window_sends_no_hb_bubble() {
+        let test = make_test_state("local_chat_open_window").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .unwrap()
+                .current_window = Some("pack:1:1".to_string());
+        }
+
+        handle_local_chat(&test.state, &tx, pid, "hello").await;
+
+        let events = drain_events(&mut rx);
+        assert!(events.is_empty());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn local_chat_console_payloads_send_no_hb_bubble() {
+        let test = make_test_state("local_chat_console_payloads").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        handle_local_chat(&test.state, &tx, pid, "console").await;
+        handle_local_chat(&test.state, &tx, pid, ">status").await;
+
+        let events = drain_events(&mut rx);
+        assert!(events.is_empty());
 
         test.cleanup();
     }

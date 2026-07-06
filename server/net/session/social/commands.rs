@@ -797,7 +797,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("commands_world_{label}_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {

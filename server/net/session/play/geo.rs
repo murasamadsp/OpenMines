@@ -17,7 +17,12 @@ fn send_geo_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
 }
 
 /// `Session.GeoHandler` → `TryAct(player.Geo, 200)` → `PEntity.Geo` + `SendGeo` (`pSenders.cs`).
-pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+pub fn handle_geo(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    programmatic: bool,
+) {
     let result = state
         .modify_player(pid, |ecs, entity| {
             let Some(program_state) = ecs.get::<ProgrammatorState>(entity) else {
@@ -25,7 +30,7 @@ pub fn handle_geo(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, p
                 send_geo_state_error(tx);
                 return None;
             };
-            if program_state.running {
+            if !programmatic && !program_state.is_manual_control_allowed() {
                 return None;
             }
             {
@@ -180,7 +185,9 @@ mod tests {
         let database = crate::db::Database::open(&db_path).await.unwrap();
         let player = database.create_player("geo-user", "p", "h").await.unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -231,7 +238,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<ProgrammatorState>();
         }
 
-        handle_geo(&test.state, &tx, pid);
+        handle_geo(&test.state, &tx, pid, false);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -249,7 +256,7 @@ mod tests {
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        handle_geo(&test.state, &tx, PlayerId(test.player.id));
+        handle_geo(&test.state, &tx, PlayerId(test.player.id), false);
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());

@@ -295,6 +295,19 @@ impl ProgrammatorState {
         }
     }
 
+    /// Проверяет, разрешено ли ручное управление.
+    /// Если программатор не запущен, ручной ход всегда разрешен.
+    /// Если программатор запущен, ручной ход разрешен только при активном `hand_mode`.
+    #[inline]
+    #[must_use]
+    pub const fn is_manual_control_allowed(&self) -> bool {
+        if self.running {
+            self.hand_mode_active
+        } else {
+            true
+        }
+    }
+
     /// Parse PROG payload from client: [4B len i32 LE][4B id i32 LE][...][UTF-8 source]
     /// Returns (id, source) or None on failure.
     pub fn decode_prog_packet(payload: &[u8]) -> Option<(i32, String)> {
@@ -1329,7 +1342,7 @@ fn execute_action(
                 let cy = pos.y + dy;
                 if crate::world::cells::is_crystal(world.get_cell(cx, cy)) {
                     if pos.dir == check_dir {
-                        *delay_ms = 200;
+                        *delay_ms = 200; //TODO: почему 200? хардкод? что за число 200????? бляяя
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
                             tx: conn.tx.clone(),
@@ -1643,7 +1656,7 @@ fn push_move(
 /// её не нужно. Клетка ворот (тип 30) пустая → штрафа нет (как и C# `return false`).
 fn move_block_penalty(world: &crate::world::World, tx: i32, ty: i32) -> u64 {
     if world.valid_coord(tx, ty) && !world.is_empty(tx, ty) {
-        200
+        200 //TODO: что за 200?
     } else {
         0
     }
@@ -1659,12 +1672,12 @@ fn speed_pause(skills: &PlayerSkillsComp, on_road: bool) -> u64 {
     let pause_units = (move_effect * 100.0) as u64;
     // off-road: pause*5*1.4 = pause*7; on-road (×0.80): pause*5.6 = pause*56/10000.
     let server_pause_ms = if on_road {
-        pause_units * 56 / 10000
+        pause_units * 56 / 10000 //TODO: что за числа? лол
     } else {
         pause_units * 7 / 1000
     };
     // Minimum 20ms to prevent infinite loops / CPU stall (намеренная девиация: C# без пола)
-    server_pause_ms.max(20)
+    server_pause_ms.max(20) //TODO: почему именно 20 мс? у нас +есть своя система задержок schedule
 }
 
 #[cfg(test)]

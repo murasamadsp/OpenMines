@@ -439,7 +439,9 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         let database = crate::db::Database::open(&db_path).await.unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
 
         let world_name = format!("test_world_spawn_{}", std::process::id());
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
@@ -520,7 +522,9 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         let database = crate::db::Database::open(&db_path).await.unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
 
         let world_name = format!("test_world_respawn_{}", std::process::id());
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();

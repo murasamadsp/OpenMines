@@ -70,6 +70,9 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 println!(
                     "  save                                         Save all players and flush world"
                 );
+                println!(
+                    "  schedule <name> <ms>                         Set ECS schedule interval (0 disables)"
+                );
             }
             "stop" | "shutdown" => {
                 tracing::info!(target: "console", "Graceful shutdown triggered from console.");
@@ -458,6 +461,31 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                         tracing::error!(target: "console", error = %e, "Error flushing world during manual save");
                         println!("Error flushing world: {e}");
                     }
+                }
+            }
+            "schedule" => {
+                let [name, interval_ms] = args else {
+                    println!("Usage: schedule <name> <ms>");
+                    continue;
+                };
+                let Ok(interval_ms) = interval_ms.parse::<u64>() else {
+                    println!("Invalid interval '{interval_ms}'. Use milliseconds.");
+                    continue;
+                };
+                if state.set_schedule_interval(name, interval_ms) {
+                    tracing::info!(
+                        target: "console",
+                        schedule = %name,
+                        interval_ms,
+                        "Updated ECS schedule interval"
+                    );
+                    if interval_ms == 0 {
+                        println!("Schedule '{name}' disabled.");
+                    } else {
+                        println!("Schedule '{name}' interval set to {interval_ms} ms.");
+                    }
+                } else {
+                    println!("Unknown schedule '{name}'.");
                 }
             }
             unknown => {

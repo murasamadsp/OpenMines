@@ -180,7 +180,7 @@ mod physics_repro {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-        let cd = CellDefs::load("configs/cells.json").unwrap();
+        let cd = CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
         let n_defs = cd.cells.len();
         let world = Arc::new(World::new("phys", 4, 4, cd, &dir).unwrap());
 
@@ -289,7 +289,7 @@ mod physics_repro {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-        let cd = CellDefs::load("configs/cells.json").unwrap();
+        let cd = CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
         let world = Arc::new(World::new("phys_road", 4, 4, cd, &dir).unwrap());
 
         let x = 64;
@@ -359,7 +359,7 @@ mod physics_repro {
                 let _ = std::fs::remove_file(e.path());
             }
         }
-        let cd = CellDefs::load("configs/cells.json").unwrap();
+        let cd = CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
         let world = Arc::new(World::new("phys_gold", 4, 4, cd, &dir).unwrap());
         let x = 64;
         for y in 50..=61 {

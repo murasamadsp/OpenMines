@@ -47,12 +47,12 @@ pub async fn dispatch_ty_packet(
         }
         "Xdig" => {
             if let Some(dir) = decode_xdig(&packet.sub_payload) {
-                handle_dig(state, tx, pid, dir);
+                handle_dig(state, tx, pid, dir, false);
             }
         }
         "Xbld" => {
             if let Some(bld) = XbldClient::decode(&packet.sub_payload) {
-                handle_build(state, tx, pid, &bld);
+                handle_build(state, tx, pid, &bld, false);
             }
         }
         "GUI_" => {
@@ -66,10 +66,10 @@ pub async fn dispatch_ty_packet(
             }
         }
         "Xgeo" => {
-            handle_geo(state, tx, pid);
+            handle_geo(state, tx, pid, false);
         }
         "Xhea" => {
-            handle_heal(state, tx, pid);
+            handle_heal(state, tx, pid, false);
         }
         "INVN" => {
             handle_invn_toggle(state, tx, pid);

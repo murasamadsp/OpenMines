@@ -67,6 +67,7 @@ pub fn handle_dig(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     dir: i32,
+    programmatic: bool,
 ) {
     let player_data = state
         .modify_player(pid, |ecs, entity| {
@@ -85,11 +86,17 @@ pub fn handle_dig(
             let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity) else {
                 return Some(DigPlayerRead::MissingState("PlayerStats"));
             };
+            let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
+                return Some(DigPlayerRead::MissingState("ProgrammatorState"));
+            };
             if ecs
                 .get::<crate::game::player::PlayerFlags>(entity)
                 .is_none()
             {
                 return Some(DigPlayerRead::MissingState("PlayerFlags"));
+            }
+            if !programmatic && !prog.is_manual_control_allowed() {
+                return Some(DigPlayerRead::Blocked);
             }
             // 1:1 ref `Session.cs:230` `DigHandler => TryAct(..., 200)`;
             // дефолт 200ms, тюнится `gameplay.cooldowns.dig_ms`.
@@ -536,6 +543,7 @@ pub fn handle_build(
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     bld: &XbldClient<'_>,
+    programmatic: bool,
 ) {
     // Fix 11: Extract player data including clan_id, skills, and build cooldown check.
     let build_data = state
@@ -555,7 +563,13 @@ pub fn handle_build(
             let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity) else {
                 return Some(BuildPlayerRead::MissingState("PlayerStats"));
             };
+            let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
+                return Some(BuildPlayerRead::MissingState("ProgrammatorState"));
+            };
             if ui.current_window.is_some() {
+                return Some(BuildPlayerRead::Blocked);
+            }
+            if !programmatic && !prog.is_manual_control_allowed() {
                 return Some(BuildPlayerRead::Blocked);
             }
             // 1:1 ref `Session.cs:233` `BuildHandler => TryAct(..., 200)`;
@@ -871,7 +885,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -1013,7 +1029,7 @@ mod tests {
                 .remove::<crate::game::player::PlayerSkillsComp>();
         }
 
-        handle_dig(&test.state, &tx, pid, 0);
+        handle_dig(&test.state, &tx, pid, 0, false);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -1051,7 +1067,7 @@ mod tests {
         test.state.world.set_cell(10, 11, cell_type::ROCK);
         test.state.world.set_durability(10, 11, 0.0);
 
-        handle_dig(&test.state, &tx, pid, 0);
+        handle_dig(&test.state, &tx, pid, 0, false);
 
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::ROCK);
         let events = drain_events(&mut rx);
@@ -1090,7 +1106,7 @@ mod tests {
         test.state.world.set_cell(10, 11, cell_type::GREEN);
         test.state.world.set_durability(10, 11, 100.0);
 
-        handle_dig(&test.state, &tx, pid, 0);
+        handle_dig(&test.state, &tx, pid, 0, false);
 
         assert_eq!(player_crystal(&test.state, pid, 0), 0);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::GREEN);
@@ -1132,7 +1148,7 @@ mod tests {
         test.state.world.set_cell(10, 11, cell_type::BOX);
         test.state.box_put(10, 11, [3, 2, 1, 0, 0, 0]);
 
-        handle_dig(&test.state, &tx, pid, 0);
+        handle_dig(&test.state, &tx, pid, 0, false);
 
         assert_eq!(player_crystal(&test.state, pid, 0), 0);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::BOX);
@@ -1187,7 +1203,7 @@ mod tests {
             direction: 0,
             block_type: "G",
         };
-        handle_build(&test.state, &tx, pid, &bld);
+        handle_build(&test.state, &tx, pid, &bld, false);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -1233,7 +1249,7 @@ mod tests {
             direction: 0,
             block_type: "G",
         };
-        handle_build(&test.state, &tx, pid, &bld);
+        handle_build(&test.state, &tx, pid, &bld, false);
 
         assert_eq!(player_crystal(&test.state, pid, 4), 10);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::GREEN_BLOCK);
@@ -1282,7 +1298,7 @@ mod tests {
             direction: 0,
             block_type: "G",
         };
-        handle_build(&test.state, &tx, pid, &bld);
+        handle_build(&test.state, &tx, pid, &bld, false);
 
         assert_eq!(player_crystal(&test.state, pid, 2), 10);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::YELLOW_BLOCK);
@@ -1307,7 +1323,7 @@ mod tests {
             direction: 0,
             block_type: "G",
         };
-        handle_build(&test.state, &tx, PlayerId(test.player.id), &bld);
+        handle_build(&test.state, &tx, PlayerId(test.player.id), &bld, false);
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());

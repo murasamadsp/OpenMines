@@ -1,4 +1,4 @@
-# Паритет генерации мира: побайтовая сверка с C#
+# Паритет генерации мира: побайтовая сверка с C #
 
 Дата: 2026-06-23.
 
@@ -21,7 +21,7 @@ libm», а конкретным багом — int-overflow в `simplex_noise` (
 C# использует три источника случайности:
 
 | Источник | Конструктор | Засев в харнессе |
-|----------|-------------|------------------|
+| - | - | - |
 | `Sectors.r` (скелет) | сид-перегрузка `Sectors(int seed,(w,h))` | `seed` напрямую |
 | `SectorFiller.rand` (заливка) | `new Random()` без сида (стр. 13) | инжект общего Random |
 | `Sector.r` (`GenerateInsides`) | `static new Random()` без сида (стр. 9) | тот же общий Random |
@@ -41,12 +41,13 @@ C# использует три источника случайности:
 mkdir -p /tmp/genparity/src && cd /tmp/genparity
 dotnet new console
 # дословные исходники:
-cp server/world/anl_reference/*.cs            src/   # шум TinkerWorX (9 файлов)
+cp crates/openmines-shared/src/world/anl_reference/*.cs            src/   # шум TinkerWorX (9 файлов)
 cp server_reference/.../Generator/SectorCell.cs src/
 cp server_reference/.../Generator/Sectors.cs    src/
 ```
 
 Правки в копиях харнесса (только чтобы скомпилировать скелет без боевых зависимостей):
+
 - `Sectors.cs`: `RcherNZ.AccidentalNoise` → `TinkerWorX.AccidentalNoiseLibrary`;
   тело `DetectAndFillSectors()` выпотрошено (недетерминированная заливка, не тестируется).
 - `ImplicitModuleBase.cs`: удалён implicit-оператор `ImplicitConstant` (тип не входит

@@ -45,7 +45,7 @@ See [workflow/taste.md](workflow/taste.md)
 - Server code is too low-level — aggressively add dependencies (crates) to simplify: strum for enums, clap for CLI, dotnet-rng for RNG. User explicitly asked for "прям много зависимостей". Confidence: 0.80
 - Wire protocol is immutable — never change packet names, payload formats, or byte-parsing semantics. Confidence: 0.95
 - For intentional deviations from C# reference, mark in code with "НАМЕРЕННАЯ ДЕВИАЦИЯ от C# по ПРЯМОМУ ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ" comment. Confidence: 0.70
-- Truth hierarchy for porting: Client behavior > C# reference > Rust server. Always check client first. Confidence: 0.85
+- Truth hierarchy for porting: js_reference (original) > Client behavior > C# reference > Rust server. When js_reference contradicts C#, js_reference wins. Confidence: 0.85
 
 # code-style
 - Use `query_player_opt` helper to eliminate `.flatten()` boilerplate on `query_player` calls that return `Option<Option<T>>`. Confidence: 0.70
@@ -65,6 +65,10 @@ See [workflow/taste.md](workflow/taste.md)
 # reference-porting
 - Full 1:1 C#→Rust parity including filenames, struct names, constants — not just logic. If C# has file X.cs, Rust should have X.rs. Filename deviations cause strong user frustration ("почему ты это игнорируешь?"). Confidence: 0.95
 - When a feature/mechanic does NOT exist in C# reference, document it separately in a protocol-gaps/doc file rather than silently inventing behavior. Confidence: 0.75
+- js_reference (JavaScript original) is an additional authoritative source alongside C# — when C# and js_reference differ, js_reference is the эталон (ground truth). Confidence: 0.70
+
+# validation
+- Add fail-fast validation on config/data load: check invariants (non-empty, non-negative, range bounds, no duplicates) with descriptive error messages naming the offending key and value. Confidence: 0.70
 
 # verification
 - Independently verify completed work — don't assume it functions correctly. User reports many "done" features are actually broken (e.g., FED chat). Verify empirically before declaring completion. User gets frustrated when told to verify things himself ("всам проверяй. заебал"). Confidence: 0.80

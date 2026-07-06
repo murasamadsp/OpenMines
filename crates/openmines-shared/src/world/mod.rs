@@ -521,7 +521,15 @@ mod tests {
     #[test]
     fn test_world_cell_facade() {
         let temp_dir = std::env::temp_dir();
-        let cell_defs = CellDefs::load("cells.json").unwrap_or_else(|_| CellDefs { cells: vec![] });
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
         let world = World::new("test_world_facade", 1, 1, cell_defs, &temp_dir).unwrap();
 
         let cell = WorldCell {

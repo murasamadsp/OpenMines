@@ -1432,7 +1432,9 @@ mod tests {
         let mut player = database.create_player("up-user", "p", "h").await.unwrap();
         player.creds = 1001;
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("up_building_world_{nonce}");
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {

@@ -10,11 +10,12 @@ on:
     branches: [main]
     paths:
       - "server/**"
+      - "crates/**"
+      - "tools/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "configs/**"
       - "ops/**"
-      - "migrations/**"
       - ".github/workflows/ci.yml"
   pull_request:
     branches: [main]

@@ -859,7 +859,9 @@ mod tests {
     }
 
     async fn make_building_test_state(label: &str) -> BuildingTestState {
-        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
         let dir = std::env::temp_dir();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -878,7 +880,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("buildings_world_{label}_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {

@@ -754,7 +754,15 @@ mod tests {
             // Гарантируем is_new (чистим leftover) → World::new авто-генерирует seed=42.
             let _ = std::fs::remove_file(dir.join(format!("{name}_v2.map")));
             let _ = std::fs::remove_file(dir.join(format!("{name}_durability.mapb")));
-            let cd = CellDefs::load("configs/cells.json").unwrap();
+            let cd = CellDefs::load(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("shared crate must live inside crates/")
+                    .parent()
+                    .expect("crates/ must live inside workspace root")
+                    .join("configs/cells.json"),
+            )
+            .unwrap();
             World::new(&name, CW, CH, cd, &dir).unwrap()
         };
         let a = mk("a");

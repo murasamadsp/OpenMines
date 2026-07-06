@@ -1,13 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
-  "language": "Русский",
-  "model": "sonnet",
-  "effortLevel": "high",
-  "alwaysThinkingEnabled": true,
   "respectGitignore": true,
-  "showTurnDuration": true,
-  "viewMode": "default",
-  "tui": "default",
+  "cleanupPeriodDays": 30,
+  "env": {
+    "BASH_DEFAULT_TIMEOUT_MS": "300000",
+    "BASH_MAX_OUTPUT_LENGTH": "100000",
+    "CLAUDE_AUTO_BACKGROUND_TASKS": "1"
+  },
   "permissions": {
     "allow": [
       "Read",
@@ -20,22 +19,7 @@
     "deny": [],
     "defaultMode": "bypassPermissions"
   },
-  "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "code-simplifier@claude-plugins-official": true,
-    "ralph-loop@claude-plugins-official": true,
-    "security-guidance@claude-plugins-official": true,
-    "claude-code-setup@claude-plugins-official": true,
-    "greptile@claude-plugins-official": true,
-    "rust-analyzer-lsp@claude-plugins-official": true,
-    "csharp-lsp@claude-plugins-official": true,
-    "remember@claude-plugins-official": true,
-    "semgrep@claude-plugins-official": true
-  },
-  "outputStyle": "default",
-  "autoMemoryEnabled": true,
-  "cleanupPeriodDays": 30,
-  "autoUpdatesChannel": "latest",
+  "model": "sonnet",
   "hooks": {
     "Stop": [
       {
@@ -59,9 +43,26 @@
       }
     ]
   },
-  "env": {
-    "BASH_DEFAULT_TIMEOUT_MS": "300000",
-    "BASH_MAX_OUTPUT_LENGTH": "100000",
-    "CLAUDE_AUTO_BACKGROUND_TASKS": "1"
-  }
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "ralph-loop@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true,
+    "greptile@claude-plugins-official": true,
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "csharp-lsp@claude-plugins-official": true,
+    "remember@claude-plugins-official": true,
+    "semgrep@claude-plugins-official": true,
+    "data-engineering@claude-plugins-official": true
+  },
+  "outputStyle": "default",
+  "viewMode": "default",
+  "language": "Русский",
+  "alwaysThinkingEnabled": true,
+  "effortLevel": "high",
+  "autoUpdatesChannel": "latest",
+  "tui": "default",
+  "autoMemoryEnabled": true,
+  "showTurnDuration": true
 }

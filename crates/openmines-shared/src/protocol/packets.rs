@@ -818,9 +818,9 @@ pub fn decode_gui_button(data: &[u8]) -> Option<Cow<'_, str>> {
     }
 }
 
-/// Decode local chat (inside TY `sub_payload`): legacy `length:message` or plain UTF-8 text
+/// Decode local chat (inside TY `sub_payload`): the whole payload is UTF-8 text.
 pub struct LoclClient<'a> {
-    // TODO: length field is decoded from legacy wire format, will be used for validation
+    // Kept as byte length for call sites that expect the decoded packet shape.
     #[allow(dead_code)]
     pub length: i32,
     pub message: &'a str,

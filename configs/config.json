@@ -9,6 +9,9 @@
     "format": "pretty",
     "file": null
   },
+  "cron": {
+    "hourly_log_enabled": true
+  },
   "gameplay": {
     "cooldowns": {
       "dig_ms": 200,

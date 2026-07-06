@@ -5,24 +5,29 @@ FROM rust:1.94-bookworm AS builder
 WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
+COPY crates/openmines-shared/Cargo.toml ./crates/openmines-shared/Cargo.toml
+COPY server/Cargo.toml ./server/Cargo.toml
+COPY tools/loadtest/Cargo.toml ./tools/loadtest/Cargo.toml
+COPY tools/proxy/Cargo.toml ./tools/proxy/Cargo.toml
 
-# Предварительная сборка зависимостей (deps layer). Стабим ВСЕ bin-таргеты,
-# иначе Cargo падает на резолве путей.
-RUN mkdir -p server/bin && echo "fn main() {}" > server/main.rs && \
-    echo "fn main() {}" > server/bin/loadtest.rs && \
-    echo "fn main() {}" > server/bin/proxy.rs && \
+# Предварительная сборка зависимостей (deps layer). Workspace members должны
+# существовать, иначе Cargo падает на резолве путей.
+RUN mkdir -p crates/openmines-shared/src server tools/loadtest/src tools/proxy/src && \
+    echo "" > crates/openmines-shared/src/lib.rs && \
+    echo "fn main() {}" > server/main.rs && \
+    echo "fn main() {}" > tools/loadtest/src/main.rs && \
+    echo "fn main() {}" > tools/proxy/src/main.rs && \
     cargo build --release --bin openmines-server --bin openmines-proxy && \
-    rm -rf server
+    rm -rf crates server tools
 
+COPY crates ./crates
 COPY server ./server
+COPY tools ./tools
 COPY configs ./configs
-# Каталог миграций нужен на этапе компиляции: `sqlx::migrate!("./migrations")`
-# (db/mod.rs) — compile-time макрос, встраивает миграции в бинарь. Без копии
-# сборка падает: "error canonicalizing migration directory /app/./migrations".
-COPY migrations ./migrations
+# Миграции встроены compile-time макросом из crates/openmines-shared/migrations.
 
 # Сборка проекта (touch для инвалидации fingerprints после заглушки).
-RUN find server -name '*.rs' -exec touch {} + && \
+RUN find crates server tools -name '*.rs' -exec touch {} + && \
     cargo build --release --bin openmines-server --bin openmines-proxy && \
     cp target/release/openmines-server /usr/local/bin/openmines-server && \
     cp target/release/openmines-proxy /usr/local/bin/openmines-proxy

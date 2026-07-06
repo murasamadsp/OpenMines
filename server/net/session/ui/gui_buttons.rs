@@ -3178,7 +3178,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("craft_start_world_{nonce}");
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -3191,7 +3193,9 @@ mod tests {
             cron: crate::config::CronConfig::default(),
             gameplay: crate::config::GameplayConfig::default(),
         };
-        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
             .await
             .unwrap();
@@ -3232,7 +3236,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("market_world_{nonce}");
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -3245,7 +3251,9 @@ mod tests {
             cron: crate::config::CronConfig::default(),
             gameplay: crate::config::GameplayConfig::default(),
         };
-        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
             .await
             .unwrap();
@@ -3286,7 +3294,9 @@ mod tests {
             .await
             .unwrap();
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("storage_world_{nonce}");
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -3299,7 +3309,9 @@ mod tests {
             cron: crate::config::CronConfig::default(),
             gameplay: crate::config::GameplayConfig::default(),
         };
-        let _ = crate::game::buildings::load_buildings_config("configs/buildings.json");
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
             .await
             .unwrap();

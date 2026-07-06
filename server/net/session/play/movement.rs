@@ -63,7 +63,7 @@ pub fn handle_move(
     let result = state
         .modify_player(pid, |ecs, entity| {
             // 1. Immutable data gathering
-            let (px, py, skin, clan, window_open, prog_running, auto_dig) = {
+            let (px, py, skin, clan, window_open, manual_control_allowed, auto_dig) = {
                 let Some(pos) = ecs.get::<PlayerPosition>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for movement");
                     send_move_state_error(tx);
@@ -96,7 +96,7 @@ pub fn handle_move(
                     stats.skin,
                     stats.clan_id.unwrap_or(0),
                     ui.current_window.is_some(),
-                    prog.running,
+                    prog.is_manual_control_allowed(),
                     settings.auto_dig,
                 )
             };
@@ -110,7 +110,7 @@ pub fn handle_move(
             // CLAUDE.md методология «rate-limit делает клиент» + ae637b9).
             // C# `Move`: `(win != null && !prog)` → tp; `TryAct`:
             // ProgRunning → silent return.
-            if prog_running && !programmatic {
+            if !programmatic && !manual_control_allowed {
                 return None;
             }
             if window_open && !programmatic {
@@ -296,7 +296,7 @@ pub fn handle_move(
         Some(MoveOutcome::Autodig(dig_dir)) => {
             // C# `Player.cs:434`: Bz() после tp назад. handle_dig сам берёт лок —
             // вызываем ПОСЛЕ закрытия modify_player.
-            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dig_dir);
+            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dig_dir, programmatic);
             return;
         }
         None => return,
@@ -389,7 +389,9 @@ mod tests {
         player.x = 10;
         player.y = 10;
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {

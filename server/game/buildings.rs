@@ -38,8 +38,6 @@ static BUILDINGS_CONFIG: OnceLock<BuildingsConfig> = OnceLock::new();
 pub fn load_buildings_config(path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
     let path_ref = path.as_ref();
     let data = fs::read_to_string(path_ref)
-        .or_else(|_| fs::read_to_string(format!("../{}", path_ref.display())))
-        .or_else(|_| fs::read_to_string(format!("../../{}", path_ref.display())))
         .with_context(|| format!("read buildings config {}", path_ref.display()))?;
     let config: BuildingsConfig = serde_json::from_str(&data)
         .with_context(|| format!("parse buildings config {}", path_ref.display()))?;

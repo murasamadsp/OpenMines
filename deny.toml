@@ -1,9 +1,3 @@
-[advisories]
-# rsa тянется ТОЛЬКО как optional-dep sqlx-macros-core (нужен для sqlx::migrate!).
-# При фиче sqlite драйвер mysql/postgres не активируется — rsa в бинарь не линкуется
-# (cargo tree -e normal,build → 0). Lockfile-only, не эксплуатируется. Фикса у rsa нет.
-ignore = ["RUSTSEC-2023-0071"]
-
 [sources]
 allow-git = []
 

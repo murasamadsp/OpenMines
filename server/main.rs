@@ -860,4 +860,39 @@ mod benchmarks {
             "tick too slow: {per_tick:?} (N={BENCH_N})"
         );
     }
+
+    #[test]
+    fn test_dynamic_schedule_interval_change() {
+        let state = create_minimal_state();
+        let physics = state
+            .schedules
+            .iter()
+            .find(|s| s.name == "physics")
+            .expect("physics schedule must exist");
+
+        assert_eq!(
+            physics
+                .interval_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            100
+        );
+
+        assert!(state.set_schedule_interval("physics", 250));
+        assert_eq!(
+            physics
+                .interval_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            250
+        );
+
+        assert!(state.set_schedule_interval("physics", 0));
+        assert_eq!(
+            physics
+                .interval_ms
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+
+        assert!(!state.set_schedule_interval("missing", 100));
+    }
 }

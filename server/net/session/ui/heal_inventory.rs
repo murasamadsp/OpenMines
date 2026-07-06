@@ -27,9 +27,22 @@ fn send_heal_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-pub fn handle_heal(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+pub fn handle_heal(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    programmatic: bool,
+) {
     let result = state
         .modify_player(pid, |ecs, entity| {
+            let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
+                tracing::error!(player_id = %pid, component = "ProgrammatorState", "Player component missing for heal");
+                send_heal_state_error(tx);
+                return None;
+            };
+            if !programmatic && !prog.is_manual_control_allowed() {
+                return None;
+            }
             let (h, mh, cry2, hx, hy) = {
                 let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for heal");
@@ -207,19 +220,19 @@ pub async fn handle_inventory_use(
 
     let used = match sel {
         10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, sel),
-        0 => place_building_from_item(state, tx, pid, "T").await,
-        1 => place_building_from_item(state, tx, pid, "R").await,
-        2 => place_building_from_item(state, tx, pid, "U").await,
-        3 => place_building_from_item(state, tx, pid, "M").await,
+        0 => place_building_from_item(state, tx, pid, PackType::Teleport).await,
+        1 => place_building_from_item(state, tx, pid, PackType::Resp).await,
+        2 => place_building_from_item(state, tx, pid, PackType::Up).await,
+        3 => place_building_from_item(state, tx, pid, PackType::Market).await,
         // Предмет 4 = «пак кланс» (тип D, конфиг "Clans"). В C#-референсе был обрубок
         // `4 => (p) => true` (потреблялся, ничего не делал → «списывается но не ставится»).
         // Оригинал ставил здесь пак кланс. Восстановлено по поведению (клиент предмет
         // локально не списывает → раз «списывается», сервер его потреблял в этой ветке).
-        4 => place_building_from_item(state, tx, pid, "D").await,
-        24 => place_building_from_item(state, tx, pid, "F").await,
-        26 => place_building_from_item(state, tx, pid, "G").await,
+        4 => place_building_from_item(state, tx, pid, PackType::Clans).await,
+        24 => place_building_from_item(state, tx, pid, PackType::Craft).await,
+        26 => place_building_from_item(state, tx, pid, PackType::Gun).await,
         27 => use_gate_item(state, tx, pid).await,
-        29 => place_building_from_item(state, tx, pid, "L").await,
+        29 => place_building_from_item(state, tx, pid, PackType::Storage).await,
         5 => use_boom(state, pid),
         6 => use_protector(state, pid),
         7 => use_razryadka(state, pid),
@@ -432,23 +445,31 @@ async fn use_gate_item(
         return false; // C# p.clan != null
     }
     let (dx, dy) = dir_offset(pdir);
-    let (bx, by) = (px + dx * 3, py + dy * 3);
+    let (bx, by) = (px + dx, py + dy);
     let (access, anygun) = state.access_gun_full(bx, by, cid);
     if !access || !anygun {
         return false;
     }
-    place_building_from_item(state, tx, pid, "N").await
+    place_building_from_item_with(state, tx, pid, PackType::Gate, 1, Some(cid)).await
 }
 
 pub async fn place_building_from_item(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
-    code: &str,
+    pack_type: PackType,
 ) -> bool {
-    let Some(pack_type) = PackType::from_str(code) else {
-        return false;
-    };
+    place_building_from_item_with(state, tx, pid, pack_type, 2, None).await
+}
+
+async fn place_building_from_item_with(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    pack_type: PackType,
+    offset_cells: i32,
+    clan_override: Option<i32>,
+) -> bool {
     let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         let s = ecs.get::<PlayerStats>(entity)?;
@@ -463,14 +484,14 @@ pub async fn place_building_from_item(
     if pack_type == PackType::Gun && player_clan == 0 {
         return false;
     }
-    // Клан здания: пушке — клан игрока (p.cid), остальным — 0 (1:1 C#).
-    let building_clan = if pack_type == PackType::Gun {
+    // Клан здания: пушке и Gate-item — клан игрока; прочим item-пакам — 0.
+    let building_clan = clan_override.unwrap_or(if pack_type == PackType::Gun {
         player_clan
     } else {
         0
-    };
+    });
     let (dx, dy) = dir_offset(pdir);
-    let (bx, by) = (px + dx * 3, py + dy * 3);
+    let (bx, by) = (px + dx * offset_cells, py + dy * offset_cells);
     if validate_building_area(state, bx, by, pack_type).is_err() {
         return false;
     }
@@ -481,6 +502,7 @@ pub async fn place_building_from_item(
             return false;
         }
     };
+    let code = building_db_code_for_item(pack_type);
     let id = state
         .db
         .insert_building(code, bx, by, pid.into(), building_clan, &extra)
@@ -545,6 +567,21 @@ pub async fn place_building_from_item(
         true
     } else {
         false
+    }
+}
+
+const fn building_db_code_for_item(pack_type: PackType) -> &'static str {
+    match pack_type {
+        PackType::Gate => "N",
+        PackType::Teleport => "T",
+        PackType::Resp => "R",
+        PackType::Gun => "G",
+        PackType::Market => "M",
+        PackType::Up => "U",
+        PackType::Storage => "L",
+        PackType::Craft => "F",
+        PackType::Clans => "D",
+        _ => pack_type.name(),
     }
 }
 
@@ -1125,8 +1162,13 @@ mod tests {
             .create_player("inventory-user", "p", "h")
             .await
             .unwrap();
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
 
-        let cell_defs = crate::world::cells::CellDefs::load("configs/cells.json").unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
         let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let config = crate::config::Config {
@@ -1163,6 +1205,20 @@ mod tests {
         events
     }
 
+    fn building_at(state: &Arc<GameState>, x: i32, y: i32) -> Option<(PackType, i32)> {
+        let entity = *state.building_index.get(&(x, y))?;
+        let ecs = state.ecs.read();
+        let meta = ecs.get::<BuildingMetadata>(entity)?;
+        let own = ecs.get::<BuildingOwnership>(entity)?;
+        Some((meta.pack_type, own.clan_id))
+    }
+
+    fn clear_building_footprint(state: &Arc<GameState>, x: i32, y: i32, pack_type: PackType) {
+        for (dx, dy, _) in pack_type.building_cells().unwrap() {
+            state.world.destroy(x + dx, y + dy);
+        }
+    }
+
     #[tokio::test]
     async fn heal_missing_stats_is_explicit_error_not_full_health_fallback() {
         let test = make_test_state("heal_missing_stats").await;
@@ -1177,7 +1233,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerStats>();
         }
 
-        handle_heal(&test.state, &tx, pid);
+        handle_heal(&test.state, &tx, pid, false);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -1206,7 +1262,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerSkillsComp>();
         }
 
-        handle_heal(&test.state, &tx, pid);
+        handle_heal(&test.state, &tx, pid, false);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -1234,7 +1290,7 @@ mod tests {
             stats.crystals[2] = 1;
         }
 
-        handle_heal(&test.state, &tx, pid);
+        handle_heal(&test.state, &tx, pid, false);
 
         assert!(drain_events(&mut rx).is_empty());
 
@@ -1319,6 +1375,62 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние инвентаря недоступно."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn item_building_uses_pack_offset_two_not_three() {
+        let test = make_test_state("inventory_build_offset").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+        }
+        clear_building_footprint(&test.state, 10, 12, PackType::Teleport);
+
+        assert!(place_building_from_item(&test.state, &tx, pid, PackType::Teleport).await);
+        assert_eq!(
+            building_at(&test.state, 10, 12),
+            Some((PackType::Teleport, 0))
+        );
+        assert!(building_at(&test.state, 10, 13).is_none());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn gate_item_uses_offset_one_and_player_clan() {
+        let test = make_test_state("inventory_gate_offset_clan").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<PlayerStats>(entity).unwrap().clan_id = Some(7);
+        }
+        clear_building_footprint(&test.state, 10, 11, PackType::Gate);
+
+        assert!(
+            place_building_from_item_with(&test.state, &tx, pid, PackType::Gate, 1, Some(7)).await
+        );
+        assert_eq!(building_at(&test.state, 10, 11), Some((PackType::Gate, 7)));
+        assert!(building_at(&test.state, 10, 13).is_none());
 
         test.cleanup();
     }

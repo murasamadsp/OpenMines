@@ -187,6 +187,7 @@ fmod_editor.log
 # ======================================================================
 .claude/settings.local.json
 .omc/
+.desloppify/
 
 
 # Telegram-парсер: сессия = авторизация аккаунта, config = api_hash/телефон — НЕ коммитить

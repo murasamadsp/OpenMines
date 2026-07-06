@@ -3,6 +3,9 @@
 # Переменные:
 #   UNITY_EDITOR — путь к бинарнику Unity (по умолчанию Hub + версия из ProjectVersion.txt)
 #   CLIENT_BUILD_ROOT — каталог вывода (по умолчанию: <корень репо>/client-builds)
+#
+# Usage:
+#   scripts/build-client.sh <all|win|mac> <local|dev|production>
 
 set -euo pipefail
 
@@ -38,7 +41,13 @@ else
   exit 1
 fi
 
-TARGET="${1:-all}"
+TARGET="${1:-}"
+PROFILE="${2:-}"
+if [[ -z "$TARGET" || -z "$PROFILE" ]]; then
+  echo "Usage: $0 <all|win|mac> <local|dev|production>" >&2
+  exit 2
+fi
+
 case "$TARGET" in
   win|windows|win64)
     METHOD="CommandLineBuild.BuildWindows64"
@@ -50,7 +59,16 @@ case "$TARGET" in
     METHOD="CommandLineBuild.BuildAll"
     ;;
   *)
-    echo "Usage: $0 [all|win|mac]" >&2
+    echo "Usage: $0 <all|win|mac> <local|dev|production>" >&2
+    exit 1
+    ;;
+esac
+
+case "$PROFILE" in
+  local|dev|production)
+    ;;
+  *)
+    echo "Usage: $0 <all|win|mac> <local|dev|production>" >&2
     exit 1
     ;;
 esac
@@ -62,10 +80,12 @@ echo "==> Unity: $UNITY"
 echo "==> Project: $CLIENT_DIR"
 echo "==> Output:  $OUT_ROOT"
 echo "==> Method:  $METHOD"
+echo "==> Env:     $PROFILE"
 
 "$UNITY" -batchmode -nographics -quit \
   -projectPath "$CLIENT_DIR" \
   -executeMethod "$METHOD" \
+  --openmines-env "$PROFILE" \
   -logFile "$OUT_ROOT/last-unity-build.log"
 
 echo "==> Готово. Лог: $OUT_ROOT/last-unity-build.log"
