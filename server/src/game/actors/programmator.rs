@@ -116,9 +116,52 @@ pub enum ActionType {
     HandModeOff,
     MacrosGun,
     MacrosDigAround,
+    OnlineGeo,
+    OnlineZz,
+    OnlineC190,
+    OnlinePoly,
+    OnlineUp,
+    OnlineCraft,
+    OnlineNano,
+    OnlineRem,
+    InventoryUp,
+    InventoryLeft,
+    InventoryDown,
+    InventoryRight,
+    DebugMessage,
+    DebugPause,
+    RestartRow,
 }
 
 const fn get_action_type(id: u8) -> ActionType {
+    match id {
+        162 => ActionType::BuildBlock,
+        163 => ActionType::BuildPillar,
+        164 => ActionType::BuildRoad,
+        165 => ActionType::BuildMilitaryBlock,
+        166 => ActionType::RunOnRespawn,
+        167 => ActionType::OnlineGeo,
+        168 => ActionType::OnlineZz,
+        169 => ActionType::OnlineC190,
+        170 => ActionType::OnlinePoly,
+        171 => ActionType::OnlineUp,
+        172 => ActionType::OnlineCraft,
+        173 => ActionType::OnlineNano,
+        174 => ActionType::OnlineRem,
+        175 => ActionType::InventoryUp,
+        176 => ActionType::InventoryLeft,
+        177 => ActionType::InventoryDown,
+        178 => ActionType::InventoryRight,
+        179 => ActionType::HandModeOn,
+        180 => ActionType::HandModeOff,
+        181 => ActionType::DebugMessage,
+        182 => ActionType::DebugPause,
+        200 => ActionType::RestartRow,
+        _ => get_legacy_action_type(id),
+    }
+}
+
+const fn get_legacy_action_type(id: u8) -> ActionType {
     match id {
         // 0 → None (как и любой неизвестный id, см. wildcard).
         1 => ActionType::NextRow,
@@ -206,11 +249,6 @@ const fn get_action_type(id: u8) -> ActionType {
         159 => ActionType::DisableAutoDig,
         160 => ActionType::EnableAgression,
         161 => ActionType::DisableAgression,
-        164 => ActionType::MacrosGun,
-        165 => ActionType::MacrosDigAround,
-        166 => ActionType::RunOnRespawn,
-        179 => ActionType::HandModeOn,
-        180 => ActionType::HandModeOff,
         98 => ActionType::IsSlime,
         106 => ActionType::IsInGun,
         _ => ActionType::None,
@@ -656,14 +694,50 @@ impl ProgrammatorState {
                 );
                 i += 3;
             } else if current.starts_with("GEO;") {
-                Self::push_text_action(&mut functions, &current_func, ActionType::Geology);
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineGeo);
                 i += 4;
+            } else if current.starts_with("ZZ;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineZz);
+                i += 3;
+            } else if current.starts_with("C190;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineC190);
+                i += 5;
+            } else if current.starts_with("POLY;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlinePoly);
+                i += 5;
+            } else if current.starts_with("UP;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineUp);
+                i += 3;
+            } else if current.starts_with("CRAFT;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineCraft);
+                i += 6;
+            } else if current.starts_with("NANO;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineNano);
+                i += 5;
+            } else if current.starts_with("REM;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::OnlineRem);
+                i += 4;
+            } else if current.starts_with("iw") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::InventoryUp);
+                i += 2;
+            } else if current.starts_with("ia") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::InventoryLeft);
+                i += 2;
+            } else if current.starts_with("is") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::InventoryDown);
+                i += 2;
+            } else if current.starts_with("id") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::InventoryRight);
+                i += 2;
             } else if current.starts_with("Hand+") {
                 Self::push_text_action(&mut functions, &current_func, ActionType::HandModeOn);
                 i += 5;
             } else if current.starts_with("Hand-") {
                 Self::push_text_action(&mut functions, &current_func, ActionType::HandModeOff);
                 i += 5;
+            } else if current.starts_with("RESTART;") {
+                Self::push_text_action(&mut functions, &current_func, ActionType::RestartRow);
+                i += 8;
             } else if current.starts_with("OR") {
                 Self::push_text_action(&mut functions, &current_func, ActionType::Or);
                 i += 2;
@@ -797,7 +871,7 @@ impl ProgrammatorState {
                             Self::push_text_label_action(
                                 &mut functions,
                                 &current_func,
-                                ActionType::RunIfTrue,
+                                ActionType::DebugMessage,
                                 label,
                             );
                             i = next;
@@ -1038,7 +1112,7 @@ impl ProgrammatorState {
                             Self::push_text_label_action(
                                 &mut functions,
                                 &current_func,
-                                ActionType::RunIfFalse,
+                                ActionType::DebugPause,
                                 label,
                             );
                             i = next;
@@ -2429,8 +2503,72 @@ mod tests {
     fn unity_hand_mode_bytecodes_map_to_hand_mode_actions() {
         assert_eq!(get_action_type(179), ActionType::HandModeOn);
         assert_eq!(get_action_type(180), ActionType::HandModeOff);
-        assert_ne!(get_action_type(162), ActionType::HandModeOn);
-        assert_ne!(get_action_type(163), ActionType::HandModeOff);
+        assert_eq!(get_action_type(162), ActionType::BuildBlock);
+        assert_eq!(get_action_type(163), ActionType::BuildPillar);
+        assert_eq!(get_action_type(164), ActionType::BuildRoad);
+        assert_eq!(get_action_type(165), ActionType::BuildMilitaryBlock);
+    }
+
+    #[test]
+    fn unity_programmator_extension_bytecodes_are_named() {
+        assert_eq!(get_action_type(167), ActionType::OnlineGeo);
+        assert_eq!(get_action_type(168), ActionType::OnlineZz);
+        assert_eq!(get_action_type(169), ActionType::OnlineC190);
+        assert_eq!(get_action_type(170), ActionType::OnlinePoly);
+        assert_eq!(get_action_type(171), ActionType::OnlineUp);
+        assert_eq!(get_action_type(172), ActionType::OnlineCraft);
+        assert_eq!(get_action_type(173), ActionType::OnlineNano);
+        assert_eq!(get_action_type(174), ActionType::OnlineRem);
+        assert_eq!(get_action_type(175), ActionType::InventoryUp);
+        assert_eq!(get_action_type(176), ActionType::InventoryLeft);
+        assert_eq!(get_action_type(177), ActionType::InventoryDown);
+        assert_eq!(get_action_type(178), ActionType::InventoryRight);
+        assert_eq!(get_action_type(181), ActionType::DebugMessage);
+        assert_eq!(get_action_type(182), ActionType::DebugPause);
+        assert_eq!(get_action_type(200), ActionType::RestartRow);
+    }
+
+    #[test]
+    fn parse_text_format_maps_all_current_unity_extension_tokens() {
+        let (functions, _) = ProgrammatorState::parse_text(
+            "$B1;B2;B3;VB;GEO;ZZ;C190;POLY;UP;CRAFT;NANO;REM;iwiaisidHand+Hand-!{dbg}{pause}RESTART;",
+        )
+        .unwrap();
+        let actions: Vec<ActionType> = functions[""]
+            .actions
+            .iter()
+            .map(|a| a.action_type)
+            .collect();
+
+        assert_eq!(
+            actions,
+            vec![
+                ActionType::BuildBlock,
+                ActionType::BuildPillar,
+                ActionType::BuildRoad,
+                ActionType::BuildMilitaryBlock,
+                ActionType::OnlineGeo,
+                ActionType::OnlineZz,
+                ActionType::OnlineC190,
+                ActionType::OnlinePoly,
+                ActionType::OnlineUp,
+                ActionType::OnlineCraft,
+                ActionType::OnlineNano,
+                ActionType::OnlineRem,
+                ActionType::InventoryUp,
+                ActionType::InventoryLeft,
+                ActionType::InventoryDown,
+                ActionType::InventoryRight,
+                ActionType::HandModeOn,
+                ActionType::HandModeOff,
+                ActionType::DebugMessage,
+                ActionType::DebugPause,
+                ActionType::RestartRow,
+            ]
+        );
+
+        assert_eq!(functions[""].actions[18].label, "dbg");
+        assert_eq!(functions[""].actions[19].label, "pause");
     }
 
     #[test]
