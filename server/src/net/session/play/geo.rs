@@ -108,7 +108,7 @@ pub fn handle_geo(
                 } else if place_here {
                     if let Some(cplaceable) = ecs.get_mut::<PlayerGeoStack>(entity)?.0.pop() {
                         state.world.set_cell(tgt_x, tgt_y, cplaceable);
-                        let d = if is_crystal(cplaceable) {
+                        let d = if crate::world::CellType(cplaceable).is_crystal() {
                             0.0
                         } else {
                             let mut rng = rand::rng();

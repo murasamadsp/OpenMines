@@ -1416,7 +1416,7 @@ fn execute_action(
     timing: crate::config::ProgrammatorConfig,
 ) -> ExecResult {
     // C# Player.OnRoad: is_road клетки под игроком (для ServerPause road-бонуса).
-    let on_road = crate::world::cells::is_road(world.get_cell(pos.x, pos.y));
+    let on_road = crate::world::CellType(world.get_cell(pos.x, pos.y)).is_road();
     match action.action_type {
         // ─── Movement ────────────────────────────────────────────────────
         // dir = -1 (позиционный ход, 1:1 C# `Move(x,y)` дефолт). `handle_move`
@@ -1723,8 +1723,7 @@ fn execute_action(
         }
         ActionType::IsCrystal => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                let cell = w.get_cell(x, y);
-                crate::world::cells::is_crystal(cell)
+                crate::world::CellType(w.get_cell(x, y)).is_crystal()
             });
             ExecResult::None
         }
@@ -2032,7 +2031,7 @@ fn execute_action(
             // и там всё ещё кристалл — копаем дальше.
             if prog.macros_template.is_some() {
                 let (dx, dy) = crate::game::direction::dir_offset(pos.dir);
-                if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
+                if crate::world::CellType(world.get_cell(pos.x + dx, pos.y + dy)).is_crystal() {
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
@@ -2045,7 +2044,7 @@ fn execute_action(
             // Скан 4 направлений. Первый кристалл: если смотрим на него — копаем
             // (и фиксируем template), иначе поворачиваемся к нему.
             for (dir_key, (dx, dy)) in DIRZ {
-                if crate::world::cells::is_crystal(world.get_cell(pos.x + dx, pos.y + dy)) {
+                if crate::world::CellType(world.get_cell(pos.x + dx, pos.y + dy)).is_crystal() {
                     if pos.dir == dir_key {
                         *delay = Some(direct_action_delay(timing));
                         prog.macros_template = Some(dir_key);
@@ -2089,7 +2088,7 @@ fn execute_action(
                 let (dx, dy) = crate::game::direction::dir_offset(check_dir);
                 let cx = pos.x + dx;
                 let cy = pos.y + dy;
-                if crate::world::cells::is_crystal(world.get_cell(cx, cy)) {
+                if crate::world::CellType(world.get_cell(cx, cy)).is_crystal() {
                     if pos.dir == check_dir {
                         *delay = Some(direct_action_delay(timing));
                         prog_q.0.push(ProgrammatorAction::Dig {
