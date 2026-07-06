@@ -30,6 +30,7 @@ pub struct GameplayConfig {
     pub skills: SkillsConfig,
     pub spawn: SpawnConfig,
     pub programmator: ProgrammatorConfig,
+    pub schedules: ScheduleConfig,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -61,6 +62,32 @@ impl Default for ProgrammatorConfig {
             direct_action_delay_us: 333_333,
             blocked_move_penalty_ms: 200,
             min_move_delay_ms: 20,
+        }
+    }
+}
+
+/// Стартовые интервалы ECS-очередей в миллисекундах. `0` отключает очередь.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    pub hazards_ms: u64,
+    pub physics_ms: u64,
+    pub guns_ms: u64,
+    pub programmator_ms: u64,
+    pub alive_ms: u64,
+    pub building_effects_ms: u64,
+    pub hourly_damage_ms: u64,
+}
+
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        Self {
+            hazards_ms: 10,
+            physics_ms: 100,
+            guns_ms: 100,
+            programmator_ms: 100,
+            alive_ms: 5_000,
+            building_effects_ms: 1_000,
+            hourly_damage_ms: 3_600_000,
         }
     }
 }
@@ -269,6 +296,15 @@ mod tests {
                        "direct_action_delay_us": 333333,
                        "blocked_move_penalty_ms": 200,
                        "min_move_delay_ms": 20
+                     },
+                     "schedules": {
+                       "hazards_ms": 10,
+                       "physics_ms": 100,
+                       "guns_ms": 100,
+                       "programmator_ms": 100,
+                       "alive_ms": 5000,
+                       "building_effects_ms": 1000,
+                       "hourly_damage_ms": 3600000
                      }}
     }"#;
 
@@ -285,6 +321,8 @@ mod tests {
         assert_eq!(c.gameplay.programmator.direct_action_delay_us, 333_333);
         assert_eq!(c.gameplay.programmator.blocked_move_penalty_ms, 200);
         assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
+        assert_eq!(c.gameplay.schedules.hazards_ms, 10);
+        assert_eq!(c.gameplay.schedules.hourly_damage_ms, 3_600_000);
         assert!(c.cron.hourly_log_enabled);
     }
 
@@ -301,6 +339,15 @@ mod tests {
                        "direct_action_delay_us": 333333,
                        "blocked_move_penalty_ms": 200,
                        "min_move_delay_ms": 20
+                     },
+                     "schedules": {
+                       "hazards_ms": 10,
+                       "physics_ms": 100,
+                       "guns_ms": 100,
+                       "programmator_ms": 100,
+                       "alive_ms": 5000,
+                       "building_effects_ms": 1000,
+                       "hourly_damage_ms": 3600000
                      }}"#,
             r#""x": 0"#,
         );
@@ -331,6 +378,15 @@ mod tests {
         assert!(
             serde_json::from_value::<Config>(no_programmator).is_err(),
             "пропущенный programmator должен быть ошибкой"
+        );
+        let mut no_schedules: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_schedules["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("schedules");
+        assert!(
+            serde_json::from_value::<Config>(no_schedules).is_err(),
+            "пропущенный schedules должен быть ошибкой"
         );
     }
 

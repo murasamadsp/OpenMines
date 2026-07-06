@@ -329,47 +329,50 @@ impl GameState {
             }
         }
 
+        let schedule_intervals = config.gameplay.schedules;
         let schedules = vec![
             GameSchedule {
                 name: "hazards".to_string(),
                 schedule: RwLock::new(schedule_hazards),
-                interval_ms: std::sync::atomic::AtomicU64::new(10),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.hazards_ms),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "physics".to_string(),
                 schedule: RwLock::new(schedule_physics),
-                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.physics_ms),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "guns".to_string(),
                 schedule: RwLock::new(schedule_guns),
-                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.guns_ms),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "programmator".to_string(),
                 schedule: RwLock::new(schedule_programmator),
-                interval_ms: std::sync::atomic::AtomicU64::new(100),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.programmator_ms),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "alive".to_string(),
                 schedule: RwLock::new(schedule_alive),
-                interval_ms: std::sync::atomic::AtomicU64::new(5000),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.alive_ms),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "building_effects".to_string(),
                 schedule: RwLock::new(schedule_building_effects),
-                interval_ms: std::sync::atomic::AtomicU64::new(1000),
+                interval_ms: std::sync::atomic::AtomicU64::new(
+                    schedule_intervals.building_effects_ms,
+                ),
                 last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "hourly_damage".to_string(),
                 schedule: RwLock::new(schedule_hourly_damage),
-                interval_ms: std::sync::atomic::AtomicU64::new(3_600_000),
+                interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.hourly_damage_ms),
                 last_run: Mutex::new(Instant::now()),
             },
         ];

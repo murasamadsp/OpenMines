@@ -193,15 +193,24 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod benchmarks {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
     const BENCH_N: u32 = 500;
+    static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn create_minimal_state() -> Arc<crate::game::GameState> {
+        create_minimal_state_with_gameplay(crate::config::GameplayConfig::default())
+    }
+
+    fn create_minimal_state_with_gameplay(
+        gameplay: crate::config::GameplayConfig,
+    ) -> Arc<crate::game::GameState> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let dir = std::env::temp_dir();
-            let db_path = dir.join(format!("bench_db_{}", std::process::id()));
+            let suffix = TEST_DB_SEQ.fetch_add(1, Ordering::Relaxed);
+            let db_path = dir.join(format!("bench_db_{}_{}", std::process::id(), suffix));
             let _ = std::fs::remove_file(&db_path);
             let database = crate::db::Database::open(&db_path).await.unwrap();
             let cell_defs =
@@ -217,7 +226,7 @@ mod benchmarks {
                 data_dir: dir.to_string_lossy().to_string(),
                 logging: crate::config::LoggingConfig::default(),
                 cron: crate::config::CronConfig::default(),
-                gameplay: crate::config::GameplayConfig::default(),
+                gameplay,
             };
             let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
                 .await
@@ -296,5 +305,26 @@ mod benchmarks {
         );
 
         assert!(!state.set_schedule_interval("missing", 100));
+    }
+
+    #[test]
+    fn schedule_intervals_come_from_config() {
+        let mut gameplay = crate::config::GameplayConfig::default();
+        gameplay.schedules.physics_ms = 321;
+        gameplay.schedules.programmator_ms = 654;
+
+        let state = create_minimal_state_with_gameplay(gameplay);
+        let interval = |name: &str| {
+            state
+                .schedules
+                .iter()
+                .find(|s| s.name == name)
+                .expect("schedule must exist")
+                .interval_ms
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        assert_eq!(interval("physics"), 321);
+        assert_eq!(interval("programmator"), 654);
     }
 }
