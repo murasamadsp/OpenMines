@@ -387,6 +387,59 @@ impl Database {
         Ok(())
     }
 
+    pub async fn save_players_batch(&self, players: &[PlayerRow]) -> Result<()> {
+        if players.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for p in players {
+            let inv_json = serde_json::to_string(&p.inventory)?;
+            let skills_json = serde_json::to_string(&p.skills)?;
+            let result = sqlx::query(
+                "UPDATE players SET x=?1, y=?2, dir=?3, health=?4, max_health=?5, money=?6, creds=?7,
+                 skin=?8, auto_dig=?9, cry_green=?10, cry_blue=?11, cry_red=?12, cry_violet=?13,
+                 cry_white=?14, cry_cyan=?15, clan_id=?16, passwd=?17, inventory=?18, skills=?19,
+                 resp_x=?21, resp_y=?22, clan_rank=?23, last_bonus_at=?24
+                 WHERE id=?20",
+            )
+            .bind(p.x)
+            .bind(p.y)
+            .bind(p.dir)
+            .bind(p.health)
+            .bind(p.max_health)
+            .bind(p.money)
+            .bind(p.creds)
+            .bind(p.skin)
+            .bind(i32::from(p.auto_dig))
+            .bind(p.crystals[0])
+            .bind(p.crystals[1])
+            .bind(p.crystals[2])
+            .bind(p.crystals[3])
+            .bind(p.crystals[4])
+            .bind(p.crystals[5])
+            .bind(p.clan_id)
+            .bind(&p.passwd)
+            .bind(inv_json)
+            .bind(skills_json)
+            .bind(p.id)
+            .bind(p.resp_x)
+            .bind(p.resp_y)
+            .bind(p.clan_rank)
+            .bind(p.last_bonus_at)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() != 1 {
+                bail!(
+                    "player id={}: save affected {} rows",
+                    p.id,
+                    result.rows_affected()
+                );
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Сброс позиции и точки респавна ВСЕХ игроков на спавн `(x, y)`. Вызывается
     /// при `--regen`: после регена рельеф полностью новый, а старые `x/y` (и
     /// `resp_x/resp_y`) указывают внутрь сгенерированных блоков → игрок логинится

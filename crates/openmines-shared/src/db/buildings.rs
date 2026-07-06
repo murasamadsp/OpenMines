@@ -224,6 +224,53 @@ impl Database {
         )
         .await
     }
+
+    pub async fn save_buildings_batch(&self, buildings: &[BuildingRow]) -> Result<()> {
+        if buildings.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for row in buildings {
+            let extra = BuildingExtra {
+                charge: row.charge,
+                max_charge: row.max_charge,
+                cost: row.cost,
+                hp: row.hp,
+                max_hp: row.max_hp,
+                money_inside: row.money_inside,
+                crystals_inside: row.crystals_inside,
+                items_inside: row.items_inside.clone(),
+                craft_recipe_id: row.craft_recipe_id,
+                craft_num: row.craft_num,
+                craft_end_ts: row.craft_end_ts,
+                clanzone: row.clanzone,
+            };
+            let type_code = row.type_code.chars().next().map_or(b' ', |c| c as u8);
+            let data_json = serde_json::to_string(&extra)?;
+            let type_code_str = char::from(type_code).to_string();
+            let result = sqlx::query(
+                "UPDATE buildings SET type_code = ?1, x = ?2, y = ?3, owner_id = ?4, clan_id = ?5, data = ?6 WHERE id = ?7"
+            )
+            .bind(type_code_str)
+            .bind(row.x)
+            .bind(row.y)
+            .bind(row.owner_id)
+            .bind(row.clan_id)
+            .bind(data_json)
+            .bind(row.id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() != 1 {
+                bail!(
+                    "building id={}: update state affected {} rows",
+                    row.id,
+                    result.rows_affected()
+                );
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
