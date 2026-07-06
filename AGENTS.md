@@ -113,7 +113,7 @@ cargo fmt --all
 
 ### Wire-формат
 
-```
+```text
 [4B length i32 LE (включая эти 4B)] [1B data_type] [2B event_name] [payload...]
 ```
 
@@ -292,6 +292,7 @@ cargo fmt --all
 Проект разделен на две основные части: общую разделяемую библиотеку `openmines-shared` и исполняемый файл игрового сервера `openmines-server`. Entry point игрового сервера — `server/src/main.rs`.
 
 ### Структура `crates/openmines-shared/src/` (Общая логика)
+
 - **`config.rs`** — загрузка файлов конфигурации: `config.json`, `cells.json`, `buildings.json`.
 - **`world/`** — мир на mmap-слоях (`.mapb`): cells, road, durability. Чанки 32×32. Dirty-tracking + атомарные бэкапы чанков.
 - **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
@@ -299,6 +300,7 @@ cargo fmt --all
 - **`time.rs`** — утилиты для работы со временем.
 
 ### Структура `server/src/` (Игровой сервер)
+
 - **`game/`** — игровая логика на Bevy ECS:
   - `mod.rs` — `GameState` (центральный Arc-объект), Bevy ECS-системы, очереди broadcast/programmator.
   - `actors/` — ECS-компоненты сущностей:
@@ -333,7 +335,7 @@ cargo fmt --all
 
 ### GameState — центральный объект
 
-```
+```rust
 GameState {
     world: Arc<World>                         // mmap-слои мира
     db: Arc<Database>                         // SQLite
