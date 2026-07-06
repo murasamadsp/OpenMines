@@ -62,6 +62,30 @@ enum DigMutationRead {
     MissingState(&'static str),
 }
 
+struct CrystalMineYield {
+    final_amount: i64,
+    exp_amount: f32,
+}
+
+impl CrystalMineYield {
+    fn calculate(
+        mine_general: f32,
+        mine_for_crystal: f32,
+        crystal_multiplier: i64,
+        ctx: crate::game::ExpContext,
+    ) -> Self {
+        let mining_amount = 1.0_f32 + mine_general + mine_for_crystal;
+        let base_drop = crate::game::mechanics::random::probabilistic_i64(
+            mining_amount * crystal_multiplier as f32,
+        )
+        .max(1);
+        Self {
+            final_amount: ctx.apply_drop(base_drop),
+            exp_amount: mining_amount,
+        }
+    }
+}
+
 pub fn handle_dig(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -378,10 +402,12 @@ pub fn handle_dig(
     // D8+D9: Crystal mining happens on EVERY hit (1:1 with C# Player.Bz → Mine(cell,x,y)).
     // Dig exp happens only on destroy. MineGeneral exp happens every hit with crystals.
     let mined_amount = cry_idx.map_or(0_i64, |idx| {
-        let mining_amount = 1.0_f32 + mine_general + mine_by_crystal[idx];
-        let mine_exp = mining_amount;
-        let dob = mining_amount * cell.crystal_multiplier() as f32;
-        let amount = crate::game::mechanics::random::probabilistic_i64(dob).max(1);
+        let mined_yield = CrystalMineYield::calculate(
+            mine_general,
+            mine_by_crystal[idx],
+            cell.crystal_multiplier(),
+            ctx,
+        );
 
         // Add crystals + MineGeneral exp on every hit.
         let mined = state
@@ -402,7 +428,7 @@ pub fn handle_dig(
                     let mut p_stats = ecs
                         .get_mut::<crate::game::player::PlayerStats>(entity)
                         .expect("PlayerStats checked before crystal mining");
-                    p_stats.crystals[idx] += ctx.apply_drop(amount);
+                    p_stats.crystals[idx] += mined_yield.final_amount;
                     let c_data = p_stats.crystals;
                     send_u_packet(tx, "@B", &basket(&c_data, 1).1);
                 }
@@ -410,7 +436,9 @@ pub fn handle_dig(
                     let mut skills = ecs
                         .get_mut::<crate::game::player::PlayerSkillsComp>(entity)
                         .expect("PlayerSkillsComp checked before crystal mining");
-                    if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "m", mine_exp) {
+                    if let Some(sk) =
+                        ctx.add_skill_exp(&mut skills.states, "m", mined_yield.exp_amount)
+                    {
                         send_u_packet(tx, sk.0, &sk.1);
                     }
                 }
@@ -430,8 +458,8 @@ pub fn handle_dig(
             return 0;
         }
 
-        // C# Player.Mine: World.AddDob(type, odob) — объём добычи для динамики цен.
-        crate::game::market::add_dob(state, idx, amount);
+        // AddDob tracks the same effective economy volume that reached inventory.
+        crate::game::market::add_dob(state, idx, mined_yield.final_amount);
 
         // Crystal mine FX (fx=2) on every hit.
         // Color remapping: type 1→3, 2→1, 3→2, other→same.
@@ -446,7 +474,7 @@ pub fn handle_dig(
             net_u16_nonneg(tgt_x),
             net_u16_nonneg(tgt_y),
             2,
-            (amount.min(255)) as u8,
+            (mined_yield.final_amount.min(255)) as u8,
             color_remapped,
         );
         // C# `SendDFToBots` шлёт через `vChunksAroundEx()` — 5×5 чанков ВКЛЮЧАЯ
@@ -455,7 +483,7 @@ pub fn handle_dig(
         // «сколько выкопал». Включаем себя (None).
         state.broadcast_hb_at(px, py, &[mine_fx], None);
 
-        amount
+        mined_yield.final_amount
     });
     let _ = mined_amount;
 
@@ -922,6 +950,32 @@ mod tests {
         events
     }
 
+    fn basket_green(payload: &[u8]) -> i64 {
+        std::str::from_utf8(payload)
+            .unwrap()
+            .split(':')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    fn directed_mine_fx_amount(payload: &[u8]) -> Option<i64> {
+        let mut i = 0;
+        while i + 9 <= payload.len() {
+            if payload[i] != b'D' {
+                return None;
+            }
+            let fx = payload[i + 1];
+            let amount = payload[i + 2];
+            if fx == 2 {
+                return Some(i64::from(amount));
+            }
+            i += 9;
+        }
+        None
+    }
+
     #[tokio::test]
     async fn crystal_spend_missing_player_stats_is_explicit_error_not_insufficient_resources() {
         let test = make_test_state("crystal_spend_missing_stats").await;
@@ -1081,6 +1135,68 @@ mod tests {
         assert!(
             events.iter().any(|(event, _)| event == "HB"),
             "programmatic Dig must send self HB for programmator visual sync"
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn crystal_mine_fx_uses_same_final_amount_as_inventory() {
+        let test = make_test_state("crystal_mine_fx_final_amount").await;
+        {
+            let now = crate::time::now_unix();
+            test.state
+                .active_events
+                .write()
+                .list
+                .push(crate::game::ActiveEvent {
+                    id: "drop_x100".to_string(),
+                    title: "drop_x100".to_string(),
+                    starts_at: now - 1,
+                    ends_at: now + 60,
+                    xp_mult: 1.0,
+                    drop_mult: 100.0,
+                });
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
+                .unwrap()
+                .last_dig -= Duration::from_millis(500);
+        }
+        test.state.world.set_cell(10, 11, cell_type::GREEN);
+        test.state.world.set_durability(10, 11, 100.0);
+
+        handle_dig(&test.state, &tx, pid, 0, false);
+
+        let events = drain_events(&mut rx);
+        let basket_amount = events
+            .iter()
+            .find(|(event, _)| event == "@B")
+            .map(|(_, payload)| basket_green(payload))
+            .expect("@B after crystal mine");
+        let fx_amount = events
+            .iter()
+            .filter(|(event, _)| event == "HB")
+            .find_map(|(_, payload)| directed_mine_fx_amount(payload))
+            .expect("mine D FX after crystal mine");
+
+        assert_eq!(fx_amount, basket_amount);
+        assert!(
+            basket_amount >= 100,
+            "test must exercise event/drop multiplier, got {basket_amount}"
         );
 
         test.cleanup();
