@@ -1085,6 +1085,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resp_save_updates_clanzone_marks_dirty_and_refreshes_admin_gui() {
+        let test = make_charge_fill_test_state("resp_save_clanzone", "R", 1, 100).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        set_player_window(&test.state, test.player.id.into(), "resp:10:10");
+        assert_eq!(building_clanzone(&test.state, 10, 10), 0);
+
+        handle_resp_save(&test.state, &tx, test.player.id.into(), "clanzone:321#");
+
+        let events = drain_events(&mut rx);
+        assert_eq!(building_clanzone(&test.state, 10, 10), 321);
+        assert!(building_dirty(&test.state, 10, 10));
+        assert!(
+            events.iter().any(|(event, payload)| {
+                event == "GU" && String::from_utf8_lossy(payload).contains("321")
+            }),
+            "admin GUI refresh must include updated clanzone"
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
     async fn gun_fill_prog_missing_building_stats_does_not_dirty_building() {
         let test = make_charge_fill_test_state("gun_prog_missing_stats", "G", 5, 100).await;
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -1194,6 +1219,14 @@ mod tests {
         state
             .query_building_opt(x, y, |ecs, entity| {
                 Some(ecs.get::<BuildingStats>(entity)?.cost)
+            })
+            .unwrap()
+    }
+
+    fn building_clanzone(state: &Arc<GameState>, x: i32, y: i32) -> i32 {
+        state
+            .query_building_opt(x, y, |ecs, entity| {
+                Some(ecs.get::<BuildingStats>(entity)?.clanzone)
             })
             .unwrap()
     }
