@@ -148,7 +148,6 @@ pub trait WorldProvider: Send + Sync {
     fn set_cell_typed(&self, x: i32, y: i32, cell: CellType);
     fn get_durability(&self, x: i32, y: i32) -> f32;
     fn set_durability(&self, x: i32, y: i32, d: f32);
-    #[allow(dead_code)]
     fn read_world_cell(&self, x: i32, y: i32) -> Option<WorldCell>;
     fn write_world_cell(&self, x: i32, y: i32, cell: WorldCell);
     fn destroy(&self, x: i32, y: i32);

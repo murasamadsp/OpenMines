@@ -867,8 +867,10 @@ pub fn try_spend_crystal(
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    let cell = state.world.get_cell_typed(x, y);
-    let sub = hb_cell(net_u16_nonneg(x), net_u16_nonneg(y), cell.0);
+    let Some(cell) = state.world.read_world_cell(x, y) else {
+        return;
+    };
+    let sub = hb_cell(net_u16_nonneg(x), net_u16_nonneg(y), cell.cell_type.0);
     state.broadcast_hb_at(x, y, &[sub], None);
 }
 
