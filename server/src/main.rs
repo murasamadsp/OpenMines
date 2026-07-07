@@ -116,16 +116,41 @@ async fn main() -> Result<()> {
                 Err(e) => {
                     tracing::warn!(error = ?e, "Failed to register SIGTERM handler; only SIGINT will trigger shutdown");
                     let _ = tokio::signal::ctrl_c().await;
+                    tracing::info!("Shutdown signal received (SIGINT)");
+                    let _ = shutdown_tx_signal.send(());
+                    let _ = tokio::signal::ctrl_c().await;
+                    tracing::error!("Second SIGINT received; forcing process exit");
+                    std::process::exit(130);
                 }
                 Ok(mut sigterm) => {
                     if use_ctrl_c {
-                        let ctrl_c = tokio::signal::ctrl_c();
+                        let first_was_sigterm = tokio::select! {
+                            _ = tokio::signal::ctrl_c() => false,
+                            _ = sigterm.recv() => true,
+                        };
+                        tracing::info!(
+                            signal = if first_was_sigterm {
+                                "SIGTERM"
+                            } else {
+                                "SIGINT"
+                            },
+                            "Shutdown signal received"
+                        );
+                        let _ = shutdown_tx_signal.send(());
                         tokio::select! {
-                            _ = ctrl_c => {},
-                            _ = sigterm.recv() => {},
+                            _ = tokio::signal::ctrl_c() => {
+                                tracing::error!("Second SIGINT received; forcing process exit");
+                                std::process::exit(130);
+                            }
+                            _ = sigterm.recv() => {
+                                tracing::error!("Second SIGTERM received; forcing process exit");
+                                std::process::exit(143);
+                            }
                         }
                     } else {
                         let _ = sigterm.recv().await;
+                        tracing::info!("Shutdown signal received (SIGTERM)");
+                        let _ = shutdown_tx_signal.send(());
                     }
                 }
             }
@@ -133,8 +158,12 @@ async fn main() -> Result<()> {
         #[cfg(not(unix))]
         {
             let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("Shutdown signal received (Ctrl+C)");
+            let _ = shutdown_tx_signal.send(());
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::error!("Second Ctrl+C received; forcing process exit");
+            std::process::exit(130);
         }
-        let _ = shutdown_tx_signal.send(());
     });
 
     // 1:1 C# CreateSpawns: стартовые здания + площадка золотой дороги при пустой
