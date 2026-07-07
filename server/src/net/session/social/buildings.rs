@@ -3,7 +3,6 @@ use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
 use crate::game::broadcast_cell_update;
 use crate::game::buildings::{
     BuildingFlags, BuildingSpawnSpec, BuildingStorage, PackType, PackView, get_building_config,
-    spawn_building_from_extra,
 };
 use crate::game::player::{
     PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
@@ -265,20 +264,16 @@ pub async fn handle_place_building(
         }
     };
 
-    let entity = spawn_building_from_extra(
-        &mut state.ecs.write(),
-        &BuildingSpawnSpec {
-            id: db_id,
-            pack_type,
-            x: bx,
-            y: by,
-            owner_id: pid,
-            clan_id: initial_clan,
-            extra: &extra,
-        },
-    );
-
-    state.register_building_entity(bx, by, entity);
+    let spec = BuildingSpawnSpec {
+        id: db_id,
+        pack_type,
+        x: bx,
+        y: by,
+        owner_id: pid,
+        clan_id: initial_clan,
+        extra: &extra,
+    };
+    let entity = state.spawn_building_runtime(&spec);
 
     // Spawn BotSpot entity for Spot buildings (1:1 with C# Spot.Build → new BotSpot).
     if pack_type == PackType::Spot {
@@ -297,17 +292,16 @@ pub async fn handle_place_building(
         hp: extra.hp,
         max_hp: extra.max_hp,
     };
-    place_building_in_world(state, tx, pid, &view, true);
+    broadcast_building_placed(state, tx, pid, &view, true);
 }
 
-pub fn place_building_in_world(
+pub fn broadcast_building_placed(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
     pid: PlayerId,
     view: &PackView,
     close_gui: bool,
 ) {
-    state.place_building_footprint(view.x, view.y, view.pack_type);
     broadcast_pack_to_nearby(state, view);
     if close_gui {
         let g = gu_close();
@@ -585,7 +579,7 @@ pub fn move_pack_cells(state: &Arc<GameState>, old_view: &PackView, nx: i32, ny:
     // Старая позиция: очистить клетки + снять O-оверлей.
     state.clear_building_footprint(old_view);
     broadcast_pack_clear(state, old_view);
-    // Новая позиция: поставить клетки + O-оверлей (как `place_building_in_world`).
+    // Новая позиция: поставить клетки + O-оверлей (как initial runtime commit).
     let mut new_view = old_view.clone();
     new_view.x = nx;
     new_view.y = ny;

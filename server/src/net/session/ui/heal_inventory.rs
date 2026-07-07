@@ -2,7 +2,7 @@
 #![allow(clippy::cast_possible_truncation)]
 use crate::game::buildings::{
     BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats, GridPosition,
-    can_destroy, damage_building, is_damagable, spawn_building_from_extra,
+    can_destroy, damage_building, is_damagable,
 };
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
@@ -13,8 +13,8 @@ use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
-    broadcast_pack_update, building_extra_for_pack_type, destroy_damagable_building,
-    place_building_in_world, validate_building_area,
+    broadcast_building_placed, broadcast_pack_update, building_extra_for_pack_type,
+    destroy_damagable_building, validate_building_area,
 };
 
 // ─── Healing ────────────────────────────────────────────────────────────────
@@ -513,19 +513,16 @@ async fn place_building_from_item_with(
         .await
         .ok();
     if let Some(db_id) = id {
-        let entity = spawn_building_from_extra(
-            &mut state.ecs.write(),
-            &BuildingSpawnSpec {
-                id: db_id,
-                pack_type,
-                x: bx,
-                y: by,
-                owner_id: pid,
-                clan_id: building_clan,
-                extra: &extra,
-            },
-        );
-        state.register_building_entity(bx, by, entity);
+        let spec = BuildingSpawnSpec {
+            id: db_id,
+            pack_type,
+            x: bx,
+            y: by,
+            owner_id: pid,
+            clan_id: building_clan,
+            extra: &extra,
+        };
+        state.spawn_building_runtime(&spec);
         let view = PackView {
             id: db_id,
             pack_type,
@@ -538,7 +535,7 @@ async fn place_building_from_item_with(
             hp: extra.hp,
             max_hp: extra.max_hp,
         };
-        place_building_in_world(state, tx, pid, &view, false);
+        broadcast_building_placed(state, tx, pid, &view, false);
         true
     } else {
         false

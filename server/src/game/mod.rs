@@ -29,8 +29,8 @@ pub use actors::player::{
 };
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
-    BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
-    PackView,
+    BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats,
+    GridPosition, PackType, PackView,
 };
 pub use world::coords::{ChunkPos, WorldPos};
 
@@ -947,6 +947,19 @@ impl GameState {
         if let Some(entity) = self.remove_building_entity(old_x, old_y) {
             self.register_building_entity(new_x, new_y, entity);
         }
+    }
+
+    /// Runtime commit нового здания: ECS entity + runtime индексы + mmap footprint.
+    /// DB insert остаётся перед этим шагом, потому что call-sites по-разному
+    /// обрабатывают ошибку БД и возврат ресурсов игроку.
+    pub fn spawn_building_runtime(&self, spec: &BuildingSpawnSpec<'_>) -> Entity {
+        let entity = {
+            let mut ecs = self.ecs.write();
+            buildings::spawn_building_from_extra(&mut ecs, spec)
+        };
+        self.register_building_entity(spec.x, spec.y, entity);
+        self.place_building_footprint(spec.x, spec.y, spec.pack_type);
+        entity
     }
 
     /// Поставить mmap-футпринт здания и разослать HB cell updates.
