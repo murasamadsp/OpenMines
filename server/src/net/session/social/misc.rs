@@ -306,6 +306,27 @@ pub async fn handle_prog_ty(
                     );
                     return;
                 }
+                let prog_name = match load_owned_program_name(state, pid, prog_id).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, "Saved program is missing after PROG save");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Программа недоступна.").1,
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed after PROG save");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        return;
+                    }
+                };
 
                 let run_state = state
                     .modify_player(pid, |ecs, entity| {
@@ -347,6 +368,7 @@ pub async fn handle_prog_ty(
 
                 send_u_packet(tx, "Gu", &gu_close().1);
                 send_programmator_start_position(tx, server_pos, running);
+                send_u_packet(tx, "#p", &open_programmator(prog_id, &prog_name, &source).1);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
                 send_u_packet(tx, "BH", &hand_mode(false).1);
                 if !running {
@@ -375,23 +397,14 @@ pub async fn handle_prog_ty(
             }
         }
         "pRST" => {
-            // Unity `@P 0` hides the programmator GameObject but does not clear
-            // `ProgrammerView.active`. Therefore stopped pRST must not emit `@P 0`:
-            // the client uses pRST as a pre-open signal in `OnProgButton()`.
-            // Only a real running->stopped transition sends `@P 0`.
+            // Unity uses stopped `pRST` as a pre-open/reset signal from
+            // `OnProgButton()`. It must not open `#P`: doing so reopens the
+            // editor over gameplay when the user is only toggling program mode.
+            // Only a real running->stopped transition sends visible wire.
             let result = state
                 .modify_player(pid, |ecs, entity| {
                     let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
                     let was_running = ps.running;
-                    let server_prog_window_open = ecs
-                        .get::<crate::game::player::PlayerUI>(entity)
-                        .and_then(|ui| ui.current_window.as_deref())
-                        .is_some_and(|w| w == "prog" || w.starts_with("pren:"));
-                    let editor_data = if !was_running && server_prog_window_open {
-                        ps.selected_id.zip(ps.selected_data.clone())
-                    } else {
-                        None
-                    };
                     if was_running {
                         ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
                             .stop_program();
@@ -399,44 +412,15 @@ pub async fn handle_prog_ty(
                     if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
                         ui.current_window = None;
                     }
-                    Some((editor_data, was_running))
+                    Some(was_running)
                 })
                 .flatten();
-            let Some((editor_data, was_running)) = result else {
+            let Some(was_running) = result else {
                 tracing::error!(player_id = %pid, "Programmator state missing for pRST");
                 send_u_packet(tx, "@P", &programmator_status(false).1);
                 send_programmator_state_error(tx);
                 return;
             };
-            if let Some((prog_id, source)) = editor_data {
-                let name = match load_owned_program_name(state, pid, prog_id).await {
-                    Ok(Some(name)) => name,
-                    Ok(None) => {
-                        tracing::warn!(
-                            player_id = %pid,
-                            program_id = prog_id,
-                            "Selected program is missing or owned by another player"
-                        );
-                        send_u_packet(
-                            tx,
-                            "OK",
-                            &ok_message("ПРОГРАММАТОР", "Выбранная программа недоступна.").1,
-                        );
-                        return;
-                    }
-                    Err(e) => {
-                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for selected program");
-                        send_u_packet(
-                            tx,
-                            "OK",
-                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
-                        );
-                        return;
-                    }
-                };
-                send_u_packet(tx, "#P", &open_programmator(prog_id, &name, &source).1);
-                return;
-            }
             if was_running {
                 // RunProgramm() закрывает окно перед остановкой.
                 clear_programmator_window(state, pid);
@@ -821,10 +805,14 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@P", "BH", "OK"]);
+        assert_eq!(names, vec!["Gu", "#p", "@P", "BH", "OK"]);
         assert_eq!(events[0].1, b"_");
-        assert_eq!(events[1].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[1].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "");
         assert_eq!(events[2].1, b"0");
+        assert_eq!(events[3].1, b"0");
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "");
@@ -859,13 +847,16 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@T", "@P", "BH"]);
+        assert_eq!(names, vec!["Gu", "@T", "#p", "@P", "BH"]);
         assert!(!names.contains(&"#P"));
-        assert!(!names.contains(&"#p"));
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"17:23");
-        assert_eq!(events[2].1, b"1");
-        assert_eq!(events[3].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[2].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "$z");
+        assert_eq!(events[3].1, b"1");
+        assert_eq!(events[4].1, b"0");
 
         test.cleanup();
     }
@@ -1023,7 +1014,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prst_from_open_program_list_reopens_selected_stopped_program() {
+    async fn prst_from_open_program_list_does_not_reopen_selected_stopped_program() {
         let test = make_test_state("prst_state_machine").await;
         let (tx, mut rx) = mpsc::unbounded_channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
@@ -1058,13 +1049,10 @@ mod tests {
         assert_eq!(window_after, Some(None));
 
         let events = drain_events(&mut rx);
-        let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["#P"]);
-
-        let open_json: serde_json::Value = serde_json::from_slice(&events[0].1).unwrap();
-        assert_eq!(open_json["id"], prog_id);
-        assert_eq!(open_json["title"], "main");
-        assert_eq!(open_json["source"], "");
+        assert!(
+            events.is_empty(),
+            "stopped pRST must not emit #P or @P; client may send it as pre-open reset"
+        );
 
         test.cleanup();
     }

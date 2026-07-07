@@ -63,9 +63,10 @@ C# reference:
 - `StaticGUI.StartedProg` сохраняет source, запускает программу, затем шлёт
   `UpdateProgrammatorPacket` (`#p`).
 
-Текущая server-side девиация от этого участка C#: на успешном `PROG` сервер
-сохраняет source и запускает runtime, но не шлёт `#p`. Ручная проверка Unity
-показала, что `#p` на старте будит тяжёлый редактор/GUI и может фризить клиент.
+Сервер обязан сохранить source, запустить runtime и отправить `#p` перед `@P`.
+Без `#p` Unity не вызывает `UpdateProgramm()`, а значит не сбрасывает
+`ProgrammerView.active=false`; следующий `@P 1` активирует programmator object
+поверх игры и визуально открывает редактор.
 
 Сервер должен:
 
@@ -77,15 +78,16 @@ C# reference:
 - запустить программу;
 - закрыть HORB/window state на сервере;
 - отправить статус в порядке, совместимом с Unity:
-  `Gu`, optional `@T`, затем `@P`, затем `BH`;
-- не отправлять `#P/#p` на успешном старте программы.
+  `Gu`, optional `@T`, затем `#p`, `@P`, `BH`;
+- не отправлять `#P` на успешном старте программы.
 
 Пакеты `@P/#p/#P/Gu` нельзя менять без ручной проверки клиента:
 
 - `@P "1"` в Unity вызывает `GUIManager.ChangeProgTo(true)` и ставит
   `ProgPanel.playing = true`;
-- `#p` вызывает `GUIManager.UpdateProgramm(...)`, загружает source, трогает
-  редактор и в конце закрывает programmator object (`SetActive(false)`).
+- `#p` вызывает `GUIManager.UpdateProgramm(...)`, загружает source и в конце
+  закрывает editor state: `programmator.SetActive(false)` и
+  `ProgrammerView.active=false`.
 
 Итог после успешного запуска: программа работает, `ProgPanel.playing == true`,
 редактор не висит поверх игры.
@@ -117,8 +119,8 @@ Unity всегда шлёт `pRST` перед `Pope`/локальным откр
 
 - если программа запущена: остановить, очистить runtime state, очистить server
   `current_window`, отправить `Gu`, затем `@P 0`;
-- если программа не запущена: очистить server `current_window` и отправить
-  только `@P 0`;
+- если программа не запущена: очистить server `current_window` и не отправлять
+  `#P/@P`;
 - не открывать `#P` из stopped `pRST`;
 - если selected нет: не открывать фиктивную программу и не создавать `program`.
 
@@ -197,13 +199,10 @@ Unity handler:
 
 Использовать:
 
+- после успешного `PROG` save/start перед `@P`, чтобы закрыть editor state;
 - после rename;
 - на login, если selected program есть и нужно восстановить client-side
-  `ProgrammerView.programId/source`, но не открывать редактор.
-
-Не использовать:
-
-- после успешного `PROG` save/start.
+  `ProgrammerView.programId/source`, но не открыть редактор.
 
 ### `@P`
 
@@ -278,7 +277,7 @@ Opcode `Stop` внутри программы:
 - Создавать программу `id=0`, `name="program"` при `PROG program_id=0`.
 - Открывать список программ как fallback для валидного `PROG`.
 - Молча выбирать другую программу, если selected отсутствует.
-- Слать `#P/#p` на успешном `PROG` start без новой ручной проверки Unity.
+- Слать `#P` на успешном `PROG` start.
 - Менять порядок `@P/#p/#P/Gu` без сверки с Unity handlers.
 - Чистить только клиентский или только серверный state: GUI state, ECS runtime
   state и wire status должны сходиться.

@@ -699,7 +699,7 @@ client-only fix или product decision.
 
 - Минимальный сценарий: `Pope` список -> `createprog` -> `#P` open ->
   `PROG` save+run -> `Gu` close -> `#p` update -> `@P 1` -> `pRST` stop ->
-  `@P 0` -> `#P` reopen.
+  `Gu` -> `@P 0`; stopped `pRST` не должен открывать `#P`.
 - Что делать: оформить в `docs/PROTOCOL.md` или отдельном тест-доке и покрыть
   protocol-пробой.
 - Статус: спецификация оформлена в `docs/PROTOCOL.md` в разделе

@@ -436,16 +436,18 @@ try:
         raise RuntimeError(f"settings save did not update #S payload: {settings_payload!r}")
 
     write_ty("PROG", x, y, prog_payload(prog_id, "$z"))
-    prog_packets = wait_for_events(["Gu", "@T", "@P", "BH"], timeout=8)
+    prog_packets = wait_for_events(["Gu", "@T", "#p", "@P", "BH"], timeout=8)
     prog_packets.extend(drain_available())
     assert_no_event(prog_packets, "#P", "PROG start")
-    assert_no_event(prog_packets, "#p", "PROG start")
     prog_events = foreground_events(prog_packets)
-    expected_prog = ["Gu", "@T", "@P", "BH"]
-    if prog_events[:4] != expected_prog:
+    expected_prog = ["Gu", "@T", "#p", "@P", "BH"]
+    if prog_events[:5] != expected_prog:
         raise RuntimeError(f"PROG start events mismatch: {prog_events!r}")
+    prog_update = json.loads(first_payload(prog_packets, "#p").decode("utf-8"))
+    if prog_update.get("id") != prog_id or prog_update.get("source") != "$z":
+        raise RuntimeError(f"PROG start #p payload mismatch: {prog_update!r}")
     prog_foreground_packets = [p for p in prog_packets if p[1] != "PI"]
-    if prog_foreground_packets[2][2] != b"1" or prog_foreground_packets[3][2] != b"0":
+    if prog_foreground_packets[3][2] != b"1" or prog_foreground_packets[4][2] != b"0":
         raise RuntimeError("PROG start did not report @P=1 and BH=0")
 
     write_ty("pRST", x, y)

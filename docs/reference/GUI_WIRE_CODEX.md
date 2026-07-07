@@ -29,7 +29,7 @@ prog.menu.open | GUIManager.OnProgButton | Pope | ignored | social/buildings.rs:
 prog.create.dialog | HORB button | GUI_ | {"b":"createprog"} | ui/gui_buttons.rs::open_create_prog_dialog | GU | поле имени программы
 prog.create.confirm | HORB input button | GUI_ | {"b":"createprog:<name>"} | ui/gui_buttons.rs::handle_create_prog | Gu,#P,Gu | выбирает created program, открывает редактор
 prog.open | HORB list button | GUI_ | {"b":"openprog:<id>"} | ui/gui_buttons.rs::handle_open_prog | Gu,#P,Gu | только owned program
-prog.save.start | ProgrammerView.SendAndStartProgram | PROG | [len:i32][id:i32][compiled][source] | social/misc.rs::handle_prog_ty | Gu,optional @T,@P,BH,optional OK | успешный старт не должен слать #P/#p, иначе Unity снова будит редактор
+prog.save.start | ProgrammerView.SendAndStartProgram | PROG | [len:i32][id:i32][compiled][source] | social/misc.rs::handle_prog_ty | Gu,optional @T,#p,@P,BH,optional OK | успешный старт должен слать #p перед @P, иначе Unity не сбрасывает ProgrammerView.active
 prog.stop | GUIManager/ProgPanel stop | pRST | empty | social/misc.rs::handle_prog_ty | Gu,@P,BH | только если реально был running
 prog.preopen.reset | GUIManager.OnProgButton pre-open | pRST | empty | social/misc.rs::handle_prog_ty | none or @P0 only on missing state | stopped selected не должен открывать #P
 prog.delete | ProgrammerView delete | PDEL | <id> | social/misc.rs::handle_prog_ty | none | C# parity: wire-silent
