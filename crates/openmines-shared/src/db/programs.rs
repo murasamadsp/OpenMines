@@ -100,7 +100,7 @@ impl Database {
         Ok(())
     }
 
-    /// Save (upsert) program: update code if program exists, otherwise insert.
+    /// Save program source for an existing owned program.
     pub async fn save_program(&self, player_id: i32, prog_id: i32, code: &str) -> Result<()> {
         if prog_id <= 0 {
             bail!("program id={prog_id}: invalid client program id");
@@ -112,21 +112,7 @@ impl Database {
             .execute(&self.pool)
             .await?;
         if result.rows_affected() == 0 {
-            let insert = sqlx::query(
-                "INSERT INTO programs (id, player_id, name, code) VALUES (?1, ?2, ?3, ?4)",
-            )
-            .bind(prog_id)
-            .bind(player_id)
-            .bind("program")
-            .bind(code)
-            .execute(&self.pool)
-            .await?;
-            if insert.rows_affected() != 1 {
-                bail!(
-                    "program id={prog_id}: insert affected {} rows",
-                    insert.rows_affected()
-                );
-            }
+            bail!("program id={prog_id}: save affected 0 rows");
         }
         Ok(())
     }
@@ -166,7 +152,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_program_rejects_foreign_existing_id() {
+    async fn save_program_rejects_missing_or_foreign_existing_id() {
         let database = temp_database("program_foreign_save").await;
         let owner = database
             .create_player("program-owner", "p", "h1")
@@ -186,9 +172,17 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.to_string().contains("UNIQUE constraint failed"));
+        assert!(err.to_string().contains("save affected 0 rows"));
         let saved = database.get_program(program_id).await.unwrap().unwrap();
         assert_eq!(saved.player_id, owner.id);
         assert_eq!(saved.code, "old");
+
+        let missing_id = program_id + 10_000;
+        let missing_err = database
+            .save_program(owner.id, missing_id, "created-from-prog")
+            .await
+            .unwrap_err();
+        assert!(missing_err.to_string().contains("save affected 0 rows"));
+        assert!(database.get_program(missing_id).await.unwrap().is_none());
     }
 }

@@ -293,6 +293,27 @@ pub async fn handle_prog_ty(
                     );
                     return;
                 }
+                let program_name = match load_owned_program_name(state, pid, prog_id).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, "Saved program is not owned or missing before PROG #p sync");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Программа недоступна.").1,
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed before PROG #p sync");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        return;
+                    }
+                };
                 if let Err(e) = state
                     .db
                     .set_selected_program(pid.into(), Some(prog_id))
@@ -349,6 +370,11 @@ pub async fn handle_prog_ty(
                 send_programmator_start_position(tx, server_pos, running);
                 send_u_packet(tx, "@P", &programmator_status(running).1);
                 send_u_packet(tx, "BH", &hand_mode(false).1);
+                send_u_packet(
+                    tx,
+                    "#p",
+                    &open_programmator(prog_id, &program_name, &source).1,
+                );
                 if !running {
                     send_u_packet(
                         tx,
@@ -821,10 +847,14 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@P", "BH", "OK"]);
+        assert_eq!(names, vec!["Gu", "@P", "BH", "#p", "OK"]);
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"0");
         assert_eq!(events[2].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[3].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "");
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "");
@@ -859,11 +889,46 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@T", "@P", "BH"]);
+        assert_eq!(names, vec!["Gu", "@T", "@P", "BH", "#p"]);
+        assert!(!names.contains(&"#P"));
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"17:23");
         assert_eq!(events[2].1, b"1");
         assert_eq!(events[3].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[4].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "$z");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prog_rejects_missing_positive_program_id_without_creating_default_program() {
+        let test = make_test_state("prog_missing_positive_id").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let missing_prog_id = 99_999;
+        let payload = prog_payload(0, missing_prog_id, &[], "$z");
+        let pid = PlayerId(test.player.id);
+
+        handle_prog_ty(&test.state, &tx, pid, "PROG", &payload).await;
+
+        assert!(
+            test.state
+                .db
+                .get_program(missing_prog_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Не удалось сохранить программу."));
 
         test.cleanup();
     }
