@@ -3,13 +3,15 @@
 
 pub mod actors;
 pub mod economy;
+pub mod logic;
 pub mod mechanics;
 pub mod structures;
 pub mod world;
 
 pub use actors::{alive, botspot, player, programmator};
-pub use economy::{crafting, market};
-pub use mechanics::{building_damage, chat, combat, skills};
+pub use economy::market;
+pub use logic::{crafting, skills};
+pub use mechanics::{building_damage, chat, combat};
 pub use structures::buildings;
 pub use world::{direction, sand};
 
