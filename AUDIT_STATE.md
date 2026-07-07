@@ -102,7 +102,7 @@
   подключены TCP/packet/TY metrics и `/metrics`, PO response id валидируется,
   typed `PlayerRow::as_role/as_clan_rank` используется при hydrate игрока,
   сняты исторические allow с DB API и clan GUI module. Текущий срез:
-  `rg dead_code server crates -g '!target'` -> 39 строк; оставшееся требует
+  `rg dead_code server crates -g '!target'` -> 36 строк; оставшееся требует
   feature wiring (BotSpot, skills hooks, programmator, provider/world/protocol),
   а не удаления кода.
 

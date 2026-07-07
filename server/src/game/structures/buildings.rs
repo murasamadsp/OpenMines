@@ -18,7 +18,6 @@ pub struct BuildingCellConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BuildingConfig {
-    #[allow(dead_code)]
     pub code: String,
     pub cost: i64,
     pub charge: i32,
@@ -559,12 +558,10 @@ pub struct PackView {
     pub owner_id: PlayerId,
     pub clan_id: i32,
     pub charge: i32,
-    // TODO: max_charge/hp/max_hp will be used when building UI/status packets are fully wired
+    // TODO: max_charge will be used when building charge status packets are fully wired.
     #[allow(dead_code)]
     pub max_charge: i32,
-    #[allow(dead_code)]
     pub hp: i32,
-    #[allow(dead_code)]
     pub max_hp: i32,
 }
 
