@@ -260,7 +260,7 @@ pub struct GameState {
     pub life_queue: Mutex<Vec<LifeCmd>>,
     /// Монотонный счётчик токенов сеанса (см. `LifeCmd`/`ActivePlayer`).
     session_token_seq: std::sync::atomic::AtomicU64,
-    pub player_tx: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    player_tx: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
     /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
@@ -983,6 +983,29 @@ impl GameState {
         if let Some(tx) = self.player_tx.get(&pid) {
             let _ = tx.send(data);
         }
+    }
+
+    pub fn player_sender(
+        &self,
+        pid: PlayerId,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>> {
+        self.player_tx.get(&pid).map(|tx| tx.clone())
+    }
+
+    pub fn is_player_connected(&self, pid: PlayerId) -> bool {
+        self.player_tx.contains_key(&pid)
+    }
+
+    pub fn register_player_sender(
+        &self,
+        pid: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    ) {
+        self.player_tx.insert(pid, tx);
+    }
+
+    pub fn unregister_player_sender(&self, pid: PlayerId) {
+        self.player_tx.remove(&pid);
     }
 
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {

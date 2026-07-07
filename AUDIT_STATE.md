@@ -59,6 +59,9 @@
 - Player spatial index `chunk_players` закрыт за `GameState`: регистрация,
   снятие, полный cleanup stale entries и snapshot игроков в чанке больше не
   выполняются напрямую из session-кода.
+- Player sender index `player_tx` закрыт за `GameState`: проверка online,
+  получение sender, регистрация и снятие sender больше не идут через публичный
+  `DashMap`.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.

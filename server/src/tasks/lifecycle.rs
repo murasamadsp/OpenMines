@@ -544,7 +544,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
             }
         }
         for (owner, sk_pkt) in buildwar_pkts {
-            if let Some(tx) = state.player_tx.get(&owner).map(|t| t.clone()) {
+            if let Some(tx) = state.player_sender(owner) {
                 let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
                     sk_pkt.0, &sk_pkt.1,
                 ));
@@ -652,7 +652,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                 }
             }
             for pid in due {
-                if let Some(tx) = state.player_tx.get(&pid).map(|t| t.clone()) {
+                if let Some(tx) = state.player_sender(pid) {
                     crate::net::session::play::chunks::bots_render(&state, &tx, pid);
                 }
             }

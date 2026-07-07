@@ -65,8 +65,8 @@ async fn finalize_ready_orders(state: &Arc<GameState>) {
 async fn finalize_ready_order(state: &Arc<GameState>, order: &OrderRow) {
     let buyer_id = PlayerId(order.buyer_id);
     let seller_id = PlayerId(order.initiator_id);
-    let buyer_online = state.player_tx.contains_key(&buyer_id);
-    let seller_online = order.initiator_id != 0 && state.player_tx.contains_key(&seller_id);
+    let buyer_online = state.is_player_connected(buyer_id);
+    let seller_online = order.initiator_id != 0 && state.is_player_connected(seller_id);
     if !buyer_online && !seller_online {
         finalize_offline_ready_order(state, order).await;
         return;
@@ -165,7 +165,7 @@ async fn finalize_offline_ready_order(state: &Arc<GameState>, order: &OrderRow) 
 
 /// Деньги игроку: online → ECS + `P$` (как C# `SendMoney`) + dirty; offline → БД.
 pub async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) -> Result<()> {
-    let tx = state.player_tx.get(&pid).map(|t| t.clone());
+    let tx = state.player_sender(pid);
     let applied = state.modify_player(pid, |ecs, e| {
         if ecs.get::<PlayerStats>(e).is_none() {
             tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for auction money credit");
@@ -201,7 +201,7 @@ pub async fn credit_inventory(
     item_id: i32,
     count: i32,
 ) -> Result<()> {
-    let tx = state.player_tx.get(&pid).map(|t| t.clone());
+    let tx = state.player_sender(pid);
     let applied = state.modify_player(pid, |ecs, e| {
         if ecs.get::<PlayerInventory>(e).is_none() {
             tracing::error!(player_id = %pid, component = "PlayerInventory", "Player component missing for auction inventory credit");

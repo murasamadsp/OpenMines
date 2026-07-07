@@ -111,7 +111,7 @@ pub fn connect_in_tick(
                     last_bots_render: std::time::Instant::now(),
                 },
             );
-            state.player_tx.insert(pid, tx.clone());
+            state.register_player_sender(pid, tx.clone());
             send_initial_sync(state, tx, &row);
             tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
             return;
@@ -225,7 +225,7 @@ pub fn connect_in_tick(
     );
     state.player_entities.insert(pid, entity);
 
-    state.player_tx.insert(pid, tx.clone());
+    state.register_player_sender(pid, tx.clone());
 
     // BUG 3: Recalculate max_health from Health skill at login (C# ref: MaxHealth = 100 + skill.Effect).
     state.modify_player(pid, |ecs, entity| {
@@ -259,7 +259,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         return;
     };
     state.active_players.remove(&pid);
-    state.player_tx.remove(&pid);
+    state.unregister_player_sender(pid);
     let entity = p;
 
     // Берём чанк и row из ECS (sync), затем save_player отдаём в отдельный
