@@ -321,7 +321,6 @@ pub trait OnPackCrys {
     fn on_pack_crys_capacity(&self, current_capacity: i64) -> i64;
 }
 
-#[allow(dead_code)] // Will be used when experience scaling modifiers are implemented
 pub trait OnExp {
     fn on_exp(&self, current_val: f32) -> f32;
 }
@@ -579,12 +578,10 @@ pub fn get_player_skill_effect(skills: &SkillSlots, skill: SkillType) -> f32 {
 /// установлен и exp добавлен (вызывающие тогда шлют @S); `false`, если скилла нет
 /// в слотах (тогда @S не нужен — 1:1 C#, неустановленный скилл опыт не копит).
 pub fn add_skill_exp(skills: &mut SkillSlots, code: &str, amount: f32) -> bool {
-    let upgrade_mult = skills
-        .find(SkillType::Upgrade.code())
-        .map_or(1.0, |s| skill_effect(SkillType::Upgrade, s.level));
+    let gained_exp = PlayerSkills { skills }.on_exp(amount);
 
     if let Some(entry) = skills.find_mut(code) {
-        entry.exp = amount.mul_add(upgrade_mult, entry.exp);
+        entry.exp += gained_exp;
         true
     } else {
         false
@@ -698,7 +695,9 @@ pub fn can_install_skill(player_skills: &SkillSlots, skill: SkillType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::SkillType;
+    use super::{SkillType, add_skill_exp, skill_effect};
+    use crate::db::{SkillEntry, SkillSlots};
+    use std::collections::HashMap;
     use strum::IntoEnumIterator as _;
 
     #[test]
@@ -714,5 +713,36 @@ mod tests {
     fn from_code_unknown_is_none() {
         assert_eq!(SkillType::from_code("?"), None);
         assert_eq!(SkillType::from_code(""), None);
+    }
+
+    #[test]
+    fn add_skill_exp_applies_upgrade_multiplier_once() {
+        let mut skills = SkillSlots {
+            skills: HashMap::from([
+                (
+                    0,
+                    SkillEntry {
+                        code: SkillType::Digging.code().to_owned(),
+                        level: 1,
+                        exp: 0.0,
+                    },
+                ),
+                (
+                    1,
+                    SkillEntry {
+                        code: SkillType::Upgrade.code().to_owned(),
+                        level: 2,
+                        exp: 0.0,
+                    },
+                ),
+            ]),
+            total_slots: 20,
+        };
+
+        assert!(add_skill_exp(&mut skills, SkillType::Digging.code(), 10.0));
+
+        let gained = skills.find(SkillType::Digging.code()).unwrap().exp;
+        let expected = 10.0 * skill_effect(SkillType::Upgrade, 2);
+        assert!((gained - expected).abs() < f32::EPSILON);
     }
 }

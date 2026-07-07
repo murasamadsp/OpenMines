@@ -48,7 +48,6 @@ pub struct BotSpotBasket {
 }
 
 /// Constants matching C# `BotSpot` class.
-#[allow(dead_code)]
 impl BotSpotData {
     /// C# `public int tail => 1;`
     pub const TAIL: u8 = 1;
