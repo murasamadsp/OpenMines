@@ -51,10 +51,10 @@ pub fn standing_cell_hazard_system(
         if !world.valid_coord(px, py) {
             continue;
         }
-        let cell = world.get_cell(px, py);
+        let cell = world.get_cell_typed(px, py);
         let pdef = {
             let defs = world.cell_defs();
-            defs.get(cell).clone()
+            defs.get_typed(cell).clone()
         };
         if pdef.cell_is_empty() {
             continue;
@@ -102,7 +102,7 @@ pub fn standing_cell_hazard_system(
             }
         }
 
-        if cell == cell_type::BOX {
+        if cell == crate::world::CellType(cell_type::BOX) {
             // C-1 фикс: in-memory `box_take` вместо sync SQLite под `ecs.write()`
             // (get_box_at/delete_box_at тут фризили весь сервер каждые 10ms при
             // игроке на BOX). Поведение 1:1 (`PEntity.GetBox`: всегда удаляет,

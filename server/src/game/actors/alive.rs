@@ -94,7 +94,7 @@ pub fn alive_physics_system(
                 if !world.valid_coord(x, y) || !seen.insert((x, y)) {
                     continue;
                 }
-                let cell = crate::world::CellType(world.get_cell(x, y));
+                let cell = world.get_cell_typed(x, y);
                 if is_alive(cell) {
                     alive_cells.push((x, y, cell.0));
                 }
@@ -488,7 +488,7 @@ fn alive_rainbow(
             continue;
         }
 
-        let opposite_cell = crate::world::CellType(world.get_cell(ox, oy));
+        let opposite_cell = world.get_cell_typed(ox, oy);
         let odef = cell_defs.get_typed(opposite_cell);
 
         // C# conditions: not alive, not empty, is_diggable, is_destructible.

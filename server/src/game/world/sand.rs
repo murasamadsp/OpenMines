@@ -16,7 +16,7 @@ fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
     if !world.valid_coord(x, y) {
         return false;
     }
-    let cell = crate::world::CellType(world.get_cell(x, y));
+    let cell = world.get_cell_typed(x, y);
     world.is_empty(x, y)
         && !matches!(
             cell.0,
@@ -29,7 +29,7 @@ fn has_falltype(world: &crate::world::World, x: i32, y: i32) -> bool {
     if !world.valid_coord(x, y) {
         return false;
     }
-    let cell = crate::world::CellType(world.get_cell(x, y));
+    let cell = world.get_cell_typed(x, y);
     world.cell_defs().get_typed(cell).is_sand() || cell.is_boulder()
 }
 
@@ -93,7 +93,7 @@ pub fn sand_physics_system(
                     continue;
                 }
 
-                let cell = crate::world::CellType(world.get_cell(sx, sy));
+                let cell = world.get_cell_typed(sx, sy);
                 let is_s = cell_defs.get_typed(cell).is_sand();
                 let is_b = cell.is_boulder();
 

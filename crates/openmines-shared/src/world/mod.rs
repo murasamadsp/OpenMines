@@ -138,12 +138,14 @@ pub trait WorldProvider: Send + Sync {
     fn cells_height(&self) -> u32;
     fn valid_coord(&self, x: i32, y: i32) -> bool;
     fn get_cell(&self, x: i32, y: i32) -> u8;
+    fn get_cell_typed(&self, x: i32, y: i32) -> CellType;
     // TODO: get_solid_cell/get_road_cell will be used when layer-specific cell queries are needed
     #[allow(dead_code)]
     fn get_solid_cell(&self, x: i32, y: i32) -> u8;
     #[allow(dead_code)]
     fn get_road_cell(&self, x: i32, y: i32) -> u8;
     fn set_cell(&self, x: i32, y: i32, cell: u8);
+    fn set_cell_typed(&self, x: i32, y: i32, cell: CellType);
     fn get_durability(&self, x: i32, y: i32) -> f32;
     fn set_durability(&self, x: i32, y: i32, d: f32);
     #[allow(dead_code)]
@@ -222,6 +224,10 @@ impl WorldProvider for World {
         if b == 0 { EMPTY_CELL } else { b }
     }
 
+    fn get_cell_typed(&self, x: i32, y: i32) -> CellType {
+        CellType(self.get_cell(x, y))
+    }
+
     fn get_solid_cell(&self, x: i32, y: i32) -> u8 {
         let c = self.get_cell(x, y);
         if self.cell_defs.get(c).cell_is_empty() {
@@ -241,11 +247,14 @@ impl WorldProvider for World {
     }
 
     fn set_cell(&self, x: i32, y: i32, cell: u8) {
+        self.set_cell_typed(x, y, CellType(cell));
+    }
+
+    fn set_cell_typed(&self, x: i32, y: i32, cell_type: CellType) {
         if !self.valid_coord(x, y) {
             return;
         }
-        let cell_type = CellType(cell);
-        let prop = self.cell_defs.get(cell);
+        let prop = self.cell_defs.get_typed(cell_type);
         let durability = if prop.cell_is_empty() {
             0.0f32
         } else {
@@ -541,6 +550,9 @@ mod tests {
         let read = world.read_world_cell(10, 10).unwrap();
         assert_eq!(read.cell_type, CellType(cell_type::ROAD));
         assert!((read.durability - 5.0).abs() < f32::EPSILON);
+
+        world.set_cell_typed(11, 10, CellType(cell_type::GREEN));
+        assert_eq!(world.get_cell_typed(11, 10), CellType(cell_type::GREEN));
 
         // cleanup temp files if created
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));

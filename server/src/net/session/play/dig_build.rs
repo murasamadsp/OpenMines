@@ -231,7 +231,7 @@ pub fn handle_dig(
         return;
     }
 
-    let cell = crate::world::CellType(state.world.get_cell(tgt_x, tgt_y));
+    let cell = state.world.get_cell_typed(tgt_x, tgt_y);
     let (touch_damage, diggable) = {
         let defs = state.world.cell_defs();
         let p = defs.get_typed(cell);
