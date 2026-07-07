@@ -25,7 +25,7 @@ pub struct Config {
 
 /// Корень геймплей-тюнинга. Растёт добавлением секций-суб-структур
 /// (`cooldowns`, далее `combat`/`items`/`economy`/…).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
     pub combat: CombatConfig,
@@ -35,6 +35,22 @@ pub struct GameplayConfig {
     pub programmator: ProgrammatorConfig,
     pub schedules: ScheduleConfig,
     pub rate_limits: RateLimitConfig,
+}
+
+impl GameplayConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            cooldowns: CooldownConfig::runtime_baseline(),
+            combat: CombatConfig::runtime_baseline(),
+            bonus: BonusConfig::runtime_baseline(),
+            skills: SkillsConfig::runtime_baseline(),
+            spawn: SpawnConfig::runtime_baseline(),
+            programmator: ProgrammatorConfig::runtime_baseline(),
+            schedules: ScheduleConfig::runtime_baseline(),
+            rate_limits: RateLimitConfig::runtime_baseline(),
+        }
+    }
 }
 
 /// Настройки rate limiting для защиты от спама.
@@ -51,8 +67,9 @@ pub struct RateLimitConfig {
     pub gui_per_sec: u32,
 }
 
-impl Default for RateLimitConfig {
-    fn default() -> Self {
+impl RateLimitConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             chat_burst: 5,
             chat_per_sec: 3,
@@ -68,8 +85,9 @@ pub struct SpawnConfig {
     pub y: i32,
 }
 
-impl Default for SpawnConfig {
-    fn default() -> Self {
+impl SpawnConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self { x: 10, y: 10 }
     }
 }
@@ -85,8 +103,9 @@ pub struct ProgrammatorConfig {
     pub min_move_delay_ms: u64,
 }
 
-impl Default for ProgrammatorConfig {
-    fn default() -> Self {
+impl ProgrammatorConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             direct_action_delay_us: 333_333,
             blocked_move_penalty_ms: 200,
@@ -111,8 +130,9 @@ pub struct ScheduleConfig {
     pub session_disconnect_timeout_secs: u64,
 }
 
-impl Default for ScheduleConfig {
-    fn default() -> Self {
+impl ScheduleConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             hazards_ms: 10,
             physics_ms: 400,
@@ -136,8 +156,9 @@ pub struct SkillsConfig {
     pub upgrade_cost_base: i64,
 }
 
-impl Default for SkillsConfig {
-    fn default() -> Self {
+impl SkillsConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             upgrade_cost_base: 100,
         }
@@ -153,11 +174,9 @@ pub struct CooldownConfig {
     pub geo_ms: u64,
 }
 
-// `Default` — НЕ для serde-подстановки (поля обязательны при парсинге), а только
-// для генерации стартового `config.json` и тест-фикстур. Канонические значения
-// живут в одном месте; рантайм всегда читает их из файла.
-impl Default for CooldownConfig {
-    fn default() -> Self {
+impl CooldownConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             dig_ms: 200,
             build_ms: 200,
@@ -175,8 +194,9 @@ pub struct CombatConfig {
     pub gun_radius_cells: i32,
 }
 
-impl Default for CombatConfig {
-    fn default() -> Self {
+impl CombatConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             gun_fire_interval_ms: 500,
             gun_damage: 60,
@@ -193,8 +213,9 @@ pub struct BonusConfig {
     pub reward_money: i64,
 }
 
-impl Default for BonusConfig {
-    fn default() -> Self {
+impl BonusConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
             cooldown_secs: 7 * 3_600,
             reward_money: 1_000_000,
@@ -207,16 +228,13 @@ pub struct CronConfig {
     pub hourly_log_enabled: bool,
 }
 
-impl Default for CronConfig {
-    fn default() -> Self {
+impl CronConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
         Self {
-            hourly_log_enabled: default_hourly_log_enabled(),
+            hourly_log_enabled: true,
         }
     }
-}
-
-const fn default_hourly_log_enabled() -> bool {
-    true
 }
 
 /// Настройки вывода логов (см. `crate::logging::init`). Все поля обязательны в
@@ -229,24 +247,24 @@ pub struct LoggingConfig {
     pub file: Option<LogFileConfig>,
 }
 
-impl Default for LoggingConfig {
-    fn default() -> Self {
+impl LoggingConfig {
+    #[must_use]
+    pub fn runtime_baseline() -> Self {
         Self {
-            filter: default_log_filter(),
-            format: LogFormat::default(),
+            filter: runtime_baseline_log_filter(),
+            format: LogFormat::Pretty,
             file: None,
         }
     }
 }
 
-fn default_log_filter() -> String {
+fn runtime_baseline_log_filter() -> String {
     "openmines_server=info,openmines_server::net::session=debug,tokio=warn,h2=warn".into()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
-    #[default]
     Pretty,
     Compact,
     Json,
@@ -514,12 +532,12 @@ mod tests {
         let cfg = Config::load(root.join("configs/config.json").to_str().unwrap()).unwrap();
         assert_eq!(
             cfg.gameplay,
-            GameplayConfig::default(),
+            GameplayConfig::runtime_baseline(),
             "configs/config.json gameplay must match typed baseline in config.rs"
         );
         assert_eq!(
             cfg.cron,
-            CronConfig::default(),
+            CronConfig::runtime_baseline(),
             "configs/config.json cron must match typed baseline in config.rs"
         );
     }

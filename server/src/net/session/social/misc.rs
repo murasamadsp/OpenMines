@@ -715,9 +715,9 @@ mod tests {
             world_chunks_w: 2,
             world_chunks_h: 2,
             data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::default(),
-            cron: crate::config::CronConfig::default(),
-            gameplay: crate::config::GameplayConfig::default(),
+            logging: crate::config::LoggingConfig::runtime_baseline(),
+            cron: crate::config::CronConfig::runtime_baseline(),
+            gameplay: crate::config::GameplayConfig::runtime_baseline(),
         };
 
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)

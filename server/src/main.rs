@@ -234,7 +234,7 @@ mod benchmarks {
     static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
 
     fn create_minimal_state() -> Arc<crate::game::GameState> {
-        create_minimal_state_with_gameplay(crate::config::GameplayConfig::default())
+        create_minimal_state_with_gameplay(crate::config::GameplayConfig::runtime_baseline())
     }
 
     fn create_minimal_state_with_gameplay(
@@ -258,8 +258,8 @@ mod benchmarks {
                 world_chunks_w: 2,
                 world_chunks_h: 2,
                 data_dir: dir.to_string_lossy().to_string(),
-                logging: crate::config::LoggingConfig::default(),
-                cron: crate::config::CronConfig::default(),
+                logging: crate::config::LoggingConfig::runtime_baseline(),
+                cron: crate::config::CronConfig::runtime_baseline(),
                 gameplay,
             };
             let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
@@ -343,7 +343,7 @@ mod benchmarks {
 
     #[test]
     fn schedule_intervals_come_from_config() {
-        let mut gameplay = crate::config::GameplayConfig::default();
+        let mut gameplay = crate::config::GameplayConfig::runtime_baseline();
         gameplay.schedules.physics_ms = 321;
         gameplay.schedules.programmator_ms = 654;
 

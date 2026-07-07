@@ -1178,9 +1178,9 @@ mod tests {
             world_chunks_w: 2,
             world_chunks_h: 2,
             data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::default(),
-            cron: crate::config::CronConfig::default(),
-            gameplay: crate::config::GameplayConfig::default(),
+            logging: crate::config::LoggingConfig::runtime_baseline(),
+            cron: crate::config::CronConfig::runtime_baseline(),
+            gameplay: crate::config::GameplayConfig::runtime_baseline(),
         };
         let buildings_path = repo_root.join("configs/buildings.json");
         let _ = crate::game::buildings::load_buildings_config(

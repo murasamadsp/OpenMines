@@ -160,7 +160,8 @@ mod tests {
     }
 
     async fn make_bonus_test_state(label: &str) -> BonusTestState {
-        make_bonus_test_state_with_bonus(label, crate::config::BonusConfig::default()).await
+        make_bonus_test_state_with_bonus(label, crate::config::BonusConfig::runtime_baseline())
+            .await
     }
 
     async fn make_bonus_test_state_with_bonus(
@@ -188,7 +189,7 @@ mod tests {
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
         let gameplay = crate::config::GameplayConfig {
             bonus,
-            ..Default::default()
+            ..crate::config::GameplayConfig::runtime_baseline()
         };
         let config = crate::config::Config {
             world_name: world_name.clone(),
@@ -196,8 +197,8 @@ mod tests {
             world_chunks_w: 2,
             world_chunks_h: 2,
             data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::default(),
-            cron: crate::config::CronConfig::default(),
+            logging: crate::config::LoggingConfig::runtime_baseline(),
+            cron: crate::config::CronConfig::runtime_baseline(),
             gameplay,
         };
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)

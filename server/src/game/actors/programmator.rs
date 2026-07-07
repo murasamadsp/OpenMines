@@ -2825,7 +2825,7 @@ mod tests {
         // C# Player.cs:155: на дороге ServerPause ×0.80 → меньше пауза.
         // Movement lvl0 effect=70 → pause_units=7000; off=49ms, on=39ms.
         let skills = empty_skills();
-        let timing = crate::config::ProgrammatorConfig::default();
+        let timing = crate::config::ProgrammatorConfig::runtime_baseline();
         let off = speed_pause(&skills, false, timing);
         let on = speed_pause(&skills, true, timing);
         assert_eq!(off, 49);
@@ -2911,7 +2911,7 @@ mod tests {
     fn programmator_direct_action_delay_comes_from_config() {
         let timing = crate::config::ProgrammatorConfig {
             direct_action_delay_us: 123_456,
-            ..Default::default()
+            ..crate::config::ProgrammatorConfig::runtime_baseline()
         };
         assert_eq!(direct_action_delay(timing), Duration::from_micros(123_456));
     }
@@ -3180,7 +3180,7 @@ mod tests {
             &mut prog_q,
             &mut delay,
             0,
-            crate::config::ProgrammatorConfig::default(),
+            crate::config::ProgrammatorConfig::runtime_baseline(),
         );
 
         assert!(matches!(result, ExecResult::None));
@@ -3200,7 +3200,7 @@ mod tests {
             &mut prog_q,
             &mut delay,
             0,
-            crate::config::ProgrammatorConfig::default(),
+            crate::config::ProgrammatorConfig::runtime_baseline(),
         );
 
         assert!(matches!(result, ExecResult::None));
@@ -3237,7 +3237,7 @@ mod tests {
             &mut prog_q,
             &mut delay,
             0,
-            crate::config::ProgrammatorConfig::default(),
+            crate::config::ProgrammatorConfig::runtime_baseline(),
         );
 
         assert!(matches!(result, ExecResult::Label(label) if label == "next"));

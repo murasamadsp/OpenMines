@@ -44,11 +44,9 @@
 - Implicit defaults audit: запретить runtime-подстановки доменного состояния.
   Начато с fail-fast загрузки boxes/events; дальше разбирать `serde(default)` и
   `unwrap_or` только там, где это скрывает повреждение config/DB/game state.
-- Config baseline cleanup: `config.rs::Default` сейчас не serde fallback, а
-  typed baseline для шаблона/тестов; это охраняется тестом против
-  `configs/config.json`. Следующий шаг — переименовать смысл в явный
-  `runtime_baseline()`/`template_config()`, чтобы не было визуальной ловушки
-  “дефолт = тихая подстановка”.
+- Config baseline cleanup: runtime config-структуры больше не реализуют
+  `Default`; тесты/фикстуры используют явный `runtime_baseline()`, а загрузка
+  `config.json` остаётся fail-fast без serde-подстановок.
 
 ## Входящие баги от ручной проверки 2026-07-07
 
