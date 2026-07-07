@@ -14,10 +14,75 @@ use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 use num_traits::ToPrimitive;
+use std::time::{Duration, Instant};
 
 /// Очередь смерти после `gun_firing_system`: нельзя вызывать `handle_death` изнутри `schedule.run` (вложенный `ecs.write()`).
 #[derive(Resource, Default)]
 pub struct DeathQueue(pub Vec<PlayerId>);
+
+struct HazardProfile {
+    started_at: Instant,
+    players_scanned: usize,
+    active_cells: usize,
+    fall_damage_hits: usize,
+    boxes_seen: usize,
+    boxes_taken: usize,
+    destructible_cells: usize,
+    lookup_time: Duration,
+    fall_damage_time: Duration,
+    box_time: Duration,
+    destroy_time: Duration,
+}
+
+impl HazardProfile {
+    fn start() -> Self {
+        Self {
+            started_at: Instant::now(),
+            players_scanned: 0,
+            active_cells: 0,
+            fall_damage_hits: 0,
+            boxes_seen: 0,
+            boxes_taken: 0,
+            destructible_cells: 0,
+            lookup_time: Duration::ZERO,
+            fall_damage_time: Duration::ZERO,
+            box_time: Duration::ZERO,
+            destroy_time: Duration::ZERO,
+        }
+    }
+
+    fn log_if_slow(&self) {
+        let total = self.started_at.elapsed();
+        if total <= Duration::from_millis(5) {
+            return;
+        }
+        tracing::warn!(
+            target: "tickprof",
+            players_scanned = self.players_scanned,
+            active_cells = self.active_cells,
+            fall_damage_hits = self.fall_damage_hits,
+            boxes_seen = self.boxes_seen,
+            boxes_taken = self.boxes_taken,
+            destructible_cells = self.destructible_cells,
+            lookup_time = ?self.lookup_time,
+            fall_damage_time = ?self.fall_damage_time,
+            box_time = ?self.box_time,
+            destroy_time = ?self.destroy_time,
+            total = ?total,
+            "SLOW hazards system"
+        );
+    }
+}
+
+fn reset_c190_if_due(cooldowns: &mut PlayerCooldowns) {
+    if cooldowns
+        .last_c190_hit
+        .is_some_and(|t| t.elapsed() >= Duration::from_mins(1))
+    {
+        cooldowns.c190_stacks = 1;
+        cooldowns.last_c190_hit = Some(Instant::now());
+    }
+}
 
 /// `Player.Update`: стоя на непустой клетке — `Hurt(fall_damage)`; далее ящик 90 / `is_destructible` (как `Player.cs` при `!isEmpty`).
 #[allow(clippy::needless_pass_by_value)]
@@ -37,30 +102,31 @@ pub fn standing_cell_hazard_system(
         &mut PlayerCooldowns,
     )>,
 ) {
+    let mut profile = HazardProfile::start();
     let world = &world_res.0;
 
     for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
+        profile.players_scanned += 1;
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
-        if cooldowns
-            .last_c190_hit
-            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_mins(1))
-        {
-            cooldowns.c190_stacks = 1;
-            cooldowns.last_c190_hit = Some(std::time::Instant::now());
-        }
+        reset_c190_if_due(&mut cooldowns);
         let (px, py) = (pos.x, pos.y);
         if !world.valid_coord(px, py) {
             continue;
         }
+        let lookup_t0 = Instant::now();
         let cell = world.get_cell_typed(px, py);
         let pdef = {
             let defs = world.cell_defs();
             defs.get_typed(cell).clone()
         };
+        profile.lookup_time += lookup_t0.elapsed();
         if pdef.cell_is_empty() {
             continue;
         }
+        profile.active_cells += 1;
         if pdef.fall_damage > 0 {
+            profile.fall_damage_hits += 1;
+            let fall_t0 = Instant::now();
             let fd = pdef.fall_damage;
             // C# ref: Player.Hurt → Health.AddExp (on every hurt)
             if crate::game::skills::add_skill_exp(&mut skills.states, "l", 1.0) {
@@ -101,14 +167,18 @@ pub fn standing_cell_hazard_system(
                     exclude: Some(p_meta.id),
                 });
             }
+            profile.fall_damage_time += fall_t0.elapsed();
         }
 
         if cell == crate::world::CellType(cell_type::BOX) {
+            profile.boxes_seen += 1;
+            let box_t0 = Instant::now();
             // C-1 фикс: in-memory `box_take` вместо sync SQLite под `ecs.write()`
             // (get_box_at/delete_box_at тут фризили весь сервер каждые 10ms при
             // игроке на BOX). Поведение 1:1 (`PEntity.GetBox`: всегда удаляет,
             // кристаллы могут быть 0); персистенция отложена (box_persist_q).
             if let Some(crys) = box_index.0.remove(&(px, py).into()).map(|(_, v)| v) {
+                profile.boxes_taken += 1;
                 box_persist.0.lock().push(((px, py).into(), None));
                 for (i, &c) in crys.iter().enumerate() {
                     stats.crystals[i] = stats.crystals[i].saturating_add(c);
@@ -121,11 +191,16 @@ pub fn standing_cell_hazard_system(
             }
             let _ = world.damage_cell(px, py, 1.0);
             bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
+            profile.box_time += box_t0.elapsed();
         } else if pdef.physical.is_destructible {
+            profile.destructible_cells += 1;
+            let destroy_t0 = Instant::now();
             world.destroy(px, py);
             bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
+            profile.destroy_time += destroy_t0.elapsed();
         }
     }
+    profile.log_if_slow();
 }
 
 /// Таймер залпа пушек. C# зовёт `gun.Update()` каждые 0.5с (`World.Update`
