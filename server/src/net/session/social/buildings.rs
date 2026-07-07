@@ -469,7 +469,7 @@ where
 {
     let entity = *state
         .building_index
-        .get(&(pack_x, pack_y))
+        .get(&((pack_x, pack_y).into()))
         .ok_or_else(|| "Объект не найден".to_string())?;
     let mut ecs = state.ecs.write();
     if ecs.get::<BuildingFlags>(entity).is_none() {
@@ -639,7 +639,7 @@ pub async fn destroy_damagable_building(
         let ecs = state.ecs.read();
         state
             .building_index
-            .get(&(bx, by))
+            .get(&((bx, by).into()))
             .and_then(|e| ecs.get::<BuildingStorage>(*e).map(|s| s.crystals))
     } else {
         None

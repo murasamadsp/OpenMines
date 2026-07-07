@@ -233,7 +233,7 @@ pub struct GameState {
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub player_entities: DashMap<PlayerId, Entity>,
     pub chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
-    pub building_index: DashMap<(i32, i32), Entity>,
+    pub building_index: DashMap<WorldPos, Entity>,
     pub botspot_index: DashMap<PlayerId, Entity>,
     pub chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
     pub chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
@@ -690,7 +690,7 @@ impl GameState {
     }
 
     pub fn get_pack_at(&self, x: i32, y: i32) -> Option<PackView> {
-        let entity = *self.building_index.get(&(x, y))?;
+        let entity = *self.building_index.get(&((x, y).into()))?;
         let view = {
             let ecs = self.ecs.read();
             let meta = ecs.get::<BuildingMetadata>(entity)?;
@@ -934,7 +934,7 @@ impl GameState {
     /// Callers не должны вручную синхронизировать `building_index` и
     /// `chunk_buildings`: это единый boundary для position→entity кэшей.
     pub fn register_building_entity(&self, x: i32, y: i32, entity: Entity) {
-        self.building_index.insert((x, y), entity);
+        self.building_index.insert((x, y).into(), entity);
         let (cx, cy) = World::chunk_pos(x, y);
         self.chunk_buildings
             .entry((cx, cy).into())
@@ -944,7 +944,7 @@ impl GameState {
 
     /// Удалить building entity из обоих runtime-индексов.
     pub fn remove_building_entity(&self, x: i32, y: i32) -> Option<Entity> {
-        let (_, entity) = self.building_index.remove(&(x, y))?;
+        let (_, entity) = self.building_index.remove(&((x, y).into()))?;
         let (cx, cy) = World::chunk_pos(x, y);
         if let Some(mut entities) = self.chunk_buildings.get_mut(&(cx, cy).into()) {
             entities.retain(|&ent| ent != entity);

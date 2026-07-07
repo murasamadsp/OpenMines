@@ -203,7 +203,7 @@ pub async fn handle_inventory_use(
     // C# `ContainsPack` → `Chunk.GetPack`: блок ТОЛЬКО если facing = ORIGIN
     // здания (SetPack регистрирует Pack лишь в origin-клетке), НЕ footprint-aware.
     // Раньше был `find_pack_covering` (весь футпринт) → строже C#/клиента.
-    if !state.world.valid_coord(fx, fy) || state.building_index.contains_key(&(fx, fy)) {
+    if !state.world.valid_coord(fx, fy) || state.building_index.contains_key(&((fx, fy).into())) {
         return;
     }
     // can_place_over: обходится только exempt-предметами.
@@ -1165,7 +1165,7 @@ mod tests {
     }
 
     fn building_at(state: &Arc<GameState>, x: i32, y: i32) -> Option<(PackType, i32)> {
-        let entity = *state.building_index.get(&(x, y))?;
+        let entity = *state.building_index.get(&((x, y).into()))?;
         let ecs = state.ecs.read();
         let meta = ecs.get::<BuildingMetadata>(entity)?;
         let own = ecs.get::<BuildingOwnership>(entity)?;

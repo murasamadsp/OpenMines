@@ -136,7 +136,7 @@ pub fn apply_player_death_core(
     // Респаун: проверяем pack через уже имеющийся &mut ecs (без отдельного лока)
     let (rx, ry) = if let (Some(x), Some(y)) = (rebind_x, rebind_y) {
         // Collect resp building data immutably first, then mutate.
-        let resp_data = state.building_index.get(&(x, y)).map(|ent| {
+        let resp_data = state.building_index.get(&((x, y).into())).map(|ent| {
             let bld_ent = *ent;
             let Some(meta) = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent) else {
                 return Err(DeathCoreError::RespState("BuildingMetadata"));

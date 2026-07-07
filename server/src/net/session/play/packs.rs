@@ -95,7 +95,11 @@ fn apply_charge_fill(
     let Some(player_entity) = state.get_player_entity(pid) else {
         return FillResult::MissingState;
     };
-    let Some(building_entity) = state.building_index.get(&(pack_x, pack_y)).map(|ent| *ent) else {
+    let Some(building_entity) = state
+        .building_index
+        .get(&((pack_x, pack_y).into()))
+        .map(|ent| *ent)
+    else {
         return FillResult::MissingState;
     };
 
@@ -252,11 +256,14 @@ pub fn open_resp_gui(
     };
 
     // Get cost from ECS
-    let cost = state.building_index.get(&(view.x, view.y)).and_then(|ent| {
-        let ecs = state.ecs.read();
-        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
-        Some(pk_stats.cost)
-    });
+    let cost = state
+        .building_index
+        .get(&((view.x, view.y).into()))
+        .and_then(|ent| {
+            let ecs = state.ecs.read();
+            let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+            Some(pk_stats.cost)
+        });
     let Some(cost) = cost else {
         tracing::error!(
             x = view.x,
@@ -312,20 +319,23 @@ pub fn open_resp_admin_gui(
     }
 
     // Fetch building details from ECS
-    let details = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
-        let ecs = state.ecs.read();
-        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
-        let storage = ecs.get::<BuildingStorage>(*ent)?;
-        let ownership = ecs.get::<BuildingOwnership>(*ent)?;
-        Some((
-            pk_stats.charge,
-            pk_stats.max_charge,
-            pk_stats.cost,
-            pk_stats.clanzone,
-            storage.money,
-            ownership.clan_id,
-        ))
-    });
+    let details = state
+        .building_index
+        .get(&((pack_x, pack_y).into()))
+        .and_then(|ent| {
+            let ecs = state.ecs.read();
+            let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+            let storage = ecs.get::<BuildingStorage>(*ent)?;
+            let ownership = ecs.get::<BuildingOwnership>(*ent)?;
+            Some((
+                pk_stats.charge,
+                pk_stats.max_charge,
+                pk_stats.cost,
+                pk_stats.clanzone,
+                storage.money,
+                ownership.clan_id,
+            ))
+        });
 
     let Some((charge, max_charge, cost, clanzone, money_inside, clan_id)) = details else {
         tracing::error!(
@@ -525,7 +535,7 @@ pub fn handle_resp_profit(
     };
     let Some(building_entity) = state
         .building_index
-        .get(&(pack_x, pack_y))
+        .get(&((pack_x, pack_y).into()))
         .map(|entry| *entry.value())
     else {
         send_resp_state_error(tx);
@@ -598,7 +608,7 @@ fn resp_profit_state_ready(
         .unwrap_or(false);
     let building_ready = state
         .building_index
-        .get(&(pack_x, pack_y))
+        .get(&((pack_x, pack_y).into()))
         .map(|ent| {
             let ecs = state.ecs.read();
             ecs.get::<BuildingStorage>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
@@ -659,7 +669,7 @@ pub fn handle_resp_save(
     };
     let building_state_ready = state
         .building_index
-        .get(&(pack_x, pack_y))
+        .get(&((pack_x, pack_y).into()))
         .map(|ent| {
             let ecs = state.ecs.read();
             (fields.cost.is_none() && fields.clanzone.is_none()
@@ -729,11 +739,14 @@ pub fn open_gun_gui(
     pack_x: i32,
     pack_y: i32,
 ) {
-    let fill_info = state.building_index.get(&(pack_x, pack_y)).and_then(|ent| {
-        let ecs = state.ecs.read();
-        let pk_stats = ecs.get::<BuildingStats>(*ent)?;
-        Some((pk_stats.charge, pk_stats.max_charge))
-    });
+    let fill_info = state
+        .building_index
+        .get(&((pack_x, pack_y).into()))
+        .and_then(|ent| {
+            let ecs = state.ecs.read();
+            let pk_stats = ecs.get::<BuildingStats>(*ent)?;
+            Some((pk_stats.charge, pk_stats.max_charge))
+        });
     let Some((charge, max_charge)) = fill_info else {
         return;
     };
@@ -841,7 +854,7 @@ pub fn handle_gun_fill_prog(
     }
     let building_state_ready = state
         .building_index
-        .get(&(pack_x, pack_y))
+        .get(&((pack_x, pack_y).into()))
         .map(|ent| {
             let ecs = state.ecs.read();
             ecs.get::<BuildingStats>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
@@ -990,7 +1003,7 @@ mod tests {
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
-        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             ecs.get_mut::<BuildingStorage>(building_entity)
@@ -1022,7 +1035,7 @@ mod tests {
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             ecs.get_mut::<BuildingStorage>(building_entity)
@@ -1097,7 +1110,7 @@ mod tests {
     async fn gun_fill_prog_missing_building_stats_does_not_dirty_building() {
         let test = make_charge_fill_test_state("gun_prog_missing_stats", "G", 5, 100).await;
         let (tx, _rx) = mpsc::unbounded_channel();
-        let building_entity = *test.state.building_index.get(&(10, 10)).unwrap();
+        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             ecs.entity_mut(building_entity).remove::<BuildingStats>();
@@ -1194,7 +1207,7 @@ mod tests {
     fn building_charge(state: &Arc<GameState>, x: i32, y: i32) -> i32 {
         state
             .building_index
-            .get(&(x, y))
+            .get(&((x, y).into()))
             .and_then(|ent| {
                 let ecs = state.ecs.read();
                 Some(ecs.get::<BuildingStats>(*ent)?.charge)
@@ -1205,7 +1218,7 @@ mod tests {
     fn building_cost(state: &Arc<GameState>, x: i32, y: i32) -> i32 {
         state
             .building_index
-            .get(&(x, y))
+            .get(&((x, y).into()))
             .and_then(|ent| {
                 let ecs = state.ecs.read();
                 Some(ecs.get::<BuildingStats>(*ent)?.cost)
@@ -1233,7 +1246,7 @@ mod tests {
     fn building_storage_money(state: &Arc<GameState>, x: i32, y: i32) -> i64 {
         state
             .building_index
-            .get(&(x, y))
+            .get(&((x, y).into()))
             .and_then(|ent| {
                 let ecs = state.ecs.read();
                 Some(ecs.get::<BuildingStorage>(*ent)?.money)
@@ -1252,7 +1265,7 @@ mod tests {
     fn building_dirty(state: &Arc<GameState>, x: i32, y: i32) -> bool {
         state
             .building_index
-            .get(&(x, y))
+            .get(&((x, y).into()))
             .and_then(|ent| {
                 let ecs = state.ecs.read();
                 Some(ecs.get::<BuildingFlags>(*ent)?.dirty)

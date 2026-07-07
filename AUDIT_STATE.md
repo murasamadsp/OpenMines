@@ -32,6 +32,8 @@
 - Runtime-индексы зданий (`building_index` + `chunk_buildings`) сведены в методы
   `register_building_entity` / `remove_building_entity` / `move_building_entity`,
   чтобы callers не синхронизировали два кэша вручную.
+- `building_index` использует typed key `WorldPos`, как и `box_index`; сырой
+  `(i32, i32)` больше не является типом центрального индекса зданий.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
@@ -59,11 +61,11 @@
 - Единый владелец клетки не готов: тип клетки, durability, здания, SQLite и кэши
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
-  type/durability для live-path, box-клетки получили первый boundary, а runtime
-  индексы зданий, mmap footprint, live creation, destroy и runtime removal зданий
-  сведены в helper boundary. Rollback/compensation после runtime failure ещё не
-  включён в эту authoritative операцию из-за разных сценариев возврата
-  ресурсов/ошибок.
+  type/durability для live-path, box-клетки получили первый boundary, центральные
+  индексы box/building используют `WorldPos`, а runtime индексы зданий, mmap
+  footprint, live creation, destroy и runtime removal зданий сведены в helper
+  boundary. Rollback/compensation после runtime failure ещё не включён в эту
+  authoritative операцию из-за разных сценариев возврата ресурсов/ошибок.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.

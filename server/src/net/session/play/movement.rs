@@ -179,7 +179,7 @@ pub fn handle_move(
             // ПОКРЫВАЮЩИЙ клетку (1:1 C# `PackPart`), затем здание по его origin.
             if let Some((ox, oy)) =
                 GameState::find_pack_covering_with(ecs, &state.chunk_buildings, target_x, target_y)
-                && let Some(bld_entity) = state.building_index.get(&(ox, oy))
+                && let Some(bld_entity) = state.building_index.get(&((ox, oy).into()))
             {
                 let bld_entity = *bld_entity;
                 if let (Some(meta), Some(ownership)) = (
