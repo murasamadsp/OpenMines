@@ -803,8 +803,8 @@ pub fn handle_build(
                 .push(crate::game::PendingConversion {
                     pos: (tgt_x, tgt_y).into(),
                     ticks_left: 10,
-                    required_cell: cell_type::MILITARY_BLOCK_FRAME,
-                    target_cell: cell_type::MILITARY_BLOCK,
+                    required_cell: crate::world::CellType(cell_type::MILITARY_BLOCK_FRAME),
+                    target_cell: crate::world::CellType(cell_type::MILITARY_BLOCK),
                     durability,
                     owner_pid: pid,
                 });

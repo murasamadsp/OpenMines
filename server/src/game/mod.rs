@@ -131,8 +131,8 @@ pub struct PackResendQueue(pub Vec<(i32, i32)>);
 
 pub struct PendingConversion {
     pub pos: WorldPos,
-    pub target_cell: u8,
-    pub required_cell: u8,
+    pub target_cell: crate::world::CellType,
+    pub required_cell: crate::world::CellType,
     pub durability: f32,
     pub ticks_left: u32,
     /// Игрок, поставивший блок — для начисления 2-го build-exp при конвертации
