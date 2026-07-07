@@ -349,6 +349,7 @@ pub struct ProgrammatorState {
     pub function_order: Vec<String>,
     pub current_function: String,
     pub delay: Instant,
+    pub started_at: Instant,
     pub selected_id: Option<i32>,
     pub selected_data: Option<String>,
     pub shift_x: i32,
@@ -380,6 +381,7 @@ impl ProgrammatorState {
             function_order: Vec::new(),
             current_function: String::new(),
             delay: Instant::now(),
+            started_at: Instant::now(),
             selected_id: None,
             selected_data: None,
             shift_x: 0,
@@ -1202,6 +1204,7 @@ impl ProgrammatorState {
             self.current_prog = functions;
             self.function_order = order;
             self.delay = Instant::now();
+            self.started_at = Instant::now();
             self.drop_state();
             self.running = true;
             true
@@ -1371,6 +1374,36 @@ fn load_percent(stats: &PlayerStats) -> i32 {
     clamp_i64_to_i32(total.saturating_mul(100))
 }
 
+fn programmator_call_depth(prog: &ProgrammatorState) -> i32 {
+    let mut depth = 0_i32;
+    let mut current = prog.current_function.as_str();
+    let mut guard = 0_usize;
+    while guard < prog.current_prog.len() {
+        guard += 1;
+        let Some(called_from) = prog
+            .current_prog
+            .get(current)
+            .and_then(|f| f.called_from.as_deref())
+        else {
+            break;
+        };
+        depth = depth.saturating_add(1);
+        current = called_from;
+    }
+    depth
+}
+
+fn programmator_logic_mode(prog: &ProgrammatorState) -> i32 {
+    prog.current_prog
+        .get(&prog.current_function)
+        .and_then(|f| f.last_state_action)
+        .map_or(0, |action| match action {
+            ActionType::And => 1,
+            ActionType::Or => 2,
+            _ => 0,
+        })
+}
+
 fn readonly_programmator_value(
     label: &str,
     prog: &mut ProgrammatorState,
@@ -1385,6 +1418,8 @@ fn readonly_programmator_value(
         "AUT" => i32::from(settings.auto_dig),
         "AGR" => i32::from(settings.aggression),
         "HND" => i32::from(prog.hand_mode_active),
+        "DBG" => 0,
+        "STK" => programmator_call_depth(prog),
         "DIR" => match pos.dir {
             1 => 3,
             3 => 1,
@@ -1406,6 +1441,7 @@ fn readonly_programmator_value(
                 stats.health.saturating_mul(100) / stats.max_health
             }
         }
+        "TIM" => i32::try_from(prog.started_at.elapsed().as_secs()).unwrap_or(i32::MAX),
         "G" => clamp_i64_to_i32(stats.crystals[0]),
         "B" => clamp_i64_to_i32(stats.crystals[1]),
         "R" => clamp_i64_to_i32(stats.crystals[2]),
@@ -1423,6 +1459,7 @@ fn readonly_programmator_value(
         "LOA" => load_percent(stats),
         "RND" => rand::random_range(0..1000),
         "FLP" => i32::from(prog.flip_state),
+        "BOO" => programmator_logic_mode(prog),
         "AX" => selected_offset(prog).0.abs(),
         "AY" => selected_offset(prog).1.abs(),
         "DX" => 100 + selected_offset(prog).0,
@@ -2152,13 +2189,13 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                f.state = None;
-            }
             if state_val == Some(false) {
-                // Condition is false, don't jump
+                // C#/JS preserve state on the no-jump path.
                 ExecResult::None
             } else {
+                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+                    f.state = None;
+                }
                 ExecResult::Label(action.label.clone())
             }
         }
@@ -2167,13 +2204,13 @@ fn execute_action(
                 .current_prog
                 .get(&prog.current_function)
                 .and_then(|f| f.state);
-            if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
-                f.state = None;
-            }
             if state_val == Some(true) {
-                // Condition is true, don't jump
+                // C#/JS preserve state on the no-jump path.
                 ExecResult::None
             } else {
+                if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+                    f.state = None;
+                }
                 ExecResult::Label(action.label.clone())
             }
         }
@@ -2762,6 +2799,25 @@ mod tests {
         }
     }
 
+    fn label_action(action_type: ActionType, label: &str) -> PAction {
+        PAction {
+            action_type,
+            label: label.to_string(),
+            num: 0,
+        }
+    }
+
+    fn test_metadata() -> PlayerMetadata {
+        PlayerMetadata {
+            id: crate::game::player::PlayerId(1),
+            name: "test".to_string(),
+            passwd: String::new(),
+            hash: String::new(),
+            resp_x: None,
+            resp_y: None,
+        }
+    }
+
     #[test]
     fn speed_pause_road_bonus_is_faster() {
         // C# Player.cs:155: на дороге ServerPause ×0.80 → меньше пауза.
@@ -3044,19 +3100,27 @@ mod tests {
         prog.current_prog.insert(String::new(), PFunction::new());
         prog.hand_mode_active = true;
         prog.check_x = 1;
+        prog.started_at = Instant::now()
+            .checked_sub(Duration::from_secs(3))
+            .expect("test duration is smaller than monotonic clock range");
+        prog.current_prog.get_mut("").unwrap().last_state_action = Some(ActionType::Or);
         let mut delay = None;
 
         for action in [
             writable("AUT", 1),
             writable("AGR", 1),
             writable("HND", 1),
+            writable("DBG", 0),
+            writable("STK", 0),
             writable("DIR", 1),
             writable("X", 10),
             writable("Y", 10),
             writable("HP", 25),
             writable("HPP", 25),
+            writable("TIM", 3),
             writable("G", 1),
             writable("GEO", 2),
+            writable("BOO", 2),
             writable("CEL", i32::from(crate::world::cells::cell_type::GREEN)),
         ] {
             let geo_count = if action.label == "GEO" { 2 } else { 0 };
@@ -3082,6 +3146,100 @@ mod tests {
             (prog.check_x, prog.check_y, prog.shift_x, prog.shift_y),
             (0, 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn run_if_preserves_state_on_no_jump_like_js_reference() {
+        let world = test_world("run_if_state_preserve");
+        let pos = test_position();
+        let stats = test_stats();
+        let skills = empty_skills();
+        let settings = PlayerSettings::default();
+        let meta = test_metadata();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = PlayerConnection { tx };
+        let mut prog_q = ProgrammatorQueue(Vec::new());
+        let mut delay = None;
+        let mut prog = ProgrammatorState::new();
+        let mut function = PFunction::new();
+        function.state = Some(false);
+        prog.current_prog.insert(String::new(), function);
+
+        let result = execute_action(
+            &label_action(ActionType::RunIfTrue, "next"),
+            &mut prog,
+            &pos,
+            &stats,
+            &skills,
+            &settings,
+            &world,
+            &meta,
+            &conn,
+            &mut prog_q,
+            &mut delay,
+            0,
+            crate::config::ProgrammatorConfig::default(),
+        );
+
+        assert!(matches!(result, ExecResult::None));
+        assert_eq!(prog.current_prog[""].state, Some(false));
+
+        prog.current_prog.get_mut("").unwrap().state = Some(true);
+        let result = execute_action(
+            &label_action(ActionType::RunIfFalse, "next"),
+            &mut prog,
+            &pos,
+            &stats,
+            &skills,
+            &settings,
+            &world,
+            &meta,
+            &conn,
+            &mut prog_q,
+            &mut delay,
+            0,
+            crate::config::ProgrammatorConfig::default(),
+        );
+
+        assert!(matches!(result, ExecResult::None));
+        assert_eq!(prog.current_prog[""].state, Some(true));
+    }
+
+    #[test]
+    fn run_if_clears_state_only_on_jump_like_js_reference() {
+        let world = test_world("run_if_state_clear");
+        let pos = test_position();
+        let stats = test_stats();
+        let skills = empty_skills();
+        let settings = PlayerSettings::default();
+        let meta = test_metadata();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let conn = PlayerConnection { tx };
+        let mut prog_q = ProgrammatorQueue(Vec::new());
+        let mut delay = None;
+        let mut prog = ProgrammatorState::new();
+        let mut function = PFunction::new();
+        function.state = Some(true);
+        prog.current_prog.insert(String::new(), function);
+
+        let result = execute_action(
+            &label_action(ActionType::RunIfTrue, "next"),
+            &mut prog,
+            &pos,
+            &stats,
+            &skills,
+            &settings,
+            &world,
+            &meta,
+            &conn,
+            &mut prog_q,
+            &mut delay,
+            0,
+            crate::config::ProgrammatorConfig::default(),
+        );
+
+        assert!(matches!(result, ExecResult::Label(label) if label == "next"));
+        assert_eq!(prog.current_prog[""].state, None);
     }
 
     #[test]
