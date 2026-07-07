@@ -100,7 +100,7 @@ ECS-команды/rollback или fail-fast abort для invariant-panic.
 | Хранилище | Что | Где |
 |---|---|---|
 | `MapStore` (mmap `_v2.map`) | тип клетки `u8` | `world/map_format.rs:134` |
-| `Layer` (mmap `.mapb`) | durability `f32` | `world/mod.rs:156` |
+| `Layer` (mmap durability `.map`) | durability `f32` | `world/mod.rs` |
 | ECS-компоненты | здания: `GridPosition`/`BuildingStats`/… | `game/buildings.rs` |
 | SQLite | `buildings`, `boxes`, origin-клетки | `db/buildings.rs`, `db/…` |
 

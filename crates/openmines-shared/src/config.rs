@@ -8,7 +8,8 @@ pub struct Config {
     pub port: u16,
     pub world_chunks_w: u32,
     pub world_chunks_h: u32,
-    /// Каталог для `SQLite` и слоёв мира (`.mapb`), относительно текущей рабочей директории.
+    /// Каталог для `SQLite` и файлов мира (`*_v2.map`, `*_road_v2.map`, durability),
+    /// относительно текущей рабочей директории.
     /// Перекрывается переменной окружения `M3R_DATA_DIR` (абсолютный или относительный путь).
     pub data_dir: String,
     /// См. `LoggingConfig`; секция обязательна в runtime-конфиге.

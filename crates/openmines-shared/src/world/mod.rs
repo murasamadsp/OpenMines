@@ -23,7 +23,7 @@ const CHUNK_SIZE: u32 = 32;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerType {
     /// Единственный mmap-слой — durability (f32 на клетку). Клетки теперь
-    /// хранятся в клиентском `.map` (см. [`map_format`]), не в `.mapb`.
+    /// хранятся в клиентском `.map` (см. [`map_format`]), не в старом raw-слое.
     F32,
 }
 
@@ -456,8 +456,8 @@ impl WorldProvider for World {
         if let Some(dpath) = dpath_for_backup
             && dpath.exists()
         {
-            let bak = dpath.with_extension("mapb.bak");
-            let tmp = dpath.with_extension("mapb.tmp");
+            let bak = dpath.with_extension("map.bak");
+            let tmp = dpath.with_extension("map.tmp");
             let _ = fs::copy(&dpath, &tmp);
             let _ = fs::rename(&tmp, &bak);
         }
@@ -536,7 +536,7 @@ impl World {
     }
 
     /// Залить сгенерированные клетки в `.map` за один write-лок. Плоский
-    /// буфер индексируется как прежняя `.mapb`-раскладка
+    /// буфер индексируется как прежняя chunk-раскладка
     /// (`chunk = cy + chunks_h*cx`, `cell = ly + 32*lx`); `0` → `EMPTY`.
     pub(crate) fn ingest_generated_cells(&self, flat: &[u8]) {
         let cs = CHUNK_SIZE;

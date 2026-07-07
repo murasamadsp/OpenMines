@@ -292,7 +292,7 @@ cargo fmt --all
 ### Структура `crates/openmines-shared/src/` (Общая логика)
 
 - **`config.rs`** — загрузка файлов конфигурации: `config.json`, `cells.json`, `buildings.json`.
-- **`world/`** — мир на mmap-слоях (`.mapb`): cells, road, durability. Чанки 32×32. Dirty-tracking + атомарные бэкапы чанков.
+- **`world/`** — мир в клиентском `.map`-формате: foreground `*_v2.map`, background/road `*_road_v2.map`, durability `*_durability.map`. Чанки 32×32. Dirty-tracking + бэкапы.
 - **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
 - **`protocol/`** — бинарный кодек сетевых пакетов: сериализация и десериализация пакетов, золотые тесты байт-в-байт.
 - **`time.rs`** — утилиты для работы со временем.
