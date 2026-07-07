@@ -726,6 +726,17 @@ impl GameState {
         self.building_index.contains_key(&((x, y).into()))
     }
 
+    pub fn query_building_opt<R>(
+        &self,
+        x: i32,
+        y: i32,
+        f: impl FnOnce(&EcsWorld, Entity) -> Option<R>,
+    ) -> Option<R> {
+        let entity = self.building_entity_at(x, y)?;
+        let ecs = self.ecs.read();
+        f(&ecs, entity)
+    }
+
     pub(crate) fn find_pack_covering_with(
         ecs: &EcsWorld,
         chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,

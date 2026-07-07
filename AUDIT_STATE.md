@@ -37,6 +37,9 @@
 - Для origin lookup здания добавлены `GameState::building_entity_at` /
   `has_building_origin`; простые live-path проверки больше не лезут в
   `building_index` напрямую.
+- Для read-only запросов к компонентам здания добавлен
+  `GameState::query_building_opt`; `play/packs.rs` больше не обращается к
+  `building_index` напрямую.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
