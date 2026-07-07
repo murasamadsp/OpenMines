@@ -9,6 +9,7 @@
 
 ```bash
 cargo fmt --all --check
+cargo run -- --doctor
 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 cargo test --all-targets --all-features
 scripts/dev-smoke.sh
@@ -23,7 +24,7 @@ scripts/dev-smoke.sh
 Базовая цель: быстрый локальный цикл должен сначала ловить ошибку дешёвыми
 проверками, а полный gate запускать один раз перед коммитом.
 
-Рекомендуемый локальный порядок:
+Рекомендуемый локальный порядок до полного pre-commit:
 
 ```bash
 cargo check -p openmines-server

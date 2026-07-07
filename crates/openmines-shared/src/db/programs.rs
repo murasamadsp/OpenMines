@@ -1,8 +1,7 @@
 use super::Database;
 use anyhow::{Result, bail};
-use sqlx::Row;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ProgramRow {
     pub id: i32,
     pub player_id: i32,
@@ -12,34 +11,22 @@ pub struct ProgramRow {
 
 impl Database {
     pub async fn list_programs(&self, player_id: i32) -> Result<Vec<ProgramRow>> {
-        let rows =
-            sqlx::query("SELECT id, player_id, name, code FROM programs WHERE player_id = ?1")
-                .bind(player_id)
-                .fetch_all(&self.pool)
-                .await?;
-        let programs = rows
-            .into_iter()
-            .map(|r| ProgramRow {
-                id: r.get("id"),
-                player_id: r.get("player_id"),
-                name: r.get("name"),
-                code: r.get("code"),
-            })
-            .collect();
+        let programs = sqlx::query_as::<_, ProgramRow>(
+            "SELECT id, player_id, name, code FROM programs WHERE player_id = ?1",
+        )
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await?;
         Ok(programs)
     }
 
     pub async fn get_program(&self, id: i32) -> Result<Option<ProgramRow>> {
-        let row = sqlx::query("SELECT id, player_id, name, code FROM programs WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
-        let program = row.map(|r| ProgramRow {
-            id: r.get("id"),
-            player_id: r.get("player_id"),
-            name: r.get("name"),
-            code: r.get("code"),
-        });
+        let program = sqlx::query_as::<_, ProgramRow>(
+            "SELECT id, player_id, name, code FROM programs WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(program)
     }
 

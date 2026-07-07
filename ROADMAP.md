@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > This roadmap is stale and tends to overstate implementation progress.
-> Refer to the "Implementation Status" ("Статус реализации") section in [CLAUDE.md](file:///Users/murasama/Projects/games/OpenMines/CLAUDE.md) as the single honest source of truth.
+> Refer to the "Implementation Status" ("Статус реализации") section in [AGENTS.md](file:///Users/murasama/Projects/games/OpenMines/AGENTS.md) as the single honest source of truth.
 
 Восстановление Mines 3. Клиент: Unity 2019.4.10f1. Сервер: Rust + SQLite + mmap, TCP-binary.
 Все пункты верифицируются по C# референсу (`server_reference/`).

@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     }
 
     if args.doctor {
-        return doctor::run(&args, &cfg);
+        return doctor::run(&args, &cfg).await;
     }
 
     println!("[Main] Process started");

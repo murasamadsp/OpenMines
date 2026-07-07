@@ -1,8 +1,7 @@
 use crate::db::Database;
 use anyhow::Result;
-use sqlx::Row;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]
 pub struct EventRow {
     pub id: String,
     pub title: String,
@@ -14,21 +13,11 @@ pub struct EventRow {
 impl Database {
     /// Loads all active events from the database.
     pub async fn load_all_events(&self) -> Result<Vec<EventRow>> {
-        let rows =
-            sqlx::query("SELECT id, title, starts_at, ends_at, config_json FROM active_events")
-                .fetch_all(&self.pool)
-                .await?;
-
-        let mut events = Vec::new();
-        for r in rows {
-            events.push(EventRow {
-                id: r.try_get("id")?,
-                title: r.try_get("title")?,
-                starts_at: r.try_get("starts_at")?,
-                ends_at: r.try_get("ends_at")?,
-                config_json: r.try_get("config_json")?,
-            });
-        }
+        let events = sqlx::query_as::<_, EventRow>(
+            "SELECT id, title, starts_at, ends_at, config_json FROM active_events",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(events)
     }
 

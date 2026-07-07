@@ -1,6 +1,7 @@
 use crate::{cli, config, game, migrations, world};
 use anyhow::{Context as _, Result};
 use std::path::Path;
+use std::str::FromStr;
 
 fn check_file(path: &str, label: &str) -> Result<()> {
     let meta = std::fs::metadata(path).with_context(|| format!("{label}: stat {path}"))?;
@@ -25,7 +26,7 @@ fn check_state_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run(args: &cli::Args, cfg: &config::Config) -> Result<()> {
+pub async fn run(args: &cli::Args, cfg: &config::Config) -> Result<()> {
     println!("OpenMines doctor");
     println!("config: {}", args.config);
 
@@ -42,6 +43,57 @@ pub fn run(args: &cli::Args, cfg: &config::Config) -> Result<()> {
 
     let state_dir = migrations::resolve_state_dir(&cfg.data_dir, args.data_dir.clone())?;
     check_state_dir(&state_dir)?;
+
+    // Проверяем целостность и миграции базы данных, если она существует
+    let db_path = state_dir.join("openmines.db");
+    if db_path.exists() {
+        check_file(db_path.to_str().unwrap(), "database")?;
+        println!("OK database file exists: {}", db_path.display());
+
+        let connection_str = format!("sqlite://{}", db_path.to_str().unwrap());
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&connection_str)?
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .read_only(true);
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .context("Failed to connect to database in doctor mode")?;
+
+        let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&pool)
+            .await
+            .context("PRAGMA integrity_check query failed")?;
+
+        if integrity != "ok" {
+            anyhow::bail!("Database integrity check failed: {integrity}");
+        }
+        println!("OK database integrity: {integrity}");
+
+        let applied_versions: Vec<i64> =
+            sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success = 1")
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+
+        let migrator = sqlx::migrate!("../crates/openmines-shared/migrations");
+        let mut missing_migrations = Vec::new();
+        for m in migrator.iter() {
+            if !applied_versions.contains(&m.version) {
+                missing_migrations.push(format!("{} ({})", m.version, m.description));
+            }
+        }
+        if !missing_migrations.is_empty() {
+            anyhow::bail!("Database has pending migrations: {missing_migrations:?}");
+        }
+        println!(
+            "OK database migrations: all {} migrations applied",
+            migrator.iter().count()
+        );
+    } else {
+        println!("OK database file does not exist yet (will be created on startup)");
+    }
 
     check_file(&args.cells_config, "cells")?;
     let cell_defs = world::cells::CellDefs::load(&args.cells_config)

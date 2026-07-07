@@ -27,6 +27,11 @@ quality_run_clippy_strict() {
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 }
 
+quality_run_doctor() {
+  echo "==> Running server doctor"
+  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo run -- --doctor
+}
+
 quality_run_arch_guard() {
   echo "==> Running architecture guard"
   scripts/arch-guard.sh

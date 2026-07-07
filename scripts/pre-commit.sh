@@ -17,11 +17,13 @@ source "$ROOT_DIR/scripts/quality-common.sh"
 
 quality_run_rustfmt_apply_staged
 quality_run_rustfmt_check
+quality_run_doctor
 quality_run_clippy_strict
 quality_run_deny_if_available
 quality_run_audit_if_available
 quality_run_machete_if_available
 quality_run_tests
+quality_run_wire_smoke
 
 if [[ "${PRE_COMMIT_EXTENDED:-0}" == "1" ]]; then
   quality_run_outdated_if_available

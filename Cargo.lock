@@ -1655,6 +1655,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "strum",
  "tokio",
  "tokio-cron-scheduler",

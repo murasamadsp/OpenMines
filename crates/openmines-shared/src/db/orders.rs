@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use sqlx::Row;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 // Поля читаются доменом `Bet`/`CheckReady` и GUI аукциона (следующий слайс).
 #[allow(dead_code)]
 pub struct OrderRow {
@@ -20,18 +20,6 @@ pub struct OrderRow {
     pub buyer_id: i32,
     /// Unix-секунды последней ставки; 0 = ставок не было.
     pub bet_time: i64,
-}
-
-fn row_to_order(row: &sqlx::sqlite::SqliteRow) -> OrderRow {
-    OrderRow {
-        id: row.get("id"),
-        initiator_id: row.get("initiator_id"),
-        item_id: row.get("item_id"),
-        num: row.get("num"),
-        cost: row.get("cost"),
-        buyer_id: row.get("buyer_id"),
-        bet_time: row.get("bet_time"),
-    }
 }
 
 #[allow(dead_code)]
@@ -58,26 +46,26 @@ impl Database {
     }
 
     pub async fn get_order(&self, id: i32) -> Result<Option<OrderRow>> {
-        let row = sqlx::query(
+        let order = sqlx::query_as::<_, OrderRow>(
             "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time \
              FROM orders WHERE id = ?1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.as_ref().map(row_to_order))
+        Ok(order)
     }
 
     /// Ордера по типу предмета, отсортированы по `cost` (как `MarketSystem.GetItems`).
     pub async fn list_orders_by_item(&self, item_id: i32) -> Result<Vec<OrderRow>> {
-        let rows = sqlx::query(
+        let orders = sqlx::query_as::<_, OrderRow>(
             "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time \
              FROM orders WHERE item_id = ?1 ORDER BY cost",
         )
         .bind(item_id)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.iter().map(row_to_order).collect())
+        Ok(orders)
     }
 
     /// Сводка для item-грида (`MarketSystem.Items`): `(item_id, count, min_cost)`.
@@ -173,14 +161,14 @@ impl Database {
     pub async fn finalize_order_offline(&self, order: &OrderRow) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
 
-        let current = sqlx::query(
+        let current = sqlx::query_as::<_, OrderRow>(
             "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time \
              FROM orders WHERE id = ?1",
         )
         .bind(order.id)
         .fetch_optional(&mut *tx)
         .await?;
-        let Some(current) = current.as_ref().map(row_to_order) else {
+        let Some(current) = current else {
             tx.rollback().await?;
             return Ok(false);
         };
@@ -262,24 +250,24 @@ impl Database {
     /// Ордера, готовые к финализации (`Order.CheckReady`): была ставка
     /// (`buyer_id > 0`) и с момента последней прошло ≥ 5 мин (`bet_time <= cutoff`).
     pub async fn list_ready_orders(&self, cutoff_time: i64) -> Result<Vec<OrderRow>> {
-        let rows = sqlx::query(
+        let orders = sqlx::query_as::<_, OrderRow>(
             "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time \
              FROM orders WHERE buyer_id > 0 AND bet_time > 0 AND bet_time <= ?1",
         )
         .bind(cutoff_time)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.iter().map(row_to_order).collect())
+        Ok(orders)
     }
 
     /// Все ордера — для отмены+рефанда при полном регене мира.
     pub async fn all_orders(&self) -> Result<Vec<OrderRow>> {
-        let rows = sqlx::query(
+        let orders = sqlx::query_as::<_, OrderRow>(
             "SELECT id, initiator_id, item_id, num, cost, buyer_id, bet_time FROM orders",
         )
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.iter().map(row_to_order).collect())
+        Ok(orders)
     }
 
     /// Снести все ордера. Возвращает число удалённых строк.

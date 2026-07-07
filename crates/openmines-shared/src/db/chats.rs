@@ -92,7 +92,7 @@ impl Database {
     /// в порядке возрастания `id` (старые → новые).
     pub async fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>> {
         #[allow(clippy::cast_possible_wrap)]
-        let rows = sqlx::query(
+        let mut msgs = sqlx::query_as::<_, ChatRow>(
             "SELECT cm.id, cm.player_name, cm.message, cm.created_at,
                     cm.player_id, cm.color, COALESCE(p.clan_id, 0) as clan_id
              FROM chat_messages cm
@@ -105,23 +105,8 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut result: Vec<ChatRow> = rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<i64, _>("id"),
-                    r.get::<String, _>("player_name"),
-                    r.get::<String, _>("message"),
-                    r.get::<i64, _>("created_at"),
-                    r.get::<i32, _>("player_id"),
-                    r.get::<i32, _>("color"),
-                    r.get::<i32, _>("clan_id"),
-                )
-            })
-            .collect();
-
-        result.reverse();
-        Ok(result)
+        msgs.reverse();
+        Ok(msgs)
     }
 }
 
