@@ -1580,7 +1580,7 @@ type ProgrammatorQuery<'w, 's> = Query<
     (
         &'static PlayerMetadata,
         &'static PlayerPosition,
-        &'static PlayerConnection,
+        Option<&'static PlayerConnection>,
         &'static PlayerStats,
         &'static PlayerSkillsComp,
         &'static crate::game::player::PlayerSettings,
@@ -1708,7 +1708,7 @@ fn execute_action(
     settings: &crate::game::player::PlayerSettings,
     world: &crate::world::World,
     meta: &PlayerMetadata,
-    conn: &PlayerConnection,
+    conn: Option<&PlayerConnection>,
     prog_q: &mut ProgrammatorQueue,
     delay: &mut Option<Duration>,
     geo_count: usize,
@@ -1821,7 +1821,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Dig {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 dir: pos.dir,
             });
             ExecResult::None
@@ -1832,7 +1832,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 dir: pos.dir,
                 block_type: "G".to_string(),
             });
@@ -1842,7 +1842,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 dir: pos.dir,
                 block_type: "O".to_string(),
             });
@@ -1852,7 +1852,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 dir: pos.dir,
                 block_type: "R".to_string(),
             });
@@ -1862,7 +1862,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 dir: pos.dir,
                 block_type: "V".to_string(),
             });
@@ -1872,14 +1872,14 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Geo {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
             });
             ExecResult::None
         }
         ActionType::Heal => {
             prog_q.0.push(ProgrammatorAction::Heal {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
             });
             *delay = Some(direct_action_delay(timing));
             ExecResult::None
@@ -1887,11 +1887,11 @@ fn execute_action(
         ActionType::Stop => {
             prog.stop_program();
             prog_q.0.push(ProgrammatorAction::SetProgrammatorStatus {
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 running: false,
             });
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: false,
             });
             ExecResult::None
@@ -2242,7 +2242,9 @@ fn execute_action(
             // Send BB (beep sound) to player via protocol encoding
             let pkt = crate::protocol::u_packet("BB", &[]);
             let mut buf = bytes::BytesMut::with_capacity(pkt.wire_len());
-            if pkt.encode(&mut buf).is_ok() {
+            if pkt.encode(&mut buf).is_ok()
+                && let Some(conn) = conn
+            {
                 conn.send_or_log(buf.to_vec());
             }
             ExecResult::None
@@ -2251,7 +2253,7 @@ fn execute_action(
         ActionType::EnableAutoDig => {
             prog_q.0.push(ProgrammatorAction::SetAutoDig {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: true,
             });
             ExecResult::None
@@ -2259,7 +2261,7 @@ fn execute_action(
         ActionType::DisableAutoDig => {
             prog_q.0.push(ProgrammatorAction::SetAutoDig {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: false,
             });
             ExecResult::None
@@ -2267,7 +2269,7 @@ fn execute_action(
         ActionType::EnableAgression => {
             prog_q.0.push(ProgrammatorAction::SetAggression {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: true,
             });
             ExecResult::None
@@ -2275,7 +2277,7 @@ fn execute_action(
         ActionType::DisableAgression => {
             prog_q.0.push(ProgrammatorAction::SetAggression {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: false,
             });
             ExecResult::None
@@ -2283,7 +2285,7 @@ fn execute_action(
         ActionType::HandModeOn => {
             prog.hand_mode_active = true;
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: true,
             });
             ExecResult::None
@@ -2291,7 +2293,7 @@ fn execute_action(
         ActionType::HandModeOff => {
             prog.hand_mode_active = false;
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 enabled: false,
             });
             ExecResult::None
@@ -2322,7 +2324,7 @@ fn execute_action(
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
-                        tx: conn.tx.clone(),
+                        tx: conn.map(|c| c.tx.clone()),
                         dir: pos.dir,
                     });
                     return ExecResult::BoolResult(true);
@@ -2336,7 +2338,7 @@ fn execute_action(
             if stats.crystals[2] > 0 && stats.health < stats.max_health {
                 prog_q.0.push(ProgrammatorAction::Heal {
                     pid: meta.id,
-                    tx: conn.tx.clone(),
+                    tx: conn.map(|c| c.tx.clone()),
                 });
                 *delay = Some(direct_action_delay(timing));
                 return ExecResult::BoolResult(true);
@@ -2355,7 +2357,7 @@ fn execute_action(
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
-                        tx: conn.tx.clone(),
+                        tx: conn.map(|c| c.tx.clone()),
                         dir: pos.dir,
                     });
                     return ExecResult::BoolResult(true);
@@ -2370,7 +2372,7 @@ fn execute_action(
                         prog.macros_template = Some(dir_key);
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
-                            tx: conn.tx.clone(),
+                            tx: conn.map(|c| c.tx.clone()),
                             dir: pos.dir,
                         });
                     } else {
@@ -2391,7 +2393,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::FillGun {
                 pid: meta.id,
-                tx: conn.tx.clone(),
+                tx: conn.map(|c| c.tx.clone()),
                 x: gx,
                 y: gy,
             });
@@ -2413,7 +2415,7 @@ fn execute_action(
                         *delay = Some(direct_action_delay(timing));
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
-                            tx: conn.tx.clone(),
+                            tx: conn.map(|c| c.tx.clone()),
                             dir: pos.dir,
                         });
                     } else {
@@ -2679,14 +2681,14 @@ fn handle_none_result(action: &PAction, prog: &mut ProgrammatorState) {
 fn push_move(
     prog_q: &mut ProgrammatorQueue,
     meta: &PlayerMetadata,
-    conn: &PlayerConnection,
+    conn: Option<&PlayerConnection>,
     x: i32,
     y: i32,
     dir: i32,
 ) {
     prog_q.0.push(ProgrammatorAction::Move {
         pid: meta.id,
-        tx: conn.tx.clone(),
+        tx: conn.map(|c| c.tx.clone()),
         x,
         y,
         dir,
@@ -3174,7 +3176,7 @@ mod tests {
             &settings,
             &world,
             &meta,
-            &conn,
+            Some(&conn),
             &mut prog_q,
             &mut delay,
             0,
@@ -3194,7 +3196,7 @@ mod tests {
             &settings,
             &world,
             &meta,
-            &conn,
+            Some(&conn),
             &mut prog_q,
             &mut delay,
             0,
@@ -3231,7 +3233,7 @@ mod tests {
             &settings,
             &world,
             &meta,
-            &conn,
+            Some(&conn),
             &mut prog_q,
             &mut delay,
             0,

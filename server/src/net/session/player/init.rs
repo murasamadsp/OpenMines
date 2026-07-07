@@ -91,9 +91,8 @@ pub fn connect_in_tick(
                 state.unregister_player_entity(pid);
                 None
             } else {
-                if let Some(mut conn) = ecs.get_mut::<PlayerConnection>(entity) {
-                    conn.tx = tx.clone();
-                }
+                ecs.entity_mut(entity)
+                    .insert(PlayerConnection { tx: tx.clone() });
                 if let Some(mut view) = ecs.get_mut::<PlayerView>(entity) {
                     view.last_chunk = None;
                     view.visible_chunks.clear();
@@ -316,6 +315,11 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
     state.broadcast_to_nearby(cx, cy, &hb_data, None);
 
     if keep_offline {
+        state
+            .ecs
+            .write()
+            .entity_mut(entity)
+            .remove::<PlayerConnection>();
         tracing::info!(
             player_id = %pid,
             "Player disconnected; running programmator entity kept offline"
@@ -664,10 +668,33 @@ mod tests {
                 .is_some_and(|prog| prog.running)
         };
         assert!(still_running);
+        let has_connection_after_disconnect = {
+            let ecs = state.ecs.read();
+            ecs.get::<PlayerConnection>(entity).is_some()
+        };
+        assert!(
+            !has_connection_after_disconnect,
+            "offline programmator entity must not keep a closed connection channel"
+        );
+
+        let (tx2, _rx2) = tokio::sync::mpsc::unbounded_channel();
+        connect_in_tick(&state, &tx2, &player, 456);
+        assert!(state.is_player_active(pid));
+        assert_eq!(state.get_player_entity(pid), Some(entity));
+        let has_connection_after_reconnect = {
+            let ecs = state.ecs.read();
+            ecs.get::<PlayerConnection>(entity).is_some()
+        };
+        assert!(
+            has_connection_after_reconnect,
+            "reconnect must restore PlayerConnection on the offline entity"
+        );
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
     }
 
     #[tokio::test]

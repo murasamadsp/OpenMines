@@ -568,11 +568,13 @@ fn run_game_tick_sync(
     for action in prog_actions {
         match action {
             crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::play::movement::handle_move(
                     state, &tx, pid, 0, x, y, dir, true,
                 );
             }
             crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::play::dig_build::handle_dig(state, &tx, pid, dir, true);
             }
             crate::game::ProgrammatorAction::Build {
@@ -581,6 +583,7 @@ fn run_game_tick_sync(
                 dir,
                 block_type,
             } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 let bld = crate::protocol::packets::XbldClient {
                     direction: dir,
                     block_type: &block_type,
@@ -588,31 +591,40 @@ fn run_game_tick_sync(
                 crate::net::session::play::dig_build::handle_build(state, &tx, pid, &bld, true);
             }
             crate::game::ProgrammatorAction::Geo { pid, tx } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::play::geo::handle_geo(state, &tx, pid, true);
             }
             crate::game::ProgrammatorAction::Heal { pid, tx } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::ui::heal_inventory::handle_heal(state, &tx, pid, true);
             }
             crate::game::ProgrammatorAction::SetAutoDig { pid, tx, enabled } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::social::misc::handle_auto_dig_set(state, &tx, pid, enabled);
             }
             crate::game::ProgrammatorAction::SetAggression { pid, tx, enabled } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::social::misc::handle_aggression_set(state, &tx, pid, enabled);
             }
             crate::game::ProgrammatorAction::SetHandMode { tx, enabled } => {
-                let packet = crate::protocol::packets::hand_mode(enabled);
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    packet.0, &packet.1,
-                ));
+                if let Some(tx) = tx {
+                    let packet = crate::protocol::packets::hand_mode(enabled);
+                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                        packet.0, &packet.1,
+                    ));
+                }
             }
             crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
+                let (tx, _rx) = programmator_action_tx(tx);
                 crate::net::session::play::packs::handle_gun_fill_prog(state, &tx, pid, x, y);
             }
             crate::game::ProgrammatorAction::SetProgrammatorStatus { tx, running } => {
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    "@P",
-                    &crate::protocol::packets::programmator_status(running).1,
-                ));
+                if let Some(tx) = tx {
+                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                        "@P",
+                        &crate::protocol::packets::programmator_status(running).1,
+                    ));
+                }
             }
         }
     }
@@ -707,6 +719,21 @@ fn run_game_tick_sync(
         *win_max_side_profile = SideProfile::default();
         *win_max_actions = 0;
     }
+}
+
+fn programmator_action_tx(
+    tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+    Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
+) {
+    tx.map_or_else(
+        || {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (tx, Some(rx))
+        },
+        |tx| (tx, None),
+    )
 }
 
 #[cfg(test)]

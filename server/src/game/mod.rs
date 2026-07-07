@@ -80,52 +80,52 @@ pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
 pub enum ProgrammatorAction {
     Move {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         x: i32,
         y: i32,
         dir: i32,
     },
     Dig {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         dir: i32,
     },
     Build {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         dir: i32,
         block_type: String,
     },
     Geo {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     },
     Heal {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
     },
     SetAutoDig {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         enabled: bool,
     },
     SetAggression {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         enabled: bool,
     },
     SetHandMode {
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         enabled: bool,
     },
     FillGun {
         pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         x: i32,
         y: i32,
     },
     SetProgrammatorStatus {
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
         running: bool,
     },
 }
