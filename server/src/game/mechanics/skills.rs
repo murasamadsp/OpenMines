@@ -456,7 +456,50 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
         | SkillType::BuildWar
         | SkillType::Fridge
         | SkillType::RoadMovement => 1.0,
-        _ => x,
+        SkillType::AntiSlime
+        | SkillType::AntiBlock
+        | SkillType::AdjacentExtraction
+        | SkillType::Geology
+        | SkillType::MineBlue
+        | SkillType::MineGreen
+        | SkillType::Destruction
+        | SkillType::Annihilation
+        | SkillType::Crystallography
+        | SkillType::Deconstruction
+        | SkillType::MineRed
+        | SkillType::BuildQuadro
+        | SkillType::Detection
+        | SkillType::MineCyan
+        | SkillType::Compression
+        | SkillType::Upgrade
+        | SkillType::Deactivation
+        | SkillType::HyperPacking
+        | SkillType::MineViolet
+        | SkillType::PackingBlue
+        | SkillType::PackingCyan
+        | SkillType::PackingViolet
+        | SkillType::Discount
+        | SkillType::Sort
+        | SkillType::Turbo
+        | SkillType::DeMagnetizing
+        | SkillType::MineWhite
+        | SkillType::PackingRed
+        | SkillType::PackingWhite
+        | SkillType::PackingGreen
+        | SkillType::Extraction
+        | SkillType::Repair
+        | SkillType::ExpertMining
+        | SkillType::Washing
+        | SkillType::Fracturing
+        | SkillType::NanoPacking
+        | SkillType::BuildUniversal
+        | SkillType::Architecture
+        | SkillType::TotalDestruction
+        | SkillType::UltraWhite
+        | SkillType::Jewlery
+        | SkillType::MineSlime
+        | SkillType::MineDeep
+        | SkillType::GluonPacking => x,
     }
 }
 
@@ -465,7 +508,64 @@ pub fn skill_effect(skill: SkillType, level: i32) -> f32 {
 pub const fn exp_needed(skill: SkillType, _level: i32) -> f32 {
     match skill {
         SkillType::AntiGun => 0.0,
-        _ => 1.0,
+        SkillType::AntiSlime
+        | SkillType::AntiBlock
+        | SkillType::AdjacentExtraction
+        | SkillType::Geology
+        | SkillType::MineBlue
+        | SkillType::MineGreen
+        | SkillType::Destruction
+        | SkillType::Annihilation
+        | SkillType::Crystallography
+        | SkillType::Deconstruction
+        | SkillType::BuildRed
+        | SkillType::Digging
+        | SkillType::Health
+        | SkillType::MineGeneral
+        | SkillType::MineRed
+        | SkillType::BuildGreen
+        | SkillType::BuildQuadro
+        | SkillType::Detection
+        | SkillType::Movement
+        | SkillType::BuildYellow
+        | SkillType::Compression
+        | SkillType::Fridge
+        | SkillType::MineCyan
+        | SkillType::RoadMovement
+        | SkillType::Upgrade
+        | SkillType::Deactivation
+        | SkillType::HyperPacking
+        | SkillType::MineViolet
+        | SkillType::Packing
+        | SkillType::PackingBlue
+        | SkillType::PackingCyan
+        | SkillType::PackingViolet
+        | SkillType::Discount
+        | SkillType::Sort
+        | SkillType::Turbo
+        | SkillType::DeMagnetizing
+        | SkillType::MineWhite
+        | SkillType::PackingRed
+        | SkillType::PackingWhite
+        | SkillType::PackingGreen
+        | SkillType::Extraction
+        | SkillType::Repair
+        | SkillType::ExpertMining
+        | SkillType::Washing
+        | SkillType::Fracturing
+        | SkillType::NanoPacking
+        | SkillType::BuildStructure
+        | SkillType::BuildRoad
+        | SkillType::BuildUniversal
+        | SkillType::BuildWar
+        | SkillType::Architecture
+        | SkillType::TotalDestruction
+        | SkillType::UltraWhite
+        | SkillType::Jewlery
+        | SkillType::Induction
+        | SkillType::MineSlime
+        | SkillType::MineDeep
+        | SkillType::GluonPacking => 1.0,
     }
 }
 

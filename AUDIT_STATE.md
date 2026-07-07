@@ -90,6 +90,11 @@
   `GameState::delete_building_runtime` внутри своей async detonation task.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
+- `skill_effect` и `exp_needed` больше не используют wildcard `match`: каждый
+  `SkillType` явно получает формулу эффекта и требование опыта, новый вариант
+  теперь ломает компиляцию до осознанного решения.
+- `/skill` админ-команда закрыта: принимает только wire/DB-коды, `/skill codes`
+  генерируется из `SkillType`, изменения сразу синкаются клиенту и пишутся в БД.
 
 ## Не считать закрытым
 
@@ -106,6 +111,9 @@
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
 - Программатор не считать “готовым” без ручного wire/GUI сценария по клиенту и
   референсу.
+- Скиллы не считать “готовыми” как систему: текущий runtime coverage зафиксирован
+  в `docs/SKILLS_STATUS.md`, многие `SkillType` ещё не имеют доказанного gameplay
+  hook / exp hook / UI sync.
 
 ## Следующий правильный порядок
 
