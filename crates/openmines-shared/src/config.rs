@@ -78,6 +78,8 @@ pub struct ScheduleConfig {
     pub alive_ms: u64,
     pub building_effects_ms: u64,
     pub hourly_damage_ms: u64,
+    pub game_loop_tick_rate_ms: u64,
+    pub game_loop_panic_backoff_ms: u64,
 }
 
 impl Default for ScheduleConfig {
@@ -90,6 +92,8 @@ impl Default for ScheduleConfig {
             alive_ms: 5_000,
             building_effects_ms: 1_000,
             hourly_damage_ms: 3_600_000,
+            game_loop_tick_rate_ms: 10,
+            game_loop_panic_backoff_ms: 200,
         }
     }
 }
@@ -266,6 +270,7 @@ impl GameplayConfig {
         self.bonus.validate()?;
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
+        self.schedules.validate()?;
         Ok(())
     }
 }
@@ -345,6 +350,18 @@ impl ProgrammatorConfig {
     }
 }
 
+impl ScheduleConfig {
+    fn validate(self) -> Result<()> {
+        if self.game_loop_tick_rate_ms == 0 {
+            anyhow::bail!("gameplay.schedules.game_loop_tick_rate_ms must be greater than 0");
+        }
+        if self.game_loop_panic_backoff_ms == 0 {
+            anyhow::bail!("gameplay.schedules.game_loop_panic_backoff_ms must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
 impl LoggingConfig {
     fn validate(&self) -> Result<()> {
         if self.filter.trim().is_empty() {
@@ -384,15 +401,17 @@ mod tests {
                        "blocked_move_penalty_ms": 200,
                        "min_move_delay_ms": 20
                      },
-                     "schedules": {
-                       "hazards_ms": 10,
-                       "physics_ms": 100,
-                       "guns_ms": 100,
-                       "programmator_ms": 100,
-                       "alive_ms": 5000,
-                       "building_effects_ms": 1000,
-                       "hourly_damage_ms": 3600000
-                     }}
+                      "schedules": {
+                        "hazards_ms": 10,
+                        "physics_ms": 100,
+                        "guns_ms": 100,
+                        "programmator_ms": 100,
+                        "alive_ms": 5000,
+                        "building_effects_ms": 1000,
+                        "hourly_damage_ms": 3600000,
+                        "game_loop_tick_rate_ms": 10,
+                        "game_loop_panic_backoff_ms": 200
+                      }}
     }"#;
 
     #[test]
@@ -424,28 +443,7 @@ mod tests {
     #[test]
     fn missing_gameplay_key_is_an_error_not_a_silent_default() {
         // Нет секции gameplay целиком.
-        let no_gameplay = FULL.replace(
-            r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
-                     "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
-                     "bonus": {"cooldown_secs": 25201, "reward_money": 1000001},
-                     "skills": {"upgrade_cost_base": 100},
-                     "spawn": {"x": 12, "y": 13},
-                     "programmator": {
-                       "direct_action_delay_us": 333333,
-                       "blocked_move_penalty_ms": 200,
-                       "min_move_delay_ms": 20
-                     },
-                     "schedules": {
-                       "hazards_ms": 10,
-                       "physics_ms": 100,
-                       "guns_ms": 100,
-                       "programmator_ms": 100,
-                       "alive_ms": 5000,
-                       "building_effects_ms": 1000,
-                       "hourly_damage_ms": 3600000
-                     }}"#,
-            r#""x": 0"#,
-        );
+        let no_gameplay = FULL.replace(r#""gameplay": {"#, r#""ignored": {"#);
         assert!(
             serde_json::from_str::<Config>(&no_gameplay).is_err(),
             "пропущенный gameplay должен быть ошибкой (fail-fast), а не дефолтом"

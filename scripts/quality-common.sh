@@ -37,6 +37,11 @@ quality_run_arch_guard() {
   scripts/arch-guard.sh
 }
 
+quality_run_tools_audit() {
+  echo "==> Running tools hygiene audit"
+  scripts/tools-audit.sh
+}
+
 quality_run_deny_if_available() {
   if command -v cargo-deny >/dev/null 2>&1; then
     echo "==> Running dependency policy check"

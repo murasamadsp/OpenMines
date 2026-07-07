@@ -205,19 +205,78 @@ pub fn spawn_building_dirty_flush_loop(
 /// 200ms между рестартами — не спинить CPU при устойчивой панике. `EcsWorld`
 /// живёт в `GameState` (не пересоздаётся): после паники под `ecs.write()` guard
 /// снимается (`parking_lot` без poison), следующий тик берёт лок штатно.
-pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: broadcast::Sender<()>) {
-    tokio::spawn(async move {
+pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<()>) {
+    let mut rx = state
+        .commands_rx
+        .lock()
+        .take()
+        .expect("commands_rx already taken");
+
+    let mut shutdown_rx = shutdown.subscribe();
+    let tick_rate_ms = state.config.gameplay.schedules.game_loop_tick_rate_ms;
+    let panic_backoff_ms = state.config.gameplay.schedules.game_loop_panic_backoff_ms;
+
+    std::thread::spawn(move || {
+        tracing::info!(
+            tick_rate_ms = tick_rate_ms,
+            panic_backoff_ms = panic_backoff_ms,
+            "ECS Game Thread started"
+        );
+
+        let mut win_start = Instant::now();
+        let mut win_ticks: u64 = 0;
+        let mut win_over: u64 = 0;
+        let mut win_max_total = std::time::Duration::ZERO;
+        let mut win_max_dispatch = std::time::Duration::ZERO;
+        let mut win_max_schedule = std::time::Duration::ZERO;
+        let mut win_max_side = std::time::Duration::ZERO;
+        let mut win_max_side_profile = SideProfile::default();
+        let mut win_max_actions: usize = 0;
+        let mut last_warn = Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+
+        let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
+        let backoff_duration = std::time::Duration::from_millis(panic_backoff_ms);
+
         loop {
-            match tokio::spawn(run_game_tick(state.clone(), shutdown.subscribe())).await {
-                Err(je) if je.is_panic() => {
-                    tracing::error!(
-                        target: "tickprof",
-                        "GAME TICK PANICKED — рестарт через 200ms (ECS мог остаться mid-mutation)"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                // Чистый shutdown (`Ok`) или отмена задачи (`Err`) — выходим из supervisor.
-                _ => break,
+            let start = Instant::now();
+
+            if shutdown_rx.try_recv().is_ok() {
+                tracing::info!("ECS Game Thread shutting down");
+                break;
+            }
+
+            let state_clone = state.clone();
+            let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_game_tick_sync(
+                    &state_clone,
+                    &mut rx,
+                    &mut win_ticks,
+                    &mut win_over,
+                    &mut win_max_total,
+                    &mut win_max_dispatch,
+                    &mut win_max_schedule,
+                    &mut win_max_side,
+                    &mut win_max_side_profile,
+                    &mut win_max_actions,
+                    &mut last_warn,
+                    &mut win_start,
+                );
+            }));
+
+            if let Err(panic_err) = run_res {
+                tracing::error!(
+                    target: "tickprof",
+                    panic = ?panic_err,
+                    "GAME TICK PANICKED — thread loop continues (ECS could be mid-mutation)"
+                );
+                std::thread::sleep(backoff_duration);
+            }
+
+            let elapsed = start.elapsed();
+            if let Some(remaining) = tick_duration.checked_sub(elapsed) {
+                std::thread::sleep(remaining);
             }
         }
     });
@@ -250,468 +309,403 @@ impl SideProfile {
     }
 }
 
-#[allow(clippy::too_many_lines)]
-async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
-    // ── Stage 0 instrumentation (self-throttled; диагностика фриза, target=tickprof) ──
-    const TICK_BUDGET: std::time::Duration = std::time::Duration::from_millis(10);
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn run_game_tick_sync(
+    state: &Arc<GameState>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::PlayerCommand>,
+    win_ticks: &mut u64,
+    win_over: &mut u64,
+    win_max_total: &mut std::time::Duration,
+    win_max_dispatch: &mut std::time::Duration,
+    win_max_schedule: &mut std::time::Duration,
+    win_max_side: &mut std::time::Duration,
+    win_max_side_profile: &mut SideProfile,
+    win_max_actions: &mut usize,
+    last_warn: &mut Instant,
+    win_start: &mut Instant,
+) {
+    let tick_budget =
+        std::time::Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
+    let tick_t0 = Instant::now();
 
-    // Game tick loop: systems + queue draining.
-    // 1:1 ref: C# Step/Update loops (ServerTime.cs) run with 1ms or 10ms sleeps.
-    // 10ms (100Hz) is the standard for player actions and systems in the legacy server.
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut win_start = Instant::now();
-    let mut win_ticks: u64 = 0;
-    let mut win_over: u64 = 0;
-    let mut win_max_total = std::time::Duration::ZERO;
-    let mut win_max_dispatch = std::time::Duration::ZERO;
-    let mut win_max_schedule = std::time::Duration::ZERO;
-    let mut win_max_side = std::time::Duration::ZERO;
-    let mut win_max_side_profile = SideProfile::default();
-    let mut win_max_actions: usize = 0;
-    let mut last_warn = Instant::now()
-        .checked_sub(std::time::Duration::from_secs(1))
-        .unwrap_or_else(Instant::now);
-
-    loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = shutdown.recv() => break,
-        }
-        let tick_t0 = Instant::now();
-
-        // 0. Команды жизненного цикла (Connect/Disconnect) — ДО действий,
-        // чтобы entity игрока спавнился раньше своих TY. ВНЕ `ecs.write()`
-        // блока ниже: хендлеры берут `ecs` сами (tick — единственный писатель,
-        // контеншна нет). Убирает ecs-доступ из conn-тасков (C-4 фриз).
-        for cmd in state.drain_life() {
-            match cmd {
-                crate::game::LifeCmd::Connect { row, tx, token } => {
-                    crate::net::session::player::init::connect_in_tick(&state, &tx, &row, token);
-                }
-                crate::game::LifeCmd::Disconnect { pid, token } => {
-                    crate::net::session::player::init::disconnect_in_tick(&state, pid, token);
-                }
+    // 1. Сначала обрабатываем все входящие команды от игроков
+    let mut n_actions = 0;
+    let d0 = Instant::now();
+    while let Ok(cmd) = rx.try_recv() {
+        n_actions += 1;
+        match cmd {
+            crate::game::PlayerCommand::Connect { row, tx, token } => {
+                crate::net::session::player::init::connect_in_tick(state, &tx, &row, token);
             }
-        }
-
-        // 1. Сначала обрабатываем все входящие пакеты от игроков (Action Queue 1:1 с C#).
-        let actions = state.incoming_actions.drain();
-        let n_actions = actions.len();
-        let d0 = Instant::now();
-        for (pid, tx, ty) in actions {
-            let state_clone = state.clone();
-            let tx_clone = tx.clone();
-            let ty_owned = ty.clone();
-            let handle = tokio::spawn(async move {
-                crate::net::session::dispatch::dispatch_ty_packet(
-                    &state_clone,
-                    &tx_clone,
-                    pid,
-                    &ty_owned,
-                )
-                .await
-            });
-            match handle.await {
-                Ok(res) => {
-                    if let Err(e) = res {
-                        tracing::error!(
-                            player_id = %pid,
-                            packet = ?ty,
-                            error = ?e,
-                            "Error processing TY packet"
-                        );
-                    }
-                }
-                Err(je) if je.is_panic() => {
-                    tracing::error!(
-                        player_id = %pid,
-                        packet = ?ty,
-                        "PANIC processing TY packet!"
-                    );
-                }
-                Err(je) => {
-                    tracing::error!(
-                        player_id = %pid,
-                        packet = ?ty,
-                        "TY packet processing task cancelled or failed: {:?}",
-                        je
-                    );
-                }
+            crate::game::PlayerCommand::Disconnect { player_id, token } => {
+                crate::net::session::player::init::disconnect_in_tick(state, player_id, token);
             }
-        }
-        let dt_dispatch = d0.elapsed();
-
-        // 2. ECS + очереди side-effects.
-        // Системы НЕ ре-лочат `ecs` — вместо этого пушат в BroadcastQueue/ProgrammatorQueue.
-        // Обрабатываем очереди ПОСЛЕ `schedule.run()`, когда `ecs.write()` уже отпущен.
-        let sched_t0 = Instant::now();
-        let (
-            pending,
-            broadcasts,
-            prog_actions,
-            cell_conversions,
-            pack_resends,
-            box_ops,
-            sched_lock_wait,
-            sched_run,
-        ) = {
-            let mut ecs = state.ecs.write();
-            let lw = sched_t0.elapsed();
-            let run_t0 = Instant::now();
-
-            let now = Instant::now();
-            for gs in &state.schedules {
-                let _ = &gs.name;
-                let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
-                if interval_ms == 0 {
-                    continue;
-                }
-                let interval = std::time::Duration::from_millis(interval_ms);
-                let mut last_run = gs.last_run.lock();
-                if now.duration_since(*last_run) >= interval {
-                    let schedule_t0 = Instant::now();
-                    let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        gs.schedule.write().run(&mut ecs);
-                    }));
-                    let elapsed = schedule_t0.elapsed();
-                    if elapsed > std::time::Duration::from_millis(5) {
-                        tracing::warn!(
-                            target: "scheduler",
-                            schedule = %gs.name,
-                            duration = ?elapsed,
-                            "System schedule execution exceeded warning threshold (5ms)"
-                        );
-                    }
-                    if let Err(panic_err) = run_res {
-                        tracing::error!(
-                            target: "scheduler",
-                            schedule = %gs.name,
-                            panic = ?panic_err,
-                            "PANIC occurred in system schedule execution"
-                        );
-                    }
-                    *last_run = now;
-                }
-            }
-
-            let rn = run_t0.elapsed();
-
-            let p = crate::net::session::play::death::flush_player_death_queue_after_tick(
-                &state, &mut ecs,
-            );
-            let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
-            let pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
-            let bp =
-                std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
-            // Отложенные конвертации клеток (StupidAction 1:1 с C#).
-            let convs =
-                std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
-            let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
-            drop(ecs);
-            (p, bc, pa, convs, pr, bp, lw, rn)
-        };
-        let dt_schedule = sched_t0.elapsed();
-        if dt_schedule > std::time::Duration::from_millis(50) {
-            tracing::warn!(
-                target: "tickprof",
-                "SLOW schedule: total={dt_schedule:?} lock_wait={sched_lock_wait:?} \
-                 run={sched_run:?} flush={:?}",
-                dt_schedule
-                    .saturating_sub(sched_lock_wait)
-                    .saturating_sub(sched_run)
-            );
-        }
-
-        // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
-        let side_t0 = Instant::now();
-        let mut side_profile = SideProfile::default();
-
-        // Отложенные broadcast'ы из ECS-систем (sand, combat).
-        let section_t0 = Instant::now();
-        for effect in broadcasts {
-            match effect {
-                crate::game::BroadcastEffect::CellUpdate(pos) => {
-                    let (x, y): (i32, i32) = pos.into();
-                    crate::game::broadcast_cell_update(&state, x, y);
-                }
-                crate::game::BroadcastEffect::Nearby {
-                    cx,
-                    cy,
-                    data,
-                    exclude,
-                } => {
-                    state.broadcast_to_nearby(cx, cy, &data, exclude);
-                }
-            }
-        }
-        side_profile.broadcasts = section_t0.elapsed();
-
-        // Перерасылка HB O для зданий у которых обнулился charge (C# `ResendPack`).
-        let section_t0 = Instant::now();
-        for (px, py) in pack_resends {
-            if let Some(view) = state.get_pack_at(px, py) {
-                crate::net::session::social::buildings::broadcast_pack_update(&state, &view);
-            }
-        }
-        side_profile.pack_resends = section_t0.elapsed();
-
-        // Персистенция боксов (BoxPersistQueue уже дренирован внутри ecs.write).
-        let section_t0 = Instant::now();
-        if !box_ops.is_empty() {
-            struct DbTaskGuard {
-                state: Arc<GameState>,
-            }
-            impl Drop for DbTaskGuard {
-                fn drop(&mut self) {
-                    self.state
-                        .db_pending_tasks
-                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-                }
-            }
-
-            let db = state.db.clone();
-            let state_clone = state.clone();
-            state
-                .db_pending_tasks
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            tokio::spawn(async move {
-                let _guard = DbTaskGuard { state: state_clone };
-                for (pos, op) in box_ops {
-                    let (bx, by): (i32, i32) = pos.into();
-                    let r = match op {
-                        None => db.delete_box_at(bx, by).await,
-                        Some(crystals) => db.upsert_box(bx, by, &crystals).await,
-                    };
-                    if let Err(e) = r {
-                        tracing::error!(x = bx, y = by, error = ?e, "box persist failed");
-                    }
-                }
-            });
-        }
-        side_profile.box_persist = section_t0.elapsed();
-
-        // StupidAction 1:1 с C# `World.W.StupidAction(10, x, y, action)` — отложенная конвертация клеток.
-        let section_t0 = Instant::now();
-        let mut remaining_conversions: Vec<crate::game::PendingConversion> = Vec::new();
-        let mut converted_owners: Vec<crate::game::player::PlayerId> = Vec::new();
-        for mut conv in cell_conversions {
-            if conv.ticks_left > 1 {
-                conv.ticks_left -= 1;
-                remaining_conversions.push(conv);
-            } else {
-                let (x, y): (i32, i32) = conv.pos.into();
-                let should_convert = state.world.valid_coord(x, y)
-                    && state.world.get_cell_typed(x, y) == conv.required_cell;
-                // ticks_left == 1: выполняем действие, если guard cell совпадает.
-                if should_convert {
-                    state.world.write_world_cell(
-                        x,
-                        y,
-                        crate::world::WorldCell {
-                            cell_type: conv.target_cell,
-                            durability: conv.durability,
-                        },
-                    );
-                    crate::game::broadcast_cell_update(&state, x, y);
-                    converted_owners.push(conv.owner_pid);
-                }
-            }
-        }
-        // Возвращаем оставшиеся + начисляем 2-й BuildWar-exp за конвертацию
-        // frame→block (1:1 C# Player.Build("V"): AddExp на frame И в колбэке).
-        let ctx = crate::game::ExpContext::from_state(&state);
-        let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, (&'static str, Vec<u8>))> =
-            Vec::new();
-        {
-            let mut ecs = state.ecs.write();
-            ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining_conversions;
-            for owner in converted_owners {
-                let Some(entity) = state.get_player_entity(owner) else {
-                    continue;
-                };
-                if let Some(mut skills) =
-                    ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
-                    && let Some(sk) = ctx.add_skill_exp(
-                        &mut skills.states,
-                        crate::game::skills::SkillType::BuildWar.code(),
-                        1.0,
+            crate::game::PlayerCommand::Ty {
+                player_id,
+                tx,
+                packet,
+            } => {
+                let state_clone = state.clone();
+                let tx_clone = tx;
+                state.tokio_handle.spawn(async move {
+                    if let Err(e) = crate::net::session::dispatch::dispatch_ty_packet(
+                        &state_clone,
+                        &tx_clone,
+                        player_id,
+                        &packet,
                     )
-                {
-                    buildwar_pkts.push((owner, sk));
+                    .await
+                    {
+                        tracing::error!(
+                            player_id = %player_id,
+                            error = ?e,
+                            "Failed to dispatch TY packet command"
+                        );
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    let dt_dispatch = d0.elapsed();
+
+    // 2. ECS + очереди side-effects.
+    let sched_t0 = Instant::now();
+    let (
+        pending,
+        broadcasts,
+        prog_actions,
+        cell_conversions,
+        pack_resends,
+        box_ops,
+        sched_lock_wait,
+        sched_run,
+    ) = {
+        let mut ecs = state.ecs.write();
+        let lw = sched_t0.elapsed();
+        let run_t0 = Instant::now();
+
+        let now = Instant::now();
+        for gs in &state.schedules {
+            let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
+            if interval_ms == 0 {
+                continue;
+            }
+            let interval = std::time::Duration::from_millis(interval_ms);
+            let mut last_run = gs.last_run.lock();
+            if now.duration_since(*last_run) >= interval {
+                let schedule_t0 = Instant::now();
+                let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    gs.schedule.write().run(&mut ecs);
+                }));
+                let elapsed = schedule_t0.elapsed();
+                if elapsed > std::time::Duration::from_millis(5) {
+                    tracing::warn!(
+                        target: "scheduler",
+                        schedule = %gs.name,
+                        duration = ?elapsed,
+                        "System schedule execution exceeded warning threshold (5ms)"
+                    );
                 }
+                if let Err(panic_err) = run_res {
+                    tracing::error!(
+                        target: "scheduler",
+                        schedule = %gs.name,
+                        panic = ?panic_err,
+                        "PANIC occurred in system schedule execution"
+                    );
+                }
+                *last_run = now;
             }
         }
-        for (owner, sk_pkt) in buildwar_pkts {
-            if let Some(tx) = state.player_sender(owner) {
+
+        let rn = run_t0.elapsed();
+
+        let p =
+            crate::net::session::play::death::flush_player_death_queue_after_tick(state, &mut ecs);
+        let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
+        let pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
+        let bp = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
+        let convs =
+            std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
+        let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
+        drop(ecs);
+        (p, bc, pa, convs, pr, bp, lw, rn)
+    };
+    let dt_schedule = sched_t0.elapsed();
+    if dt_schedule > std::time::Duration::from_millis(50) {
+        tracing::warn!(
+            target: "tickprof",
+            "SLOW schedule: total={dt_schedule:?} lock_wait={sched_lock_wait:?} \
+             run={sched_run:?} flush={:?}",
+            dt_schedule
+                .saturating_sub(sched_lock_wait)
+                .saturating_sub(sched_run)
+        );
+    }
+
+    // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
+    let side_t0 = Instant::now();
+    let mut side_profile = SideProfile::default();
+
+    let section_t0 = Instant::now();
+    for effect in broadcasts {
+        match effect {
+            crate::game::BroadcastEffect::CellUpdate(pos) => {
+                let (x, y): (i32, i32) = pos.into();
+                crate::game::broadcast_cell_update(state, x, y);
+            }
+            crate::game::BroadcastEffect::Nearby {
+                cx,
+                cy,
+                data,
+                exclude,
+            } => {
+                state.broadcast_to_nearby(cx, cy, &data, exclude);
+            }
+        }
+    }
+    side_profile.broadcasts = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    for (px, py) in pack_resends {
+        if let Some(view) = state.get_pack_at(px, py) {
+            crate::net::session::social::buildings::broadcast_pack_update(state, &view);
+        }
+    }
+    side_profile.pack_resends = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    if !box_ops.is_empty() {
+        struct DbTaskGuard {
+            state: Arc<GameState>,
+        }
+        impl Drop for DbTaskGuard {
+            fn drop(&mut self) {
+                self.state
+                    .db_pending_tasks
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        let db = state.db.clone();
+        let state_clone = state.clone();
+        state
+            .db_pending_tasks
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        state.tokio_handle.spawn(async move {
+            let _guard = DbTaskGuard { state: state_clone };
+            for (pos, op) in box_ops {
+                let (bx, by): (i32, i32) = pos.into();
+                let r = match op {
+                    None => db.delete_box_at(bx, by).await,
+                    Some(crystals) => db.upsert_box(bx, by, &crystals).await,
+                };
+                if let Err(e) = r {
+                    tracing::error!(x = bx, y = by, error = ?e, "box persist failed");
+                }
+            }
+        });
+    }
+    side_profile.box_persist = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    let mut remaining_conversions: Vec<crate::game::PendingConversion> = Vec::new();
+    let mut converted_owners: Vec<crate::game::player::PlayerId> = Vec::new();
+    for mut conv in cell_conversions {
+        if conv.ticks_left > 1 {
+            conv.ticks_left -= 1;
+            remaining_conversions.push(conv);
+        } else {
+            let (x, y): (i32, i32) = conv.pos.into();
+            let should_convert = state.world.valid_coord(x, y)
+                && state.world.get_cell_typed(x, y) == conv.required_cell;
+            if should_convert {
+                state.world.write_world_cell(
+                    x,
+                    y,
+                    crate::world::WorldCell {
+                        cell_type: conv.target_cell,
+                        durability: conv.durability,
+                    },
+                );
+                crate::game::broadcast_cell_update(state, x, y);
+                converted_owners.push(conv.owner_pid);
+            }
+        }
+    }
+    let ctx = crate::game::ExpContext::from_state(state);
+    let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, (&'static str, Vec<u8>))> =
+        Vec::new();
+    {
+        let mut ecs = state.ecs.write();
+        ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining_conversions;
+        for owner in converted_owners {
+            let Some(entity) = state.get_player_entity(owner) else {
+                continue;
+            };
+            if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
+                && let Some(sk) = ctx.add_skill_exp(
+                    &mut skills.states,
+                    crate::game::skills::SkillType::BuildWar.code(),
+                    1.0,
+                )
+            {
+                buildwar_pkts.push((owner, sk));
+            }
+        }
+    }
+    for (owner, sk_pkt) in buildwar_pkts {
+        if let Some(tx) = state.player_sender(owner) {
+            let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                sk_pkt.0, &sk_pkt.1,
+            ));
+        }
+    }
+    side_profile.cell_conversions = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    for action in prog_actions {
+        match action {
+            crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
+                crate::net::session::play::movement::handle_move(
+                    state, &tx, pid, 0, x, y, dir, true,
+                );
+            }
+            crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
+                crate::net::session::play::dig_build::handle_dig(state, &tx, pid, dir, true);
+            }
+            crate::game::ProgrammatorAction::Build {
+                pid,
+                tx,
+                dir,
+                block_type,
+            } => {
+                let bld = crate::protocol::packets::XbldClient {
+                    direction: dir,
+                    block_type: &block_type,
+                };
+                crate::net::session::play::dig_build::handle_build(state, &tx, pid, &bld, true);
+            }
+            crate::game::ProgrammatorAction::Geo { pid, tx } => {
+                crate::net::session::play::geo::handle_geo(state, &tx, pid, true);
+            }
+            crate::game::ProgrammatorAction::Heal { pid, tx } => {
+                crate::net::session::ui::heal_inventory::handle_heal(state, &tx, pid, true);
+            }
+            crate::game::ProgrammatorAction::SetAutoDig { pid, tx, enabled } => {
+                crate::net::session::social::misc::handle_auto_dig_set(state, &tx, pid, enabled);
+            }
+            crate::game::ProgrammatorAction::SetAggression { pid, tx, enabled } => {
+                crate::net::session::social::misc::handle_aggression_set(state, &tx, pid, enabled);
+            }
+            crate::game::ProgrammatorAction::SetHandMode { tx, enabled } => {
+                let packet = crate::protocol::packets::hand_mode(enabled);
                 let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    sk_pkt.0, &sk_pkt.1,
+                    packet.0, &packet.1,
+                ));
+            }
+            crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
+                crate::net::session::play::packs::handle_gun_fill_prog(state, &tx, pid, x, y);
+            }
+            crate::game::ProgrammatorAction::SetProgrammatorStatus { tx, running } => {
+                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                    "@P",
+                    &crate::protocol::packets::programmator_status(running).1,
                 ));
             }
         }
-        side_profile.cell_conversions = section_t0.elapsed();
+    }
+    side_profile.programmator_actions = section_t0.elapsed();
 
-        // Отложенные команды программатора.
-        let section_t0 = Instant::now();
-        for action in prog_actions {
-            match action {
-                crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
-                    // Тот же handle_move, что и ручной ход (no-DRY): валидация
-                    // коллизии/ворот/дистанции — нельзя пройти сквозь блоки.
-                    // programmatic=true пропускает guard «программа бежит». Тайминг
-                    // (delay per operator) — в programmator_system, отдельный цикл.
-                    crate::net::session::play::movement::handle_move(
-                        &state, &tx, pid, 0, x, y, dir, true,
-                    );
-                }
-                crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
-                    crate::net::session::play::dig_build::handle_dig(&state, &tx, pid, dir, true);
-                }
-                crate::game::ProgrammatorAction::Build {
-                    pid,
-                    tx,
-                    dir,
-                    block_type,
-                } => {
-                    let bld = crate::protocol::packets::XbldClient {
-                        direction: dir,
-                        block_type: &block_type,
-                    };
-                    crate::net::session::play::dig_build::handle_build(
-                        &state, &tx, pid, &bld, true,
-                    );
-                }
-                crate::game::ProgrammatorAction::Geo { pid, tx } => {
-                    crate::net::session::play::geo::handle_geo(&state, &tx, pid, true);
-                }
-                crate::game::ProgrammatorAction::Heal { pid, tx } => {
-                    crate::net::session::ui::heal_inventory::handle_heal(&state, &tx, pid, true);
-                }
-                crate::game::ProgrammatorAction::SetAutoDig { pid, tx, enabled } => {
-                    crate::net::session::social::misc::handle_auto_dig_set(
-                        &state, &tx, pid, enabled,
-                    );
-                }
-                crate::game::ProgrammatorAction::SetAggression { pid, tx, enabled } => {
-                    crate::net::session::social::misc::handle_aggression_set(
-                        &state, &tx, pid, enabled,
-                    );
-                }
-                crate::game::ProgrammatorAction::SetHandMode { tx, enabled } => {
-                    let packet = crate::protocol::packets::hand_mode(enabled);
-                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                        packet.0, &packet.1,
-                    ));
-                }
-                crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
-                    crate::net::session::play::packs::handle_gun_fill_prog(&state, &tx, pid, x, y);
-                }
-                crate::game::ProgrammatorAction::SetProgrammatorStatus { tx, running } => {
-                    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                        "@P",
-                        &crate::protocol::packets::programmator_status(running).1,
-                    ));
-                }
-            }
-        }
-        side_profile.programmator_actions = section_t0.elapsed();
-
-        let section_t0 = Instant::now();
-        for (pid, rx, ry, mh, bcast) in pending {
-            crate::net::session::play::death::run_death_broadcasts(&state, &bcast, pid);
-            let tx = state.query_player_opt(pid, |ecs, entity| {
-                ecs.get::<crate::game::player::PlayerConnection>(entity)
-                    .map(|c| c.tx.clone())
-            });
-            if let Some(tx) = tx {
-                crate::net::session::play::death::send_respawn_after_death(
-                    &tx, pid, rx, ry, mh, &bcast,
-                );
-                crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
-            }
-        }
-        side_profile.death = section_t0.elapsed();
-
-        // Периодический BotsRender (1:1 C# `Player.BotsRender`, каждые 4с):
-        // заново шлёт `X` всех видимых ботов каждому игроку. Без этого
-        // клиентский `RobotsGarbageCollector` (6с без пинга) удаляет
-        // простаивающих ботов — они мигают при ходьбе и исчезают в покое.
-        // Таймер per-player в `ActivePlayer`; due-список собираем заранее и
-        // отпускаем шард `active_players` ДО рендера (он берёт `ecs.read()`).
-        let section_t0 = Instant::now();
-        {
-            let now_render = Instant::now();
-            let due = state.take_due_bots_render(now_render, std::time::Duration::from_secs(4));
-            for pid in due {
-                if let Some(tx) = state.player_sender(pid) {
-                    crate::net::session::play::chunks::bots_render(&state, &tx, pid);
-                }
-            }
-        }
-        side_profile.bots_render = section_t0.elapsed();
-
-        // ── Stage 0: агрегация и throttled-вывод (target=tickprof) ──
-        let dt_side = side_t0.elapsed();
-        let dt_total = tick_t0.elapsed();
-        win_ticks += 1;
-        if dt_total > TICK_BUDGET {
-            win_over += 1;
-        }
-        win_max_total = win_max_total.max(dt_total);
-        win_max_dispatch = win_max_dispatch.max(dt_dispatch);
-        win_max_schedule = win_max_schedule.max(dt_schedule);
-        win_max_side = win_max_side.max(dt_side);
-        win_max_side_profile.update_max(side_profile);
-        win_max_actions = win_max_actions.max(n_actions);
-
-        // Индивидуальный over-budget тик — не чаще 1 раза/500мс (сам не флудит).
-        if dt_total > TICK_BUDGET && last_warn.elapsed() >= std::time::Duration::from_millis(500) {
-            last_warn = Instant::now();
-            tracing::warn!(
-                target: "tickprof",
-                "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
-                 schedule={dt_schedule:?} side={dt_side:?} actions={n_actions} \
-                 side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
-                 side_cell_conversions={:?} side_programmator_actions={:?} \
-                 side_death={:?} side_bots_render={:?}",
-                side_profile.broadcasts,
-                side_profile.pack_resends,
-                side_profile.box_persist,
-                side_profile.cell_conversions,
-                side_profile.programmator_actions,
-                side_profile.death,
-                side_profile.bots_render,
+    let section_t0 = Instant::now();
+    for (pid, rx, ry, mh, bcast) in pending {
+        crate::net::session::play::death::run_death_broadcasts(state, &bcast, pid);
+        let tx = state.query_player_opt(pid, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerConnection>(entity)
+                .map(|c| c.tx.clone())
+        });
+        if let Some(tx) = tx {
+            crate::net::session::play::death::send_respawn_after_death(
+                &tx, pid, rx, ry, mh, &bcast,
             );
+            crate::net::session::play::chunks::check_chunk_changed(state, &tx, pid);
         }
-        // Сводка раз в ~5с.
-        if win_start.elapsed() >= std::time::Duration::from_secs(5) {
-            tracing::info!(
-                target: "tickprof",
-                "5s summary: ticks={win_ticks} over_budget={win_over} \
-                 max_total={win_max_total:?} max_dispatch={win_max_dispatch:?} \
-                 max_schedule={win_max_schedule:?} max_side={win_max_side:?} \
-                 max_actions={win_max_actions} max_side_broadcasts={:?} \
-                 max_side_pack_resends={:?} max_side_box_persist={:?} \
-                 max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
-                 max_side_death={:?} max_side_bots_render={:?}",
-                win_max_side_profile.broadcasts,
-                win_max_side_profile.pack_resends,
-                win_max_side_profile.box_persist,
-                win_max_side_profile.cell_conversions,
-                win_max_side_profile.programmator_actions,
-                win_max_side_profile.death,
-                win_max_side_profile.bots_render,
-            );
-            win_start = Instant::now();
-            win_ticks = 0;
-            win_over = 0;
-            win_max_total = std::time::Duration::ZERO;
-            win_max_dispatch = std::time::Duration::ZERO;
-            win_max_schedule = std::time::Duration::ZERO;
-            win_max_side = std::time::Duration::ZERO;
-            win_max_side_profile = SideProfile::default();
-            win_max_actions = 0;
+    }
+    side_profile.death = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    {
+        let now_render = Instant::now();
+        let due = state.take_due_bots_render(now_render, std::time::Duration::from_secs(4));
+        for pid in due {
+            if let Some(tx) = state.player_sender(pid) {
+                crate::net::session::play::chunks::bots_render(state, &tx, pid);
+            }
         }
+    }
+    side_profile.bots_render = section_t0.elapsed();
+
+    // ── Stage 0: агрегация и throttled-вывод (target=tickprof) ──
+    let dt_side = side_t0.elapsed();
+    let dt_total = tick_t0.elapsed();
+    *win_ticks += 1;
+    if dt_total > tick_budget {
+        *win_over += 1;
+    }
+    *win_max_total = (*win_max_total).max(dt_total);
+    *win_max_dispatch = (*win_max_dispatch).max(dt_dispatch);
+    *win_max_schedule = (*win_max_schedule).max(dt_schedule);
+    *win_max_side = (*win_max_side).max(dt_side);
+    win_max_side_profile.update_max(side_profile);
+    *win_max_actions = (*win_max_actions).max(n_actions);
+
+    if dt_total > tick_budget && last_warn.elapsed() >= std::time::Duration::from_millis(500) {
+        *last_warn = Instant::now();
+        tracing::warn!(
+            target: "tickprof",
+            "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
+             schedule={dt_schedule:?} side={dt_side:?} actions={n_actions} \
+             side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
+             side_cell_conversions={:?} side_programmator_actions={:?} \
+             side_death={:?} side_bots_render={:?}",
+            side_profile.broadcasts,
+            side_profile.pack_resends,
+            side_profile.box_persist,
+            side_profile.cell_conversions,
+            side_profile.programmator_actions,
+            side_profile.death,
+            side_profile.bots_render,
+        );
+    }
+
+    if win_start.elapsed() >= std::time::Duration::from_secs(5) {
+        tracing::info!(
+            target: "tickprof",
+            "5s summary: ticks={win_ticks} over_budget={win_over} \
+             max_total={win_max_total:?} max_dispatch={win_max_dispatch:?} \
+             max_schedule={win_max_schedule:?} max_side={win_max_side:?} \
+             max_actions={win_max_actions} max_side_broadcasts={:?} \
+             max_side_pack_resends={:?} max_side_box_persist={:?} \
+             max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
+             max_side_death={:?} max_side_bots_render={:?}",
+            win_max_side_profile.broadcasts,
+            win_max_side_profile.pack_resends,
+            win_max_side_profile.box_persist,
+            win_max_side_profile.cell_conversions,
+            win_max_side_profile.programmator_actions,
+            win_max_side_profile.death,
+            win_max_side_profile.bots_render,
+        );
+        *win_start = Instant::now();
+        *win_ticks = 0;
+        *win_over = 0;
+        *win_max_total = std::time::Duration::ZERO;
+        *win_max_dispatch = std::time::Duration::ZERO;
+        *win_max_schedule = std::time::Duration::ZERO;
+        *win_max_side = std::time::Duration::ZERO;
+        *win_max_side_profile = SideProfile::default();
+        *win_max_actions = 0;
     }
 }
 

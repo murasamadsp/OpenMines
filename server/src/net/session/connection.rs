@@ -185,7 +185,11 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                                 time = ty.client_timestamp(),
                                                 "<<< [TY] enqueued"
                                             );
-                                            state.incoming_actions.push(id, tx.clone(), ty);
+                                            let _ = state.commands_tx.send(crate::game::PlayerCommand::Ty {
+                                                player_id: id,
+                                                tx: tx.clone(),
+                                                packet: ty,
+                                            });
                                         } else {
                                             let event_owned = event.to_string();
                                             tracing::debug!(

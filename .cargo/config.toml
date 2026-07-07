@@ -1,0 +1,5 @@
+[alias]
+server = "run --bin openmines-server --"
+doctor = "run --bin openmines-server -- --doctor"
+check-server = "check -p openmines-server"
+test-fast = "nextest run --all-targets --all-features"

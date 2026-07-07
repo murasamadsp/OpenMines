@@ -8,6 +8,7 @@ source "$ROOT_DIR/scripts/quality-common.sh"
 
 quality_run_rustfmt_check
 quality_run_arch_guard
+quality_run_tools_audit
 quality_run_clippy_strict
 
 echo "==> Running dependency policy checks"

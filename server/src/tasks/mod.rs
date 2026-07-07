@@ -16,7 +16,7 @@ pub fn spawn_background_tasks(state: &Arc<GameState>, shutdown: &broadcast::Send
     lifecycle::spawn_online_count_loop(Arc::clone(state), shutdown.subscribe());
     lifecycle::spawn_player_dirty_flush_loop(Arc::clone(state), shutdown.subscribe());
     lifecycle::spawn_building_dirty_flush_loop(Arc::clone(state), shutdown.subscribe());
-    lifecycle::spawn_game_tick_loop(Arc::clone(state), shutdown.clone());
+    lifecycle::spawn_game_tick_loop(Arc::clone(state), shutdown);
 
     // 3. Обработка завершения аукционов
     auction::spawn_auction_finalize_loop(Arc::clone(state), shutdown.subscribe());

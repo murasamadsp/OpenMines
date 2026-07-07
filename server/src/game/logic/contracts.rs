@@ -11,9 +11,7 @@ use openmines_shared::db::players::PlayerRow;
 use openmines_shared::db::programs::ProgramRow;
 use openmines_shared::protocol::Packet;
 
-/// `PlayerId` is a type alias for the unique i32 identifying a player.
-#[allow(dead_code)]
-type PlayerId = i32;
+use crate::game::actors::player::PlayerId;
 
 /// All incoming action commands from client sessions to the game tick loop.
 #[allow(dead_code)]
@@ -21,12 +19,18 @@ type PlayerId = i32;
 pub enum PlayerCommand {
     /// Initial connection handshake and registration.
     Connect {
-        player_id: PlayerId,
-        username: String,
-        token: String,
+        row: Box<openmines_shared::db::players::PlayerRow>,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        token: u64,
     },
     /// Clean disconnect of the player session.
-    Disconnect { player_id: PlayerId, token: String },
+    Disconnect { player_id: PlayerId, token: u64 },
+    /// Incoming game packet of type TY.
+    Ty {
+        player_id: PlayerId,
+        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+        packet: crate::protocol::packets::TyPacket,
+    },
     /// Pong response returning client time.
     Pong {
         player_id: PlayerId,

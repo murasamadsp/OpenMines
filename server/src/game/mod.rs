@@ -148,14 +148,6 @@ pub struct PendingConversion {
     pub owner_pid: PlayerId,
 }
 
-// ─── Incoming Actions Queue ──────────────────────────────────────────────────
-
-/// Входящее игровое действие: (игрок, канал ответа, TY-пакет).
-pub type IncomingAction = (
-    PlayerId,
-    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    crate::protocol::packets::TyPacket,
-);
 /// Запись персистенции бокса: (координата, `Some`=upsert | `None`=delete).
 type BoxPersist = (WorldPos, Option<[i64; 6]>);
 /// Пакет в HB-overlay здания: поля именованы для читаемости (IR-3).
@@ -181,30 +173,6 @@ pub struct BuildingInsertSpec<'a> {
     pub owner_id: PlayerId,
     pub clan_id: i32,
     pub extra: &'a BuildingExtra,
-}
-
-pub struct IncomingActionsQueue {
-    pub(crate) queue: Mutex<Vec<IncomingAction>>,
-}
-
-impl IncomingActionsQueue {
-    pub fn new() -> Self {
-        Self {
-            queue: Mutex::new(Vec::with_capacity(128)),
-        }
-    }
-    pub fn push(
-        &self,
-        pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-        ty: crate::protocol::packets::TyPacket,
-    ) {
-        self.queue.lock().push((pid, tx, ty));
-    }
-    pub fn drain(&self) -> Vec<IncomingAction> {
-        let mut q = self.queue.lock();
-        std::mem::take(&mut *q)
-    }
 }
 
 // ─── Lifecycle Queue ─────────────────────────────────────────────────────────
@@ -262,10 +230,9 @@ pub struct GameState {
     pub ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
-    pub incoming_actions: IncomingActionsQueue,
-    /// Очередь команд жизненного цикла (Connect/Disconnect). Дренится в
-    /// game-tick ДО `incoming_actions` (entity спавнится раньше своих TY).
-    pub life_queue: Mutex<Vec<LifeCmd>>,
+    pub commands_tx: tokio::sync::mpsc::UnboundedSender<PlayerCommand>,
+    pub commands_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<PlayerCommand>>>,
+    pub tokio_handle: tokio::runtime::Handle,
     /// Монотонный счётчик токенов сеанса (см. `LifeCmd`/`ActivePlayer`).
     session_token_seq: std::sync::atomic::AtomicU64,
     player_tx: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
@@ -404,6 +371,7 @@ impl GameState {
             },
         ];
 
+        let state_rx;
         let state = Arc::new(Self {
             world,
             db: database,
@@ -420,8 +388,13 @@ impl GameState {
             ecs: RwLock::new(EcsWorld::new()),
             schedules,
             auth_failures: DashMap::new(),
-            incoming_actions: IncomingActionsQueue::new(),
-            life_queue: Mutex::new(Vec::new()),
+            commands_tx: {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                state_rx = Some(rx);
+                tx
+            },
+            commands_rx: Mutex::new(state_rx),
+            tokio_handle: tokio::runtime::Handle::current(),
             session_token_seq: std::sync::atomic::AtomicU64::new(1),
             player_tx: DashMap::new(),
             box_index: Arc::new(DashMap::new()),
@@ -555,12 +528,19 @@ impl GameState {
 
     /// Поставить команду жизненного цикла в очередь (из conn-таска).
     pub fn enqueue_life(&self, cmd: LifeCmd) {
-        self.life_queue.lock().push(cmd);
-    }
-
-    /// Забрать все команды жизненного цикла (в game-tick).
-    pub fn drain_life(&self) -> Vec<LifeCmd> {
-        std::mem::take(&mut *self.life_queue.lock())
+        match cmd {
+            LifeCmd::Connect { row, tx, token } => {
+                let _ = self
+                    .commands_tx
+                    .send(PlayerCommand::Connect { row, tx, token });
+            }
+            LifeCmd::Disconnect { pid, token } => {
+                let _ = self.commands_tx.send(PlayerCommand::Disconnect {
+                    player_id: pid,
+                    token,
+                });
+            }
+        }
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
