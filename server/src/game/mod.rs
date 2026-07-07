@@ -745,7 +745,7 @@ impl GameState {
             .collect()
     }
 
-    pub(crate) fn find_pack_covering_with(
+    fn find_pack_covering_with(
         ecs: &EcsWorld,
         chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,
         x: i32,
@@ -823,7 +823,7 @@ impl GameState {
 
     /// C# `World.AccessGun` → `(access, anygun)`. `access`: нет вражеской ЗАРЯЖЕННОЙ
     /// пушки в радиусе 20. `anygun`: есть ЛЮБАЯ пушка в радиусе (для Gate-item).
-    pub(crate) fn access_gun_with(
+    fn access_gun_with(
         ecs: &EcsWorld,
         chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,
         x: i32,

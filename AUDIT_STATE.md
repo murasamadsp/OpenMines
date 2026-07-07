@@ -54,6 +54,8 @@
 - Runtime-индексы `building_index`, `chunk_buildings`, `botspot_index`,
   `chunk_botspots`, `box_index`, `box_persist_q` больше не являются публичными
   полями `GameState`; новые внешние обращения теперь ловятся компилятором.
+- Static helpers, требующие сырой `chunk_buildings`, приватны внутри
+  `GameState`; внешний код может идти только через instance boundary.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
