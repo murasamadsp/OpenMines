@@ -1644,7 +1644,7 @@ pub fn programmator_system(
             a
         };
 
-        tracing::info!(
+        tracing::trace!(
             "PROGDIAG exec {:?}:{} at ({},{})",
             action.action_type,
             action.num,
