@@ -1,7 +1,7 @@
 use crate::game::player::PlayerPosition;
 use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource};
 use crate::world::WorldProvider;
-use crate::world::cells::cell_type;
+use crate::world::cells::{CellDefs, cell_type};
 use bevy_ecs::prelude::*;
 use rand::Rng;
 
@@ -25,19 +25,19 @@ fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
 }
 
 /// Есть ли у клетки `falltype` (песок/валун) — JS `BlockStats[id].falltype != null`.
-fn has_falltype(world: &crate::world::World, x: i32, y: i32) -> bool {
+fn has_falltype(world: &crate::world::World, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
     if !world.valid_coord(x, y) {
         return false;
     }
     let cell = world.get_cell_typed(x, y);
-    world.cell_defs().get_typed(cell).is_sand() || cell.is_boulder()
+    cell_defs.get_typed(cell).is_sand() || cell.is_boulder()
 }
 
 /// JS `GeoPhisics.DownFree`: 1 = падать прямо вниз, 0 = диагональный соскок,
 /// 2 = ждать/заблокировано (хода нет).
-fn down_free(world: &crate::world::World, x: i32, y: i32) -> u8 {
+fn down_free(world: &crate::world::World, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
     if is_passable(world, x, y + 1) {
-        if has_falltype(world, x, y + 2) {
+        if has_falltype(world, cell_defs, x, y + 2) {
             if !is_passable(world, x, y + 3) {
                 return 1;
             }
@@ -45,7 +45,7 @@ fn down_free(world: &crate::world::World, x: i32, y: i32) -> u8 {
         }
         return 1;
     }
-    if has_falltype(world, x, y + 1) {
+    if has_falltype(world, cell_defs, x, y + 1) {
         return 0;
     }
     2
@@ -103,7 +103,7 @@ pub fn sand_physics_system(
 
                 // JS `FallingCycle`: ветвление по `DownFree`.
                 // df==1 — прямо вниз; df==0 — диагональ; df==2 — стоим.
-                let df = down_free(world, sx, sy);
+                let df = down_free(world, &cell_defs, sx, sy);
                 if df == 1 {
                     tasks.push((sx, sy, sx, sy + 1, cell));
                     continue;

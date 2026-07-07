@@ -104,6 +104,7 @@ pub fn standing_cell_hazard_system(
 ) {
     let mut profile = HazardProfile::start();
     let world = &world_res.0;
+    let cell_defs = world.cell_defs();
 
     for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
         profile.players_scanned += 1;
@@ -115,10 +116,7 @@ pub fn standing_cell_hazard_system(
         }
         let lookup_t0 = Instant::now();
         let cell = world.get_cell_typed(px, py);
-        let pdef = {
-            let defs = world.cell_defs();
-            defs.get_typed(cell).clone()
-        };
+        let pdef = cell_defs.get_typed(cell);
         profile.lookup_time += lookup_t0.elapsed();
         if pdef.cell_is_empty() {
             continue;

@@ -86,6 +86,12 @@
 пишет в `tickprof` per-section timings для `side`-стадии: `broadcasts`,
 `pack_resends`, `box_persist`, `cell_conversions`, `programmator_actions`, `death`,
 `bots_render`.
+Для `hazards` добавлен отдельный slow-log внутри
+`standing_cell_hazard_system`: `players_scanned`, `active_cells`,
+`fall_damage_hits`, `boxes_seen/taken`, `destructible_cells` и coarse timings
+`lookup_time/fall_damage_time/box_time/destroy_time`. В `hazards` и `sand`
+hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` внутри частых
+циклов; `CellDefs` теперь берётся один раз на запуск системы.
 
 Исходная проблема: лог вида
 `OVER-BUDGET tick: total=32.760416ms dispatch=2.25µs schedule=1.002791ms side=31.7485ms actions=0`
@@ -93,6 +99,8 @@
 
 Осталось:
 - собрать реальные `tickprof`-логи с новым разбиением;
+- если снова всплывает `SLOW hazards system`, чинить конкретную секцию из
+  нового лога, а не менять общий tick budget;
 - подтвердить или исключить `bots_render` как источник пиков;
 - оптимизировать конкретный hot path, а не увеличивать tick budget.
 
