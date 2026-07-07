@@ -105,6 +105,15 @@
   `rg dead_code server crates -g '!target'` -> 36 строк; оставшееся требует
   feature wiring (BotSpot, skills hooks, programmator, provider/world/protocol),
   а не удаления кода.
+- Добавлен `openmines-server --doctor`: schema/resource doctor валидирует config,
+  port collision, state dir path, cells/buildings configs и геометрию мира без
+  запуска TCP/admin-сервера и без создания БД/мира.
+- Rust dependency audit на 2026-07-07 чистый по прямым рискам:
+  `cargo machete`, `cargo deny check`, `cargo audit`,
+  `cargo outdated --workspace --depth 1`; детали и периодические команды в
+  `docs/RUST_TOOLING.md`.
+- Загрузка runtime boxes/events больше не стартует с пустым состоянием при ошибке
+  БД; битый JSON активного event тоже fail-fast вместо тихого `xp/drop=1.0`.
 
 ## Не считать закрытым
 
@@ -127,6 +136,10 @@
 - `allow(dead_code)` не считать закрытым: оставшиеся вхождения можно снимать
   только через подключение понятной live-фичи или typed boundary с тестом. Если
   уверенность ниже 90%, оставить код и записать долг.
+- `--doctor` не считать полным readiness-check: пока он не открывает SQLite, не
+  гоняет миграции и не выполняет wire/gameplay scenario-smoke.
+- Ускорение разработки не закрыто: нужен отдельный срез `sccache`/fast linker/
+  `cargo nextest`/разделение быстрых и полных gates.
 
 ## Следующий правильный порядок
 

@@ -1,5 +1,31 @@
 # TODO
 
+## Dev-сахар / локальная проверка
+
+- Scenario-smoke для реального wire/gameplay: headless runner должен проходить
+  сценарий `connect -> auth/register -> init packets -> move -> dig -> programmator
+  start/stop -> reconnect` и проверять ответные пакеты. Это главный guardrail
+  против регрессий, которые сейчас ловятся только руками через Unity.
+- GUI/Wire Codex: единый машинно-читаемый реестр `клиентская кнопка -> TY event ->
+  серверный handler -> server packets`, особенно HORB/programmator/admin окна.
+  Цель — убрать гадание по GUI payload cardinality.
+- Live debug dashboard в админке: tickprof sections, queue sizes, dirty
+  players/buildings/boxes, active programmators, schedule intervals, last save
+  errors.
+- `openmines-server --doctor`: локальная проверка config/cells/buildings/data dir
+  без запуска игрового TCP/admin-сервера. Первый срез — schema/resource doctor;
+  дальше расширять до optional DB/migrations check без неявного создания мира.
+- Rust tooling: держать `cargo-deny`, `cargo-audit`, `cargo-machete` как
+  обязательный fast gate; периодически запускать `cargo outdated`, `cargo geiger`,
+  `cargo bloat` вручную и заносить реальные находки, а не добавлять crates ради
+  “современности”.
+- Ускорить dev/test цикл: `sccache`, быстрый linker (`mold`/`lld` где доступен),
+  `cargo nextest`, таргетированные сценарии вместо полного `cargo test` на каждую
+  правку, запрет на параллельный запуск тяжёлых cargo-gate на одной машине.
+- Implicit defaults audit: запретить runtime-подстановки доменного состояния.
+  Начато с fail-fast загрузки boxes/events; дальше разбирать `serde(default)` и
+  `unwrap_or` только там, где это скрывает повреждение config/DB/game state.
+
 ## Входящие баги от ручной проверки 2026-07-07
 
 Порядок работы: сначала скиллы, затем программатор GUI, затем shutdown/HORB.

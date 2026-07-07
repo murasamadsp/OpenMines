@@ -13,6 +13,10 @@ fn parse_rich_bool(s: &str) -> Result<bool, String> {
 #[derive(Parser, Debug, Clone)]
 #[command(name = "openmines-server", about = "OpenMines — игровой сервер (Rust)")]
 pub struct Args {
+    /// Validate config/resources/state directory and exit without starting TCP/admin servers
+    #[arg(long)]
+    pub doctor: bool,
+
     /// Force regeneration of the world map on startup
     #[arg(
         long,
@@ -128,6 +132,13 @@ mod tests {
     #[test]
     fn test_parse_regen_flag_no_args() {
         let args = parse_from_env_and_args([] as [&str; 0], &[]).unwrap();
+        assert!(!args.regen);
+    }
+
+    #[test]
+    fn test_parse_doctor_flag() {
+        let args = parse_from_env_and_args(["--doctor"], &[]).unwrap();
+        assert!(args.doctor);
         assert!(!args.regen);
     }
 

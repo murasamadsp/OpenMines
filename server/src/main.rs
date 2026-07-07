@@ -10,6 +10,7 @@ pub use openmines_shared::world;
 mod bootstrap;
 mod cli;
 mod console;
+mod doctor;
 mod game;
 mod migrations;
 mod net;
@@ -42,7 +43,6 @@ async fn main() -> Result<()> {
 
     let args = cli::Args::parse_args();
 
-    println!("[Main] Process started");
     let mut cfg = config::Config::load(&args.config).map_err(|e| {
         println!(
             "[Main] CRITICAL: Failed to load config {}: {e}",
@@ -59,6 +59,11 @@ async fn main() -> Result<()> {
         cfg.data_dir = data_dir_override.clone();
     }
 
+    if args.doctor {
+        return doctor::run(&args, &cfg);
+    }
+
+    println!("[Main] Process started");
     println!("[Main] Config loaded, initializing logging...");
     let _logging_guard = logging::init(&cfg.logging)?;
     tracing::info!(world_name = %cfg.world_name, port = cfg.port, "Config loaded");

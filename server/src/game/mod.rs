@@ -430,47 +430,47 @@ impl GameState {
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
         // боксам больше не дёргаем).
-        match state.db.load_all_boxes().await {
-            Ok(rows) => {
-                for (bx, by, crystals) in rows {
-                    state.box_index.insert((bx, by).into(), crystals);
-                }
-                tracing::info!(
-                    "Loaded {} boxes into in-memory index",
-                    state.box_index.len()
-                );
-            }
-            Err(e) => tracing::error!(error = ?e, "Failed to load boxes into index"),
+        let box_rows = state
+            .db
+            .load_all_boxes()
+            .await
+            .context("load boxes into runtime index")?;
+        for (bx, by, crystals) in box_rows {
+            state.box_index.insert((bx, by).into(), crystals);
         }
+        tracing::info!(
+            "Loaded {} boxes into in-memory index",
+            state.box_index.len()
+        );
 
-        match state.db.load_all_events().await {
-            Ok(rows) => {
-                let mut events = state.active_events.write();
-                for r in rows {
-                    #[derive(serde::Deserialize)]
-                    struct Config {
-                        xp_mult: f64,
-                        drop_mult: f64,
-                    }
-                    let cfg: Config = serde_json::from_str(&r.config_json).unwrap_or(Config {
-                        xp_mult: 1.0,
-                        drop_mult: 1.0,
-                    });
-                    events.list.push(ActiveEvent {
-                        id: r.id,
-                        title: r.title,
-                        starts_at: r.starts_at,
-                        ends_at: r.ends_at,
-                        xp_mult: cfg.xp_mult,
-                        drop_mult: cfg.drop_mult,
-                    });
+        let event_rows = state
+            .db
+            .load_all_events()
+            .await
+            .context("load active events from database")?;
+        {
+            let mut events = state.active_events.write();
+            for r in event_rows {
+                #[derive(serde::Deserialize)]
+                struct Config {
+                    xp_mult: f64,
+                    drop_mult: f64,
                 }
-                tracing::info!(
-                    count = events.list.len(),
-                    "Loaded active events from database"
-                );
+                let cfg: Config = serde_json::from_str(&r.config_json)
+                    .with_context(|| format!("parse active event config id={}", r.id))?;
+                events.list.push(ActiveEvent {
+                    id: r.id,
+                    title: r.title,
+                    starts_at: r.starts_at,
+                    ends_at: r.ends_at,
+                    xp_mult: cfg.xp_mult,
+                    drop_mult: cfg.drop_mult,
+                });
             }
-            Err(e) => tracing::error!(error = ?e, "Failed to load active events from database"),
+            tracing::info!(
+                count = events.list.len(),
+                "Loaded active events from database"
+            );
         }
 
         {
