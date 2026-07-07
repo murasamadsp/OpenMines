@@ -1997,6 +1997,17 @@ fn execute_action(
             });
             ExecResult::None
         }
+        ActionType::DebugMessage | ActionType::DebugPause => {
+            // JS reference ExecutorList: DBG_MSG/DBG_PAUSE only call dbgL("28"/"29").
+            // No wire packet, delay or state mutation is expected.
+            tracing::debug!(
+                player_id = %meta.id,
+                action = ?action.action_type,
+                label = %action.label,
+                "programmator debug action"
+            );
+            ExecResult::None
+        }
 
         // ─── Macros (simplified) ────────────────────────────────────────
         ActionType::MacrosDig => {
