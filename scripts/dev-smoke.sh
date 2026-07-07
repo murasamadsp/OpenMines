@@ -42,69 +42,29 @@ mkdir -p "$WORK_DIR/configs"
 ln -s "$ROOT/configs/cells.json" "$WORK_DIR/configs/cells.json"
 ln -s "$ROOT/configs/buildings.json" "$WORK_DIR/configs/buildings.json"
 
-cat > "$WORK_DIR/configs/config.json" <<JSON
-{
-  "world_name": "dev-smoke",
-  "port": $PORT,
-  "world_chunks_w": 4,
-  "world_chunks_h": 4,
-  "data_dir": "data",
-  "logging": {
+python3 - "$ROOT/configs/config.json" "$WORK_DIR/configs/config.json" "$PORT" <<'PY'
+import json
+import sys
+
+src, dst, port = sys.argv[1:]
+with open(src, encoding="utf-8") as f:
+    cfg = json.load(f)
+
+cfg["world_name"] = "dev-smoke"
+cfg["port"] = int(port)
+cfg["world_chunks_w"] = 4
+cfg["world_chunks_h"] = 4
+cfg["data_dir"] = "data"
+cfg["logging"] = {
     "filter": "openmines_server=info,openmines_server::net=debug,tokio=warn",
     "format": "compact",
-    "file": null
-  },
-  "cron": {
-    "hourly_log_enabled": true
-  },
-  "gameplay": {
-    "cooldowns": {
-      "dig_ms": 200,
-      "build_ms": 200,
-      "geo_ms": 200
-    },
-    "combat": {
-      "gun_fire_interval_ms": 500,
-      "gun_damage": 60,
-      "gun_radius_cells": 20
-    },
-    "bonus": {
-      "cooldown_secs": 25200,
-      "reward_money": 1000000
-    },
-    "skills": {
-      "upgrade_cost_base": 100
-    },
-    "spawn": {
-      "x": 10,
-      "y": 10
-    },
-    "programmator": {
-      "direct_action_delay_us": 333333,
-      "blocked_move_penalty_ms": 200,
-      "min_move_delay_ms": 20
-    },
-    "schedules": {
-      "hazards_ms": 10,
-      "physics_ms": 400,
-      "guns_ms": 100,
-      "programmator_ms": 100,
-      "alive_ms": 5000,
-      "building_effects_ms": 1000,
-      "hourly_damage_ms": 3600000,
-      "game_loop_tick_rate_ms": 10,
-      "game_loop_panic_backoff_ms": 200,
-      "session_disconnect_timeout_secs": 30
-    },
-    "rate_limits": {
-      "chat_burst": 5,
-      "chat_per_sec": 3,
-      "gui_burst": 10,
-      "gui_per_sec": 5
-    }
-  }
+    "file": None,
 }
-JSON
+
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
 
 echo "==> Starting local smoke server"
 echo "    workdir:  $WORK_DIR"

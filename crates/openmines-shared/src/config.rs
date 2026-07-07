@@ -25,7 +25,7 @@ pub struct Config {
 
 /// Корень геймплей-тюнинга. Растёт добавлением секций-суб-структур
 /// (`cooldowns`, далее `combat`/`items`/`economy`/…).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
     pub combat: CombatConfig,
@@ -41,7 +41,7 @@ pub struct GameplayConfig {
 /// `burst` — максимальный всплеск (GCRA bucket depth).
 /// `replenish_per_sec` — сколько токенов добавляется за секунду.
 /// Все поля обязательны (fail-fast при старте).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RateLimitConfig {
     /// Чат (`Locl`, `Chat`, `Cpri`) — сообщений в секунду + burst.
     pub chat_burst: u32,
@@ -62,7 +62,7 @@ impl Default for RateLimitConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnConfig {
     pub x: i32,
     pub y: i32,
@@ -75,7 +75,7 @@ impl Default for SpawnConfig {
 }
 
 /// Настройки серверного исполнения программатора.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgrammatorConfig {
     /// Задержка для прямых действий программы: копание/стройка/геология/хил.
     pub direct_action_delay_us: u64,
@@ -96,7 +96,7 @@ impl Default for ProgrammatorConfig {
 }
 
 /// Стартовые интервалы ECS-очередей в миллисекундах. `0` отключает очередь.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleConfig {
     pub hazards_ms: u64,
     pub physics_ms: u64,
@@ -119,7 +119,7 @@ impl Default for ScheduleConfig {
             guns_ms: 100,
             programmator_ms: 100,
             alive_ms: 5_000,
-            building_effects_ms: 1_000,
+            building_effects_ms: 500,
             hourly_damage_ms: 3_600_000,
             game_loop_tick_rate_ms: 10,
             game_loop_panic_backoff_ms: 200,
@@ -131,7 +131,7 @@ impl Default for ScheduleConfig {
 /// Тюнинг скиллов. `upgrade_cost_base` — цена апгрейда в деньгах:
 /// `cost = upgrade_cost_base * текущий_уровень` (в C# апгрейд был бесплатным —
 /// намеренная экономик-девиация, см. `docs/DEVIATIONS.md`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsConfig {
     pub upgrade_cost_base: i64,
 }
@@ -146,7 +146,7 @@ impl Default for SkillsConfig {
 
 /// Кулдауны действий игрока (мс). Прежние литералы из `play/dig_build.rs`
 /// (200ms копание/стройка) — теперь только в `config.json`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CooldownConfig {
     pub dig_ms: u64,
     pub build_ms: u64,
@@ -168,7 +168,7 @@ impl Default for CooldownConfig {
 
 /// Базовые боевые параметры. Значения по умолчанию держат текущий C#-паритет:
 /// пушка стреляет раз в 0.5с, радиус 20 клеток, базовый урон 60 HP.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CombatConfig {
     pub gun_fire_interval_ms: u64,
     pub gun_damage: i32,
@@ -187,7 +187,7 @@ impl Default for CombatConfig {
 
 /// Daily bonus tuning (`GDon` button). Defaults preserve the current behavior:
 /// one claim every 7 hours, 1_000_000 money.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BonusConfig {
     pub cooldown_secs: i64,
     pub reward_money: i64,
@@ -202,7 +202,7 @@ impl Default for BonusConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CronConfig {
     pub hourly_log_enabled: bool,
 }
@@ -464,7 +464,7 @@ mod tests {
                         "guns_ms": 100,
                         "programmator_ms": 100,
                         "alive_ms": 5000,
-                        "building_effects_ms": 1000,
+                        "building_effects_ms": 500,
                         "hourly_damage_ms": 3600000,
                         "game_loop_tick_rate_ms": 10,
                         "game_loop_panic_backoff_ms": 200,
@@ -499,8 +499,29 @@ mod tests {
         assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
         assert_eq!(c.gameplay.schedules.hazards_ms, 10);
         assert_eq!(c.gameplay.schedules.physics_ms, 400);
+        assert_eq!(c.gameplay.schedules.building_effects_ms, 500);
         assert_eq!(c.gameplay.schedules.hourly_damage_ms, 3_600_000);
         assert!(c.cron.hourly_log_enabled);
+    }
+
+    #[test]
+    fn tracked_config_matches_typed_runtime_baseline() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("shared crate must live under crates/openmines-shared");
+        let cfg = Config::load(root.join("configs/config.json").to_str().unwrap()).unwrap();
+        assert_eq!(
+            cfg.gameplay,
+            GameplayConfig::default(),
+            "configs/config.json gameplay must match typed baseline in config.rs"
+        );
+        assert_eq!(
+            cfg.cron,
+            CronConfig::default(),
+            "configs/config.json cron must match typed baseline in config.rs"
+        );
     }
 
     /// Fail-fast (запрошено): пропущенный геймплей-ключ = ошибка парсинга, а НЕ

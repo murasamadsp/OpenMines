@@ -18,69 +18,26 @@ LOG_FILTER="${M3R_DEV_LOG:-openmines_server=info,openmines_shared=info,tickprof=
 mkdir -p "$CONFIG_DIR" "$STATE_DIR"
 ln -sfn "$ROOT/configs/cells.json" "$CONFIG_DIR/cells.json"
 ln -sfn "$ROOT/configs/buildings.json" "$CONFIG_DIR/buildings.json"
-cat > "$CONFIG_DIR/config.json" <<JSON
-{
-  "world_name": "local-dev",
-  "port": $PORT,
-  "world_chunks_w": $WORLD_CHUNKS_W,
-  "world_chunks_h": $WORLD_CHUNKS_H,
-  "data_dir": "data",
-  "logging": {
-    "filter": "$LOG_FILTER",
-    "format": "compact",
-    "file": null
-  },
-  "cron": {
-    "hourly_log_enabled": true
-  },
-  "gameplay": {
-    "cooldowns": {
-      "dig_ms": 200,
-      "build_ms": 200,
-      "geo_ms": 200
-    },
-    "combat": {
-      "gun_fire_interval_ms": 500,
-      "gun_damage": 60,
-      "gun_radius_cells": 20
-    },
-    "bonus": {
-      "cooldown_secs": 25200,
-      "reward_money": 1000000
-    },
-    "skills": {
-      "upgrade_cost_base": 100
-    },
-    "spawn": {
-      "x": 10,
-      "y": 10
-    },
-    "programmator": {
-      "direct_action_delay_us": 333333,
-      "blocked_move_penalty_ms": 200,
-      "min_move_delay_ms": 20
-    },
-    "schedules": {
-      "hazards_ms": 10,
-      "physics_ms": 400,
-      "guns_ms": 100,
-      "programmator_ms": 100,
-      "alive_ms": 5000,
-      "building_effects_ms": 1000,
-      "hourly_damage_ms": 3600000,
-      "game_loop_tick_rate_ms": 10,
-      "game_loop_panic_backoff_ms": 200,
-      "session_disconnect_timeout_secs": 30
-    },
-    "rate_limits": {
-      "chat_burst": 5,
-      "chat_per_sec": 3,
-      "gui_burst": 10,
-      "gui_per_sec": 5
-    }
-  }
-}
-JSON
+python3 - "$ROOT/configs/config.json" "$CONFIG_DIR/config.json" \
+  "$PORT" "$WORLD_CHUNKS_W" "$WORLD_CHUNKS_H" "$LOG_FILTER" <<'PY'
+import json
+import sys
+
+src, dst, port, chunks_w, chunks_h, log_filter = sys.argv[1:]
+with open(src, encoding="utf-8") as f:
+    cfg = json.load(f)
+
+cfg["world_name"] = "local-dev"
+cfg["port"] = int(port)
+cfg["world_chunks_w"] = int(chunks_w)
+cfg["world_chunks_h"] = int(chunks_h)
+cfg["data_dir"] = "data"
+cfg["logging"] = {"filter": log_filter, "format": "compact", "file": None}
+
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
 
 echo "==> OpenMines local dev server"
 echo "    root:      $ROOT"

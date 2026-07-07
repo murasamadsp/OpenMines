@@ -155,11 +155,6 @@ mod physics_repro {
     use crate::world::{World, WorldProvider};
     use bevy_ecs::prelude::*;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
-
-    fn past() -> Instant {
-        Instant::now().checked_sub(Duration::from_secs(30)).unwrap()
-    }
 
     #[test]
     fn physics_runs_and_makes_no_garbage() {
@@ -189,7 +184,6 @@ mod physics_repro {
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
         w.insert_resource(BroadcastQueue::default());
-        w.insert_resource(alive::AliveTickTimer { last_tick: past() });
         w.spawn(PlayerPosition {
             x: 64,
             y: 65,
@@ -201,7 +195,6 @@ mod physics_repro {
         sched.add_systems(alive::alive_physics_system);
 
         for _ in 0..80 {
-            w.resource_mut::<alive::AliveTickTimer>().last_tick = past();
             sched.run(&mut w);
         }
 

@@ -9,24 +9,9 @@ use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 use rand::Rng;
-use std::time::Instant;
 
 /// Directions used by alive cell logic (cardinal: right, down, left, up).
 const DIRS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
-
-/// Resource tracking alive tick interval (5s as in C# reference).
-#[derive(Resource)]
-pub struct AliveTickTimer {
-    pub last_tick: Instant,
-}
-
-impl Default for AliveTickTimer {
-    fn default() -> Self {
-        Self {
-            last_tick: Instant::now(),
-        }
-    }
-}
 
 /// Check if a cell type is an alive cell.
 const fn is_alive(cell: crate::world::CellType) -> bool {
@@ -65,15 +50,8 @@ struct AliveAction {
 pub fn alive_physics_system(
     world_res: Res<WorldResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    mut timer: ResMut<AliveTickTimer>,
     query: Query<&PlayerPosition>,
 ) {
-    // Only tick every 5 seconds (C# reference: 5000ms interval).
-    if timer.last_tick.elapsed().as_millis() < 5000 {
-        return;
-    }
-    timer.last_tick = Instant::now();
-
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
 
