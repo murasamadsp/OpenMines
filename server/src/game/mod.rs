@@ -934,6 +934,26 @@ impl GameState {
             .push(((x, y).into(), Some(crystals)));
     }
 
+    /// Положить box-клетку и её содержимое одной доменной операцией.
+    /// Это первый слой boundary для `WorldCell { type, durability, pack/box }`:
+    /// callers не должны отдельно помнить про mmap-клетку и `box_index`.
+    pub fn put_box_cell(&self, x: i32, y: i32, crystals: [i64; 6]) {
+        self.world.set_cell_typed(
+            x,
+            y,
+            crate::world::CellType(crate::world::cells::cell_type::BOX),
+        );
+        self.box_put(x, y, crystals);
+    }
+
+    /// Убрать box-клетку и связанный индекс. Если индекс уже потерян, orphan BOX
+    /// всё равно очищается из мира, как прежний `damage_cell`-path при копании.
+    pub fn remove_box_cell(&self, x: i32, y: i32) -> Option<[i64; 6]> {
+        let crystals = self.box_take(x, y);
+        self.world.damage_cell(x, y, 1.0);
+        crystals
+    }
+
     /// Слить очередь персистенции боксов. На hot-path `BoxPersistQueue` дренится
     /// внутри `ecs.write()` в lifecycle.rs; этот метод — для финального drain при
     /// shutdown (`main::shutdown_flush`), чтобы не потерять последние upsert/delete.

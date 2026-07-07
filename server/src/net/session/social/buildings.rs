@@ -815,10 +815,7 @@ fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) 
     if state.get_pack_at(x, y).is_some() {
         return;
     }
-    state
-        .world
-        .set_cell_typed(x, y, crate::world::CellType(cell_type::BOX));
-    state.box_put(x, y, crystals);
+    state.put_box_cell(x, y, crystals);
     broadcast_cell_update(state, x, y);
 }
 

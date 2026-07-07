@@ -279,7 +279,7 @@ pub fn handle_dig(
                 {
                     return Some(BoxPickupResult::MissingState("PlayerFlags"));
                 }
-                let Some(bc) = state.box_take(tgt_x, tgt_y) else {
+                let Some(bc) = state.remove_box_cell(tgt_x, tgt_y) else {
                     return Some(BoxPickupResult::Empty);
                 };
                 let mut p_stats = ecs
@@ -323,7 +323,6 @@ pub fn handle_dig(
                 return;
             }
         }
-        state.world.damage_cell(tgt_x, tgt_y, 1.0);
         broadcast_cell_update(state, tgt_x, tgt_y);
         // Референс: `player.Move(player.x, player.y, dir)` → `SendMyMove()`.
         let bot = hb_bot(
@@ -1426,8 +1425,7 @@ mod tests {
             ecs.entity_mut(entity)
                 .remove::<crate::game::player::PlayerFlags>();
         }
-        test.state.world.set_cell(10, 11, cell_type::BOX);
-        test.state.box_put(10, 11, [3, 2, 1, 0, 0, 0]);
+        test.state.put_box_cell(10, 11, [3, 2, 1, 0, 0, 0]);
 
         handle_dig(&test.state, &tx, pid, 0, false);
 

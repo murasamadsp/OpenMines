@@ -106,13 +106,10 @@ pub fn apply_player_death_core(
                 if GameState::find_pack_covering_with(ecs, &state.chunk_buildings, bx, by)
                     .is_none() =>
             {
-                state
-                    .world
-                    .set_cell_typed(bx, by, crate::world::CellType(cell_type::BOX));
                 // C-2 фикс: in-memory put + отложенная персистенция вместо
                 // sync `db.upsert_box` под удерживаемым `ecs.write()` (death
                 // flush в tick-цикле) — фризило при каждой смерти.
-                state.box_put(bx, by, c);
+                state.put_box_cell(bx, by, c);
                 let mut s = ecs
                     .get_mut::<crate::game::player::PlayerStats>(entity)
                     .ok_or(DeathCoreError::PlayerState("PlayerStats"))?;
