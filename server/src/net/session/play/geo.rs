@@ -23,6 +23,7 @@ pub fn handle_geo(
     pid: PlayerId,
     programmatic: bool,
 ) {
+    let cell_defs = state.world.cell_defs();
     let result = state
         .modify_player(pid, |ecs, entity| {
             let Some(program_state) = ecs.get::<ProgrammatorState>(entity) else {
@@ -88,8 +89,7 @@ pub fn handle_geo(
                 && state.access_gun_full_in_ecs(ecs, tgt_x, tgt_y, cid).0
             {
                 let cell = state.world.get_cell_typed(tgt_x, tgt_y);
-                let defs = state.world.cell_defs();
-                let cell_props = defs.get_typed(cell);
+                let cell_props = cell_defs.get_typed(cell);
                 let pickable = cell_props.nature.is_pickable && !cell_props.cell_is_empty();
                 let place_here = cell_props.cell_is_empty()
                     && cell_props.can_place_over()
@@ -112,7 +112,7 @@ pub fn handle_geo(
                             if rng.random_range(1..=100) > 99 {
                                 0.0
                             } else {
-                                defs.get_typed(place_cell).durability
+                                cell_defs.get_typed(place_cell).durability
                             }
                         };
                         state.world.write_world_cell(
@@ -131,7 +131,7 @@ pub fn handle_geo(
             let geo_name = ecs
                 .get::<PlayerGeoStack>(entity)
                 .and_then(|s| s.0.last())
-                .map(|&c| state.world.cell_defs().get(c).name.clone())
+                .map(|&c| cell_defs.get(c).name.clone())
                 .unwrap_or_default();
 
             {

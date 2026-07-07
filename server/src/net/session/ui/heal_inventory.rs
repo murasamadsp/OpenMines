@@ -212,7 +212,8 @@ pub async fn handle_inventory_use(
     // can_place_over: обходится только exempt-предметами.
     if !is_exempt_item(sel) {
         let cell = state.world.get_cell_typed(fx, fy);
-        if !state.world.cell_defs().get_typed(cell).can_place_over() {
+        let cell_defs = state.world.cell_defs();
+        if !cell_defs.get_typed(cell).can_place_over() {
             return;
         }
     }
@@ -703,6 +704,7 @@ pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
 /// + 40 HP игрокам + FX.
 fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // AoE: radius 3.5 centered on facing cell
+    let cell_defs = state.world.cell_defs();
     for ddx in -4..=4 {
         for ddy in -4..=4 {
             let tgt_x = cx + ddx;
@@ -715,8 +717,7 @@ fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                 continue;
             }
             let c = state.world.get_cell_typed(tgt_x, tgt_y);
-            let defs = state.world.cell_defs();
-            let prop = defs.get_typed(c);
+            let prop = cell_defs.get_typed(c);
             // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
             // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
             if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
@@ -796,6 +797,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
 /// разрушение клеток + 50 HP игрокам + FX.
 async fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
+    let cell_defs = state.world.cell_defs();
     for ddx in -1..=1 {
         for ddy in -1..=1 {
             let tgt_x = cx + ddx;
@@ -814,8 +816,7 @@ async fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) 
             }
             // Destroy destructible non-building cells
             let c = state.world.get_cell_typed(tgt_x, tgt_y);
-            let defs = state.world.cell_defs();
-            let prop = defs.get_typed(c);
+            let prop = cell_defs.get_typed(c);
             // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
             // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
             if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
@@ -969,14 +970,14 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
     state.broadcast_hb_at(px, py, &[shot_fx], None);
 
     // Все 10 клеток валидны (endpoint проверен выше) — без early-break.
+    let cell_defs = state.world.cell_defs();
     for i in 0..10 {
         let (tgt_x, tgt_y) = (start_x + dx * i, start_y + dy * i);
 
         // Damage valid cells: not alive, is_diggable, is_destructible, not building block
         let c = state.world.get_cell_typed(tgt_x, tgt_y);
         if !is_alive_cell(c) && !is_building_block(c) {
-            let defs = state.world.cell_defs();
-            let prop = defs.get_typed(c);
+            let prop = cell_defs.get_typed(c);
             if prop.physical.is_diggable && prop.physical.is_destructible {
                 state.world.damage_cell(tgt_x, tgt_y, 50.0);
                 broadcast_cell_update(state, tgt_x, tgt_y);
