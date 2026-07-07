@@ -485,13 +485,7 @@ impl GameState {
         let mut spot_count = 0u32;
         for row in all_rows {
             let (entity, pack_type) = buildings::spawn_building_from_row(&mut ecs, &row)?;
-            state.building_index.insert((row.x, row.y), entity);
-            let (cx, cy) = World::chunk_pos(row.x, row.y);
-            state
-                .chunk_buildings
-                .entry((cx, cy).into())
-                .or_default()
-                .push(entity);
+            state.register_building_entity(row.x, row.y, entity);
 
             if pack_type == buildings::PackType::Spot {
                 let botspot_entity = ecs
@@ -513,6 +507,7 @@ impl GameState {
                 state
                     .botspot_index
                     .insert(row.owner_id.into(), botspot_entity);
+                let (cx, cy) = World::chunk_pos(row.x, row.y);
                 state
                     .chunk_botspots
                     .entry((cx, cy).into())
@@ -911,6 +906,35 @@ impl GameState {
     pub fn send_to_player(&self, pid: PlayerId, data: Vec<u8>) {
         if let Some(tx) = self.player_tx.get(&pid) {
             let _ = tx.send(data);
+        }
+    }
+
+    /// Зарегистрировать building entity в обоих runtime-индексах.
+    /// Callers не должны вручную синхронизировать `building_index` и
+    /// `chunk_buildings`: это единый boundary для position→entity кэшей.
+    pub fn register_building_entity(&self, x: i32, y: i32, entity: Entity) {
+        self.building_index.insert((x, y), entity);
+        let (cx, cy) = World::chunk_pos(x, y);
+        self.chunk_buildings
+            .entry((cx, cy).into())
+            .or_default()
+            .push(entity);
+    }
+
+    /// Удалить building entity из обоих runtime-индексов.
+    pub fn remove_building_entity(&self, x: i32, y: i32) -> Option<Entity> {
+        let (_, entity) = self.building_index.remove(&(x, y))?;
+        let (cx, cy) = World::chunk_pos(x, y);
+        if let Some(mut entities) = self.chunk_buildings.get_mut(&(cx, cy).into()) {
+            entities.retain(|&ent| ent != entity);
+        }
+        Some(entity)
+    }
+
+    /// Перенести building entity между координатами в runtime-индексах.
+    pub fn move_building_entity(&self, old_x: i32, old_y: i32, new_x: i32, new_y: i32) {
+        if let Some(entity) = self.remove_building_entity(old_x, old_y) {
+            self.register_building_entity(new_x, new_y, entity);
         }
     }
 

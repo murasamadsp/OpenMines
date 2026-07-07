@@ -545,20 +545,7 @@ fn handle_pack_move_command(
         })
         .is_ok()
         {
-            if let Some((_, entity)) = state.building_index.remove(&(x, y)) {
-                let (ocx, ocy) = crate::world::World::chunk_pos(x, y);
-                if let Some(mut e) = state.chunk_buildings.get_mut(&(ocx, ocy).into()) {
-                    e.retain(|&ent| ent != entity);
-                }
-
-                state.building_index.insert((nx, ny), entity);
-                let (ncx, ncy) = crate::world::World::chunk_pos(nx, ny);
-                state
-                    .chunk_buildings
-                    .entry((ncx, ncy).into())
-                    .or_default()
-                    .push(entity);
-            }
+            state.move_building_entity(x, y, nx, ny);
             // Перенос МИРОВЫХ КЛЕТОК футпринта на новую позицию — закрывает
             // рассинхрон «index/ECS/DB на новом месте, а клетки на старом».
             if let Some(ov) = old_view {

@@ -29,6 +29,9 @@
 - Box-клетки больше не требуют от callers вручную синхронизировать mmap cell и
   `box_index`: live create/remove paths используют `GameState::put_box_cell` /
   `remove_box_cell`.
+- Runtime-индексы зданий (`building_index` + `chunk_buildings`) сведены в методы
+  `register_building_entity` / `remove_building_entity` / `move_building_entity`,
+  чтобы callers не синхронизировали два кэша вручную.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
@@ -37,8 +40,9 @@
 - Единый владелец клетки не готов: тип клетки, durability, здания, SQLite и кэши
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
-  type/durability для live-path, а box-клетки получили первый boundary, но pack,
-  DB и индексы зданий ещё не сведены в один authoritative boundary.
+  type/durability для live-path, box-клетки получили первый boundary, а runtime
+  индексы зданий сведены в helper boundary. Pack footprint, DB и ECS-компоненты
+  зданий ещё не сведены в один authoritative boundary.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
@@ -48,8 +52,8 @@
 ## Следующий правильный порядок
 
 1. Дальше расширять boundary к `WorldCell { type, durability, pack }`: следующий
-   слой — операции зданий (`building_index`/`chunk_buildings`/mmap footprint/DB),
-   не переписывая весь мир одним махом.
+   слой — операции зданий (mmap footprint/DB/ECS-компоненты), не переписывая весь
+   мир одним махом.
 2. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
 3. Любую намеренную девиацию от C#/JS reference сразу записывать в
    `docs/DEVIATIONS.md`.

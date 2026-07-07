@@ -548,13 +548,7 @@ async fn place_building_from_item_with(
                 BuildingFlags { dirty: false },
             ))
             .id();
-        state.building_index.insert((bx, by), entity);
-        let (cx, cy) = crate::world::World::chunk_pos(bx, by);
-        state
-            .chunk_buildings
-            .entry((cx, cy).into())
-            .or_default()
-            .push(entity);
+        state.register_building_entity(bx, by, entity);
         let view = PackView {
             id: db_id,
             pack_type,
@@ -849,13 +843,10 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                 let meta = ecs.get::<BuildingMetadata>(ent)?;
                 (meta.pack_type == PackType::Gate).then_some((ent, meta.id))
             });
-            if let Some((ent, gate_id)) = gate {
-                state.building_index.remove(&(tgt_x, tgt_y));
-                let (gcx, gcy) = crate::world::World::chunk_pos(tgt_x, tgt_y);
-                if let Some(mut e) = state.chunk_buildings.get_mut(&(gcx, gcy).into()) {
-                    e.retain(|&x| x != ent);
+            if let Some((_, gate_id)) = gate {
+                if let Some(entity) = state.remove_building_entity(tgt_x, tgt_y) {
+                    state.ecs.write().despawn(entity);
                 }
-                state.ecs.write().despawn(ent);
                 state
                     .world
                     .set_cell_typed(tgt_x, tgt_y, crate::world::CellType(cell_type::EMPTY));

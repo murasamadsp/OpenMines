@@ -301,13 +301,7 @@ pub async fn handle_place_building(
         ))
         .id();
 
-    state.building_index.insert((bx, by), entity);
-    let (cx, cy) = crate::world::World::chunk_pos(bx, by);
-    state
-        .chunk_buildings
-        .entry((cx, cy).into())
-        .or_default()
-        .push(entity);
+    state.register_building_entity(bx, by, entity);
 
     // Spawn BotSpot entity for Spot buildings (1:1 with C# Spot.Build → new BotSpot).
     if pack_type == PackType::Spot {
@@ -716,11 +710,7 @@ pub async fn destroy_damagable_building(
         None
     };
 
-    if let Some((_, entity)) = state.building_index.remove(&(bx, by)) {
-        let (cx, cy) = crate::world::World::chunk_pos(bx, by);
-        if let Some(mut e) = state.chunk_buildings.get_mut(&(cx, cy).into()) {
-            e.retain(|&ent| ent != entity);
-        }
+    if let Some(entity) = state.remove_building_entity(bx, by) {
         if view.pack_type == PackType::Spot {
             despawn_botspot(state, view.owner_id);
         }
@@ -978,7 +968,7 @@ mod tests {
                 },
             ))
             .id();
-        test.state.building_index.insert((8, 8), building_entity);
+        test.state.register_building_entity(8, 8, building_entity);
 
         let result = modify_pack_with_db(&test.state, 8, 8, |ecs, entity| {
             let mut ownership = ecs.get_mut::<BuildingOwnership>(entity).unwrap();
