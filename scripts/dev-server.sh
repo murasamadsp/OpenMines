@@ -69,7 +69,8 @@ cat > "$CONFIG_DIR/config.json" <<JSON
       "building_effects_ms": 1000,
       "hourly_damage_ms": 3600000,
       "game_loop_tick_rate_ms": 10,
-      "game_loop_panic_backoff_ms": 200
+      "game_loop_panic_backoff_ms": 200,
+      "session_disconnect_timeout_secs": 30
     }
   }
 }

@@ -66,11 +66,7 @@ done < <(git ls-files 'tools/**/__pycache__/*' 'tools/**/*.pyc')
 echo "==> Checking tracked local probe state"
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue
-  if [[ "${STRICT_TOOLS_AUDIT:-0}" == "1" ]]; then
-    err "tracked local state/cache file: $path"
-  else
-    warn "tracked local state/cache file: $path"
-  fi
+  err "tracked local state/cache file: $path"
 done < <(git ls-files \
   'tools/.repro_creds.json' \
   'tools/.sim_creds.json' \

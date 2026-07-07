@@ -80,6 +80,8 @@ pub struct ScheduleConfig {
     pub hourly_damage_ms: u64,
     pub game_loop_tick_rate_ms: u64,
     pub game_loop_panic_backoff_ms: u64,
+    /// Таймаут сессии: нет PO дольше этого — клиент считается мёртвым.
+    pub session_disconnect_timeout_secs: u64,
 }
 
 impl Default for ScheduleConfig {
@@ -94,6 +96,7 @@ impl Default for ScheduleConfig {
             hourly_damage_ms: 3_600_000,
             game_loop_tick_rate_ms: 10,
             game_loop_panic_backoff_ms: 200,
+            session_disconnect_timeout_secs: 30,
         }
     }
 }
@@ -358,6 +361,11 @@ impl ScheduleConfig {
         if self.game_loop_panic_backoff_ms == 0 {
             anyhow::bail!("gameplay.schedules.game_loop_panic_backoff_ms must be greater than 0");
         }
+        if self.session_disconnect_timeout_secs == 0 {
+            anyhow::bail!(
+                "gameplay.schedules.session_disconnect_timeout_secs must be greater than 0"
+            );
+        }
         Ok(())
     }
 }
@@ -410,7 +418,8 @@ mod tests {
                         "building_effects_ms": 1000,
                         "hourly_damage_ms": 3600000,
                         "game_loop_tick_rate_ms": 10,
-                        "game_loop_panic_backoff_ms": 200
+                        "game_loop_panic_backoff_ms": 200,
+                        "session_disconnect_timeout_secs": 30
                       }}
     }"#;
 

@@ -51,8 +51,8 @@
 
 ## Tracked State Risk
 
-Следующие файлы сейчас являются state/cache, а не исходниками. Их надо
-перевести в untracked через `git rm --cached` отдельным подтверждённым шагом:
+Следующие файлы являются state/cache, а не исходниками. Они должны оставаться
+untracked и игнорироваться Git:
 
 - `tools/.repro_creds.json`
 - `tools/.sim_creds.json`
@@ -63,8 +63,7 @@
 
 ## Следующий срез
 
-1. Подтвердить и выполнить `git rm --cached` для tracked probe-state файлов.
-2. Решить судьбу `tg_parser.py`: оставить как external-data tool или вынести из
+1. Решить судьбу `tg_parser.py`: оставить как external-data tool или вынести из
    основного repo tooling.
-3. Перевести warnings `scripts/tools-audit.sh` по tracked probe-state в strict
-   errors после `git rm --cached`.
+2. Добавить быстрый `scripts/toolbox.sh` или `cargo xtask` только если список
+   ручных команд начнёт снова расползаться.

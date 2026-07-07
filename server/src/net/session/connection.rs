@@ -7,7 +7,7 @@ use crate::net::session::outbox::flush_outbox;
 use crate::net::session::player::init::on_disconnect;
 use crate::net::session::prelude::*;
 use crate::net::session::state::HeartbeatGate;
-use crate::net::session::{constants, wire};
+use crate::net::session::wire;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -90,8 +90,14 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 // `Session.CheckDisconnected`). Реальный разрыв также
                 // ловится `read_buf`==0 ниже.
                 let now = Instant::now();
-                if heartbeat_state.is_timed_out(now, constants::HEARTBEAT_DISCONNECT_TIMEOUT) {
-                    tracing::warn!("Pong timeout (>30s). Closing connection");
+                let disconnect_timeout = std::time::Duration::from_secs(
+                    state.config.gameplay.schedules.session_disconnect_timeout_secs,
+                );
+                if heartbeat_state.is_timed_out(now, disconnect_timeout) {
+                    tracing::warn!(
+                        timeout_secs = state.config.gameplay.schedules.session_disconnect_timeout_secs,
+                        "Pong timeout. Closing connection"
+                    );
                     break;
                 }
                 // 1 PI / тик → клиент 1 PO / PI → нет шторма. `num2` =
