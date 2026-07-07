@@ -115,7 +115,7 @@ impl Default for ScheduleConfig {
     fn default() -> Self {
         Self {
             hazards_ms: 10,
-            physics_ms: 100,
+            physics_ms: 400,
             guns_ms: 100,
             programmator_ms: 100,
             alive_ms: 5_000,
@@ -460,7 +460,7 @@ mod tests {
                      },
                       "schedules": {
                         "hazards_ms": 10,
-                        "physics_ms": 100,
+                        "physics_ms": 400,
                         "guns_ms": 100,
                         "programmator_ms": 100,
                         "alive_ms": 5000,
@@ -498,6 +498,7 @@ mod tests {
         assert_eq!(c.gameplay.programmator.blocked_move_penalty_ms, 200);
         assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
         assert_eq!(c.gameplay.schedules.hazards_ms, 10);
+        assert_eq!(c.gameplay.schedules.physics_ms, 400);
         assert_eq!(c.gameplay.schedules.hourly_damage_ms, 3_600_000);
         assert!(c.cron.hourly_log_enabled);
     }

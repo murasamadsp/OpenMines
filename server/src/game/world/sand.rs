@@ -51,28 +51,12 @@ fn down_free(world: &crate::world::World, cell_defs: &CellDefs, x: i32, y: i32) 
     2
 }
 
-#[derive(Resource)]
-pub struct SandTickTimer(pub std::time::Instant);
-
-impl Default for SandTickTimer {
-    fn default() -> Self {
-        Self(std::time::Instant::now())
-    }
-}
-
 #[allow(clippy::needless_pass_by_value)]
 pub fn sand_physics_system(
     world_res: Res<WorldResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    mut timer: ResMut<SandTickTimer>,
     query: Query<&PlayerPosition>,
 ) {
-    // Run only once every 100ms
-    if timer.0.elapsed().as_millis() < 100 {
-        return;
-    }
-    timer.0 = std::time::Instant::now();
-
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
     let mut rng = rand::rng();
@@ -205,7 +189,6 @@ mod physics_repro {
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
         w.insert_resource(BroadcastQueue::default());
-        w.insert_resource(super::SandTickTimer(past()));
         w.insert_resource(alive::AliveTickTimer { last_tick: past() });
         w.spawn(PlayerPosition {
             x: 64,
@@ -218,7 +201,6 @@ mod physics_repro {
         sched.add_systems(alive::alive_physics_system);
 
         for _ in 0..80 {
-            w.resource_mut::<super::SandTickTimer>().0 = past();
             w.resource_mut::<alive::AliveTickTimer>().last_tick = past();
             sched.run(&mut w);
         }
@@ -326,13 +308,11 @@ mod physics_repro {
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
         w.insert_resource(BroadcastQueue::default());
-        w.insert_resource(super::SandTickTimer(past()));
         w.spawn(PlayerPosition { x, y: 60, dir: 0 });
 
         let mut sched = Schedule::default();
         sched.add_systems(super::sand_physics_system);
         for _ in 0..40 {
-            w.resource_mut::<super::SandTickTimer>().0 = past();
             sched.run(&mut w);
         }
 
@@ -387,12 +367,10 @@ mod physics_repro {
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
         w.insert_resource(BroadcastQueue::default());
-        w.insert_resource(super::SandTickTimer(past()));
         w.spawn(PlayerPosition { x, y: 56, dir: 0 });
         let mut sched = Schedule::default();
         sched.add_systems(super::sand_physics_system);
         for _ in 0..30 {
-            w.resource_mut::<super::SandTickTimer>().0 = past();
             sched.run(&mut w);
         }
 

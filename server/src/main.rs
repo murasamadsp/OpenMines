@@ -319,7 +319,7 @@ mod benchmarks {
             physics
                 .interval_ms
                 .load(std::sync::atomic::Ordering::Relaxed),
-            100
+            400
         );
 
         assert!(state.set_schedule_interval("physics", 250));

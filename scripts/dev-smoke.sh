@@ -86,7 +86,7 @@ cat > "$WORK_DIR/configs/config.json" <<JSON
     },
     "schedules": {
       "hazards_ms": 10,
-      "physics_ms": 100,
+      "physics_ms": 400,
       "guns_ms": 100,
       "programmator_ms": 100,
       "alive_ms": 5000,
