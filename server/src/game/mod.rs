@@ -13,6 +13,7 @@ pub use mechanics::{building_damage, chat, combat, skills};
 pub use structures::buildings;
 pub use world::{direction, sand};
 
+use crate::config::CombatConfig;
 use crate::config::Config;
 use crate::config::ProgrammatorConfig;
 use crate::db::{Database, buildings::BuildingExtra};
@@ -43,6 +44,9 @@ pub struct WorldResource(pub Arc<crate::world::World>);
 
 #[derive(Resource, Clone, Copy)]
 pub struct ProgrammatorConfigResource(pub ProgrammatorConfig);
+
+#[derive(Resource, Clone, Copy)]
+pub struct CombatConfigResource(pub CombatConfig);
 
 /// Индекс боксов (crystal loot на земле) — lock-free `DashMap`, общий с `GameState`
 /// для консистентности между ECS-системами и async-хендлерами.
@@ -475,6 +479,7 @@ impl GameState {
             ecs.insert_resource(ProgrammatorConfigResource(
                 state.config.gameplay.programmator,
             ));
+            ecs.insert_resource(CombatConfigResource(state.config.gameplay.combat));
             ecs.insert_resource(BoxIndexResource(state.box_index.clone()));
             ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
             ecs.insert_resource(combat::DeathQueue::default());

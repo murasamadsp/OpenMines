@@ -7,12 +7,13 @@ use crate::game::player::{
 };
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
-    BoxIndexResource, BoxPersistQueue, BroadcastEffect, BroadcastQueue, PackResendQueue,
-    WorldResource,
+    BoxIndexResource, BoxPersistQueue, BroadcastEffect, BroadcastQueue, CombatConfigResource,
+    PackResendQueue, WorldResource,
 };
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
+use num_traits::ToPrimitive;
 
 /// Очередь смерти после `gun_firing_system`: нельзя вызывать `handle_death` изнутри `schedule.run` (вложенный `ecs.write()`).
 #[derive(Resource, Default)]
@@ -139,12 +140,32 @@ impl Default for GunTickTimer {
     }
 }
 
-/// Интервал залпа = C# `lastpackeffect` (0.5с).
-const GUN_FIRE_INTERVAL_MS: u128 = 500;
+fn inside_gun_radius(player: &PlayerPosition, gun: &GridPosition, radius_cells: i32) -> bool {
+    let dx = i64::from(player.x) - i64::from(gun.x);
+    let dy = i64::from(player.y) - i64::from(gun.y);
+    let radius = i64::from(radius_cells);
+    dx * dx + dy * dy <= radius * radius
+}
+
+fn gun_damage_after_skills(base_damage: i32, skills: &crate::db::SkillSlots) -> i32 {
+    let sk = SkillHurt { skills };
+    // 1:1 ref default Gun damage = 60 * (1 - AntiGun/100); AntiGun effect — f32
+    // из get_player_skill_effect (1:1 с C#, нельзя переводить в int без
+    // потери паритета). Округлённый каст намеренный и ограничен снизу.
+    #[allow(clippy::cast_possible_truncation)]
+    (sk.on_hurt(
+        base_damage
+            .to_f32()
+            .expect("validated positive gun_damage must fit f32"),
+    )
+    .round() as i32)
+        .max(0)
+}
 
 /// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → `AntiGun`.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
+    combat_cfg: Res<CombatConfigResource>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut pack_resend_q: ResMut<PackResendQueue>,
@@ -167,8 +188,10 @@ pub fn gun_firing_system(
     )>,
 ) {
     let now = std::time::Instant::now();
-    // Залп раз в 0.5с (1:1 C# `lastpackeffect`), а не каждый тик.
-    if fire_timer.0.elapsed().as_millis() < GUN_FIRE_INTERVAL_MS {
+    let combat = combat_cfg.0;
+    // Залп раз в `gameplay.combat.gun_fire_interval_ms`
+    // (default 500ms = 1:1 C# `lastpackeffect`), а не каждый тик.
+    if fire_timer.0.elapsed().as_millis() < u128::from(combat.gun_fire_interval_ms) {
         return;
     }
     fire_timer.0 = now;
@@ -198,9 +221,7 @@ pub fn gun_firing_system(
                 continue;
             }
 
-            let dx = p_pos.x - b_pos.x;
-            let dy = p_pos.y - b_pos.y;
-            if dx * dx + dy * dy > 400 {
+            if !inside_gun_radius(p_pos, b_pos, combat.gun_radius_cells) {
                 continue;
             }
 
@@ -219,15 +240,7 @@ pub fn gun_firing_system(
                 ));
             }
             // C# Gun.Update order: damage first, then deduct charge
-            let sk = SkillHurt {
-                skills: &p_sk.states,
-            };
-            // 1:1 ref Gun damage = 60 * (1 - AntiGun/100); AntiGun effect — f32
-            // из get_player_skill_effect (1:1 с C#, нельзя переводить в int без
-            // потери паритета). Округлённый каст намеренный и ограничен [0,60].
-            // Та же конвенция, что skills.rs (on_pack_crys_capacity).
-            #[allow(clippy::cast_possible_truncation)]
-            let dmg = (sk.on_hurt(60.0).round() as i32).max(0);
+            let dmg = gun_damage_after_skills(combat.gun_damage, &p_sk.states);
             if dmg > 0 {
                 if stats.health > dmg {
                     stats.health -= dmg;

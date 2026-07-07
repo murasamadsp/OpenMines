@@ -17,8 +17,8 @@
   неизвестных ключей, `code` совпадает с `PackType`.
 - ECS systems больше не используют `Arc<GameState>` как ресурс: используются
   `WorldResource`, `BoxIndexResource`, `BoxPersistQueue`.
-- `gameplay.cooldowns`, `skills`, `spawn`, `programmator`, `schedules` вынесены в
-  typed config без silent defaults.
+- `gameplay.cooldowns`, `combat`, `skills`, `spawn`, `programmator`, `schedules`
+  вынесены в typed config без silent defaults.
 - `WorldProvider` имеет typed cell API: `get_cell_typed` / `set_cell_typed`.
 - Live-path gameplay/session cell access переведён на `CellType` API; raw
   `get_cell/set_cell` остаётся только на низкоуровневой map/wire boundary и в тестах.
@@ -102,7 +102,7 @@
   подключены TCP/packet/TY metrics и `/metrics`, PO response id валидируется,
   typed `PlayerRow::as_role/as_clan_rank` используется при hydrate игрока,
   сняты исторические allow с DB API и clan GUI module. Текущий срез:
-  `rg dead_code server crates -g '!target'` -> 48 строк; оставшееся требует
+  `rg dead_code server crates -g '!target'` -> 41 строка; оставшееся требует
   feature wiring (BotSpot, skills hooks, programmator, provider/world/protocol),
   а не удаления кода.
 

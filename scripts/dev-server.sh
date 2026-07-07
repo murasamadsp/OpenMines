@@ -39,6 +39,11 @@ cat > "$CONFIG_DIR/config.json" <<JSON
       "build_ms": 200,
       "geo_ms": 200
     },
+    "combat": {
+      "gun_fire_interval_ms": 500,
+      "gun_damage": 60,
+      "gun_radius_cells": 20
+    },
     "skills": {
       "upgrade_cost_base": 100
     },

@@ -27,6 +27,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
+    pub combat: CombatConfig,
     pub skills: SkillsConfig,
     pub spawn: SpawnConfig,
     pub programmator: ProgrammatorConfig,
@@ -130,6 +131,25 @@ impl Default for CooldownConfig {
     }
 }
 
+/// Базовые боевые параметры. Значения по умолчанию держат текущий C#-паритет:
+/// пушка стреляет раз в 0.5с, радиус 20 клеток, базовый урон 60 HP.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct CombatConfig {
+    pub gun_fire_interval_ms: u64,
+    pub gun_damage: i32,
+    pub gun_radius_cells: i32,
+}
+
+impl Default for CombatConfig {
+    fn default() -> Self {
+        Self {
+            gun_fire_interval_ms: 500,
+            gun_damage: 60,
+            gun_radius_cells: 20,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronConfig {
     pub hourly_log_enabled: bool,
@@ -224,6 +244,7 @@ impl Config {
 impl GameplayConfig {
     fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
         self.cooldowns.validate()?;
+        self.combat.validate()?;
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
         Ok(())
@@ -240,6 +261,21 @@ impl CooldownConfig {
         }
         if self.geo_ms == 0 {
             anyhow::bail!("gameplay.cooldowns.geo_ms must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl CombatConfig {
+    fn validate(self) -> Result<()> {
+        if self.gun_fire_interval_ms == 0 {
+            anyhow::bail!("gameplay.combat.gun_fire_interval_ms must be greater than 0");
+        }
+        if self.gun_damage <= 0 {
+            anyhow::bail!("gameplay.combat.gun_damage must be greater than 0");
+        }
+        if self.gun_radius_cells <= 0 {
+            anyhow::bail!("gameplay.combat.gun_radius_cells must be greater than 0");
         }
         Ok(())
     }
@@ -308,6 +344,7 @@ mod tests {
         "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
         "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
+                     "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -334,6 +371,9 @@ mod tests {
         assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
         assert_eq!(c.gameplay.cooldowns.build_ms, 300);
         assert_eq!(c.gameplay.cooldowns.geo_ms, 350);
+        assert_eq!(c.gameplay.combat.gun_fire_interval_ms, 550);
+        assert_eq!(c.gameplay.combat.gun_damage, 65);
+        assert_eq!(c.gameplay.combat.gun_radius_cells, 22);
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
         assert_eq!(c.gameplay.spawn.x, 12);
         assert_eq!(c.gameplay.spawn.y, 13);
@@ -352,6 +392,7 @@ mod tests {
         // Нет секции gameplay целиком.
         let no_gameplay = FULL.replace(
             r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
+                     "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -384,6 +425,15 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(&no_geo).is_err(),
             "пропущенный geo_ms должен быть ошибкой"
+        );
+        let mut no_combat: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_combat["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("combat");
+        assert!(
+            serde_json::from_value::<Config>(no_combat).is_err(),
+            "пропущенный combat должен быть ошибкой"
         );
         let mut no_spawn: serde_json::Value = serde_json::from_str(FULL).unwrap();
         no_spawn["gameplay"]
@@ -489,6 +539,22 @@ mod tests {
         for key in ["dig_ms", "build_ms", "geo_ms"] {
             let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
             raw["gameplay"]["cooldowns"][key] = serde_json::json!(0);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_combat_values_are_errors() {
+        for (key, value) in [
+            ("gun_fire_interval_ms", serde_json::json!(0)),
+            ("gun_damage", serde_json::json!(0)),
+            ("gun_radius_cells", serde_json::json!(0)),
+            ("gun_damage", serde_json::json!(-1)),
+            ("gun_radius_cells", serde_json::json!(-1)),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["combat"][key] = value;
             let cfg: Config = serde_json::from_value(raw).unwrap();
             assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
         }
