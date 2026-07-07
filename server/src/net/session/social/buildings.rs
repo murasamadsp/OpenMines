@@ -634,9 +634,6 @@ pub async fn destroy_damagable_building(
     let Some(view) = state.get_pack_at(bx, by) else {
         return false;
     };
-    if state.db.delete_building(view.id).await.is_err() {
-        return false;
-    }
     // Захват crysinside до despawn (для Box-дропа Storage, C# `Storage.Destroy`).
     let crysinside: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
         let ecs = state.ecs.read();
@@ -648,7 +645,9 @@ pub async fn destroy_damagable_building(
         None
     };
 
-    state.remove_building_runtime(&view);
+    if state.delete_building_runtime(&view).await.is_err() {
+        return false;
+    }
     broadcast_pack_clear(state, &view);
     close_pack_windows(state, &view);
 

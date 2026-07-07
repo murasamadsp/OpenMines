@@ -1018,6 +1018,14 @@ impl GameState {
         entity
     }
 
+    /// Persisted removal здания: DB delete + runtime cleanup.
+    /// Дропы/возврат предметов остаются у caller'а, потому что зависят от
+    /// конкретной причины сноса.
+    pub async fn delete_building_runtime(&self, view: &PackView) -> anyhow::Result<Option<Entity>> {
+        self.db.delete_building(view.id).await?;
+        Ok(self.remove_building_runtime(view))
+    }
+
     /// Runtime removal `BotSpot`, связанного со Spot-зданием.
     pub fn remove_botspot_runtime(&self, owner_id: PlayerId) -> Option<Entity> {
         let (_, entity) = self.botspot_index.remove(&owner_id)?;
