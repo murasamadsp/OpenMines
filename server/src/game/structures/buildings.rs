@@ -64,6 +64,26 @@ impl BuildingsConfig {
                 anyhow::bail!("Building '{key}' duplicates code '{}'", bld.code);
             }
         }
+        for key in self.buildings.keys() {
+            if PackType::from_config_key(key).is_none() {
+                anyhow::bail!("Unknown building config key '{key}'");
+            }
+        }
+        for pack_type in PackType::configured_pack_types() {
+            let Some(key) = pack_type.config_json_key() else {
+                continue;
+            };
+            let Some(config) = self.buildings.get(key) else {
+                anyhow::bail!("Missing building config for {key}");
+            };
+            if config.code.as_bytes()[0] != pack_type.code() {
+                anyhow::bail!(
+                    "Building '{key}' code '{}' does not match PackType code '{}'",
+                    config.code,
+                    char::from(pack_type.code())
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -167,6 +187,27 @@ pub enum PackType {
 }
 
 impl PackType {
+    const fn configured_pack_types() -> [Self; 10] {
+        [
+            Self::Teleport,
+            Self::Resp,
+            Self::Gun,
+            Self::Market,
+            Self::Up,
+            Self::Storage,
+            Self::Craft,
+            Self::Spot,
+            Self::Gate,
+            Self::Clans,
+        ]
+    }
+
+    fn from_config_key(key: &str) -> Option<Self> {
+        Self::configured_pack_types()
+            .into_iter()
+            .find(|pack_type| pack_type.config_json_key() == Some(key))
+    }
+
     const fn config_json_key(self) -> Option<&'static str> {
         match self {
             Self::Teleport => Some("Teleport"),
@@ -487,7 +528,7 @@ impl PackView {
 mod tests {
     use crate::db::buildings::BuildingRow;
 
-    use super::{BuildingCellConfig, BuildingConfig, BuildingsConfig};
+    use super::{BuildingCellConfig, BuildingConfig, BuildingsConfig, PackType};
     use std::collections::HashMap;
 
     fn valid_building(code: &str) -> BuildingConfig {
@@ -506,6 +547,18 @@ mod tests {
         }
     }
 
+    fn full_buildings_config() -> BuildingsConfig {
+        let mut buildings = HashMap::new();
+        for pack_type in PackType::configured_pack_types() {
+            let key = pack_type.config_json_key().expect("configured key");
+            buildings.insert(
+                key.to_string(),
+                valid_building(&char::from(pack_type.code()).to_string()),
+            );
+        }
+        BuildingsConfig { buildings }
+    }
+
     #[test]
     fn buildings_config_rejects_empty_map_and_duplicate_codes() {
         assert!(
@@ -520,6 +573,24 @@ mod tests {
         buildings.insert("A".to_string(), valid_building("A"));
         buildings.insert("B".to_string(), valid_building("A"));
         assert!(BuildingsConfig { buildings }.validate().is_err());
+    }
+
+    #[test]
+    fn buildings_config_requires_known_pack_keys_and_exact_codes() {
+        let mut cfg = full_buildings_config();
+        assert!(cfg.validate().is_ok());
+
+        cfg.buildings.remove("Resp");
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = full_buildings_config();
+        cfg.buildings
+            .insert("Unknown".to_string(), valid_building("Z"));
+        assert!(cfg.validate().is_err());
+
+        let mut cfg = full_buildings_config();
+        cfg.buildings.get_mut("Resp").unwrap().code = "T".to_string();
+        assert!(cfg.validate().is_err());
     }
 
     #[test]
