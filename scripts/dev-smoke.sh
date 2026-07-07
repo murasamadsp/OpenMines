@@ -127,6 +127,7 @@ popd >/dev/null
 
 python3 - "$PORT" "$SERVER_PID" "$LOG_FILE" <<'PY'
 import os
+import hashlib
 import json
 import socket
 import struct
@@ -215,6 +216,11 @@ def write_ty(event4, x, y, sub_payload=b"", packet_time=0):
     sock.sendall(struct.pack("<i", len(body) + 4) + body)
 
 
+def prog_payload(prog_id, source, compiled=b""):
+    source_bytes = source.encode("utf-8")
+    return struct.pack("<ii", len(compiled), prog_id) + compiled + source_bytes
+
+
 def write_gui(button):
     write_ty("GUI_", 0, 0, json.dumps({"b": button}, separators=(",", ":")).encode("utf-8"))
 
@@ -255,6 +261,52 @@ def wait_for_events(wanted, timeout=8):
     return found
 
 
+def read_until_event(event, timeout=8):
+    found = []
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        sock.settimeout(max(0.1, min(0.5, end - time.monotonic())))
+        try:
+            packet = read_packet()
+        except socket.timeout:
+            continue
+        found.append(packet)
+        if packet[1] == event:
+            return packet, found
+    raise RuntimeError(
+        f"missing event {event!r}; observed tail={[p[1] for p in found[-20:]]!r}"
+    )
+
+
+def drain_available(timeout=0.25):
+    found = []
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        sock.settimeout(max(0.01, min(0.05, end - time.monotonic())))
+        try:
+            found.append(read_packet())
+        except socket.timeout:
+            continue
+    return found
+
+
+def assert_no_event(packets, event, label):
+    observed = [p[1] for p in packets]
+    if event in observed:
+        raise RuntimeError(f"{label}: unexpected {event!r} in {observed!r}")
+
+
+def foreground_events(packets):
+    return [p[1] for p in packets if p[1] != "PI"]
+
+
+def first_payload(packets, event):
+    for packet in packets:
+        if packet[1] == event:
+            return packet[2]
+    raise RuntimeError(f"missing payload for event {event!r}")
+
+
 try:
     sock.settimeout(5)
     expect_handshake("auth-failure")
@@ -289,6 +341,8 @@ try:
     ah_payload = auth_packets[0][2].decode("utf-8", errors="strict")
     if "_" not in ah_payload:
         raise RuntimeError(f"invalid AH payload after registration: {ah_payload!r}")
+    user_id_s, user_hash = ah_payload.split("_", 1)
+    user_id = int(user_id_s)
 
     init_packets = wait_for_events(["BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P"], timeout=12)
     tp_payload = next(p[2] for p in init_packets if p[1] == "@T").decode("utf-8", errors="strict")
@@ -301,6 +355,62 @@ try:
     time.sleep(0.25)
     write_ty("Xmov", x + 1, y, "3", int(time.time() * 1000))
     wait_for_events(["PI"], timeout=8)
+
+    write_ty("Pope", x, y)
+    wait_for_events(["GU"], timeout=8)
+    write_gui("createprog:main")
+    open_packet, create_packets = read_until_event("#P", timeout=8)
+    create_events = [p[1] for p in create_packets]
+    if create_events[:2] != ["Gu", "#P"]:
+        raise RuntimeError(f"programmator create events mismatch: {create_events!r}")
+    opened = json.loads(open_packet[2].decode("utf-8"))
+    prog_id = int(opened["id"])
+    if prog_id <= 0 or opened["title"] != "main" or opened["source"] != "":
+        raise RuntimeError(f"invalid #P payload after create: {opened!r}")
+    create_tail = drain_available()
+    tail_events = foreground_events(create_tail)
+    if tail_events != ["Gu"]:
+        raise RuntimeError(f"programmator create tail mismatch: {tail_events!r}")
+
+    write_ty("PROG", x, y, prog_payload(prog_id, "$z"))
+    update_packet, prog_packets = read_until_event("#p", timeout=8)
+    assert_no_event(prog_packets, "#P", "PROG start")
+    prog_events = foreground_events(prog_packets)
+    expected_prog = ["Gu", "@T", "@P", "BH", "#p"]
+    if prog_events != expected_prog:
+        raise RuntimeError(f"PROG start events mismatch: {prog_events!r}")
+    prog_foreground_packets = [p for p in prog_packets if p[1] != "PI"]
+    if prog_foreground_packets[2][2] != b"1" or prog_foreground_packets[3][2] != b"0":
+        raise RuntimeError("PROG start did not report @P=1 and BH=0")
+    updated = json.loads(update_packet[2].decode("utf-8"))
+    if int(updated["id"]) != prog_id or updated["title"] != "main" or updated["source"] != "$z":
+        raise RuntimeError(f"invalid #p payload after PROG: {updated!r}")
+
+    write_ty("pRST", x, y)
+    stop_packets = wait_for_events(["Gu", "@P", "BH"], timeout=8)
+    stop_foreground_packets = [p for p in stop_packets if p[1] != "PI"]
+    if stop_foreground_packets[1][2] != b"0" or stop_foreground_packets[2][2] != b"0":
+        raise RuntimeError("pRST stop did not report @P=0 and BH=0")
+finally:
+    if sock is not None:
+        sock.close()
+
+sock = None
+try:
+    sock = connect_client()
+    sock.settimeout(5)
+    sid = expect_handshake("reconnect")
+    token = hashlib.md5(f"{user_hash}{sid}".encode("utf-8")).hexdigest()
+    write_u("AU", f"smokere_{user_id}_{token}")
+    reconnect_packets = wait_for_events(["cf", "Gu", "BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P", "BH", "#p"], timeout=12)
+    reconnect_events = foreground_events(reconnect_packets)
+    assert_no_event(reconnect_packets, "#P", "reconnect init")
+    reconnect_update = next(p for p in reconnect_packets if p[1] == "#p")
+    reconnect_prog = json.loads(reconnect_update[2].decode("utf-8"))
+    if int(reconnect_prog["id"]) != prog_id or reconnect_prog["source"] != "$z":
+        raise RuntimeError(f"selected program was not restored on reconnect: {reconnect_prog!r}")
+    if first_payload(reconnect_packets, "@P") != b"0" or first_payload(reconnect_packets, "BH") != b"0":
+        raise RuntimeError(f"reconnect programmator status mismatch: {reconnect_events!r}")
 finally:
     if sock is not None:
         sock.close()
@@ -310,6 +420,8 @@ print("    initial: ST AU PI")
 print("    auth-failure: cf BI HB GU")
 print("    gui-register: AH cf Gu + init packets")
 print("    gameplay: PO/Xdig/Xmov kept session responsive")
+print("    programmator: Pope/create/PROG/pRST wire contract")
+print("    reconnect: selected program restored without #P editor open")
 PY
 
 echo "==> Stopping smoke server"

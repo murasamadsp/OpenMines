@@ -15,16 +15,22 @@
 - Базовый scenario-smoke: `scripts/dev-smoke.sh` проходит
   `connect -> auth-failure -> GUI register -> init packets -> PO/Xdig/Xmov` и
   проверяет, что сессия остаётся responsive.
+- Programmator/reconnect scenario-smoke: `scripts/dev-smoke.sh` теперь проверяет
+  `Pope -> createprog -> #P -> PROG -> Gu/@T/@P/BH/#p -> pRST -> Gu/@P/BH`
+  и reconnect через сохранённый `AH`/legacy token. Критично: reconnect обязан
+  восстановить selected program через `#p` и не открыть редактор через `#P`.
+- GUI/Wire Codex: начальный машинно-читаемый реестр добавлен в
+  `docs/reference/GUI_WIRE_CODEX.md` для auth, programmator, toggles и common
+  HORB routes.
 
 Осталось:
 
-- Scenario-smoke расширить до полного программатор/reconnect сценария:
-  `programmator start/stop -> reconnect -> persisted state`. Базовый
-  auth/init/move/dig smoke уже есть; следующий guardrail должен ловить именно
-  программаторные GUI/wire регрессии.
-- GUI/Wire Codex: единый машинно-читаемый реестр `клиентская кнопка -> TY event ->
-  серверный handler -> server packets`, особенно HORB/programmator/admin окна.
-  Цель — убрать гадание по GUI payload cardinality.
+- Scenario-smoke добить по оставшимся GUI/program routes: `openprog`, `PREN`,
+  `rename:<id>:<name>`, `PDEL`, `PCOP`, `TAGR`, settings save. Базовый
+  programmator start/stop/reconnect уже закрыт.
+- GUI/Wire Codex расширить до полного покрытия HORB/admin/building/auction
+  окон. Начальный реестр есть; теперь каждую GUI правку начинать с обновления
+  строки в `docs/reference/GUI_WIRE_CODEX.md`.
 - Live debug dashboard в админке: tickprof sections, queue sizes, dirty
   players/buildings/boxes, active programmators, schedule intervals, last save
   errors.
@@ -49,6 +55,9 @@
   закрыт текущим PROG wire-контрактом `Gu -> @P/BH -> #p`: `#p` обновляет source
   и закрывает Unity programmator object. Остаётся общий ручной аудит
   программатора по `docs/PROGRAMMATOR_GUI_PROTOCOL.md`.
+- Программатор smoke: локально подтверждён сценарий create/start/stop/reconnect.
+  Это не доказывает весь программатор, но теперь ломание GUI/start/reconnect
+  будет ловиться без Unity.
 - Shutdown: добавлены фазовые логи и таймауты коммитом `1671fdb`
   (`players/buildings` 5s, `box` 2s, `world.flush` 5s). `dev-smoke.sh`
   проходит. Если ручной `^C` снова зависнет, следующий лог обязан показать
@@ -104,3 +113,24 @@
   Unity-клиентом и `server_reference/`, а не с устаревшими аудитами.
 - Если добавляется новая намеренная девиация от C# — сразу заносить в
   `docs/DEVIATIONS.md`.
+
+---
+
+## Assessment 2026-07-07
+
+Самое больное сейчас:
+
+- **Скиллы**: самый большой доменный долг. Есть команда `/skill`, но нужен
+  полный audit matrix `SkillType -> action hook -> exp hook -> UI sync`.
+- **Programmator runtime**: GUI start/stop/reconnect закрыт smoke-ом, но runtime
+  bytecodes/handmode/debug/actions всё ещё требуют прохода по клиенту и
+  reference. Не считать готовым.
+- **HORB/admin окна**: Codex начат, но не полный. Любой `IndexOutOfRange` в
+  Unity popup почти наверняка означает неверную cardinality payload на сервере.
+- **Tickprof side path**: есть per-section логи, но нет реального виновника.
+  Следующее действие — собрать живой over-budget лог и чинить конкретную секцию.
+- **Implicit defaults**: чистить только runtime defaults, которые маскируют
+  повреждение config/DB/game state. Массовый grep по `unwrap_or` без доменной
+  проверки запрещён.
+- **Архитектура ECS**: пока не трогать крупно. Реальная боль не в потоках, а в
+  отсутствии единого владельца cell/building/durability/DB/cache state.
