@@ -67,11 +67,8 @@ pub fn connect_in_tick(
                 .map(|pos| (pos.chunk_x(), pos.chunk_y()))
                 .unwrap_or((0, 0))
         };
-        // Remove from chunk_players — iterate all entries to handle stale registrations.
-        state
-            .chunk_players
-            .iter_mut()
-            .for_each(|mut e| e.value_mut().retain(|&id| id != pid));
+        // Remove from chunk player index — iterate all entries to handle stale registrations.
+        state.unregister_player_from_all_chunks(pid);
         // Broadcast removal to nearby players.
         let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
         let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
@@ -328,9 +325,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         });
     }
 
-    if let Some(mut e) = state.chunk_players.get_mut(&(cx, cy).into()) {
-        e.retain(|&id| id != pid);
-    }
+    state.unregister_player_from_chunk(pid, cx, cy);
 
     let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
     let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);

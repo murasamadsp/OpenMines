@@ -56,6 +56,9 @@
   полями `GameState`; новые внешние обращения теперь ловятся компилятором.
 - Static helpers, требующие сырой `chunk_buildings`, приватны внутри
   `GameState`; внешний код может идти только через instance boundary.
+- Player spatial index `chunk_players` закрыт за `GameState`: регистрация,
+  снятие, полный cleanup stale entries и snapshot игроков в чанке больше не
+  выполняются напрямую из session-кода.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.

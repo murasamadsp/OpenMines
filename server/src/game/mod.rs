@@ -241,7 +241,7 @@ pub struct GameState {
     pub config: Config,
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub player_entities: DashMap<PlayerId, Entity>,
-    pub chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
+    chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
     building_index: DashMap<WorldPos, Entity>,
     botspot_index: DashMap<PlayerId, Entity>,
     chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
@@ -1167,6 +1167,32 @@ impl GameState {
                 })
             })
             .collect()
+    }
+
+    pub fn players_in_chunk(&self, cx: u32, cy: u32) -> Vec<PlayerId> {
+        self.chunk_players
+            .get(&(cx, cy).into())
+            .map(|players| players.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn register_player_chunk(&self, pid: PlayerId, cx: u32, cy: u32) {
+        let mut players = self.chunk_players.entry((cx, cy).into()).or_default();
+        if !players.contains(&pid) {
+            players.push(pid);
+        }
+    }
+
+    pub fn unregister_player_from_chunk(&self, pid: PlayerId, cx: u32, cy: u32) {
+        if let Some(mut players) = self.chunk_players.get_mut(&(cx, cy).into()) {
+            players.retain(|&id| id != pid);
+        }
+    }
+
+    pub fn unregister_player_from_all_chunks(&self, pid: PlayerId) {
+        self.chunk_players
+            .iter_mut()
+            .for_each(|mut e| e.value_mut().retain(|&id| id != pid));
     }
 
     /// Поставить mmap-футпринт здания и разослать HB cell updates.

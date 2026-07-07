@@ -59,32 +59,30 @@ pub fn check_chunk_changed(
         sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
 
         // Сначала отправляем ботов (игроков), чтобы клиент знал о них до обработки построек
-        if let Some(pids) = state.chunk_players.get(&(ncx, ncy).into()) {
-            for &opid in pids.iter() {
-                if opid == pid {
-                    continue;
-                }
-                let bot_data = state.query_player_opt(opid, |ecs, entity| {
-                    let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-                    let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
-                    let tail = ecs
-                        .get::<crate::game::programmator::ProgrammatorState>(entity)
-                        .map_or(0, |ps| u8::from(ps.running));
-                    Some(hb_bot(
-                        net_u16_nonneg(opid),
-                        net_u16_nonneg(p.x),
-                        net_u16_nonneg(p.y),
-                        net_u8_clamped(p.dir, 3),
-                        net_u8_clamped(s.skin, 255),
-                        net_u16_nonneg(s.clan_id.unwrap_or(0)),
-                        tail,
-                    ))
-                });
-                if let Some(bot) = bot_data {
-                    sub_packets.push(bot);
-                    sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-                }
+        for opid in state.players_in_chunk(ncx, ncy) {
+            if opid == pid {
+                continue;
+            }
+            let bot_data = state.query_player_opt(opid, |ecs, entity| {
+                let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                // tail = 1 when programmator running (C#: Player.tail => programsData.ProgRunning ? 1 : 0)
+                let tail = ecs
+                    .get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .map_or(0, |ps| u8::from(ps.running));
+                Some(hb_bot(
+                    net_u16_nonneg(opid),
+                    net_u16_nonneg(p.x),
+                    net_u16_nonneg(p.y),
+                    net_u8_clamped(p.dir, 3),
+                    net_u8_clamped(s.skin, 255),
+                    net_u16_nonneg(s.clan_id.unwrap_or(0)),
+                    tail,
+                ))
+            });
+            if let Some(bot) = bot_data {
+                sub_packets.push(bot);
+                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
             }
         }
 
@@ -129,14 +127,12 @@ pub fn check_chunk_changed(
         }
 
         // Notify the player to remove bots that are now too far away
-        if let Some(pids) = state.chunk_players.get(&(ocx, ocy).into()) {
-            for &opid in pids.iter() {
-                if opid == pid {
-                    continue;
-                }
-                sub_packets.push(hb_bot_del(net_u16_nonneg(opid)));
-                sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
+        for opid in state.players_in_chunk(ocx, ocy) {
+            if opid == pid {
+                continue;
             }
+            sub_packets.push(hb_bot_del(net_u16_nonneg(opid)));
+            sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
         }
 
         // Notify BotSpots removal
@@ -210,9 +206,9 @@ pub fn check_chunk_changed(
         send_b_packet(tx, "HB", &bundle);
     }
 
-    // Обновляем ECS (view) и chunk_players РАЗДЕЛЬНО, чтобы не держать ecs.write()
-    // одновременно с chunk_players — иначе deadlock с broadcast_to_nearby,
-    // который держит chunk_players.read() и хочет ecs.read().
+    // Обновляем ECS (view) и chunk player index РАЗДЕЛЬНО, чтобы не держать
+    // ecs.write() одновременно с spatial index — иначе deadlock с
+    // broadcast_to_nearby, который держит индекс игроков и хочет ecs.read().
     let chunk_update = state
         .modify_player(pid, |ecs, entity| {
             let (ncx, ncy) = {
@@ -239,18 +235,12 @@ pub fn check_chunk_changed(
             }
         })
         .flatten();
-    // ecs.write() отпущен — безопасно обновляем chunk_players.
+    // ecs.write() отпущен — безопасно обновляем chunk player index.
     if let Some((old, (ncx, ncy))) = chunk_update {
         if let Some((ocx, ocy)) = old {
-            if let Some(mut e) = state.chunk_players.get_mut(&(ocx, ocy).into()) {
-                e.retain(|&id| id != pid);
-            }
+            state.unregister_player_from_chunk(pid, ocx, ocy);
         }
-        state
-            .chunk_players
-            .entry((ncx, ncy).into())
-            .or_default()
-            .push(pid);
+        state.register_player_chunk(pid, ncx, ncy);
     }
 }
 
@@ -271,30 +261,28 @@ pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
     let mut subs: Vec<Vec<u8>> = Vec::new();
     for (ncx, ncy) in state.visible_chunks_around(cx, cy) {
         // Игроки в чанке (кроме самого наблюдателя).
-        if let Some(pids) = state.chunk_players.get(&(ncx, ncy).into()) {
-            for &opid in pids.iter() {
-                if opid == pid {
-                    continue;
-                }
-                let bot = state.query_player_opt(opid, |ecs, entity| {
-                    let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-                    let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
-                    let tail = ecs
-                        .get::<crate::game::programmator::ProgrammatorState>(entity)
-                        .map_or(0, |ps| u8::from(ps.running));
-                    Some(hb_bot(
-                        net_u16_nonneg(opid),
-                        net_u16_nonneg(p.x),
-                        net_u16_nonneg(p.y),
-                        net_u8_clamped(p.dir, 3),
-                        net_u8_clamped(s.skin, 255),
-                        net_u16_nonneg(s.clan_id.unwrap_or(0)),
-                        tail,
-                    ))
-                });
-                if let Some(bot) = bot {
-                    subs.push(bot);
-                }
+        for opid in state.players_in_chunk(ncx, ncy) {
+            if opid == pid {
+                continue;
+            }
+            let bot = state.query_player_opt(opid, |ecs, entity| {
+                let p = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                let s = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+                let tail = ecs
+                    .get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .map_or(0, |ps| u8::from(ps.running));
+                Some(hb_bot(
+                    net_u16_nonneg(opid),
+                    net_u16_nonneg(p.x),
+                    net_u16_nonneg(p.y),
+                    net_u8_clamped(p.dir, 3),
+                    net_u8_clamped(s.skin, 255),
+                    net_u16_nonneg(s.clan_id.unwrap_or(0)),
+                    tail,
+                ))
+            });
+            if let Some(bot) = bot {
+                subs.push(bot);
             }
         }
 
@@ -372,10 +360,9 @@ mod tests {
         player.y = 8;
         crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
 
-        let registered = state.chunk_players.get(&(0, 0).into()).is_some_and(|e| {
-            e.value()
-                .contains(&crate::game::player::PlayerId(player.id))
-        });
+        let registered = state
+            .players_in_chunk(0, 0)
+            .contains(&crate::game::player::PlayerId(player.id));
         assert!(
             registered,
             "игрок со спавном в чанке (0,0) обязан попасть в chunk_players на коннекте"

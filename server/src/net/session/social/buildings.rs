@@ -539,22 +539,19 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
     let window_key = format!("pack:{}:{}", view.x, view.y);
     let (pcx, pcy) = World::chunk_pos(view.x, view.y);
     for (cx, cy) in state.visible_chunks_around(pcx, pcy) {
-        if let Some(players) = state.chunk_players.get(&(cx, cy).into()) {
-            let ids: Vec<PlayerId> = players.value().clone();
-            for pid in ids {
-                state.modify_player(pid, |ecs, entity| {
-                    if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-                        if ui.current_window.as_deref() == Some(window_key.as_str()) {
-                            ui.current_window = None;
-                            if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
-                                let g = gu_close();
-                                let _ = conn.tx.send(make_u_packet_bytes(g.0, &g.1));
-                            }
+        for pid in state.players_in_chunk(cx, cy) {
+            state.modify_player(pid, |ecs, entity| {
+                if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+                    if ui.current_window.as_deref() == Some(window_key.as_str()) {
+                        ui.current_window = None;
+                        if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
+                            let g = gu_close();
+                            let _ = conn.tx.send(make_u_packet_bytes(g.0, &g.1));
                         }
                     }
-                    Some(())
-                });
-            }
+                }
+                Some(())
+            });
         }
     }
 }
