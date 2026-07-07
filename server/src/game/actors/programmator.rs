@@ -315,6 +315,31 @@ pub struct ProgrammatorSnapshot {
     pub goto_death: Option<String>,
     pub macros_template: Option<i32>,
     pub hand_mode_active: bool,
+    pub user_variables: HashMap<String, i32>,
+    pub last_variables: LastVariables,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LastVariables {
+    younger: Option<String>,
+    older: Option<String>,
+}
+
+impl LastVariables {
+    fn set(&mut self, name: &str) {
+        if self.younger.as_deref() == Some(name) {
+            return;
+        }
+        self.older = self.younger.replace(name.to_string());
+    }
+
+    fn younger(&self) -> Option<&str> {
+        self.younger.as_deref()
+    }
+
+    fn older(&self) -> Option<&str> {
+        self.older.as_deref()
+    }
 }
 
 #[derive(Component, Debug)]
@@ -339,6 +364,12 @@ pub struct ProgrammatorState {
     /// JS ref `HAND_MODE`: когда `true` — программа не блокирует ручное управление
     /// (ботом можно двигать WASD даже при запущенной программе).
     pub hand_mode_active: bool,
+    /// JS ref `ProgramCondition.uservariables`: пользовательские переменные
+    /// программатора, создаваемые `(name=value)`.
+    pub user_variables: HashMap<String, i32>,
+    /// JS ref `ProgramCondition.lastVariables`: последние переменные для
+    /// команд `SET/ADD/...` и `AD2/MU2/...`.
+    pub last_variables: LastVariables,
 }
 
 impl ProgrammatorState {
@@ -360,6 +391,8 @@ impl ProgrammatorState {
             goto_death: None,
             macros_template: None,
             hand_mode_active: false,
+            user_variables: HashMap::new(),
+            last_variables: LastVariables::default(),
         }
     }
 
@@ -394,6 +427,8 @@ impl ProgrammatorState {
             goto_death: self.goto_death.clone(),
             macros_template: self.macros_template,
             hand_mode_active: self.hand_mode_active,
+            user_variables: self.user_variables.clone(),
+            last_variables: self.last_variables.clone(),
         }
     }
 
@@ -414,6 +449,8 @@ impl ProgrammatorState {
         self.goto_death = snapshot.goto_death;
         self.macros_template = snapshot.macros_template;
         self.hand_mode_active = snapshot.hand_mode_active;
+        self.user_variables = snapshot.user_variables;
+        self.last_variables = snapshot.last_variables;
     }
 
     /// Parse PROG payload from client: [4B len i32 LE][4B id i32 LE][...][UTF-8 source]
@@ -1193,6 +1230,8 @@ impl ProgrammatorState {
         self.shift_y = 0;
         self.flip_state = false;
         self.hand_mode_active = false;
+        self.user_variables.clear();
+        self.last_variables = LastVariables::default();
         for f in self.current_prog.values_mut() {
             f.reset();
         }
@@ -1271,6 +1310,229 @@ fn check_cell(
             _ => f.state = Some(result),
         }
     }
+}
+
+fn set_condition_state(prog: &mut ProgrammatorState, result: bool) {
+    if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
+        match f.last_state_action {
+            Some(ActionType::Or) => f.state = Some(f.state.unwrap_or(false) || result),
+            Some(ActionType::And) => f.state = Some(f.state.unwrap_or(true) && result),
+            _ => f.state = Some(result),
+        }
+    }
+}
+
+fn selected_offset(prog: &ProgrammatorState) -> (i32, i32) {
+    let f = prog.current_prog.get(&prog.current_function);
+    if let Some(f) = f
+        && f.startoffset != (0, 0)
+    {
+        return f.startoffset;
+    }
+    (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
+}
+
+fn selected_world_pos(prog: &ProgrammatorState, pos: &PlayerPosition) -> (i32, i32) {
+    let (sx, sy) = selected_offset(prog);
+    if prog.flip_state {
+        (pos.x - sx, pos.y - sy)
+    } else {
+        (pos.x + sx, pos.y + sy)
+    }
+}
+
+const fn reset_view_offsets(prog: &mut ProgrammatorState) {
+    prog.check_x = 0;
+    prog.check_y = 0;
+    prog.shift_x = 0;
+    prog.shift_y = 0;
+}
+
+const fn compare_value(action_type: ActionType, actual: i32, expected: i32) -> bool {
+    match action_type {
+        ActionType::WritableStateLower => actual < expected,
+        ActionType::WritableStateMore => actual > expected,
+        _ => actual == expected,
+    }
+}
+
+fn clamp_i64_to_i32(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or_else(|_| {
+        if value.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    })
+}
+
+fn load_percent(stats: &PlayerStats) -> i32 {
+    let total = stats.crystals.iter().copied().sum::<i64>();
+    clamp_i64_to_i32(total.saturating_mul(100))
+}
+
+fn readonly_programmator_value(
+    label: &str,
+    prog: &mut ProgrammatorState,
+    pos: &PlayerPosition,
+    stats: &PlayerStats,
+    settings: &crate::game::player::PlayerSettings,
+    world: &crate::world::World,
+    geo_count: usize,
+) -> Option<i32> {
+    let key = label.to_ascii_uppercase();
+    let value = match key.as_str() {
+        "AUT" => i32::from(settings.auto_dig),
+        "AGR" => i32::from(settings.aggression),
+        "HND" => i32::from(prog.hand_mode_active),
+        "DIR" => match pos.dir {
+            1 => 3,
+            3 => 1,
+            d => d,
+        },
+        "X" => pos.x,
+        "Y" => pos.y,
+        "CEL" => {
+            let (x, y) = selected_world_pos(prog, pos);
+            let cell = i32::from(world.get_cell(x, y));
+            reset_view_offsets(prog);
+            cell
+        }
+        "HP" => stats.health,
+        "HPP" => {
+            if stats.max_health <= 0 {
+                0
+            } else {
+                stats.health.saturating_mul(100) / stats.max_health
+            }
+        }
+        "G" => clamp_i64_to_i32(stats.crystals[0]),
+        "B" => clamp_i64_to_i32(stats.crystals[1]),
+        "R" => clamp_i64_to_i32(stats.crystals[2]),
+        "V" => clamp_i64_to_i32(stats.crystals[3]),
+        "W" => clamp_i64_to_i32(stats.crystals[4]),
+        "C" => clamp_i64_to_i32(stats.crystals[5]),
+        "GP" => clamp_i64_to_i32(stats.crystals[0].saturating_mul(100)),
+        "BP" => clamp_i64_to_i32(stats.crystals[1].saturating_mul(100)),
+        "RP" => clamp_i64_to_i32(stats.crystals[2].saturating_mul(100)),
+        "VP" => clamp_i64_to_i32(stats.crystals[3].saturating_mul(100)),
+        "WP" => clamp_i64_to_i32(stats.crystals[4].saturating_mul(100)),
+        "CP" => clamp_i64_to_i32(stats.crystals[5].saturating_mul(100)),
+        "GEO" => i32::try_from(geo_count).unwrap_or(i32::MAX),
+        "GEP" => i32::try_from(geo_count.saturating_mul(100)).unwrap_or(i32::MAX),
+        "LOA" => load_percent(stats),
+        "RND" => rand::random_range(0..1000),
+        "FLP" => i32::from(prog.flip_state),
+        "AX" => selected_offset(prog).0.abs(),
+        "AY" => selected_offset(prog).1.abs(),
+        "DX" => 100 + selected_offset(prog).0,
+        "DY" => 100 + selected_offset(prog).1,
+        _ => return None,
+    };
+    Some(value)
+}
+
+fn run_programmator_command(prog: &mut ProgrammatorState, command: &str, num: i32) -> bool {
+    let key = command.to_ascii_uppercase();
+    match key.as_str() {
+        "SET" | "ADD" | "MUL" | "DIV" | "SUB" | "MOD" => {
+            let Some(name) = prog.last_variables.younger().map(str::to_string) else {
+                return false;
+            };
+            let Some(current) = prog.user_variables.get(&name).copied() else {
+                return false;
+            };
+            let next = match key.as_str() {
+                "SET" => num,
+                "ADD" => current.saturating_add(num),
+                "MUL" => current.saturating_mul(num),
+                "DIV" => current / num.max(1),
+                "SUB" => current.saturating_sub(num),
+                "MOD" => {
+                    if num == 0 {
+                        return false;
+                    }
+                    current % num
+                }
+                _ => unreachable!(),
+            };
+            prog.user_variables.insert(name, next);
+            true
+        }
+        "AD2" | "MU2" | "DI2" | "SU2" => {
+            let Some(younger_name) = prog.last_variables.younger().map(str::to_string) else {
+                return false;
+            };
+            let Some(older_name) = prog.last_variables.older().map(str::to_string) else {
+                return false;
+            };
+            let Some(younger) = prog.user_variables.get(&younger_name).copied() else {
+                return false;
+            };
+            let Some(older) = prog.user_variables.get(&older_name).copied() else {
+                return false;
+            };
+            let next = match key.as_str() {
+                "AD2" => older.saturating_add(younger),
+                "MU2" => older.saturating_mul(younger),
+                "DI2" => older / younger.max(1),
+                "SU2" => older.saturating_sub(younger),
+                _ => unreachable!(),
+            };
+            prog.user_variables.insert(older_name, next);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WritableStateContext<'a> {
+    pos: &'a PlayerPosition,
+    stats: &'a PlayerStats,
+    settings: &'a crate::game::player::PlayerSettings,
+    world: &'a crate::world::World,
+    geo_count: usize,
+}
+
+fn execute_writable_state(
+    action: &PAction,
+    prog: &mut ProgrammatorState,
+    ctx: WritableStateContext<'_>,
+    delay: &mut Option<Duration>,
+) -> ExecResult {
+    if action.label.eq_ignore_ascii_case("del") {
+        *delay = Some(delay_millis(u64::try_from(action.num).unwrap_or(0)));
+        return ExecResult::None;
+    }
+    if run_programmator_command(prog, &action.label, action.num) {
+        return ExecResult::None;
+    }
+    if let Some(value) = readonly_programmator_value(
+        &action.label,
+        prog,
+        ctx.pos,
+        ctx.stats,
+        ctx.settings,
+        ctx.world,
+        ctx.geo_count,
+    ) {
+        let result = compare_value(action.action_type, value, action.num);
+        set_condition_state(prog, result);
+        prog.last_variables.set(&action.label);
+        return ExecResult::BoolResult(result);
+    }
+    let result = if let Some(value) = prog.user_variables.get(&action.label).copied() {
+        compare_value(action.action_type, value, action.num)
+    } else if action.action_type == ActionType::WritableState {
+        prog.user_variables.insert(action.label.clone(), action.num);
+        true
+    } else {
+        false
+    };
+    prog.last_variables.set(&action.label);
+    set_condition_state(prog, result);
+    ExecResult::BoolResult(result)
 }
 
 // ─── Main ECS system ─────────────────────────────────────────────────────────
@@ -2135,51 +2397,18 @@ fn execute_action(
         // ─── Writable state / other ─────────────────────────────────────
         ActionType::WritableState
         | ActionType::WritableStateLower
-        | ActionType::WritableStateMore => {
-            // C# PAction.CallWSAction: "del"→задержка (null, без state);
-            // "geo"→сравнение geo.Count с num; прочее→false.
-            let res: Option<bool> = if action.label.eq_ignore_ascii_case("del") {
-                *delay = Some(delay_millis(u64::try_from(action.num).unwrap_or(0)));
-                None
-            } else if action.label.eq_ignore_ascii_case("geo") {
-                let count = i32::try_from(geo_count).unwrap_or(i32::MAX);
-                Some(match action.action_type {
-                    ActionType::WritableStateLower => count < action.num,
-                    ActionType::WritableStateMore => count > action.num,
-                    _ => count == action.num,
-                })
-            } else if action.label.eq_ignore_ascii_case("aut") {
-                let val = i32::from(settings.auto_dig);
-                Some(match action.action_type {
-                    ActionType::WritableStateLower => val < action.num,
-                    ActionType::WritableStateMore => val > action.num,
-                    _ => val == action.num,
-                })
-            } else if action.label.eq_ignore_ascii_case("agr") {
-                let val = i32::from(settings.aggression);
-                Some(match action.action_type {
-                    ActionType::WritableStateLower => val < action.num,
-                    ActionType::WritableStateMore => val > action.num,
-                    _ => val == action.num,
-                })
-            } else if action.label.eq_ignore_ascii_case("hnd") {
-                let val = i32::from(prog.hand_mode_active);
-                Some(match action.action_type {
-                    ActionType::WritableStateLower => val < action.num,
-                    ActionType::WritableStateMore => val > action.num,
-                    _ => val == action.num,
-                })
-            } else {
-                Some(false)
-            };
-            // C# Execute: if (res != null) { Check(p, (_,_) => res); return res; }
-            // Check пишет father.state с учётом And/Or — иначе RunIfTrue/False ломаются.
-            if let Some(r) = res {
-                check_cell(prog, pos, world, |_, _, _| r);
-                return ExecResult::BoolResult(r);
-            }
-            ExecResult::None
-        }
+        | ActionType::WritableStateMore => execute_writable_state(
+            action,
+            prog,
+            WritableStateContext {
+                pos,
+                stats,
+                settings,
+                world,
+                geo_count,
+            },
+            delay,
+        ),
 
         _ => ExecResult::None,
     }
@@ -2470,7 +2699,11 @@ fn speed_pause(
 mod tests {
     use super::*;
     use crate::db::SkillSlots;
+    use crate::game::player::{PlayerPosition, PlayerSettings, PlayerStats};
+    use crate::world::WorldProvider;
     use std::collections::HashMap;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn empty_skills() -> PlayerSkillsComp {
         PlayerSkillsComp {
@@ -2478,6 +2711,51 @@ mod tests {
                 skills: HashMap::new(),
                 total_slots: 20,
             },
+        }
+    }
+
+    fn test_world(name: &str) -> crate::world::World {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("openmines_programmator_{name}_{suffix}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        crate::world::World::new(name, 2, 2, cell_defs, &dir).unwrap()
+    }
+
+    fn test_position() -> PlayerPosition {
+        PlayerPosition {
+            x: 10,
+            y: 10,
+            dir: 3,
+        }
+    }
+
+    fn test_stats() -> PlayerStats {
+        PlayerStats {
+            health: 75,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            crystals: [1, 2, 3, 4, 5, 6],
+            role: 0,
+            skin: 0,
+            clan_id: None,
+            clan_rank: 0,
+            last_bonus_at: 0,
+        }
+    }
+
+    fn writable(label: &str, num: i32) -> PAction {
+        PAction {
+            action_type: ActionType::WritableState,
+            label: label.to_string(),
+            num,
         }
     }
 
@@ -2550,6 +2828,22 @@ mod tests {
             .collect();
 
         assert_eq!(actions, vec![ActionType::Start, ActionType::Stop]);
+    }
+
+    #[test]
+    fn parse_text_format_maps_writable_variables() {
+        let (functions, _) = ProgrammatorState::parse_text("$(foo=7)(foo>3)(foo<9)").unwrap();
+        let actions = &functions[""].actions;
+
+        assert_eq!(actions[0].action_type, ActionType::WritableState);
+        assert_eq!(actions[0].label, "foo");
+        assert_eq!(actions[0].num, 7);
+        assert_eq!(actions[1].action_type, ActionType::WritableStateMore);
+        assert_eq!(actions[1].label, "foo");
+        assert_eq!(actions[1].num, 3);
+        assert_eq!(actions[2].action_type, ActionType::WritableStateLower);
+        assert_eq!(actions[2].label, "foo");
+        assert_eq!(actions[2].num, 9);
     }
 
     #[test]
@@ -2646,6 +2940,176 @@ mod tests {
     }
 
     #[test]
+    fn writable_state_creates_and_compares_user_variables() {
+        let world = test_world("vars_user");
+        let pos = test_position();
+        let stats = test_stats();
+        let settings = PlayerSettings::default();
+        let mut prog = ProgrammatorState::new();
+        prog.current_prog.insert(String::new(), PFunction::new());
+        let mut delay = None;
+
+        let result = execute_writable_state(
+            &writable("foo", 7),
+            &mut prog,
+            WritableStateContext {
+                pos: &pos,
+                stats: &stats,
+                settings: &settings,
+                world: &world,
+                geo_count: 0,
+            },
+            &mut delay,
+        );
+        assert!(matches!(result, ExecResult::BoolResult(true)));
+        assert_eq!(prog.user_variables["foo"], 7);
+        assert_eq!(prog.current_prog[""].state, Some(true));
+
+        let more = PAction {
+            action_type: ActionType::WritableStateMore,
+            label: "foo".to_string(),
+            num: 3,
+        };
+        let result = execute_writable_state(
+            &more,
+            &mut prog,
+            WritableStateContext {
+                pos: &pos,
+                stats: &stats,
+                settings: &settings,
+                world: &world,
+                geo_count: 0,
+            },
+            &mut delay,
+        );
+        assert!(matches!(result, ExecResult::BoolResult(true)));
+        assert_eq!(prog.current_prog[""].state, Some(true));
+    }
+
+    #[test]
+    fn writable_state_commands_mutate_last_user_variable() {
+        let world = test_world("vars_commands");
+        let pos = test_position();
+        let stats = test_stats();
+        let settings = PlayerSettings::default();
+        let mut prog = ProgrammatorState::new();
+        prog.current_prog.insert(String::new(), PFunction::new());
+        let mut delay = None;
+
+        let _ = execute_writable_state(
+            &writable("foo", 7),
+            &mut prog,
+            WritableStateContext {
+                pos: &pos,
+                stats: &stats,
+                settings: &settings,
+                world: &world,
+                geo_count: 0,
+            },
+            &mut delay,
+        );
+        let result = execute_writable_state(
+            &writable("ADD", 5),
+            &mut prog,
+            WritableStateContext {
+                pos: &pos,
+                stats: &stats,
+                settings: &settings,
+                world: &world,
+                geo_count: 0,
+            },
+            &mut delay,
+        );
+
+        assert!(matches!(result, ExecResult::None));
+        assert_eq!(prog.user_variables["foo"], 12);
+    }
+
+    #[test]
+    fn writable_state_reads_readonly_values_and_selected_cell() {
+        let world = test_world("vars_readonly");
+        world.set_cell(11, 10, crate::world::cells::cell_type::GREEN);
+        let pos = test_position();
+        let mut stats = test_stats();
+        stats.health = 25;
+        let settings = PlayerSettings {
+            auto_dig: true,
+            aggression: true,
+            ..Default::default()
+        };
+        let mut prog = ProgrammatorState::new();
+        prog.current_prog.insert(String::new(), PFunction::new());
+        prog.hand_mode_active = true;
+        prog.check_x = 1;
+        let mut delay = None;
+
+        for action in [
+            writable("AUT", 1),
+            writable("AGR", 1),
+            writable("HND", 1),
+            writable("DIR", 1),
+            writable("X", 10),
+            writable("Y", 10),
+            writable("HP", 25),
+            writable("HPP", 25),
+            writable("G", 1),
+            writable("GEO", 2),
+            writable("CEL", i32::from(crate::world::cells::cell_type::GREEN)),
+        ] {
+            let geo_count = if action.label == "GEO" { 2 } else { 0 };
+            let result = execute_writable_state(
+                &action,
+                &mut prog,
+                WritableStateContext {
+                    pos: &pos,
+                    stats: &stats,
+                    settings: &settings,
+                    world: &world,
+                    geo_count,
+                },
+                &mut delay,
+            );
+            assert!(
+                matches!(result, ExecResult::BoolResult(true)),
+                "failed readonly {}",
+                action.label
+            );
+        }
+        assert_eq!(
+            (prog.check_x, prog.check_y, prog.shift_x, prog.shift_y),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn writable_state_delay_does_not_update_condition_state() {
+        let world = test_world("vars_delay");
+        let pos = test_position();
+        let stats = test_stats();
+        let settings = PlayerSettings::default();
+        let mut prog = ProgrammatorState::new();
+        prog.current_prog.insert(String::new(), PFunction::new());
+        let mut delay = None;
+
+        let result = execute_writable_state(
+            &writable("del", 77),
+            &mut prog,
+            WritableStateContext {
+                pos: &pos,
+                stats: &stats,
+                settings: &settings,
+                world: &world,
+                geo_count: 0,
+            },
+            &mut delay,
+        );
+
+        assert!(matches!(result, ExecResult::None));
+        assert_eq!(delay, Some(Duration::from_millis(77)));
+        assert_eq!(prog.current_prog[""].state, None);
+    }
+
+    #[test]
     fn programmator_snapshot_roundtrips_runtime_state() {
         let mut state = ProgrammatorState::new();
         assert!(state.run_program("$zg"));
@@ -2655,6 +3119,8 @@ mod tests {
         state.hand_mode_active = true;
         state.selected_id = Some(7);
         state.selected_data = Some("$zg".to_string());
+        state.user_variables.insert("foo".to_string(), 12);
+        state.last_variables.set("foo");
 
         let encoded = serde_json::to_string(&state.snapshot()).unwrap();
         let snapshot = serde_json::from_str(&encoded).unwrap();
@@ -2672,6 +3138,8 @@ mod tests {
         assert!(restored.hand_mode_active);
         assert_eq!(restored.selected_id, Some(7));
         assert_eq!(restored.selected_data.as_deref(), Some("$zg"));
+        assert_eq!(restored.user_variables["foo"], 12);
+        assert_eq!(restored.last_variables.younger(), Some("foo"));
     }
 
     #[test]
