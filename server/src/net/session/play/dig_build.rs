@@ -751,8 +751,7 @@ pub fn handle_build(
         "G" => {
             if prop.cell_is_empty() || prop.is_sand() {
                 if try_spend_crystal(state, tx, pid, 0, cost) {
-                    place_block(state, tgt_x, tgt_y, cell_type::GREEN_BLOCK);
-                    state.world.set_durability(tgt_x, tgt_y, durability);
+                    place_world_cell(state, tgt_x, tgt_y, cell_type::GREEN_BLOCK, durability);
                     placed_skill = Some(SkillType::BuildGreen);
                 }
             } else if cur.is(cell_type::GREEN_BLOCK) {
@@ -761,10 +760,13 @@ pub fn handle_build(
                 if try_spend_crystal(state, tx, pid, 4, y_cost) {
                     // D7: Yellow upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
                     let existing_dur = state.world.get_durability(tgt_x, tgt_y);
-                    place_block(state, tgt_x, tgt_y, cell_type::YELLOW_BLOCK);
-                    state
-                        .world
-                        .set_durability(tgt_x, tgt_y, existing_dur + build_yellow_hp);
+                    place_world_cell(
+                        state,
+                        tgt_x,
+                        tgt_y,
+                        cell_type::YELLOW_BLOCK,
+                        existing_dur + build_yellow_hp,
+                    );
                     placed_skill = Some(SkillType::BuildYellow);
                 }
             } else if cur.is(cell_type::YELLOW_BLOCK) {
@@ -773,18 +775,20 @@ pub fn handle_build(
                 if try_spend_crystal(state, tx, pid, 2, r_cost) {
                     // D7: Red upgrade adds durability to existing (C# GetDurability + AdditionalEffect).
                     let existing_dur = state.world.get_durability(tgt_x, tgt_y);
-                    place_block(state, tgt_x, tgt_y, cell_type::RED_BLOCK);
-                    state
-                        .world
-                        .set_durability(tgt_x, tgt_y, existing_dur + build_red_hp);
+                    place_world_cell(
+                        state,
+                        tgt_x,
+                        tgt_y,
+                        cell_type::RED_BLOCK,
+                        existing_dur + build_red_hp,
+                    );
                     placed_skill = Some(SkillType::BuildRed);
                 }
             }
         }
         "R" => {
             if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 0, cost) {
-                place_block(state, tgt_x, tgt_y, cell_type::ROAD);
-                state.world.set_durability(tgt_x, tgt_y, durability);
+                place_world_cell(state, tgt_x, tgt_y, cell_type::ROAD, durability);
                 placed_skill = Some(SkillType::BuildRoad);
             }
         }
@@ -792,11 +796,10 @@ pub fn handle_build(
             if (prop.cell_is_empty() || prop.is_sand())
                 && try_spend_crystal(state, tx, pid, 0, cost)
             {
-                place_block(state, tgt_x, tgt_y, cell_type::SUPPORT);
                 // D5: опора ломается с первого удара (durability 0, 1:1 C#).
                 // damage_cell рушит при `d - dmg <= 0`, поэтому 0 = разрушение
                 // с любого удара. Не используем build_skill_hp (он делал опоры прочнее).
-                state.world.set_durability(tgt_x, tgt_y, 0.0);
+                place_world_cell(state, tgt_x, tgt_y, cell_type::SUPPORT, 0.0);
                 placed_skill = Some(SkillType::BuildStructure);
             }
         }
@@ -883,6 +886,18 @@ fn place_block(state: &Arc<GameState>, x: i32, y: i32, cell: u8) {
     state
         .world
         .set_cell_typed(x, y, crate::world::CellType(cell));
+    broadcast_cell_update(state, x, y);
+}
+
+fn place_world_cell(state: &Arc<GameState>, x: i32, y: i32, cell: u8, durability: f32) {
+    state.world.write_world_cell(
+        x,
+        y,
+        crate::world::WorldCell {
+            cell_type: crate::world::CellType(cell),
+            durability,
+        },
+    );
     broadcast_cell_update(state, x, y);
 }
 
