@@ -784,7 +784,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let st = state.clone();
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        prot_detonate(&st, pid, cx, cy);
+        prot_detonate(&st, pid, cx, cy).await;
         clear_consumable_pack(&st, cx, cy);
     });
     true
@@ -792,7 +792,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
 
 /// Детонация Protector через 2с (тело C# `AsyncAction`): `AoE` 3x3 — снос гейтов +
 /// разрушение клеток + 50 HP игрокам + FX.
-fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
+async fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
     for ddx in -1..=1 {
         for ddy in -1..=1 {
@@ -806,16 +806,9 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                 .get_pack_at(tgt_x, tgt_y)
                 .filter(|view| view.pack_type == PackType::Gate);
             if let Some(view) = gate {
-                state.remove_building_runtime(&view);
-                // Удалить из БД — иначе гейт ВОСКРЕСАЕТ при рестарте (рассинхрон
-                // слоёв: world/ECS чисты, а DB-строка осталась). Async detached.
-                let db = state.db.clone();
-                let gate_id = view.id;
-                tokio::spawn(async move {
-                    if let Err(e) = db.delete_building(gate_id).await {
-                        tracing::error!(error = ?e, "gate DB delete failed");
-                    }
-                });
+                if let Err(e) = state.delete_building_runtime(&view).await {
+                    tracing::error!(error = ?e, "gate delete failed");
+                }
             }
             // Destroy destructible non-building cells
             let c = state.world.get_cell_typed(tgt_x, tgt_y);
