@@ -142,8 +142,8 @@ pub fn sand_physics_system(
             // сбрасывает её на дефолт типа → без переноса недокопанный валун «лечится»
             // до полной при падении. Читаем durability ДО очистки источника.
             let dur = world.get_durability(sx, sy);
-            world.set_cell(sx, sy, cell_type::EMPTY);
-            world.set_cell(dest_x, dest_y, cell.0);
+            world.set_cell_typed(sx, sy, crate::world::CellType(cell_type::EMPTY));
+            world.set_cell_typed(dest_x, dest_y, cell);
             world.set_durability(dest_x, dest_y, dur);
 
             bcast_q.0.push(BroadcastEffect::CellUpdate((sx, sy).into()));

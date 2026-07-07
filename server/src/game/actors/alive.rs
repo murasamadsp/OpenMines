@@ -57,7 +57,7 @@ impl PlayerPositions {
 struct AliveAction {
     x: i32,
     y: i32,
-    cell: u8,
+    cell: crate::world::CellType,
     durability: Option<f32>,
 }
 
@@ -83,7 +83,7 @@ pub fn alive_physics_system(
     };
 
     // Collect alive cells near players (radius 16, same as sand).
-    let mut alive_cells: Vec<(i32, i32, u8)> = Vec::new();
+    let mut alive_cells: Vec<(i32, i32, crate::world::CellType)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for pos in &query {
@@ -96,7 +96,7 @@ pub fn alive_physics_system(
                 }
                 let cell = world.get_cell_typed(x, y);
                 if is_alive(cell) {
-                    alive_cells.push((x, y, cell.0));
+                    alive_cells.push((x, y, cell));
                 }
             }
         }
@@ -113,7 +113,9 @@ pub fn alive_physics_system(
         let mut modif = 1;
         for &(dx, dy) in &DIRS {
             if world.valid_coord(x + dx, y + dy)
-                && world.get_cell(x + dx, y + dy) == cell_type::HYPNO_ROCK
+                && world
+                    .get_cell_typed(x + dx, y + dy)
+                    .is(cell_type::HYPNO_ROCK)
             {
                 modif += 2;
             }
@@ -122,7 +124,7 @@ pub fn alive_physics_system(
             modif -= 1;
         }
 
-        match cell {
+        match cell.0 {
             cell_type::ALIVE_CYAN => {
                 alive_cyan(x, y, modif, world, &players, &mut actions);
             }
@@ -177,7 +179,7 @@ pub fn alive_physics_system(
 
     // Apply clears first (e.g., AliveWhite destroying sand above).
     for (cx, cy) in &clears {
-        world.set_cell(*cx, *cy, cell_type::EMPTY);
+        world.set_cell_typed(*cx, *cy, crate::world::CellType(cell_type::EMPTY));
         bcast_q
             .0
             .push(BroadcastEffect::CellUpdate((*cx, *cy).into()));
@@ -185,7 +187,7 @@ pub fn alive_physics_system(
 
     // Apply actions.
     for action in &actions {
-        world.set_cell(action.x, action.y, action.cell);
+        world.set_cell_typed(action.x, action.y, action.cell);
         if let Some(dur) = action.durability {
             world.set_durability(action.x, action.y, dur);
         }
@@ -211,7 +213,7 @@ fn alive_cyan(
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
-                cell: cell_type::CYAN,
+                cell: crate::world::CellType(cell_type::CYAN),
                 durability: Some(f32::from(i16::try_from(2 * modif).unwrap_or(i16::MAX))),
             });
         }
@@ -232,7 +234,9 @@ fn alive_red(
     for cx in -1..=1 {
         for cy in -1..=1 {
             if world.valid_coord(x + cx, y + cy)
-                && world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
+                && world
+                    .get_cell_typed(x + cx, y + cy)
+                    .is(cell_type::BLACK_ROCK)
             {
                 has_black_rock = true;
             }
@@ -249,7 +253,7 @@ fn alive_red(
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
-                cell: cell_type::RED,
+                cell: crate::world::CellType(cell_type::RED),
                 durability: Some(f32::from(i16::try_from(3 * modif).unwrap_or(i16::MAX))),
             });
         }
@@ -269,7 +273,9 @@ fn alive_viol(
     for cx in -1..=1 {
         for cy in -1..=1 {
             if world.valid_coord(x + cx, y + cy)
-                && world.get_cell(x + cx, y + cy) == cell_type::BLACK_ROCK
+                && world
+                    .get_cell_typed(x + cx, y + cy)
+                    .is(cell_type::BLACK_ROCK)
             {
                 has_black_rock = true;
             }
@@ -286,7 +292,7 @@ fn alive_viol(
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
-                cell: cell_type::VIOLET,
+                cell: crate::world::CellType(cell_type::VIOLET),
                 durability: Some(f32::from(i16::try_from(2 * modif).unwrap_or(i16::MAX))),
             });
         }
@@ -311,7 +317,9 @@ fn alive_black(
     for ax in -1..=1 {
         for ay in -1..=1 {
             if world.valid_coord(x + ax, y + ay)
-                && world.get_cell(x + ax, y + ay) == cell_type::ALIVE_BLACK
+                && world
+                    .get_cell_typed(x + ax, y + ay)
+                    .is(cell_type::ALIVE_BLACK)
             {
                 count += 1;
             }
@@ -325,7 +333,7 @@ fn alive_black(
         actions.push(AliveAction {
             x,
             y,
-            cell: cell_type::BLACK_ROCK,
+            cell: crate::world::CellType(cell_type::BLACK_ROCK),
             durability: None,
         });
         return;
@@ -335,7 +343,8 @@ fn alive_black(
         for &(dx, dy) in &DIRS {
             let nx = x + dx;
             let ny = y + dy;
-            if world.valid_coord(nx, ny) && world.get_cell(nx, ny) == cell_type::ALIVE_BLACK {
+            if world.valid_coord(nx, ny) && world.get_cell_typed(nx, ny).is(cell_type::ALIVE_BLACK)
+            {
                 // Opposite direction.
                 let ox = x - dx;
                 let oy = y - dy;
@@ -347,7 +356,7 @@ fn alive_black(
                         actions.push(AliveAction {
                             x: ox,
                             y: oy,
-                            cell: cell_type::RED,
+                            cell: crate::world::CellType(cell_type::RED),
                             durability: Some(f32::from(
                                 i16::try_from(3 * modif).unwrap_or(i16::MAX),
                             )),
@@ -356,7 +365,7 @@ fn alive_black(
                         actions.push(AliveAction {
                             x: ox,
                             y: oy,
-                            cell: cell_type::CYAN,
+                            cell: crate::world::CellType(cell_type::CYAN),
                             durability: Some(f32::from(
                                 i16::try_from(2 * modif).unwrap_or(i16::MAX),
                             )),
@@ -385,8 +394,8 @@ fn alive_white(
     if !world.valid_coord(x, y - 1) {
         return;
     }
-    let above = world.get_cell(x, y - 1);
-    if !cell_defs.get(above).is_sand() {
+    let above = world.get_cell_typed(x, y - 1);
+    if !cell_defs.get_typed(above).is_sand() {
         return;
     }
 
@@ -400,7 +409,7 @@ fn alive_white(
                 actions.push(AliveAction {
                     x: nx,
                     y: ny,
-                    cell: cell_type::WHITE,
+                    cell: crate::world::CellType(cell_type::WHITE),
                     durability: Some(f32::from(i16::try_from(9 * modif).unwrap_or(i16::MAX))),
                 });
             }
@@ -418,7 +427,7 @@ fn clears_sand(x: i32, y: i32, actions: &mut Vec<AliveAction>) {
     actions.push(AliveAction {
         x,
         y,
-        cell: cell_type::EMPTY,
+        cell: crate::world::CellType(cell_type::EMPTY),
         durability: None,
     });
 }
@@ -448,14 +457,14 @@ fn alive_blue(
             actions.push(AliveAction {
                 x: nx,
                 y: ny,
-                cell: cell_type::ALIVE_BLUE,
+                cell: crate::world::CellType(cell_type::ALIVE_BLUE),
                 durability: None,
             });
             // Leave Blue (109) at old position.
             actions.push(AliveAction {
                 x,
                 y,
-                cell: cell_type::BLUE,
+                cell: crate::world::CellType(cell_type::BLUE),
                 durability: Some(f32::from(i16::try_from(20 * modif).unwrap_or(i16::MAX))),
             });
             return;
@@ -504,7 +513,7 @@ fn alive_rainbow(
         actions.push(AliveAction {
             x: nx,
             y: ny,
-            cell: opposite_cell.0,
+            cell: opposite_cell,
             durability: Some(
                 target_def.durability * f32::from(i16::try_from(modif).unwrap_or(i16::MAX)),
             ),
