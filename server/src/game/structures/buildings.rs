@@ -1,4 +1,4 @@
-use crate::db::buildings::BuildingRow;
+use crate::db::buildings::{BuildingExtra, BuildingRow};
 use crate::game::player::PlayerId;
 use anyhow::Context as _;
 use bevy_ecs::prelude::{Component, Entity};
@@ -465,6 +465,58 @@ pub fn spawn_building_from_row(
         ))
         .id();
     Ok((entity, pack_type))
+}
+
+pub struct BuildingSpawnSpec<'a> {
+    pub id: i32,
+    pub pack_type: PackType,
+    pub x: i32,
+    pub y: i32,
+    pub owner_id: PlayerId,
+    pub clan_id: i32,
+    pub extra: &'a BuildingExtra,
+}
+
+pub fn spawn_building_from_extra(
+    ecs: &mut bevy_ecs::prelude::World,
+    spec: &BuildingSpawnSpec<'_>,
+) -> Entity {
+    let extra = spec.extra;
+    ecs.spawn((
+        BuildingMetadata {
+            id: spec.id,
+            pack_type: spec.pack_type,
+        },
+        GridPosition {
+            x: spec.x,
+            y: spec.y,
+        },
+        BuildingStats {
+            charge: extra.charge,
+            max_charge: extra.max_charge,
+            cost: extra.cost,
+            hp: extra.hp,
+            max_hp: extra.max_hp,
+            clanzone: extra.clanzone,
+            broken_timer: None,
+        },
+        BuildingStorage {
+            money: extra.money_inside,
+            crystals: extra.crystals_inside,
+            items: extra.items_inside.clone(),
+        },
+        BuildingOwnership {
+            owner_id: spec.owner_id,
+            clan_id: spec.clan_id,
+        },
+        BuildingCrafting {
+            recipe_id: extra.craft_recipe_id,
+            num: extra.craft_num,
+            end_ts: extra.craft_end_ts,
+        },
+        BuildingFlags { dirty: false },
+    ))
+    .id()
 }
 
 pub fn extract_building_row(ecs: &bevy_ecs::prelude::World, entity: Entity) -> Option<BuildingRow> {

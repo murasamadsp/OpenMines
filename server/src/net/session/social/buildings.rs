@@ -2,8 +2,8 @@
 use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
 use crate::game::broadcast_cell_update;
 use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
-    BuildingStorage, GridPosition, PackType, PackView, get_building_config,
+    BuildingFlags, BuildingSpawnSpec, BuildingStorage, PackType, PackView, get_building_config,
+    spawn_building_from_extra,
 };
 use crate::game::player::{
     PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
@@ -265,41 +265,18 @@ pub async fn handle_place_building(
         }
     };
 
-    let entity = state
-        .ecs
-        .write()
-        .spawn((
-            BuildingMetadata {
-                id: db_id,
-                pack_type,
-            },
-            GridPosition { x: bx, y: by },
-            BuildingStats {
-                charge: extra.charge,
-                max_charge: extra.max_charge,
-                cost: extra.cost,
-                hp: extra.hp,
-                max_hp: extra.max_hp,
-                clanzone: extra.clanzone,
-                broken_timer: None,
-            },
-            BuildingStorage {
-                money: extra.money_inside,
-                crystals: extra.crystals_inside,
-                items: extra.items_inside.clone(),
-            },
-            BuildingOwnership {
-                owner_id: pid,
-                clan_id: initial_clan,
-            },
-            BuildingCrafting {
-                recipe_id: extra.craft_recipe_id,
-                num: extra.craft_num,
-                end_ts: extra.craft_end_ts,
-            },
-            BuildingFlags { dirty: false },
-        ))
-        .id();
+    let entity = spawn_building_from_extra(
+        &mut state.ecs.write(),
+        &BuildingSpawnSpec {
+            id: db_id,
+            pack_type,
+            x: bx,
+            y: by,
+            owner_id: pid,
+            clan_id: initial_clan,
+            extra: &extra,
+        },
+    );
 
     state.register_building_entity(bx, by, entity);
 
@@ -800,6 +777,7 @@ pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
 mod tests {
     use super::*;
     use crate::db::players::PlayerRow;
+    use crate::game::buildings::{BuildingMetadata, BuildingOwnership, GridPosition};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc::UnboundedReceiver;

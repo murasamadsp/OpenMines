@@ -1,8 +1,8 @@
 //! Лечение и инвентарь.
 #![allow(clippy::cast_possible_truncation)]
 use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
-    BuildingStorage, GridPosition, can_destroy, damage_building, is_damagable,
+    BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats, GridPosition,
+    can_destroy, damage_building, is_damagable, spawn_building_from_extra,
 };
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
@@ -513,41 +513,18 @@ async fn place_building_from_item_with(
         .await
         .ok();
     if let Some(db_id) = id {
-        let entity = state
-            .ecs
-            .write()
-            .spawn((
-                BuildingMetadata {
-                    id: db_id,
-                    pack_type,
-                },
-                GridPosition { x: bx, y: by },
-                BuildingStats {
-                    charge: extra.charge,
-                    max_charge: extra.max_charge,
-                    cost: extra.cost,
-                    hp: extra.hp,
-                    max_hp: extra.max_hp,
-                    clanzone: extra.clanzone,
-                    broken_timer: None,
-                },
-                BuildingStorage {
-                    money: extra.money_inside,
-                    crystals: extra.crystals_inside,
-                    items: extra.items_inside.clone(),
-                },
-                BuildingOwnership {
-                    owner_id: pid,
-                    clan_id: building_clan,
-                },
-                BuildingCrafting {
-                    recipe_id: extra.craft_recipe_id,
-                    num: extra.craft_num,
-                    end_ts: extra.craft_end_ts,
-                },
-                BuildingFlags { dirty: false },
-            ))
-            .id();
+        let entity = spawn_building_from_extra(
+            &mut state.ecs.write(),
+            &BuildingSpawnSpec {
+                id: db_id,
+                pack_type,
+                x: bx,
+                y: by,
+                owner_id: pid,
+                clan_id: building_clan,
+                extra: &extra,
+            },
+        );
         state.register_building_entity(bx, by, entity);
         let view = PackView {
             id: db_id,

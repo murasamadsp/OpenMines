@@ -35,6 +35,8 @@
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
+- ECS-компоненты новых зданий создаются через `spawn_building_from_extra` /
+  `BuildingSpawnSpec`; session paths больше не дублируют tuple компонентов здания.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
@@ -44,8 +46,9 @@
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
   type/durability для live-path, box-клетки получили первый boundary, а runtime
-  индексы зданий и mmap footprint сведены в helper boundary. DB и ECS-компоненты
-  зданий ещё не сведены в один authoritative boundary.
+  индексы зданий, mmap footprint и spawn ECS-компонентов зданий сведены в helper
+  boundary. DB + ECS + footprint ещё не исполняются как одна authoritative
+  операция.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
@@ -55,7 +58,7 @@
 ## Следующий правильный порядок
 
 1. Дальше расширять boundary к `WorldCell { type, durability, pack }`: следующий
-   слой — операции зданий (DB/ECS-компоненты/footprint как единая транзакция), не
+   слой — операции зданий (DB + ECS + footprint как единая транзакция), не
    переписывая весь мир одним махом.
 2. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
 3. Любую намеренную девиацию от C#/JS reference сразу записывать в
