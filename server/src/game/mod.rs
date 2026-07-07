@@ -690,7 +690,7 @@ impl GameState {
     }
 
     pub fn get_pack_at(&self, x: i32, y: i32) -> Option<PackView> {
-        let entity = *self.building_index.get(&((x, y).into()))?;
+        let entity = self.building_entity_at(x, y)?;
         let view = {
             let ecs = self.ecs.read();
             let meta = ecs.get::<BuildingMetadata>(entity)?;
@@ -713,6 +713,17 @@ impl GameState {
             v
         };
         Some(view)
+    }
+
+    /// Найти origin building entity по typed world position boundary.
+    pub fn building_entity_at(&self, x: i32, y: i32) -> Option<Entity> {
+        self.building_index
+            .get(&((x, y).into()))
+            .map(|entry| *entry.value())
+    }
+
+    pub fn has_building_origin(&self, x: i32, y: i32) -> bool {
+        self.building_index.contains_key(&((x, y).into()))
     }
 
     pub(crate) fn find_pack_covering_with(

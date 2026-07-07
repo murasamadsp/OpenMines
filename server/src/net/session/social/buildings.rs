@@ -467,9 +467,8 @@ pub fn modify_pack_with_db<F, R>(
 where
     F: FnOnce(&mut EcsWorld, Entity) -> R,
 {
-    let entity = *state
-        .building_index
-        .get(&((pack_x, pack_y).into()))
+    let entity = state
+        .building_entity_at(pack_x, pack_y)
         .ok_or_else(|| "Объект не найден".to_string())?;
     let mut ecs = state.ecs.write();
     if ecs.get::<BuildingFlags>(entity).is_none() {
@@ -638,9 +637,8 @@ pub async fn destroy_damagable_building(
     let crysinside: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
         let ecs = state.ecs.read();
         state
-            .building_index
-            .get(&((bx, by).into()))
-            .and_then(|e| ecs.get::<BuildingStorage>(*e).map(|s| s.crystals))
+            .building_entity_at(bx, by)
+            .and_then(|entity| ecs.get::<BuildingStorage>(entity).map(|s| s.crystals))
     } else {
         None
     };

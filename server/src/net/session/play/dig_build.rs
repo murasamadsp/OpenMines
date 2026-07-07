@@ -731,7 +731,7 @@ pub fn handle_build(
     }
 
     // Fix 14: PackPart check — can't build on a building cell.
-    if state.building_index.contains_key(&((tgt_x, tgt_y).into())) {
+    if state.has_building_origin(tgt_x, tgt_y) {
         return;
     }
 
