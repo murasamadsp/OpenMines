@@ -40,6 +40,9 @@
 - Для read-only запросов к компонентам здания добавлен
   `GameState::query_building_opt`; `play/packs.rs` больше не обращается к
   `building_index` напрямую.
+- Для обхода зданий добавлен `GameState::building_entities_snapshot`; прямой
+  доступ к `building_index` теперь остаётся внутри `GameState`, а session-код
+  использует boundary-методы.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.

@@ -287,10 +287,9 @@ pub fn apply_player_death_core(
 fn find_random_public_resp(state: &Arc<GameState>, ecs: &bevy_ecs::prelude::World) -> (i32, i32) {
     use rand::Rng;
     let public_resps: Vec<(i32, i32)> = state
-        .building_index
-        .iter()
-        .filter_map(|entry| {
-            let entity = *entry.value();
+        .building_entities_snapshot()
+        .into_iter()
+        .filter_map(|entity| {
             let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(entity)?;
             if meta.pack_type != crate::game::buildings::PackType::Resp {
                 return None;

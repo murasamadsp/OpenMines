@@ -511,14 +511,10 @@ pub fn open_pack_gui(
     let title = view.pack_type.name();
 
     // Fetch detailed pstats from ECS for GUI
-    let pstats_info = state
-        .building_index
-        .get(&((view.x, view.y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let pstats = ecs.get::<BuildingStats>(*ent)?;
-            Some((pstats.hp, pstats.max_hp))
-        });
+    let pstats_info = state.query_building_opt(view.x, view.y, |ecs, entity| {
+        let pstats = ecs.get::<BuildingStats>(entity)?;
+        Some((pstats.hp, pstats.max_hp))
+    });
     let Some((hp, mhp)) = pstats_info else {
         tracing::error!(
             x = view.x,
@@ -569,24 +565,20 @@ pub fn open_pack_admin_gui(
     if view.owner_id != pid {
         return;
     }
-    let details = state
-        .building_index
-        .get(&((pack_x, pack_y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let st = ecs.get::<BuildingStats>(*ent)?;
-            let storage = ecs.get::<BuildingStorage>(*ent)?;
-            let own = ecs.get::<BuildingOwnership>(*ent)?;
-            Some((
-                st.hp,
-                st.max_hp,
-                st.charge,
-                st.max_charge,
-                st.cost,
-                storage.money,
-                own.clan_id,
-            ))
-        });
+    let details = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
+        let st = ecs.get::<BuildingStats>(entity)?;
+        let storage = ecs.get::<BuildingStorage>(entity)?;
+        let own = ecs.get::<BuildingOwnership>(entity)?;
+        Some((
+            st.hp,
+            st.max_hp,
+            st.charge,
+            st.max_charge,
+            st.cost,
+            storage.money,
+            own.clan_id,
+        ))
+    });
     let Some((hp, max_hp, charge, max_charge, cost, money, clan_id)) = details else {
         return;
     };
@@ -819,11 +811,11 @@ fn pack_withdraw_state_ready(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i
         })
         .unwrap_or(false);
     let building_ready = state
-        .building_index
-        .get(&((x, y).into()))
-        .map(|ent| {
-            let ecs = state.ecs.read();
-            ecs.get::<BuildingStorage>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
+        .query_building_opt(x, y, |ecs, entity| {
+            Some(
+                ecs.get::<BuildingStorage>(entity).is_some()
+                    && ecs.get::<BuildingFlags>(entity).is_some(),
+            )
         })
         .unwrap_or(false);
     player_ready && building_ready
@@ -837,14 +829,10 @@ fn open_storage_gui(
     view: &PackView,
 ) {
     // Fetch storage crystals from ECS
-    let storage_crys = state
-        .building_index
-        .get(&((view.x, view.y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let s = ecs.get::<BuildingStorage>(*ent)?;
-            Some(s.crystals)
-        });
+    let storage_crys = state.query_building_opt(view.x, view.y, |ecs, entity| {
+        let s = ecs.get::<BuildingStorage>(entity)?;
+        Some(s.crystals)
+    });
     let Some(storage_crys) = storage_crys else {
         tracing::error!(
             x = view.x,
@@ -1019,14 +1007,10 @@ fn open_crafter_gui(
         return;
     }
 
-    let craft_state = state
-        .building_index
-        .get(&((view.x, view.y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let c = ecs.get::<BuildingCrafting>(*ent)?;
-            Some((c.recipe_id, c.num, c.end_ts))
-        });
+    let craft_state = state.query_building_opt(view.x, view.y, |ecs, entity| {
+        let c = ecs.get::<BuildingCrafting>(entity)?;
+        Some((c.recipe_id, c.num, c.end_ts))
+    });
 
     let Some((recipe_id, num, end_ts)) = craft_state else {
         return;
@@ -1246,14 +1230,10 @@ fn handle_craft_start(
         return;
     }
 
-    let craft_state = state
-        .building_index
-        .get(&((bx, by).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let c = ecs.get::<BuildingCrafting>(*ent)?;
-            Some(c.recipe_id.is_some())
-        });
+    let craft_state = state.query_building_opt(bx, by, |ecs, entity| {
+        let c = ecs.get::<BuildingCrafting>(entity)?;
+        Some(c.recipe_id.is_some())
+    });
     let Some(already_crafting) = craft_state else {
         tracing::error!(
             x = bx,
@@ -1409,14 +1389,10 @@ fn handle_craft_claim(
         return;
     }
 
-    let craft_info = state
-        .building_index
-        .get(&((bx, by).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let c = ecs.get::<BuildingCrafting>(*ent)?;
-            Some((c.recipe_id, c.num, c.end_ts))
-        });
+    let craft_info = state.query_building_opt(bx, by, |ecs, entity| {
+        let c = ecs.get::<BuildingCrafting>(entity)?;
+        Some((c.recipe_id, c.num, c.end_ts))
+    });
 
     let Some((Some(recipe_id), num, end_ts)) = craft_info else {
         return;
@@ -1436,11 +1412,7 @@ fn handle_craft_claim(
         send_crafter_action_error(tx);
         return;
     };
-    let Some(building_entity) = state
-        .building_index
-        .get(&((bx, by).into()))
-        .map(|entry| *entry.value())
-    else {
+    let Some(building_entity) = state.building_entity_at(bx, by) else {
         tracing::error!(player_id = %pid, x = bx, y = by, "Craft building entity missing for claim");
         send_crafter_action_error(tx);
         return;
@@ -1512,10 +1484,9 @@ fn open_teleport_gui(
     let nearby_tps: Vec<(i32, i32)> = {
         let ecs = state.ecs.read();
         state
-            .building_index
-            .iter()
-            .filter_map(|entry| {
-                let entity = *entry.value();
+            .building_entities_snapshot()
+            .into_iter()
+            .filter_map(|entity| {
                 let meta = ecs.get::<BuildingMetadata>(entity)?;
                 if meta.pack_type != PackType::Teleport {
                     return None;
@@ -1538,14 +1509,10 @@ fn open_teleport_gui(
 
     use super::horb::{Button, Horb};
 
-    let pstats_info = state
-        .building_index
-        .get(&((view.x, view.y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let pstats = ecs.get::<BuildingStats>(*ent)?;
-            Some((pstats.hp, pstats.max_hp))
-        });
+    let pstats_info = state.query_building_opt(view.x, view.y, |ecs, entity| {
+        let pstats = ecs.get::<BuildingStats>(entity)?;
+        Some((pstats.hp, pstats.max_hp))
+    });
     let Some((hp, mhp)) = pstats_info else {
         tracing::error!(
             x = view.x,
@@ -1974,11 +1941,7 @@ fn do_market_sell(
         send_market_action_error(tx);
         return;
     };
-    let Some(building_entity) = state
-        .building_index
-        .get(&((bx, by).into()))
-        .map(|entry| *entry.value())
-    else {
+    let Some(building_entity) = state.building_entity_at(bx, by) else {
         tracing::error!(x = bx, y = by, "Market building entity missing for sell");
         send_market_action_error(tx);
         return;
@@ -2152,11 +2115,11 @@ fn handle_market_getprofit(
         return;
     }
     let building_state_ready = state
-        .building_index
-        .get(&((bx, by).into()))
-        .map(|ent| {
-            let ecs = state.ecs.read();
-            ecs.get::<BuildingStorage>(*ent).is_some() && ecs.get::<BuildingFlags>(*ent).is_some()
+        .query_building_opt(bx, by, |ecs, entity| {
+            Some(
+                ecs.get::<BuildingStorage>(entity).is_some()
+                    && ecs.get::<BuildingFlags>(entity).is_some(),
+            )
         })
         .unwrap_or(false);
     if !building_state_ready {
@@ -2221,15 +2184,11 @@ pub fn open_market_admin_gui(
     }
 
     // Fetch building details from ECS
-    let details = state
-        .building_index
-        .get(&((pack_x, pack_y).into()))
-        .and_then(|ent| {
-            let ecs = state.ecs.read();
-            let pstats = ecs.get::<BuildingStats>(*ent)?;
-            let storage = ecs.get::<BuildingStorage>(*ent)?;
-            Some((pstats.hp, storage.money))
-        });
+    let details = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
+        let pstats = ecs.get::<BuildingStats>(entity)?;
+        let storage = ecs.get::<BuildingStorage>(entity)?;
+        Some((pstats.hp, storage.money))
+    });
 
     let Some((hp, money_inside)) = details else {
         return;
@@ -2928,7 +2887,7 @@ mod tests {
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             ecs.entity_mut(entity).remove::<BuildingCrafting>();
@@ -3004,7 +2963,7 @@ mod tests {
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
         {
-            let entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+            let entity = test.state.building_entity_at(10, 10).unwrap();
             let mut ecs = test.state.ecs.write();
             let mut craft = ecs.get_mut::<BuildingCrafting>(entity).unwrap();
             craft.end_ts = 0;
@@ -3032,7 +2991,7 @@ mod tests {
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
         {
-            let entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+            let entity = test.state.building_entity_at(10, 10).unwrap();
             let mut ecs = test.state.ecs.write();
             let mut craft = ecs.get_mut::<BuildingCrafting>(entity).unwrap();
             craft.end_ts = 0;
@@ -3066,7 +3025,7 @@ mod tests {
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             ecs.entity_mut(building_entity).remove::<BuildingFlags>();
@@ -3148,7 +3107,7 @@ mod tests {
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
-        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             let mut ui = ecs.get_mut::<PlayerUI>(player_entity).unwrap();
@@ -3185,7 +3144,7 @@ mod tests {
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
-        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
@@ -3221,7 +3180,7 @@ mod tests {
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
-        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             let mut storage = ecs.get_mut::<BuildingStorage>(building_entity).unwrap();
@@ -3260,7 +3219,7 @@ mod tests {
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
-        let building_entity = *test.state.building_index.get(&((10, 10).into())).unwrap();
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
             let mut ui = ecs.get_mut::<PlayerUI>(player_entity).unwrap();
@@ -3466,11 +3425,8 @@ mod tests {
 
     fn craft_state(state: &Arc<GameState>, bx: i32, by: i32) -> (Option<i32>, i32, i64) {
         state
-            .building_index
-            .get(&((bx, by).into()))
-            .and_then(|ent| {
-                let ecs = state.ecs.read();
-                let craft = ecs.get::<BuildingCrafting>(*ent)?;
+            .query_building_opt(bx, by, |ecs, entity| {
+                let craft = ecs.get::<BuildingCrafting>(entity)?;
                 Some((craft.recipe_id, craft.num, craft.end_ts))
             })
             .unwrap()
@@ -3508,22 +3464,16 @@ mod tests {
 
     fn market_storage_money(state: &Arc<GameState>, bx: i32, by: i32) -> i64 {
         state
-            .building_index
-            .get(&((bx, by).into()))
-            .and_then(|ent| {
-                let ecs = state.ecs.read();
-                Some(ecs.get::<BuildingStorage>(*ent)?.money)
+            .query_building_opt(bx, by, |ecs, entity| {
+                Some(ecs.get::<BuildingStorage>(entity)?.money)
             })
             .unwrap()
     }
 
     fn market_storage_crystals(state: &Arc<GameState>, bx: i32, by: i32) -> [i64; 6] {
         state
-            .building_index
-            .get(&((bx, by).into()))
-            .and_then(|ent| {
-                let ecs = state.ecs.read();
-                Some(ecs.get::<BuildingStorage>(*ent)?.crystals)
+            .query_building_opt(bx, by, |ecs, entity| {
+                Some(ecs.get::<BuildingStorage>(entity)?.crystals)
             })
             .unwrap()
     }

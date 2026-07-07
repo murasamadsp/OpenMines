@@ -737,6 +737,13 @@ impl GameState {
         f(&ecs, entity)
     }
 
+    pub fn building_entities_snapshot(&self) -> Vec<Entity> {
+        self.building_index
+            .iter()
+            .map(|entry| *entry.value())
+            .collect()
+    }
+
     pub(crate) fn find_pack_covering_with(
         ecs: &EcsWorld,
         chunk_buildings: &DashMap<ChunkPos, Vec<Entity>>,
