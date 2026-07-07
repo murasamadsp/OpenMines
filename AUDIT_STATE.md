@@ -22,8 +22,10 @@
 - `WorldProvider` имеет typed cell API: `get_cell_typed` / `set_cell_typed`.
 - Live-path gameplay/session cell access переведён на `CellType` API; raw
   `get_cell/set_cell` остаётся только на низкоуровневой map/wire boundary и в тестах.
-- Первые live-path операции, которые меняют и тип клетки, и durability вместе
-  (sand move, alive actions, boulder push, geo placement), пишут через `WorldCell`.
+- Live-path операции, которые меняют и тип клетки, и durability вместе (sand
+  move, alive actions, boulder push, geo placement, build placement/upgrade,
+  delayed military conversion), пишут через `WorldCell`. Прямой
+  `set_durability` остался только в тестах и низкоуровневом `WorldProvider`.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
