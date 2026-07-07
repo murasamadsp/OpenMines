@@ -63,6 +63,10 @@ C# reference:
 - `StaticGUI.StartedProg` сохраняет source, запускает программу, затем шлёт
   `UpdateProgrammatorPacket` (`#p`).
 
+Текущая server-side девиация от этого участка C#: на успешном `PROG` сервер
+сохраняет source и запускает runtime, но не шлёт `#p`. Ручная проверка Unity
+показала, что `#p` на старте будит тяжёлый редактор/GUI и может фризить клиент.
+
 Сервер должен:
 
 - проверить владение `program_id`;
@@ -72,16 +76,16 @@ C# reference:
 - выбрать эту программу как selected;
 - запустить программу;
 - закрыть HORB/window state на сервере;
-- отправить статус и обновление редактора в порядке, совместимом с Unity:
-  `Gu`, затем `@P`, затем `#p` (`@T` может быть между `Gu` и `@P`, если нужно
-  синхронизировать авторитетную позицию перед стартом).
+- отправить статус в порядке, совместимом с Unity:
+  `Gu`, optional `@T`, затем `@P`, затем `BH`;
+- не отправлять `#P/#p` на успешном старте программы.
 
-Порядок `@P` и `#p` нельзя менять без ручной проверки клиента:
+Пакеты `@P/#p/#P/Gu` нельзя менять без ручной проверки клиента:
 
 - `@P "1"` в Unity вызывает `GUIManager.ChangeProgTo(true)` и ставит
   `ProgPanel.playing = true`;
-- `#p` вызывает `GUIManager.UpdateProgramm(...)`, загружает source и в конце
-  закрывает programmator object (`SetActive(false)`).
+- `#p` вызывает `GUIManager.UpdateProgramm(...)`, загружает source, трогает
+  редактор и в конце закрывает programmator object (`SetActive(false)`).
 
 Итог после успешного запуска: программа работает, `ProgPanel.playing == true`,
 редактор не висит поверх игры.
@@ -193,10 +197,13 @@ Unity handler:
 
 Использовать:
 
-- после `PROG` save/start;
 - после rename;
 - на login, если selected program есть и нужно восстановить client-side
   `ProgrammerView.programId/source`, но не открывать редактор.
+
+Не использовать:
+
+- после успешного `PROG` save/start.
 
 ### `@P`
 
@@ -271,6 +278,7 @@ Opcode `Stop` внутри программы:
 - Создавать программу `id=0`, `name="program"` при `PROG program_id=0`.
 - Открывать список программ как fallback для валидного `PROG`.
 - Молча выбирать другую программу, если selected отсутствует.
+- Слать `#P/#p` на успешном `PROG` start без новой ручной проверки Unity.
 - Менять порядок `@P/#p/#P/Gu` без сверки с Unity handlers.
 - Чистить только клиентский или только серверный state: GUI state, ECS runtime
   state и wire status должны сходиться.

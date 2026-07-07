@@ -29,7 +29,7 @@ prog.menu.open | GUIManager.OnProgButton | Pope | ignored | social/buildings.rs:
 prog.create.dialog | HORB button | GUI_ | {"b":"createprog"} | ui/gui_buttons.rs::open_create_prog_dialog | GU | поле имени программы
 prog.create.confirm | HORB input button | GUI_ | {"b":"createprog:<name>"} | ui/gui_buttons.rs::handle_create_prog | Gu,#P,Gu | выбирает created program, открывает редактор
 prog.open | HORB list button | GUI_ | {"b":"openprog:<id>"} | ui/gui_buttons.rs::handle_open_prog | Gu,#P,Gu | только owned program
-prog.save.start | ProgrammerView.SendAndStartProgram | PROG | [len:i32][id:i32][compiled][source] | social/misc.rs::handle_prog_ty | Gu,optional @T,@P,BH,#p,optional OK | успешный старт не должен слать #P
+prog.save.start | ProgrammerView.SendAndStartProgram | PROG | [len:i32][id:i32][compiled][source] | social/misc.rs::handle_prog_ty | Gu,optional @T,@P,BH,optional OK | успешный старт не должен слать #P/#p, иначе Unity снова будит редактор
 prog.stop | GUIManager/ProgPanel stop | pRST | empty | social/misc.rs::handle_prog_ty | Gu,@P,BH | только если реально был running
 prog.preopen.reset | GUIManager.OnProgButton pre-open | pRST | empty | social/misc.rs::handle_prog_ty | none or @P0 only on missing state | stopped selected не должен открывать #P
 prog.delete | ProgrammerView delete | PDEL | <id> | social/misc.rs::handle_prog_ty | none | C# parity: wire-silent
@@ -65,10 +65,15 @@ admin.open | admin gear | ADMN | empty | dispatch/ty.rs ADMN branch | handler-sp
 - `auth.reconnect`;
 - `prog.menu.open`;
 - `prog.create.confirm`;
+- `prog.open`;
+- `prog.rename.*`;
+- `prog.copy`;
+- `prog.delete`;
 - `prog.save.start`;
 - `prog.stop`;
 - `prog.login.selected`;
+- `toggle.aggression`;
+- `settings.open/save`;
 - `Xdig`, `Xmov`, `PO/PI` liveness.
 
-Следующие кандидаты для smoke: `prog.open`, `prog.rename.*`, `prog.delete`,
-`toggle.aggression`, `settings.open/save`.
+Следующие кандидаты для smoke: auction/building/admin HORB routes.

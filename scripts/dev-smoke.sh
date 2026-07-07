@@ -372,6 +372,69 @@ try:
     if tail_events != ["Gu"]:
         raise RuntimeError(f"programmator create tail mismatch: {tail_events!r}")
 
+    write_ty("PREN", x, y, str(prog_id))
+    pren_packets = wait_for_events(["GU"], timeout=8)
+    pren_payload = first_payload(pren_packets, "GU").decode("utf-8", errors="replace")
+    if f"rename:{prog_id}:%I%" not in pren_payload:
+        raise RuntimeError(f"programmator rename dialog missing action: {pren_payload!r}")
+    write_gui(f"rename:{prog_id}:renamed")
+    rename_update, rename_packets = read_until_event("#p", timeout=8)
+    rename_packets.extend(drain_available())
+    rename_events = foreground_events(rename_packets)
+    if rename_events[:2] != ["#p", "Gu"]:
+        raise RuntimeError(f"programmator rename events mismatch: {rename_events!r}")
+    renamed = json.loads(rename_update[2].decode("utf-8"))
+    if int(renamed["id"]) != prog_id or renamed["title"] != "renamed":
+        raise RuntimeError(f"invalid #p payload after rename: {renamed!r}")
+
+    write_ty("PCOP", x, y, str(prog_id))
+    copy_packets = wait_for_events(["GU"], timeout=8)
+    copy_payload = first_payload(copy_packets, "GU").decode("utf-8", errors="replace")
+    if "renamed (copy)" not in copy_payload:
+        raise RuntimeError(f"programmator copy did not refresh list with copied program: {copy_payload!r}")
+
+    write_gui("createprog:trash")
+    trash_open_packet, trash_packets = read_until_event("#P", timeout=8)
+    trash_events = foreground_events(trash_packets)
+    if trash_events[:2] != ["Gu", "#P"]:
+        raise RuntimeError(f"programmator trash create events mismatch: {trash_events!r}")
+    trash = json.loads(trash_open_packet[2].decode("utf-8"))
+    trash_id = int(trash["id"])
+    if trash_id <= 0 or trash["title"] != "trash":
+        raise RuntimeError(f"invalid trash #P payload: {trash!r}")
+    drain_available()
+
+    write_ty("PDEL", x, y, str(trash_id))
+    delete_tail = drain_available()
+    delete_events = foreground_events(delete_tail)
+    if delete_events:
+        raise RuntimeError(f"programmator delete must stay wire-silent, got {delete_events!r}")
+
+    write_ty("Pope", x, y)
+    wait_for_events(["GU"], timeout=8)
+    write_gui(f"openprog:{prog_id}")
+    reopen_packet, reopen_packets = read_until_event("#P", timeout=8)
+    reopen_packets.extend(drain_available())
+    reopen_events = foreground_events(reopen_packets)
+    if reopen_events[:2] != ["Gu", "#P"]:
+        raise RuntimeError(f"programmator open events mismatch: {reopen_events!r}")
+    reopened = json.loads(reopen_packet[2].decode("utf-8"))
+    if int(reopened["id"]) != prog_id or reopened["title"] != "renamed":
+        raise RuntimeError(f"invalid #P payload after openprog: {reopened!r}")
+
+    write_ty("TAGR", x, y)
+    aggr_packets = wait_for_events(["BA"], timeout=8)
+    if first_payload(aggr_packets, "BA") != b"1":
+        raise RuntimeError("TAGR did not enable aggression")
+
+    write_ty("Sett", x, y)
+    wait_for_events(["GU"], timeout=8)
+    write_gui("save:isca:0#mous:0#")
+    settings_packets = wait_for_events(["#S", "GU"], timeout=8)
+    settings_payload = first_payload(settings_packets, "#S").decode("utf-8", errors="replace")
+    if "#isca#0" not in settings_payload or "#mous#0" not in settings_payload:
+        raise RuntimeError(f"settings save did not update #S payload: {settings_payload!r}")
+
     write_ty("PROG", x, y, prog_payload(prog_id, "$z"))
     prog_packets = wait_for_events(["Gu", "@T", "@P", "BH"], timeout=8)
     prog_packets.extend(drain_available())
@@ -406,7 +469,7 @@ try:
     assert_no_event(reconnect_packets, "#P", "reconnect init")
     reconnect_update = next(p for p in reconnect_packets if p[1] == "#p")
     reconnect_prog = json.loads(reconnect_update[2].decode("utf-8"))
-    if int(reconnect_prog["id"]) != prog_id or reconnect_prog["source"] != "$z":
+    if int(reconnect_prog["id"]) != prog_id or reconnect_prog["title"] != "renamed" or reconnect_prog["source"] != "$z":
         raise RuntimeError(f"selected program was not restored on reconnect: {reconnect_prog!r}")
     if first_payload(reconnect_packets, "@P") != b"0" or first_payload(reconnect_packets, "BH") != b"0":
         raise RuntimeError(f"reconnect programmator status mismatch: {reconnect_events!r}")
@@ -419,7 +482,8 @@ print("    initial: ST AU PI")
 print("    auth-failure: cf BI HB GU")
 print("    gui-register: AH cf Gu + init packets")
 print("    gameplay: PO/Xdig/Xmov kept session responsive")
-print("    programmator: Pope/create/PROG/pRST wire contract")
+print("    programmator: Pope/create/open/rename/copy/delete/PROG/pRST wire contract")
+print("    settings: TAGR and settings save wire contract")
 print("    reconnect: selected program restored without #P editor open")
 PY
 

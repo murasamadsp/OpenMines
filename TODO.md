@@ -16,18 +16,21 @@
   `connect -> auth-failure -> GUI register -> init packets -> PO/Xdig/Xmov` и
   проверяет, что сессия остаётся responsive.
 - Programmator/reconnect scenario-smoke: `scripts/dev-smoke.sh` теперь проверяет
-  `Pope -> createprog -> #P -> PROG -> Gu/@T/@P/BH/#p -> pRST -> Gu/@P/BH`
-  и reconnect через сохранённый `AH`/legacy token. Критично: reconnect обязан
-  восстановить selected program через `#p` и не открыть редактор через `#P`.
+  `Pope -> createprog -> #P -> openprog -> rename -> PCOP -> PDEL -> PROG
+  -> Gu/@T/@P/BH -> pRST -> Gu/@P/BH` и reconnect через сохранённый
+  `AH`/legacy token. Критично: PROG-start не должен слать `#P/#p`, а reconnect
+  обязан восстановить selected program через `#p` и не открыть редактор через `#P`.
+- Settings/toggles scenario-smoke: `scripts/dev-smoke.sh` проверяет `TAGR -> BA`
+  и `Sett -> save:%R% -> #S/GU`.
 - GUI/Wire Codex: начальный машинно-читаемый реестр добавлен в
   `docs/reference/GUI_WIRE_CODEX.md` для auth, programmator, toggles и common
   HORB routes.
 
 Осталось:
 
-- Scenario-smoke добить по оставшимся GUI/program routes: `openprog`, `PREN`,
-  `rename:<id>:<name>`, `PDEL`, `PCOP`, `TAGR`, settings save. Базовый
-  programmator start/stop/reconnect уже закрыт.
+- Scenario-smoke добить по оставшимся крупным GUI routes: auction/building/admin
+  HORB. Базовые programmator routes (`openprog`, `PREN`, `rename`, `PDEL`,
+  `PCOP`), `TAGR` и settings save уже закрыты.
 - GUI/Wire Codex расширить до полного покрытия HORB/admin/building/auction
   окон. Начальный реестр есть; теперь каждую GUI правку начинать с обновления
   строки в `docs/reference/GUI_WIRE_CODEX.md`.
@@ -52,12 +55,13 @@
   имеют сомнительную формулу. Нужен отдельный аудит `SkillType` -> gameplay hook
   -> exp hook -> UI/packet sync. Текущий честный статус: `docs/SKILLS_STATUS.md`.
 - Программатор GUI: регресс "после запуска остаётся/открывается редактор"
-  закрыт текущим PROG wire-контрактом `Gu -> @P/BH -> #p`: `#p` обновляет source
-  и закрывает Unity programmator object. Остаётся общий ручной аудит
-  программатора по `docs/PROGRAMMATOR_GUI_PROTOCOL.md`.
-- Программатор smoke: локально подтверждён сценарий create/start/stop/reconnect.
-  Это не доказывает весь программатор, но теперь ломание GUI/start/reconnect
-  будет ловиться без Unity.
+  закрыт текущим PROG wire-контрактом `Gu -> optional @T -> @P/BH` без `#P/#p`.
+  `#p` допустим на init/reconnect/rename, но не на запуске программы. Остаётся
+  общий ручной аудит программатора по `docs/PROGRAMMATOR_GUI_PROTOCOL.md`.
+- Программатор smoke: локально подтверждён сценарий
+  create/open/rename/copy/delete/start/stop/reconnect. Это не доказывает весь
+  runtime программатора, но теперь ломание базового GUI/start/reconnect будет
+  ловиться без Unity.
 - Shutdown: добавлены фазовые логи и таймауты коммитом `1671fdb`
   (`players/buildings` 5s, `box` 2s, `world.flush` 5s). `dev-smoke.sh`
   проходит. Если ручной `^C` снова зависнет, следующий лог обязан показать
