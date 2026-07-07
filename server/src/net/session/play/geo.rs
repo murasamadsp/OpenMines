@@ -84,9 +84,9 @@ pub fn handle_geo(
             if state.world.valid_coord(tgt_x, tgt_y)
                 && GameState::access_gun_with(ecs, &state.chunk_buildings, tgt_x, tgt_y, cid).0
             {
-                let cell = state.world.get_cell(tgt_x, tgt_y);
+                let cell = state.world.get_cell_typed(tgt_x, tgt_y);
                 let defs = state.world.cell_defs();
-                let cell_props = defs.get(cell);
+                let cell_props = defs.get_typed(cell);
                 let pickable = cell_props.nature.is_pickable && !cell_props.cell_is_empty();
                 let place_here = cell_props.cell_is_empty()
                     && cell_props.can_place_over()
@@ -101,21 +101,22 @@ pub fn handle_geo(
                 if pickable {
                     {
                         let mut stack = ecs.get_mut::<PlayerGeoStack>(entity)?;
-                        stack.0.push(cell);
+                        stack.0.push(cell.0);
                     }
                     state.world.destroy(tgt_x, tgt_y);
                     broadcast.push((tgt_x, tgt_y));
                 } else if place_here {
                     if let Some(cplaceable) = ecs.get_mut::<PlayerGeoStack>(entity)?.0.pop() {
-                        state.world.set_cell(tgt_x, tgt_y, cplaceable);
-                        let d = if crate::world::CellType(cplaceable).is_crystal() {
+                        let place_cell = crate::world::CellType(cplaceable);
+                        state.world.set_cell_typed(tgt_x, tgt_y, place_cell);
+                        let d = if place_cell.is_crystal() {
                             0.0
                         } else {
                             let mut rng = rand::rng();
                             if rng.random_range(1..=100) > 99 {
                                 0.0
                             } else {
-                                defs.get(cplaceable).durability
+                                defs.get_typed(place_cell).durability
                             }
                         };
                         state.world.set_durability(tgt_x, tgt_y, d);

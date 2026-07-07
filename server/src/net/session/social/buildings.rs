@@ -612,7 +612,9 @@ pub fn place_building_cells(state: &Arc<GameState>, bx: i32, by: i32, pack_type:
         .building_cells()
         .expect("loaded building pack type must have config")
     {
-        state.world.set_cell(bx + cdx, by + cdy, cell);
+        state
+            .world
+            .set_cell_typed(bx + cdx, by + cdy, crate::world::CellType(cell));
         broadcast_cell_update(state, bx + cdx, by + cdy);
     }
 }
@@ -623,9 +625,11 @@ pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
         .building_cells()
         .expect("loaded building pack type must have config")
     {
-        state
-            .world
-            .set_cell(view.x + cdx, view.y + cdy, cell_type::EMPTY);
+        state.world.set_cell_typed(
+            view.x + cdx,
+            view.y + cdy,
+            crate::world::CellType(cell_type::EMPTY),
+        );
         broadcast_cell_update(state, view.x + cdx, view.y + cdy);
     }
 }
@@ -804,14 +808,16 @@ fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) 
     if !state.world.valid_coord(x, y) {
         return;
     }
-    let cell = state.world.get_cell(x, y);
-    if !state.world.is_empty(x, y) || !state.world.cell_defs().get(cell).can_place_over() {
+    let cell = state.world.get_cell_typed(x, y);
+    if !state.world.is_empty(x, y) || !state.world.cell_defs().get_typed(cell).can_place_over() {
         return;
     }
     if state.get_pack_at(x, y).is_some() {
         return;
     }
-    state.world.set_cell(x, y, cell_type::BOX);
+    state
+        .world
+        .set_cell_typed(x, y, crate::world::CellType(cell_type::BOX));
     state.box_put(x, y, crystals);
     broadcast_cell_update(state, x, y);
 }

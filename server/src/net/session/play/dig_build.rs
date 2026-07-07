@@ -508,7 +508,7 @@ pub fn handle_dig(
             let dur = state.world.get_durability(tgt_x, tgt_y);
             state.world.destroy(tgt_x, tgt_y);
             broadcast_cell_update(state, tgt_x, tgt_y);
-            state.world.set_cell(bx, by, cell.0);
+            state.world.set_cell_typed(bx, by, cell);
             state.world.set_durability(bx, by, dur);
             broadcast_cell_update(state, bx, by);
             true
@@ -730,9 +730,9 @@ pub fn handle_build(
         return;
     }
 
-    let cur = state.world.get_cell(tgt_x, tgt_y);
+    let cur = state.world.get_cell_typed(tgt_x, tgt_y);
     let binding = state.world.cell_defs();
-    let prop = binding.get(cur);
+    let prop = binding.get_typed(cur);
 
     // Fix 12: cost = effect.max(1.0) as i64.
     let cost = build_skill_effect.max(1.0) as i64;
@@ -749,7 +749,7 @@ pub fn handle_build(
                     state.world.set_durability(tgt_x, tgt_y, durability);
                     placed_skill = Some(SkillType::BuildGreen);
                 }
-            } else if cur == cell_type::GREEN_BLOCK {
+            } else if cur.is(cell_type::GREEN_BLOCK) {
                 // Upgrading green → yellow uses BuildYellow skill effect/cost.
                 let y_cost = build_yellow_effect.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 4, y_cost) {
@@ -761,7 +761,7 @@ pub fn handle_build(
                         .set_durability(tgt_x, tgt_y, existing_dur + build_yellow_hp);
                     placed_skill = Some(SkillType::BuildYellow);
                 }
-            } else if cur == cell_type::YELLOW_BLOCK {
+            } else if cur.is(cell_type::YELLOW_BLOCK) {
                 // Upgrading yellow → red uses BuildRed skill effect/cost.
                 let r_cost = build_red_effect.max(1.0) as i64;
                 if try_spend_crystal(state, tx, pid, 2, r_cost) {
@@ -868,21 +868,20 @@ pub fn try_spend_crystal(
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    let sub = hb_cell(
-        net_u16_nonneg(x),
-        net_u16_nonneg(y),
-        state.world.get_cell(x, y),
-    );
+    let cell = state.world.get_cell_typed(x, y);
+    let sub = hb_cell(net_u16_nonneg(x), net_u16_nonneg(y), cell.0);
     state.broadcast_hb_at(x, y, &[sub], None);
 }
 
 fn place_block(state: &Arc<GameState>, x: i32, y: i32, cell: u8) {
-    state.world.set_cell(x, y, cell);
+    state
+        .world
+        .set_cell_typed(x, y, crate::world::CellType(cell));
     broadcast_cell_update(state, x, y);
 }
 
-pub const fn is_truly_empty(cell: u8) -> bool {
-    cell == cell_type::NOTHING || cell == cell_type::EMPTY
+pub const fn is_truly_empty(cell: crate::world::CellType) -> bool {
+    cell.is(cell_type::NOTHING) || cell.is(cell_type::EMPTY)
 }
 
 #[cfg(test)]
