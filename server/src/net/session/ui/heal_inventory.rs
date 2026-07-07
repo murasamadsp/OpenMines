@@ -208,8 +208,8 @@ pub async fn handle_inventory_use(
     }
     // can_place_over: обходится только exempt-предметами.
     if !is_exempt_item(sel) {
-        let cell = state.world.get_cell(fx, fy);
-        if !state.world.cell_defs().get(cell).can_place_over() {
+        let cell = state.world.get_cell_typed(fx, fy);
+        if !state.world.cell_defs().get_typed(cell).can_place_over() {
             return;
         }
     }
@@ -290,29 +290,29 @@ pub fn handle_inventory_choose(
 
 /// Item-to-alive-cell mapping for geopack items.
 /// Returns `None` for item 10 (no placement), `Some(cell_type)` for all others.
-const fn geopack_item_to_cell(item: i32) -> Option<u8> {
+const fn geopack_item_to_cell(item: i32) -> Option<crate::world::CellType> {
     match item {
         // 10 → None (как и любой неизвестный item, см. wildcard).
-        11 => Some(cell_type::ALIVE_CYAN),
-        12 => Some(cell_type::ALIVE_RED),
-        13 => Some(cell_type::ALIVE_VIOL),
-        14 => Some(cell_type::ALIVE_BLACK),
-        15 => Some(cell_type::ALIVE_WHITE),
-        16 => Some(cell_type::ALIVE_BLUE),
-        34 => Some(cell_type::HYPNO_ROCK),
+        11 => Some(crate::world::CellType(cell_type::ALIVE_CYAN)),
+        12 => Some(crate::world::CellType(cell_type::ALIVE_RED)),
+        13 => Some(crate::world::CellType(cell_type::ALIVE_VIOL)),
+        14 => Some(crate::world::CellType(cell_type::ALIVE_BLACK)),
+        15 => Some(crate::world::CellType(cell_type::ALIVE_WHITE)),
+        16 => Some(crate::world::CellType(cell_type::ALIVE_BLUE)),
+        34 => Some(crate::world::CellType(cell_type::HYPNO_ROCK)),
         // item 43 кладёт BlackRock, не RedRock: C# Inventory item 43 вызывает
         // Geopack(42) (Inventory.cs:170), а ветка 43=>RedRock в C# switch — мёртвый
         // код (ни один item не зовёт Geopack(43)).
-        42 | 43 => Some(cell_type::BLACK_ROCK),
-        46 => Some(cell_type::ALIVE_RAINBOW),
+        42 | 43 => Some(crate::world::CellType(cell_type::BLACK_ROCK)),
+        46 => Some(crate::world::CellType(cell_type::ALIVE_RAINBOW)),
         _ => None,
     }
 }
 
 /// D26: Reverse mapping — alive cell to item ID for geopack pickup.
 /// C# `World.isAlive` only includes the 7 alive types (not HypnoRock/BlackRock/RedRock).
-const fn alive_cell_to_item(cell: u8) -> Option<i32> {
-    match cell {
+const fn alive_cell_to_item(cell: crate::world::CellType) -> Option<i32> {
+    match cell.0 {
         cell_type::ALIVE_CYAN => Some(11),
         cell_type::ALIVE_RED => Some(12),
         cell_type::ALIVE_VIOL => Some(13),
@@ -333,10 +333,16 @@ const fn alive_cell_to_item(cell: u8) -> Option<i32> {
 /// что эффективно разрешено {30,31,32,33,34,35,83}. `find_pack_covering` покрывает
 /// весь footprint многоклеточных зданий (эквивалент chunk.packsprop).
 fn true_empty(state: &Arc<GameState>, x: i32, y: i32) -> bool {
-    let c = state.world.get_cell(x, y);
+    let c = state.world.get_cell_typed(x, y);
     state.world.is_empty(x, y)
         && state.find_pack_covering(x, y).is_none()
-        && !matches!(c, 0 | 36 | 37 | 39)
+        && !matches!(
+            c.0,
+            cell_type::NOTHING
+                | cell_type::GOLDEN_ROAD
+                | cell_type::BUILDING_DOOR
+                | cell_type::POLYMER_ROAD
+        )
 }
 
 /// D25+D26: Geopack — placement on truly empty cells, pickup of any alive cell.
@@ -359,7 +365,7 @@ pub fn use_geopack(
         return false;
     }
 
-    let facing_cell = state.world.get_cell(fx, fy);
+    let facing_cell = state.world.get_cell_typed(fx, fy);
 
     // D26: pickup — if facing cell is ANY alive cell, pick it up and map to correct item.
     if let Some(pickup_item) = alive_cell_to_item(facing_cell) {
@@ -388,7 +394,7 @@ pub fn use_geopack(
         return false;
     };
 
-    state.world.set_cell(fx, fy, alive_cell);
+    state.world.set_cell_typed(fx, fy, alive_cell);
     broadcast_cell_update(state, fx, fy);
     true
 }
@@ -416,7 +422,9 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
     if !true_empty(state, fx, fy) {
         return false;
     }
-    state.world.set_cell(fx, fy, cell_type::POLYMER_ROAD);
+    state
+        .world
+        .set_cell_typed(fx, fy, crate::world::CellType(cell_type::POLYMER_ROAD));
     broadcast_cell_update(state, fx, fy);
     false
 }
@@ -582,9 +590,9 @@ const fn building_db_code_for_item(pack_type: PackType) -> &'static str {
 }
 
 /// Helper: check if a cell is a building block type (C# `World.isBuildingBlock`).
-const fn is_building_block(cell: u8) -> bool {
+const fn is_building_block(cell: crate::world::CellType) -> bool {
     matches!(
-        cell,
+        cell.0,
         cell_type::GREEN_BLOCK
             | cell_type::YELLOW_BLOCK
             | cell_type::RED_BLOCK
@@ -596,17 +604,8 @@ const fn is_building_block(cell: u8) -> bool {
 }
 
 /// Helper: check if a cell is alive (C# `World.isAlive`).
-const fn is_alive_cell(cell: u8) -> bool {
-    matches!(
-        cell,
-        cell_type::ALIVE_BLUE
-            | cell_type::ALIVE_CYAN
-            | cell_type::ALIVE_RED
-            | cell_type::ALIVE_BLACK
-            | cell_type::ALIVE_VIOL
-            | cell_type::ALIVE_WHITE
-            | cell_type::ALIVE_RAINBOW
-    )
+const fn is_alive_cell(cell: crate::world::CellType) -> bool {
+    cell.is_living_crystal()
 }
 
 /// Helper: deal damage to nearby players, returning list of killed players.
@@ -750,20 +749,28 @@ fn boom_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
             if dist > 3.5 {
                 continue;
             }
-            let c = state.world.get_cell(tgt_x, tgt_y);
+            let c = state.world.get_cell_typed(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
-            let prop = defs.get(c);
+            let prop = defs.get_typed(c);
             // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
             // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
             if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
                 // Special cell conversions
-                if c == cell_type::RED_ROCK && rand::random::<u32>() % 100 >= 98 {
+                if c.is(cell_type::RED_ROCK) && rand::random::<u32>() % 100 >= 98 {
                     // 2% chance: 117 → 118
-                    state.world.set_cell(tgt_x, tgt_y, cell_type::ACID_ROCK);
-                } else if c == cell_type::ACID_ROCK {
+                    state.world.set_cell_typed(
+                        tgt_x,
+                        tgt_y,
+                        crate::world::CellType(cell_type::ACID_ROCK),
+                    );
+                } else if c.is(cell_type::ACID_ROCK) {
                     // 118 → 103
-                    state.world.set_cell(tgt_x, tgt_y, cell_type::ROCK);
-                } else if c != cell_type::RED_ROCK && c != cell_type::ACID_ROCK {
+                    state.world.set_cell_typed(
+                        tgt_x,
+                        tgt_y,
+                        crate::world::CellType(cell_type::ROCK),
+                    );
+                } else if !c.is(cell_type::RED_ROCK) && !c.is(cell_type::ACID_ROCK) {
                     state.world.destroy(tgt_x, tgt_y);
                 }
                 broadcast_cell_update(state, tgt_x, tgt_y);
@@ -849,7 +856,9 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                     e.retain(|&x| x != ent);
                 }
                 state.ecs.write().despawn(ent);
-                state.world.set_cell(tgt_x, tgt_y, cell_type::EMPTY);
+                state
+                    .world
+                    .set_cell_typed(tgt_x, tgt_y, crate::world::CellType(cell_type::EMPTY));
                 broadcast_cell_update(state, tgt_x, tgt_y);
                 // Удалить из БД — иначе гейт ВОСКРЕСАЕТ при рестарте (рассинхрон
                 // слоёв: world/ECS чисты, а DB-строка осталась). Async detached.
@@ -861,9 +870,9 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
                 });
             }
             // Destroy destructible non-building cells
-            let c = state.world.get_cell(tgt_x, tgt_y);
+            let c = state.world.get_cell_typed(tgt_x, tgt_y);
             let defs = state.world.cell_defs();
-            let prop = defs.get(c);
+            let prop = defs.get_typed(c);
             // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
             // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
             if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
@@ -1021,10 +1030,10 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         let (tgt_x, tgt_y) = (start_x + dx * i, start_y + dy * i);
 
         // Damage valid cells: not alive, is_diggable, is_destructible, not building block
-        let c = state.world.get_cell(tgt_x, tgt_y);
+        let c = state.world.get_cell_typed(tgt_x, tgt_y);
         if !is_alive_cell(c) && !is_building_block(c) {
             let defs = state.world.cell_defs();
-            let prop = defs.get(c);
+            let prop = defs.get_typed(c);
             if prop.physical.is_diggable && prop.physical.is_destructible {
                 state.world.damage_cell(tgt_x, tgt_y, 50.0);
                 broadcast_cell_update(state, tgt_x, tgt_y);

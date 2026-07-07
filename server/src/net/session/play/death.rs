@@ -98,8 +98,8 @@ pub fn apply_player_death_core(
                 if !state.world.is_empty(x, y) {
                     return false;
                 }
-                let cell = state.world.get_cell(x, y);
-                state.world.cell_defs().get(cell).can_place_over()
+                let cell = state.world.get_cell_typed(x, y);
+                state.world.cell_defs().get_typed(cell).can_place_over()
             },
         ) {
             Some((bx, by))
@@ -108,7 +108,7 @@ pub fn apply_player_death_core(
             {
                 state
                     .world
-                    .set_cell(bx, by, crate::world::cells::cell_type::BOX);
+                    .set_cell_typed(bx, by, crate::world::CellType(cell_type::BOX));
                 // C-2 фикс: in-memory put + отложенная персистенция вместо
                 // sync `db.upsert_box` под удерживаемым `ecs.write()` (death
                 // flush в tick-цикле) — фризило при каждой смерти.
@@ -239,8 +239,8 @@ pub fn apply_player_death_core(
     }
 
     // Clear military block at respawn position if present
-    let spawn_cell = state.world.get_cell(rx, ry);
-    if spawn_cell == cell_type::MILITARY_BLOCK || spawn_cell == cell_type::MILITARY_BLOCK_FRAME {
+    let spawn_cell = state.world.get_cell_typed(rx, ry);
+    if spawn_cell.is(cell_type::MILITARY_BLOCK) || spawn_cell.is(cell_type::MILITARY_BLOCK_FRAME) {
         state.world.destroy(rx, ry);
         bcast.cleared_spawn_cell = Some((rx, ry));
     } // временная система

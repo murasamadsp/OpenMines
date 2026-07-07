@@ -135,10 +135,10 @@ pub fn handle_move(
             }
 
             if !state.world.is_empty(target_x, target_y) {
-                let cell = state.world.get_cell(target_x, target_y);
+                let cell = state.world.get_cell_typed(target_x, target_y);
                 tracing::debug!(
                     player_id = %pid,
-                    cell,
+                    cell = cell.0,
                     x = px,
                     y = py,
                     dest_x = target_x,
@@ -153,7 +153,7 @@ pub fn handle_move(
                     py,
                     target_x,
                     target_y,
-                    &format!("cell={cell}"),
+                    &format!("cell={}", cell.0),
                 );
                 // 1:1 C# `Player.cs:429-437`: непустая клетка + `dir==-1` + autoDig →
                 // tp назад и копнуть (`Bz`). Направление копки — из дельты (как this.dir
