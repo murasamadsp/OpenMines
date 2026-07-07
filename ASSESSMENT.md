@@ -145,7 +145,8 @@ cell `0`, а fail-fast падает на неизвестном id; загруз
 `code` с `PackType`, чтобы ключ конфига и wire-code не расходились. Следующий
 слой уже начат: `WorldProvider` получил `get_cell_typed/set_cell_typed`, и
 часть live-path (`dig`, `combat`, `sand`, `alive`, `programmator`) больше не
-строит `CellType` вручную поверх raw `u8`.
+строит `CellType` вручную поверх raw `u8`; программаторные проверки
+acid/slime/living вынесены в typed-предикаты `CellType`.
 
 ---
 

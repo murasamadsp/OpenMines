@@ -1711,13 +1711,17 @@ fn execute_action(
         // ─── Cell condition checks ──────────────────────────────────────
         ActionType::IsEmpty => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.cell_defs().get(w.get_cell(x, y)).cell_is_empty()
+                w.cell_defs()
+                    .get_typed(w.get_cell_typed(x, y))
+                    .cell_is_empty()
             });
             ExecResult::None
         }
         ActionType::IsNotEmpty => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                !w.cell_defs().get(w.get_cell(x, y)).cell_is_empty()
+                !w.cell_defs()
+                    .get_typed(w.get_cell_typed(x, y))
+                    .cell_is_empty()
             });
             ExecResult::None
         }
@@ -1729,26 +1733,31 @@ fn execute_action(
         }
         ActionType::IsBoulder => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.cell_defs().get(w.get_cell(x, y)).nature.is_boulder
+                w.cell_defs()
+                    .get_typed(w.get_cell_typed(x, y))
+                    .nature
+                    .is_boulder
             });
             ExecResult::None
         }
         ActionType::IsSand => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.cell_defs().get(w.get_cell(x, y)).is_sand()
+                w.cell_defs().get_typed(w.get_cell_typed(x, y)).is_sand()
             });
             ExecResult::None
         }
         ActionType::IsBreakableRock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.cell_defs().get(w.get_cell(x, y)).is_diggable()
+                w.cell_defs()
+                    .get_typed(w.get_cell_typed(x, y))
+                    .is_diggable()
             });
             ExecResult::None
         }
         ActionType::IsUnbreakable => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
                 let defs = w.cell_defs();
-                let def = defs.get(w.get_cell(x, y));
+                let def = defs.get_typed(w.get_cell_typed(x, y));
                 !def.cell_is_empty() && !def.is_diggable()
             });
             ExecResult::None
@@ -1756,7 +1765,7 @@ fn execute_action(
         ActionType::IsFalling => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
                 let defs = w.cell_defs();
-                let def = defs.get(w.get_cell(x, y));
+                let def = defs.get_typed(w.get_cell_typed(x, y));
                 def.is_sand() || def.nature.is_boulder
             });
             ExecResult::None
@@ -1767,69 +1776,69 @@ fn execute_action(
         }
         ActionType::IsBox => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::BOX
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::BOX)
             });
             ExecResult::None
         }
         ActionType::IsGreenBlock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::GREEN_BLOCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::GREEN_BLOCK)
             });
             ExecResult::None
         }
         ActionType::IsYellowBlock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::YELLOW_BLOCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::YELLOW_BLOCK)
             });
             ExecResult::None
         }
         ActionType::IsRedBlock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::RED_BLOCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::RED_BLOCK)
             });
             ExecResult::None
         }
         ActionType::IsPillar => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::SUPPORT
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::SUPPORT)
             });
             ExecResult::None
         }
         ActionType::IsQuadBlock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::QUAD_BLOCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::QUAD_BLOCK)
             });
             ExecResult::None
         }
         ActionType::IsRedRock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::RED_ROCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::RED_ROCK)
             });
             ExecResult::None
         }
         ActionType::IsBlackRock => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                w.get_cell(x, y) == crate::world::cells::cell_type::BLACK_ROCK
+                w.get_cell_typed(x, y)
+                    .is(crate::world::cells::cell_type::BLACK_ROCK)
             });
             ExecResult::None
         }
         ActionType::IsAcid => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                let c = w.get_cell(x, y);
-                // C# IsAcid: GrayAcid(66), PurpleAcid(67), PassiveAcid(86),
-                // LivingActiveAcid(95), CorrosiveActiveAcid(96), AcidRock(118)
-                matches!(c, 66 | 67 | 86 | 95 | 96 | 118)
+                w.get_cell_typed(x, y).is_acid()
             });
             ExecResult::None
         }
         ActionType::IsSlime => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                let c = w.get_cell(x, y);
-                // JS ref is_slime: YellowSlime(86), WhiteSlime(66), VioletSlime(67),
-                // Pearl(68), WarSlime(82), AcidRock(118). Server cells: GRAY_ACID(66),
-                // PURPLE_ACID(67), PEARL(68), PASSIVE_ACID(86), LIVING_ACTIVE_ACID(95),
-                // CORROSIVE_ACTIVE_ACID(96), ACID_ROCK(118).
-                matches!(c, 66 | 67 | 68 | 82 | 86 | 95 | 96 | 118)
+                w.get_cell_typed(x, y).is_slime()
             });
             ExecResult::None
         }
@@ -1841,9 +1850,7 @@ fn execute_action(
         }
         ActionType::IsLivingCrystal => {
             check_cell(&mut *prog, pos, world, |x, y, w| {
-                let c = w.get_cell(x, y);
-                // C# isAlive: AliveCyan(50)..AliveRainbow(55), AliveBlue(116)
-                matches!(c, 50..=55 | 116)
+                w.get_cell_typed(x, y).is_living_crystal()
             });
             ExecResult::None
         }
@@ -1997,7 +2004,10 @@ fn execute_action(
             let tx = pos.x + dx;
             let ty = pos.y + dy;
             {
-                let diggable = world.cell_defs().get(world.get_cell(tx, ty)).is_diggable();
+                let diggable = world
+                    .cell_defs()
+                    .get_typed(world.get_cell_typed(tx, ty))
+                    .is_diggable();
                 if diggable {
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {

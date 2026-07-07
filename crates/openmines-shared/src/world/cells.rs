@@ -49,6 +49,8 @@ pub mod cell_type {
     pub const X_VIOLET: u8 = 75;
     pub const MILITARY_BLOCK_FRAME: u8 = 80;
     pub const MILITARY_BLOCK: u8 = 81;
+    /// Legacy JS programmator `is_slime` includes 82. In current `cells.json` this is `ВБ песок`.
+    pub const V_B_SAND: u8 = 82;
     pub const TELEPORT_BLOCK: u8 = 83;
     pub const BOX: u8 = 90;
     pub const LAVA: u8 = 91;
@@ -153,6 +155,47 @@ pub const fn is_boulder(cell: u8) -> bool {
     matches!(
         cell,
         cell_type::BOULDER1 | cell_type::BOULDER2 | cell_type::BOULDER3
+    )
+}
+
+/// Programmator acid check: C#/JS slime-acid family used by legacy programs.
+pub const fn is_acid(cell: u8) -> bool {
+    matches!(
+        cell,
+        cell_type::GRAY_ACID
+            | cell_type::PURPLE_ACID
+            | cell_type::PASSIVE_ACID
+            | cell_type::LIVING_ACTIVE_ACID
+            | cell_type::CORROSIVE_ACTIVE_ACID
+            | cell_type::ACID_ROCK
+    )
+}
+
+/// Programmator slime check: legacy JS set, including byte 82 for compatibility.
+pub const fn is_slime(cell: u8) -> bool {
+    matches!(
+        cell,
+        cell_type::GRAY_ACID
+            | cell_type::PURPLE_ACID
+            | cell_type::PEARL
+            | cell_type::V_B_SAND
+            | cell_type::PASSIVE_ACID
+            | cell_type::LIVING_ACTIVE_ACID
+            | cell_type::CORROSIVE_ACTIVE_ACID
+            | cell_type::ACID_ROCK
+    )
+}
+
+pub const fn is_living_crystal(cell: u8) -> bool {
+    matches!(
+        cell,
+        cell_type::ALIVE_CYAN
+            | cell_type::ALIVE_RED
+            | cell_type::ALIVE_VIOL
+            | cell_type::ALIVE_BLACK
+            | cell_type::ALIVE_WHITE
+            | cell_type::ALIVE_RAINBOW
+            | cell_type::ALIVE_BLUE
     )
 }
 
@@ -300,6 +343,12 @@ impl CellType {
 
     #[inline]
     #[must_use]
+    pub const fn is(self, val: u8) -> bool {
+        self.0 == val
+    }
+
+    #[inline]
+    #[must_use]
     pub const fn is_crystal(self) -> bool {
         is_crystal(self.0)
     }
@@ -326,6 +375,24 @@ impl CellType {
     #[must_use]
     pub const fn is_boulder(self) -> bool {
         is_boulder(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_acid(self) -> bool {
+        is_acid(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_slime(self) -> bool {
+        is_slime(self.0)
+    }
+
+    #[inline]
+    #[must_use]
+    pub const fn is_living_crystal(self) -> bool {
+        is_living_crystal(self.0)
     }
 
     #[inline]
@@ -405,10 +472,26 @@ mod tests {
         let road = CellType::new(cell_type::ROAD);
         assert!(road.is_road());
         assert!(!road.is_crystal());
+        assert!(road.is(cell_type::ROAD));
 
         let green = CellType::new(cell_type::GREEN);
         assert!(green.is_crystal());
         assert_eq!(green.crystal_type(), Some(0));
+    }
+
+    #[test]
+    fn programmator_cell_predicates_are_typed() {
+        assert!(CellType::new(cell_type::GRAY_ACID).is_acid());
+        assert!(CellType::new(cell_type::ACID_ROCK).is_acid());
+        assert!(!CellType::new(cell_type::PEARL).is_acid());
+
+        assert!(CellType::new(cell_type::PEARL).is_slime());
+        assert!(CellType::new(cell_type::V_B_SAND).is_slime());
+        assert!(!CellType::new(cell_type::GREEN).is_slime());
+
+        assert!(CellType::new(cell_type::ALIVE_CYAN).is_living_crystal());
+        assert!(CellType::new(cell_type::ALIVE_BLUE).is_living_crystal());
+        assert!(!CellType::new(cell_type::CYAN).is_living_crystal());
     }
 
     #[test]
