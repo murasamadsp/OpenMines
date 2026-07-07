@@ -4,7 +4,8 @@ use crate::game::buildings::{
     BuildingFlags, BuildingStorage, PackType, PackView, get_building_config,
 };
 use crate::game::player::{
-    PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
+    PlayerConnection, PlayerFlags, PlayerInventory, PlayerMetadata, PlayerPosition, PlayerStats,
+    PlayerUI,
 };
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
@@ -607,7 +608,7 @@ pub async fn destroy_damagable_building(
         None
     };
 
-    if state.delete_building_runtime(&view).await.is_err() {
+    if !delete_destroyed_building(state, &view).await {
         return false;
     }
     broadcast_pack_clear(state, &view);
@@ -662,6 +663,66 @@ pub async fn destroy_damagable_building(
         }
     }
     true
+}
+
+async fn delete_destroyed_building(state: &Arc<GameState>, view: &PackView) -> bool {
+    if view.pack_type == PackType::Resp {
+        match state
+            .db
+            .delete_resp_building_and_clear_bindings(view.id, view.x, view.y)
+            .await
+        {
+            Ok(_) => {
+                state.remove_building_runtime(view);
+                clear_online_resp_bindings(state, view.x, view.y);
+                true
+            }
+            Err(e) => {
+                tracing::error!(
+                    building_id = view.id,
+                    x = view.x,
+                    y = view.y,
+                    error = ?e,
+                    "Resp destroy DB transaction failed"
+                );
+                false
+            }
+        }
+    } else if let Err(e) = state.delete_building_runtime(view).await {
+        tracing::error!(
+            building_id = view.id,
+            x = view.x,
+            y = view.y,
+            error = ?e,
+            "Building destroy DB delete failed"
+        );
+        false
+    } else {
+        true
+    }
+}
+
+fn clear_online_resp_bindings(state: &Arc<GameState>, resp_x: i32, resp_y: i32) {
+    for pid in state.player_entity_ids() {
+        state.modify_player(pid, |ecs, entity| {
+            let cleared = {
+                let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
+                if meta.resp_x == Some(resp_x) && meta.resp_y == Some(resp_y) {
+                    meta.resp_x = None;
+                    meta.resp_y = None;
+                    true
+                } else {
+                    false
+                }
+            };
+            if cleared {
+                if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
+                    flags.dirty = true;
+                }
+            }
+            Some(())
+        });
+    }
 }
 
 /// Индекс предмета-размещения здания для 40%-дропа при `Destroy` (C# `p.inventory[N]++`).
@@ -874,6 +935,104 @@ mod tests {
                 .owner_id
         };
         assert_eq!(owner_id, PlayerId(1));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn destroying_resp_clears_matching_online_and_offline_resp_bindings() {
+        let test = make_building_test_state("resp_destroy_clears_bindings").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let extra = crate::db::buildings::BuildingExtra {
+            charge: 100,
+            max_charge: 1000,
+            cost: 10,
+            hp: 1000,
+            max_hp: 1000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            clanzone: 0,
+        };
+        let spec = crate::game::BuildingInsertSpec {
+            type_code: "R",
+            pack_type: PackType::Resp,
+            x: 10,
+            y: 10,
+            owner_id: PlayerId(test.player.id),
+            clan_id: 0,
+            extra: &extra,
+        };
+        let (building_id, _) = test.state.insert_building_runtime(&spec).await.unwrap();
+        let offline = test
+            .state
+            .db
+            .create_player("resp-offline-bound", "p", "h")
+            .await
+            .unwrap();
+        test.state
+            .db
+            .update_player_resp(test.player.id, Some(10), Some(10))
+            .await
+            .unwrap();
+        test.state
+            .db
+            .update_player_resp(offline.id, Some(10), Some(10))
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
+            meta.resp_x = Some(10);
+            meta.resp_y = Some(10);
+            let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+            flags.dirty = false;
+            Some(())
+        });
+
+        assert!(destroy_damagable_building(&test.state, None, 10, 10).await);
+
+        assert!(test.state.get_pack_at(10, 10).is_none());
+        assert!(
+            test.state
+                .db
+                .load_all_buildings()
+                .await
+                .unwrap()
+                .iter()
+                .all(|b| b.id != building_id)
+        );
+        let online_db = test
+            .state
+            .db
+            .get_player_by_id(test.player.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let offline_db = test
+            .state
+            .db
+            .get_player_by_id(offline.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((online_db.resp_x, online_db.resp_y), (None, None));
+        assert_eq!((offline_db.resp_x, offline_db.resp_y), (None, None));
+        let online_ecs = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let meta = ecs.get::<PlayerMetadata>(entity)?;
+                let flags = ecs.get::<PlayerFlags>(entity)?;
+                Some((meta.resp_x, meta.resp_y, flags.dirty))
+            })
+            .unwrap();
+        assert_eq!(online_ecs, (None, None, true));
 
         test.cleanup();
     }

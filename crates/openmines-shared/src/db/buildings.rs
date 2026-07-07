@@ -137,6 +137,35 @@ impl Database {
         Ok(())
     }
 
+    /// C# `Resp.Destroy`: удаление Resp и сброс привязок игроков должны быть
+    /// одной DB-операцией, иначе можно получить удалённый респ с живыми binding'ами.
+    pub async fn delete_resp_building_and_clear_bindings(
+        &self,
+        building_id: i32,
+        resp_x: i32,
+        resp_y: i32,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        let cleared = sqlx::query(
+            "UPDATE players SET resp_x = NULL, resp_y = NULL WHERE resp_x = ?1 AND resp_y = ?2",
+        )
+        .bind(resp_x)
+        .bind(resp_y)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let deleted = sqlx::query("DELETE FROM buildings WHERE id = ?1")
+            .bind(building_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+        if deleted != 1 {
+            bail!("building id={building_id}: delete affected {deleted} rows");
+        }
+        tx.commit().await?;
+        Ok(cleared)
+    }
+
     /// Полная очистка зданий (при смене мира / `--regen`), чтобы старые якоря не накладывались на новую карту.
     pub async fn delete_all_buildings(&self) -> Result<u64> {
         let result = sqlx::query("DELETE FROM buildings")
@@ -396,5 +425,56 @@ mod tests {
                 .to_string()
                 .contains("update state affected 0 rows")
         );
+    }
+
+    #[tokio::test]
+    async fn delete_resp_building_and_clear_bindings_is_atomic() {
+        let database = temp_database("resp_delete_clear_atomic").await;
+        let extra = BuildingExtra {
+            charge: 100,
+            max_charge: 1000,
+            cost: 10,
+            hp: 1000,
+            max_hp: 1000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            clanzone: 0,
+        };
+        let building_id = database
+            .insert_building("R", 10, 20, 1, 0, &extra)
+            .await
+            .unwrap();
+        let player = database
+            .create_player("resp-delete-bound", "p", "h")
+            .await
+            .unwrap();
+        database
+            .update_player_resp(player.id, Some(10), Some(20))
+            .await
+            .unwrap();
+
+        let err = database
+            .delete_resp_building_and_clear_bindings(999_999, 10, 20)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("delete affected 0 rows"));
+        let still_bound = database.get_player_by_id(player.id).await.unwrap().unwrap();
+        assert_eq!(
+            (still_bound.resp_x, still_bound.resp_y),
+            (Some(10), Some(20))
+        );
+
+        let cleared = database
+            .delete_resp_building_and_clear_bindings(building_id, 10, 20)
+            .await
+            .unwrap();
+        assert_eq!(cleared, 1);
+        let cleared_player = database.get_player_by_id(player.id).await.unwrap().unwrap();
+        assert_eq!((cleared_player.resp_x, cleared_player.resp_y), (None, None));
+        assert!(database.load_all_buildings().await.unwrap().is_empty());
     }
 }
