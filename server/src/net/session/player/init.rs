@@ -6,6 +6,7 @@ use crate::game::player::{
     PlayerView,
 };
 use crate::game::programmator::ProgrammatorState;
+use crate::game::skills::{OnHealth, PlayerSkills};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
@@ -13,7 +14,6 @@ use crate::net::session::outbound::player_sync::{
 };
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
-use num_traits::ToPrimitive;
 
 /// Conn-таск: ставит вход игрока в lifecycle-очередь. Сам ecs не трогает —
 /// spawn entity + Init-пакеты выполняет game-tick (`connect_in_tick`), чтобы
@@ -217,8 +217,10 @@ pub fn connect_in_tick(
     state.modify_player(pid, |ecs, entity| {
         let max_health = {
             let skills = ecs.get::<PlayerSkillsComp>(entity)?;
-            let effect = get_player_skill_effect(&skills.states, SkillType::Health);
-            effect.to_i32().unwrap_or(0)
+            PlayerSkills {
+                skills: &skills.states,
+            }
+            .on_health_max(100)
         };
         let mut stats = ecs.get_mut::<PlayerStats>(entity)?;
         stats.max_health = max_health;

@@ -8,6 +8,7 @@ use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
     PlayerStats,
 };
+use crate::game::skills::{OnHealth, PlayerSkills};
 use crate::net::session::outbound::inventory_sync::{add_choose_miniq, send_inventory};
 use crate::net::session::play::death::handle_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
@@ -69,8 +70,10 @@ pub fn handle_heal(
                     send_heal_state_error(tx);
                     return None;
                 };
-                let v = get_player_skill_effect(&skills.states, SkillType::Repair);
-                v as i32
+                PlayerSkills {
+                    skills: &skills.states,
+                }
+                .on_health_regen(0.0) as i32
             };
             if heal_amount <= 0 {
                 return None;

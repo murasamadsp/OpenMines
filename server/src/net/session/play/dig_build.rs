@@ -1,4 +1,7 @@
 //! Копание клеток и установка блоков (Xdig, Xbld).
+use crate::game::skills::{
+    OnBld, OnDig, OnDigCrys, PlayerSkills as SkillHooks, get_player_skill_effect,
+};
 use crate::net::session::play::death::hurt_player_pure;
 use crate::net::session::prelude::*;
 
@@ -134,19 +137,18 @@ pub fn handle_dig(
             if ui.current_window.is_some() && !programmatic {
                 return Some(DigPlayerRead::Blocked);
             }
-            let dp =
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::Digging);
-            let mm = crate::game::skills::get_player_skill_effect(
-                &skills.states,
-                SkillType::MineGeneral,
-            );
+            let skill_hooks = SkillHooks {
+                skills: &skills.states,
+            };
+            let dp = skill_hooks.on_dig(0.0);
+            let mm = skill_hooks.on_dig_crys(0.0);
             let mine_by_crystal = [
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineGreen),
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineBlue),
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineRed),
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineViolet),
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineWhite),
-                crate::game::skills::get_player_skill_effect(&skills.states, SkillType::MineCyan),
+                get_player_skill_effect(&skills.states, SkillType::MineGreen),
+                get_player_skill_effect(&skills.states, SkillType::MineBlue),
+                get_player_skill_effect(&skills.states, SkillType::MineRed),
+                get_player_skill_effect(&skills.states, SkillType::MineViolet),
+                get_player_skill_effect(&skills.states, SkillType::MineWhite),
+                get_player_skill_effect(&skills.states, SkillType::MineCyan),
             ];
             let data = DigPlayerData {
                 x: pos.x,
@@ -634,26 +636,15 @@ pub fn handle_build(
                 "V" => (SkillType::BuildWar, Some(SkillType::BuildWar)),
                 _ => return Some(BuildPlayerRead::Blocked),
             };
-            let effect = get_player_skill_effect(&skills.states, skill_type);
-            // on_bld_hp: for BuildGreen/BuildYellow/BuildRed/BuildWar return level as f32.
-            let hp_effect = hp_skill_type
-                .map(|hst| {
-                    skills
-                        .states
-                        .find(hst.code())
-                        .map_or(1.0_f32, |s| s.level as f32)
-                })
-                .unwrap_or(1.0);
-            let yellow_effect = get_player_skill_effect(&skills.states, SkillType::BuildYellow);
-            let yellow_hp = skills
-                .states
-                .find(SkillType::BuildYellow.code())
-                .map_or(1.0_f32, |s| s.level as f32);
-            let red_effect = get_player_skill_effect(&skills.states, SkillType::BuildRed);
-            let red_hp = skills
-                .states
-                .find(SkillType::BuildRed.code())
-                .map_or(1.0_f32, |s| s.level as f32);
+            let skill_hooks = SkillHooks {
+                skills: &skills.states,
+            };
+            let effect = skill_hooks.on_bld(skill_type, 1.0);
+            let hp_effect = hp_skill_type.map_or(1.0, |hst| skill_hooks.on_bld_hp(hst, 1.0));
+            let yellow_effect = skill_hooks.on_bld(SkillType::BuildYellow, 1.0);
+            let yellow_hp = skill_hooks.on_bld_hp(SkillType::BuildYellow, 1.0);
+            let red_effect = skill_hooks.on_bld(SkillType::BuildRed, 1.0);
+            let red_hp = skill_hooks.on_bld_hp(SkillType::BuildRed, 1.0);
 
             let dir_changed = {
                 let Some(mut pos_mut) = ecs.get_mut::<crate::game::player::PlayerPosition>(entity)

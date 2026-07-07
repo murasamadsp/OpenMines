@@ -1,5 +1,5 @@
 use crate::game::player::{PlayerSkillsComp as PlayerSkillsComponent, PlayerStats};
-use crate::game::skills::{SkillType, skill_progress_payload};
+use crate::game::skills::{OnMove, PlayerSkills, skill_progress_payload};
 use crate::net::session::prelude::*;
 use num_traits::ToPrimitive;
 
@@ -9,7 +9,10 @@ pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSki
     //                 (int)(p.pause * 0.80 * 5 * 1.4 / 1000 * 1.7),
     //                 100000)`
     // where `p.pause = (int)(Movement.Effect * 100)`.
-    let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
+    let move_effect = PlayerSkills {
+        skills: &skills.states,
+    }
+    .on_move(0.0);
     // D24: C# does `int pause = (int)(Movement.Effect * 100)` — truncate to int first.
     let pause_i32 = (move_effect * 100.0).to_i32().unwrap_or(0);
     let pause = f64::from(pause_i32);

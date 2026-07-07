@@ -1,7 +1,7 @@
 use crate::game::player::{
     PlayerConnection, PlayerMetadata, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
-use crate::game::skills::{SkillType, get_player_skill_effect};
+use crate::game::skills::{OnMove, PlayerSkills};
 use crate::game::{
     ProgrammatorAction, ProgrammatorConfigResource, ProgrammatorQueue, WorldResource,
 };
@@ -2680,7 +2680,10 @@ fn speed_pause(
     on_road: bool,
     timing: crate::config::ProgrammatorConfig,
 ) -> u64 {
-    let move_effect = get_player_skill_effect(&skills.states, SkillType::Movement);
+    let move_effect = PlayerSkills {
+        skills: &skills.states,
+    }
+    .on_move(0.0);
     // 1:1 ref Player.cs:155: ServerPause = (OnRoad ? pause*5*0.80 : pause*5) * 1.4 / 1000.
     // pause = move_effect * 100. move_effect — f32 из get_player_skill_effect
     // (1:1 с C#, нельзя в int без потери паритета); каст намеренный,

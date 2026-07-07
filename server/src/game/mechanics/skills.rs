@@ -287,29 +287,26 @@ pub enum SkillEffectType {
     OnHealth,
 }
 
-#[allow(dead_code)] // Will be used when digging skill hooks are integrated
 pub trait OnDig {
     fn on_dig(&self, current_val: f32) -> f32;
 }
 
-#[allow(dead_code)] // Will be used when digging crystal skill hooks are integrated
 pub trait OnDigCrys {
     fn on_dig_crys(&self, current_val: f32) -> f32;
 }
 
-#[allow(dead_code)] // Will be used when movement speed modifiers are wired into packet handlers
 pub trait OnMove {
     fn on_move(&self, current_val: f32) -> f32;
+    // Road wire speed is currently 1:1 C# `0.80 * Movement`, not RoadMovement.
+    #[allow(dead_code)]
     fn on_move_road(&self, current_val: f32) -> f32;
 }
 
-#[allow(dead_code)] // Will be used when building construction cost/HP modifiers are integrated
 pub trait OnBld {
     fn on_bld(&self, skill: SkillType, current_cost: f32) -> f32;
     fn on_bld_hp(&self, skill: SkillType, current_hp: f32) -> f32;
 }
 
-#[allow(dead_code)] // Will be used when player health regeneration ticking is implemented
 pub trait OnHealth {
     fn on_health_max(&self, current_max: i32) -> i32;
     fn on_health_regen(&self, current_regen: f32) -> f32;
