@@ -3,22 +3,17 @@
 //! НАМЕРЕННАЯ ДЕВИАЦИЯ от C# референса: в C# `GDonPacket` — заглушка (декод без
 //! логики; донат там = реальные деньги, не реализован). По явному требованию
 //! пользователя кнопка превращена в ежедневный бонус: клик → начисление раз в
-//! кулдаун. Параметры (7 часов / 1 000 000 $) заданы пользователем.
+//! кулдаун. Параметры лежат в `gameplay.bonus`.
 
 use crate::game::player::{PlayerFlags, PlayerStats};
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
 use crate::tasks::auction::now_unix;
 
-/// Кулдаун между клеймами бонуса (7 часов, в секундах).
-const BONUS_COOLDOWN_SECS: i64 = 7 * 3600;
-/// Размер бонуса (деньги).
-const BONUS_REWARD: i64 = 1_000_000;
-
 /// Доступен ли бонус: прошло ≥ кулдауна с последнего клейма (0 = ни разу → да).
 #[must_use]
-pub fn bonus_available(last_bonus_at: i64) -> bool {
-    now_unix() - last_bonus_at >= BONUS_COOLDOWN_SECS
+pub fn bonus_available(last_bonus_at: i64, cooldown_secs: i64) -> bool {
+    now_unix() - last_bonus_at >= cooldown_secs
 }
 
 /// Исход попытки клейма бонуса.
@@ -44,6 +39,7 @@ pub fn handle_bonus_claim(
     pid: PlayerId,
 ) {
     let now = now_unix();
+    let bonus = state.config.gameplay.bonus;
     // Атомарно под ECS-локом: проверка кулдауна + начисление в одном замыкании,
     // чтобы спам `GDon` не дал двойной клейм. Начисляем в ECS (онлайн-игрок),
     // не прямым DB-write — иначе разойдётся с кэшем и flush затрёт.
@@ -59,9 +55,9 @@ pub fn handle_bonus_claim(
             return None;
         }
         let last = player_stats.last_bonus_at;
-        if now - last < BONUS_COOLDOWN_SECS {
+        if now - last < bonus.cooldown_secs {
             return Some(ClaimOutcome::NotReady {
-                remaining: BONUS_COOLDOWN_SECS - (now - last),
+                remaining: bonus.cooldown_secs - (now - last),
             });
         }
         let (money, creds) = {
@@ -70,7 +66,7 @@ pub fn handle_bonus_claim(
                 send_bonus_state_error(tx);
                 return None;
             };
-            pstats.money += BONUS_REWARD;
+            pstats.money += bonus.reward_money;
             pstats.last_bonus_at = now;
             (pstats.money, pstats.creds)
         };
@@ -90,11 +86,14 @@ pub fn handle_bonus_claim(
         }) => {
             send_u_packet(tx, "P$", &money(new_money, creds).1);
             send_u_packet(tx, "DR", b"0");
-            let hours = BONUS_COOLDOWN_SECS / 3600;
+            let hours = bonus.cooldown_secs / 3600;
             send_ok(
                 tx,
                 "Бонус",
-                &format!("Вы получили {BONUS_REWARD}$!\nВозвращайтесь через {hours} часов."),
+                &format!(
+                    "Вы получили {}$!\nВозвращайтесь через {hours} часов.",
+                    bonus.reward_money
+                ),
             );
 
             // Срочное сохранение в БД (write-through) для гарантированной сохранности при аварийном падении
@@ -163,6 +162,13 @@ mod tests {
     }
 
     async fn make_bonus_test_state(label: &str) -> BonusTestState {
+        make_bonus_test_state_with_bonus(label, crate::config::BonusConfig::default()).await
+    }
+
+    async fn make_bonus_test_state_with_bonus(
+        label: &str,
+        bonus: crate::config::BonusConfig,
+    ) -> BonusTestState {
         let dir = std::env::temp_dir();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -182,6 +188,10 @@ mod tests {
                 .unwrap();
         let world_name = format!("bonus_world_{label}_{}_{}", std::process::id(), nonce);
         let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let gameplay = crate::config::GameplayConfig {
+            bonus,
+            ..Default::default()
+        };
         let config = crate::config::Config {
             world_name: world_name.clone(),
             port: 8090,
@@ -190,7 +200,7 @@ mod tests {
             data_dir: dir.to_string_lossy().to_string(),
             logging: crate::config::LoggingConfig::default(),
             cron: crate::config::CronConfig::default(),
-            gameplay: crate::config::GameplayConfig::default(),
+            gameplay,
         };
         let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
             .await
@@ -224,6 +234,33 @@ mod tests {
                 Some(player_stats.money)
             })
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bonus_claim_uses_config_reward() {
+        let reward_money = 42_424;
+        let test = make_bonus_test_state_with_bonus(
+            "configured_reward",
+            crate::config::BonusConfig {
+                cooldown_secs: 3_600,
+                reward_money,
+            },
+        )
+        .await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let before_money = player_money(&test.state, pid);
+
+        handle_bonus_claim(&test.state, &tx, pid);
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|(event, _)| event == "P$"));
+        assert_eq!(player_money(&test.state, pid), before_money + reward_money);
+
+        test.cleanup();
     }
 
     #[tokio::test]

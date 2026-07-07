@@ -68,6 +68,10 @@ cat > "$WORK_DIR/configs/config.json" <<JSON
       "gun_damage": 60,
       "gun_radius_cells": 20
     },
+    "bonus": {
+      "cooldown_secs": 25200,
+      "reward_money": 1000000
+    },
     "skills": {
       "upgrade_cost_base": 100
     },

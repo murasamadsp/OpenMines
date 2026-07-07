@@ -17,7 +17,7 @@
   неизвестных ключей, `code` совпадает с `PackType`.
 - ECS systems больше не используют `Arc<GameState>` как ресурс: используются
   `WorldResource`, `BoxIndexResource`, `BoxPersistQueue`.
-- `gameplay.cooldowns`, `combat`, `skills`, `spawn`, `programmator`, `schedules`
+- `gameplay.cooldowns`, `combat`, `bonus`, `skills`, `spawn`, `programmator`, `schedules`
   вынесены в typed config без silent defaults.
 - `WorldProvider` имеет typed cell API: `get_cell_typed` / `set_cell_typed`.
 - Live-path gameplay/session cell access переведён на `CellType` API; raw

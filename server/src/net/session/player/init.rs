@@ -476,7 +476,10 @@ fn send_initial_sync(
     }
     // 18. DR — индикатор ежедневного бонуса (мигание кнопки БОНУСЫ): "1" если
     // доступен (прошло ≥ кулдауна с последнего клейма), иначе "0".
-    let dr = if crate::net::session::play::bonus::bonus_available(player.last_bonus_at) {
+    let dr = if crate::net::session::play::bonus::bonus_available(
+        player.last_bonus_at,
+        state.config.gameplay.bonus.cooldown_secs,
+    ) {
         "1"
     } else {
         "0"

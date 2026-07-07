@@ -28,6 +28,7 @@ pub struct Config {
 pub struct GameplayConfig {
     pub cooldowns: CooldownConfig,
     pub combat: CombatConfig,
+    pub bonus: BonusConfig,
     pub skills: SkillsConfig,
     pub spawn: SpawnConfig,
     pub programmator: ProgrammatorConfig,
@@ -150,6 +151,23 @@ impl Default for CombatConfig {
     }
 }
 
+/// Daily bonus tuning (`GDon` button). Defaults preserve the current behavior:
+/// one claim every 7 hours, 1_000_000 money.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BonusConfig {
+    pub cooldown_secs: i64,
+    pub reward_money: i64,
+}
+
+impl Default for BonusConfig {
+    fn default() -> Self {
+        Self {
+            cooldown_secs: 7 * 3_600,
+            reward_money: 1_000_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CronConfig {
     pub hourly_log_enabled: bool,
@@ -245,6 +263,7 @@ impl GameplayConfig {
     fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
         self.cooldowns.validate()?;
         self.combat.validate()?;
+        self.bonus.validate()?;
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
         Ok(())
@@ -276,6 +295,18 @@ impl CombatConfig {
         }
         if self.gun_radius_cells <= 0 {
             anyhow::bail!("gameplay.combat.gun_radius_cells must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl BonusConfig {
+    fn validate(self) -> Result<()> {
+        if self.cooldown_secs <= 0 {
+            anyhow::bail!("gameplay.bonus.cooldown_secs must be greater than 0");
+        }
+        if self.reward_money <= 0 {
+            anyhow::bail!("gameplay.bonus.reward_money must be greater than 0");
         }
         Ok(())
     }
@@ -345,6 +376,7 @@ mod tests {
         "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
                      "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
+                     "bonus": {"cooldown_secs": 25201, "reward_money": 1000001},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -374,6 +406,8 @@ mod tests {
         assert_eq!(c.gameplay.combat.gun_fire_interval_ms, 550);
         assert_eq!(c.gameplay.combat.gun_damage, 65);
         assert_eq!(c.gameplay.combat.gun_radius_cells, 22);
+        assert_eq!(c.gameplay.bonus.cooldown_secs, 25_201);
+        assert_eq!(c.gameplay.bonus.reward_money, 1_000_001);
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
         assert_eq!(c.gameplay.spawn.x, 12);
         assert_eq!(c.gameplay.spawn.y, 13);
@@ -393,6 +427,7 @@ mod tests {
         let no_gameplay = FULL.replace(
             r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
                      "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
+                     "bonus": {"cooldown_secs": 25201, "reward_money": 1000001},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -434,6 +469,15 @@ mod tests {
         assert!(
             serde_json::from_value::<Config>(no_combat).is_err(),
             "пропущенный combat должен быть ошибкой"
+        );
+        let mut no_bonus: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_bonus["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("bonus");
+        assert!(
+            serde_json::from_value::<Config>(no_bonus).is_err(),
+            "пропущенный bonus должен быть ошибкой"
         );
         let mut no_spawn: serde_json::Value = serde_json::from_str(FULL).unwrap();
         no_spawn["gameplay"]
@@ -555,6 +599,21 @@ mod tests {
         ] {
             let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
             raw["gameplay"]["combat"][key] = value;
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_bonus_values_are_errors() {
+        for (key, value) in [
+            ("cooldown_secs", serde_json::json!(0)),
+            ("reward_money", serde_json::json!(0)),
+            ("cooldown_secs", serde_json::json!(-1)),
+            ("reward_money", serde_json::json!(-1)),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["bonus"][key] = value;
             let cfg: Config = serde_json::from_value(raw).unwrap();
             assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
         }

@@ -21,7 +21,7 @@
 | Где | Девиация | Причина |
 |-----|----------|---------|
 | `server/src/net/session/play/geo.rs` | Поведение геологии изменено относительно C# | **[USER]** прямое требование |
-| `server/src/net/session/play/bonus.rs` | `GDonPacket` реализован (в C# — заглушка, декод без эффекта) | **[UX]** ежедневный бонус нужен живым |
+| `server/src/net/session/play/bonus.rs` + `gameplay.bonus` | `GDonPacket` реализован (в C# — заглушка, декод без эффекта); cooldown/reward настраиваются через config | **[UX]** ежедневный бонус нужен живым |
 | `server/src/net/session/ui/heal_inventory.rs` | building-items `{0,1,2,3,24,26,29}` обрабатываются, хотя в C# не входят в `typeditems` | паритет с КЛИЕНТОМ (эталон), а не с неполным C# |
 | `server/src/net/session/ui/gui_buttons.rs` | Порядок кнопок маркета: «Продать» → «Продать всё» | **[UX]** удобнее; wire-нейтрально |
 | `server/src/game/mechanics/combat.rs` | Урон пушки — округлённый каст после `AntiGun`, клампится снизу; базовое значение настраивается через `gameplay.combat.gun_damage` (default 60) | float→int без потери паритета, config-driven tuning |
