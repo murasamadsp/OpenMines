@@ -242,10 +242,10 @@ pub struct GameState {
     pub active_players: DashMap<PlayerId, ActivePlayer>,
     pub player_entities: DashMap<PlayerId, Entity>,
     pub chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
-    pub building_index: DashMap<WorldPos, Entity>,
-    pub botspot_index: DashMap<PlayerId, Entity>,
-    pub chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
-    pub chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
+    building_index: DashMap<WorldPos, Entity>,
+    botspot_index: DashMap<PlayerId, Entity>,
+    chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
+    chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     /// Активные игровые ивенты (множители опыта, дропа и т.д.).
     /// Хранится в `GameState` (не в ECS), чтобы HTTP-API мог менять их
@@ -264,10 +264,10 @@ pub struct GameState {
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
     /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
-    pub box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
+    box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
     /// Arc — общий с ECS-ресурсами, чтобы не расходились.
-    pub box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
+    box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
     /// Oneshot-каналы для принудительного кика: `remove` → drop sender → connection-таск
