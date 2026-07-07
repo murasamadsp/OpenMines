@@ -515,7 +515,8 @@ pub fn flush_player_death_queue_after_tick(
 mod tests {
     use super::*;
     use crate::db::players::PlayerRow;
-    use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats};
+    use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerPosition, PlayerStats};
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -538,6 +539,9 @@ mod tests {
     }
 
     async fn make_death_test_state(label: &str) -> DeathTestState {
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
         let dir = std::env::temp_dir();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -610,6 +614,68 @@ mod tests {
             .unwrap()
     }
 
+    async fn insert_resp(
+        state: &Arc<GameState>,
+        x: i32,
+        y: i32,
+        owner_id: PlayerId,
+        cost: i32,
+        charge: i32,
+    ) -> i32 {
+        let extra = crate::db::buildings::BuildingExtra {
+            charge,
+            max_charge: 1000,
+            cost,
+            hp: 1000,
+            max_hp: 1000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            clanzone: 0,
+        };
+        let spec = crate::game::BuildingInsertSpec {
+            type_code: "R",
+            pack_type: crate::game::buildings::PackType::Resp,
+            x,
+            y,
+            owner_id,
+            clan_id: 0,
+            extra: &extra,
+        };
+        state.insert_building_runtime(&spec).await.unwrap().0
+    }
+
+    fn set_player_resp_and_money(
+        state: &Arc<GameState>,
+        pid: PlayerId,
+        resp_x: i32,
+        resp_y: i32,
+        money: i64,
+    ) {
+        state.modify_player(pid, |ecs, entity| {
+            let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
+            meta.resp_x = Some(resp_x);
+            meta.resp_y = Some(resp_y);
+            let mut player_stats = ecs.get_mut::<PlayerStats>(entity)?;
+            player_stats.money = money;
+            player_stats.health = 0;
+            Some(())
+        });
+    }
+
+    fn resp_charge_and_storage_money(state: &Arc<GameState>, x: i32, y: i32) -> (i32, i64) {
+        state
+            .query_building_opt(x, y, |ecs, entity| {
+                let building_stats = ecs.get::<crate::game::buildings::BuildingStats>(entity)?;
+                let storage = ecs.get::<crate::game::buildings::BuildingStorage>(entity)?;
+                Some((building_stats.charge, storage.money))
+            })
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn handle_death_missing_flags_is_explicit_error_without_respawn_mutation() {
         let test = make_death_test_state("missing_flags_death").await;
@@ -665,5 +731,65 @@ mod tests {
         assert_eq!(player_health(&test.state, pid), 90);
 
         test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn public_respawn_is_free_and_does_not_decrement_charge() {
+        let test = make_death_test_state("public_resp_free").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        insert_resp(&test.state, 20, 20, PlayerId(0), 10, 100).await;
+        let pid = PlayerId(test.player.id);
+        set_player_resp_and_money(&test.state, pid, 20, 20, 5);
+
+        let (rx, ry, _, bcast) = {
+            let mut ecs = test.state.ecs.write();
+            apply_player_death_core(&test.state, &mut ecs, pid).unwrap()
+        };
+
+        assert!((22..=24).contains(&rx));
+        assert!((19..=22).contains(&ry));
+        assert_eq!(player_money_after(&test.state, pid), 5);
+        assert_eq!(resp_charge_and_storage_money(&test.state, 20, 20), (100, 0));
+        assert!(!bcast.resp_used);
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn owned_respawn_without_enough_money_falls_back_without_charging() {
+        let test = make_death_test_state("owned_resp_no_money").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        insert_resp(&test.state, 20, 20, PlayerId(0), 10, 100).await;
+        insert_resp(&test.state, 10, 10, PlayerId(42), 10, 100).await;
+        let pid = PlayerId(test.player.id);
+        set_player_resp_and_money(&test.state, pid, 10, 10, 10);
+
+        let (rx, ry, _, bcast) = {
+            let mut ecs = test.state.ecs.write();
+            apply_player_death_core(&test.state, &mut ecs, pid).unwrap()
+        };
+
+        assert!((22..=24).contains(&rx));
+        assert!((19..=22).contains(&ry));
+        assert_eq!(player_money_after(&test.state, pid), 10);
+        assert_eq!(resp_charge_and_storage_money(&test.state, 10, 10), (100, 0));
+        assert!(!bcast.resp_used);
+
+        test.cleanup();
+    }
+
+    fn player_money_after(state: &Arc<GameState>, pid: PlayerId) -> i64 {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(player_stats.money)
+            })
+            .unwrap()
     }
 }

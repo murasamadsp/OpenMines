@@ -276,7 +276,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         state
             .db_pending_tasks
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        tokio::spawn(async move {
+        state.tokio_handle.spawn(async move {
             let _guard = DbTaskGuard { state: state_clone };
             let mut attempts = 0;
             let mut backoff = std::time::Duration::from_millis(100);
@@ -689,6 +689,88 @@ mod tests {
             has_connection_after_reconnect,
             "reconnect must restore PlayerConnection on the offline entity"
         );
+
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
+    }
+
+    #[tokio::test]
+    async fn disconnect_in_tick_can_run_from_plain_game_thread_without_tokio_reactor() {
+        let dir = std::env::temp_dir();
+        let db_path = dir.join(format!("disconnect_plain_thread_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("disconnect_plain_thread_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let player = PlayerRow {
+            id: 1,
+            name: "PlainThreadPlayer".to_string(),
+            passwd: "123".to_string(),
+            hash: "hash".to_string(),
+            x: 5,
+            y: 5,
+            dir: 0,
+            health: 100,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            skin: 0,
+            auto_dig: false,
+            aggression: false,
+            crystals: [0; 6],
+            clan_id: None,
+            resp_x: None,
+            resp_y: None,
+            inventory: std::collections::HashMap::new(),
+            skills: crate::db::SkillSlots {
+                skills: std::collections::HashMap::new(),
+                total_slots: 20,
+            },
+            role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
+            clan_rank: 0,
+            last_bonus_at: 0,
+        };
+        connect_in_tick(&state, &tx, &player, 123);
+
+        let state_for_thread = state.clone();
+        std::thread::spawn(move || {
+            disconnect_in_tick(&state_for_thread, PlayerId(1), 123);
+        })
+        .join()
+        .expect("disconnect_in_tick must not panic outside Tokio reactor");
+
+        while state
+            .db_pending_tasks
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
