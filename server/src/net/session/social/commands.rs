@@ -272,36 +272,32 @@ async fn handle_chat_money_all_command(
             return;
         }
     };
-    for entry in &state.active_players {
-        state.modify_player(
-            *entry.key(),
-            |ecs: &mut bevy_ecs::prelude::World, entity| {
-                let conn_tx = ecs
-                    .get::<crate::game::player::PlayerConnection>(entity)
-                    .map(|conn| conn.tx.clone());
-                if ecs.get::<PlayerStats>(entity).is_none()
-                    || ecs.get::<PlayerFlags>(entity).is_none()
-                {
-                    tracing::error!(
-                        player_id = %entry.key(),
-                        "Online moneyall skipped for incomplete player state"
-                    );
-                    if let Some(conn_tx) = conn_tx {
-                        send_command_state_error(&conn_tx);
-                    }
-                    return Some(());
-                }
-                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-                s.money = s.money.saturating_add(amount);
-                let (m, c) = (s.money, s.creds);
-                let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-                f.dirty = true;
+    for target_pid in state.active_player_ids() {
+        state.modify_player(target_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            let conn_tx = ecs
+                .get::<crate::game::player::PlayerConnection>(entity)
+                .map(|conn| conn.tx.clone());
+            if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                tracing::error!(
+                    player_id = %target_pid,
+                    "Online moneyall skipped for incomplete player state"
+                );
                 if let Some(conn_tx) = conn_tx {
-                    send_u_packet(&conn_tx, "P$", &money(m, c).1);
+                    send_command_state_error(&conn_tx);
                 }
-                Some(())
-            },
-        );
+                return Some(());
+            }
+            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+            s.money = s.money.saturating_add(amount);
+            let (m, c) = (s.money, s.creds);
+            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+            f.dirty = true;
+            if let Some(conn_tx) = conn_tx {
+                send_u_packet(&conn_tx, "P$", &money(m, c).1);
+            }
+            Some(())
+        });
     }
     send_ok(
         tx,
@@ -614,8 +610,7 @@ fn handle_chat_kick_command(
         send_ok(tx, "Кик", CMD_USAGE_KICK);
         return;
     };
-    let target_pid = state.active_players.iter().find_map(|entry| {
-        let tid = *entry.key();
+    let target_pid = state.active_player_ids().into_iter().find_map(|tid| {
         state
             .query_player(tid, |ecs, entity| {
                 ecs.get::<crate::game::player::PlayerMetadata>(entity)

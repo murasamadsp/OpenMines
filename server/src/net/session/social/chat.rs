@@ -480,8 +480,8 @@ fn send_mu_bytes(data: &[u8]) -> Vec<u8> {
 /// Рассылка `mU` ВСЕМ активным (global, 1:1 C# `Chat.AddMessage`).
 fn send_mu_to_all(state: &Arc<GameState>, data: &[u8]) {
     let pkt = send_mu_bytes(data);
-    for entry in &state.active_players {
-        state.query_player(*entry.key(), |ecs: &bevy_ecs::prelude::World, entity| {
+    for pid in state.active_player_ids() {
+        state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             if let Some(c) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
                 let _ = c.tx.send(pkt.clone());
             }
@@ -492,8 +492,8 @@ fn send_mu_to_all(state: &Arc<GameState>, data: &[u8]) {
 /// Рассылка `mU` только членам клана `clan_id`.
 fn send_mu_to_clan(state: &Arc<GameState>, data: &[u8], clan_id: i32) {
     let pkt = send_mu_bytes(data);
-    for entry in &state.active_players {
-        state.query_player(*entry.key(), |ecs: &bevy_ecs::prelude::World, entity| {
+    for pid in state.active_player_ids() {
+        state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             if let (Some(s), Some(c)) = (
                 ecs.get::<crate::game::player::PlayerStats>(entity),
                 ecs.get::<crate::game::player::PlayerConnection>(entity),

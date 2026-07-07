@@ -350,8 +350,7 @@ pub async fn handle_clan_leave(
         }
         match state.db.delete_clan(clan_id).await {
             Ok(()) => {
-                for entry in &state.active_players {
-                    let target_pid = *entry.key();
+                for target_pid in state.active_player_ids() {
                     state.modify_player(target_pid, |ecs, entity| {
                         let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
                         if s.clan_id == Some(clan_id) {
@@ -550,8 +549,7 @@ pub async fn handle_clan_invite_list(
     let mut win = Horb::new("Пригласить").text("Выберите игрока для приглашения в клан:");
     let mut count = 0;
 
-    for entry in &state.active_players {
-        let target_pid = *entry.key();
+    for target_pid in state.active_player_ids() {
         if target_pid == pid {
             continue;
         }

@@ -8,11 +8,7 @@ pub async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     tracing::info!("Shutdown: saving players, buildings, boxes and flushing world...");
 
     // Игроки — сохраняем все ECS-сущности игроков, включая offline programmator.
-    let shutdown_pids: Vec<_> = game_state
-        .player_entities
-        .iter()
-        .map(|e| *e.key())
-        .collect();
+    let shutdown_pids = game_state.player_entity_ids();
     let mut player_rows = Vec::with_capacity(shutdown_pids.len());
     for pid in shutdown_pids {
         if let Some(row) = game_state.query_player_opt(pid, |ecs, entity| {

@@ -132,8 +132,7 @@ async fn handle_auth(
 async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let mut active_players = Vec::new();
     let ecs = state.ecs.read();
-    for entry in &state.active_players {
-        let pid = *entry.key();
+    for pid in state.active_player_ids() {
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
@@ -162,7 +161,7 @@ async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse 
     let events = state.active_events.read().list.clone();
 
     Json(ServerStats {
-        online_count: state.active_players.len(),
+        online_count: state.online_count(),
         active_players,
         market_prices,
         cost_mod,
@@ -177,8 +176,7 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let mut ecs = state.ecs.write();
 
     let mut players = Vec::new();
-    for entry in &state.active_players {
-        let pid = *entry.key();
+    for pid in state.active_player_ids() {
         if let Some(entity) = state.get_player_entity(pid)
             && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
             && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)

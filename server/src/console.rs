@@ -82,10 +82,9 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
             }
             "online" => {
                 let online: Vec<_> = state
-                    .active_players
-                    .iter()
-                    .map(|entry| {
-                        let pid = *entry.key();
+                    .active_player_ids()
+                    .into_iter()
+                    .map(|pid| {
                         state
                             .query_player(pid, |ecs, entity| {
                                 let name = ecs
@@ -117,7 +116,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 match state.db.get_player_by_name(name).await {
                     Ok(Some(row)) => {
                         let pid: PlayerId = row.id.into();
-                        let online = state.active_players.contains_key(&pid);
+                        let online = state.is_player_active(pid);
                         if online {
                             let detail = state.query_player_opt(pid, |ecs, entity| {
                                 let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
@@ -158,8 +157,8 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 let (event, pkt_body) = crate::protocol::packets::status(&msg);
                 let pkt = make_u_packet_bytes(event, &pkt_body);
                 let mut count = 0;
-                for entry in &state.active_players {
-                    state.query_player(*entry.key(), |ecs, entity| {
+                for pid in state.active_player_ids() {
+                    state.query_player(pid, |ecs, entity| {
                         if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity)
                         {
                             let _ = conn.tx.send(pkt.clone());
@@ -436,7 +435,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
             "save" => {
                 tracing::info!(target: "console", "Manual save triggered from console");
                 println!("Saving all active players and flushing world...");
-                let pids: Vec<_> = state.active_players.iter().map(|e| *e.key()).collect();
+                let pids: Vec<_> = state.active_player_ids();
                 let mut saved = 0;
                 for pid in pids {
                     let row = state.query_player_opt(pid, |ecs, entity| {

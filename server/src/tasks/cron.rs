@@ -39,7 +39,7 @@ impl CronManager {
                 let job = Job::new_async("0 0 * * * *", move |_uuid, _lock| {
                     let st = Arc::clone(&state_clone);
                     Box::pin(async move {
-                        let online = st.active_players.len();
+                        let online = st.online_count();
                         info!(online_players = online, "[Cron] Hourly Heartbeat");
                     })
                 });

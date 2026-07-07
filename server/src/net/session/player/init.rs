@@ -1,9 +1,9 @@
 use crate::db::players::PlayerRow;
 use crate::game::LifeCmd;
 use crate::game::player::{
-    ActivePlayer, PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId,
-    PlayerInventory, PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkillsComp, PlayerStats,
-    PlayerUI, PlayerView,
+    PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerInventory,
+    PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkillsComp, PlayerStats, PlayerUI,
+    PlayerView,
 };
 use crate::game::programmator::ProgrammatorState;
 use crate::net::session::outbound::inventory_sync::send_inventory;
@@ -59,7 +59,7 @@ pub fn connect_in_tick(
     } // временная система
 
     // BUG 1: Reconnect entity leak — clean up any existing session for this pid before spawning a new one.
-    if let Some((_, old_player)) = state.active_players.remove(&pid) {
+    if let Some(old_player) = state.remove_active_player(pid) {
         let old_entity = old_player.ecs_entity;
         let (old_cx, old_cy) = {
             let ecs = state.ecs.read();
@@ -75,19 +75,19 @@ pub fn connect_in_tick(
         state.broadcast_to_nearby(old_cx, old_cy, &hb_data, None);
         // Despawn old ECS entity.
         state.ecs.write().despawn(old_entity);
-        state.player_entities.remove(&pid);
+        state.unregister_player_entity(pid);
         tracing::warn!(
             player_id = %pid,
             "Player reconnected — old ECS entity cleaned up"
         );
     }
 
-    if let Some(entity) = state.player_entities.get(&pid).map(|e| *e) {
+    if let Some(entity) = state.get_player_entity(pid) {
         let mut sync_row = {
             let mut ecs = state.ecs.write();
             if !ecs.entities().contains(entity) {
                 drop(ecs);
-                state.player_entities.remove(&pid);
+                state.unregister_player_entity(pid);
                 None
             } else {
                 if let Some(mut conn) = ecs.get_mut::<PlayerConnection>(entity) {
@@ -103,14 +103,7 @@ pub fn connect_in_tick(
         if let Some(mut row) = sync_row.take() {
             row.selected_program_id = player.selected_program_id;
             row.selected_program = player.selected_program.clone();
-            state.active_players.insert(
-                pid,
-                ActivePlayer {
-                    ecs_entity: entity,
-                    session_token: token,
-                    last_bots_render: std::time::Instant::now(),
-                },
-            );
+            state.register_active_player(pid, entity, token);
             state.register_player_sender(pid, tx.clone());
             send_initial_sync(state, tx, &row);
             tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
@@ -215,15 +208,8 @@ pub fn connect_in_tick(
         ))
         .id();
 
-    state.active_players.insert(
-        pid,
-        ActivePlayer {
-            ecs_entity: entity,
-            session_token: token,
-            last_bots_render: std::time::Instant::now(),
-        },
-    );
-    state.player_entities.insert(pid, entity);
+    state.register_active_player(pid, entity, token);
+    state.register_player_entity(pid, entity);
 
     state.register_player_sender(pid, tx.clone());
 
@@ -250,15 +236,10 @@ pub fn connect_in_tick(
 pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
     // Guard: если токен в active_players не совпадает — игрок уже переподключился
     // (новый сеанс владеет entity), этот Disconnect устарел → ничего не делаем.
-    let Some(p) = state
-        .active_players
-        .get(&pid)
-        .filter(|p| p.session_token == token)
-        .map(|p| p.ecs_entity)
-    else {
+    let Some(p) = state.active_player_entity_for_token(pid, token) else {
         return;
     };
-    state.active_players.remove(&pid);
+    state.remove_active_player(pid);
     state.unregister_player_sender(pid);
     let entity = p;
 
@@ -338,7 +319,7 @@ pub fn disconnect_in_tick(state: &Arc<GameState>, pid: PlayerId, token: u64) {
         );
     } else {
         state.ecs.write().despawn(entity);
-        state.player_entities.remove(&pid);
+        state.unregister_player_entity(pid);
         tracing::info!(
             player_id = %pid,
             "Player disconnected and ECS entity despawned"
@@ -585,10 +566,10 @@ mod tests {
         assert_eq!(state.world.get_cell(5, 5), cell_type::MILITARY_BLOCK_FRAME);
 
         // We clean up from active_players first to allow reconnecting
-        if let Some((_, active)) = state.active_players.remove(&1) {
+        if let Some(active) = state.remove_active_player(1.into()) {
             state.ecs.write().despawn(active.ecs_entity);
         }
-        state.player_entities.remove(&1);
+        state.unregister_player_entity(1.into());
         connect_in_tick(&state, &tx, &player, 124);
 
         assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
@@ -669,7 +650,7 @@ mod tests {
 
         disconnect_in_tick(&state, pid, 123);
 
-        assert!(!state.active_players.contains_key(&pid));
+        assert!(!state.is_player_active(pid));
         assert_eq!(state.get_player_entity(pid), Some(entity));
         let still_running = {
             let ecs = state.ecs.read();

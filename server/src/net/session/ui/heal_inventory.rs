@@ -584,8 +584,7 @@ fn aoe_damage_players(
     let now = std::time::Instant::now();
     let ctx = crate::game::ExpContext::from_state(state);
     let mut killed: Vec<(PlayerId, mpsc::UnboundedSender<Vec<u8>>)> = Vec::new();
-    for entry in &state.active_players {
-        let opid = *entry.key();
+    for opid in state.active_player_ids() {
         // Returns Some((survived, px, py)) if player was in range and damaged
         let hit_result = state
             .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
@@ -982,8 +981,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         }
 
         // Damage ALL players on this cell: 20 + 60 * c190stacks, then increment
-        for entry in &state.active_players {
-            let opid = *entry.key();
+        for opid in state.active_player_ids() {
             // Can't shoot self or clan members
             let c_info = state.query_player_opt(pid, |ecs, entity| {
                 let shooter_stats = ecs.get::<PlayerStats>(entity)?;

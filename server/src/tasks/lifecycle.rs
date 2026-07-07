@@ -53,7 +53,7 @@ pub fn spawn_online_count_loop(state: Arc<GameState>, mut shutdown: broadcast::R
 }
 
 fn broadcast_online_count(state: &GameState) {
-    let pids: Vec<crate::game::PlayerId> = state.active_players.iter().map(|e| *e.key()).collect();
+    let pids: Vec<crate::game::PlayerId> = state.active_player_ids();
     let online_count = i32::try_from(pids.len()).unwrap_or(i32::MAX);
     let packet = crate::protocol::packets::online(online_count, 0);
     let wire = crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1);
@@ -77,8 +77,7 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
             // Сначала снимаем список pid без вложенного `modify_player` под guard'ом итератора:
             // иначе держим ref `active_players` + `ecs.write()` — легко словить взаимную блокировку
             // с сессией (`query_player` / `broadcast_to_nearby`) и «зависание» всего сервера ~10 с.
-            let pids: Vec<crate::game::PlayerId> =
-                state.player_entities.iter().map(|e| *e.key()).collect();
+            let pids: Vec<crate::game::PlayerId> = state.player_entity_ids();
 
             // Extract dirty rows WITHOUT clearing dirty yet — clearing happens only after
             // a successful save so that a concurrent disconnect save or a save failure
@@ -642,15 +641,7 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
         let section_t0 = Instant::now();
         {
             let now_render = Instant::now();
-            let mut due: Vec<crate::game::player::PlayerId> = Vec::new();
-            for mut e in state.active_players.iter_mut() {
-                if now_render.duration_since(e.value().last_bots_render)
-                    >= std::time::Duration::from_secs(4)
-                {
-                    e.value_mut().last_bots_render = now_render;
-                    due.push(*e.key());
-                }
-            }
+            let due = state.take_due_bots_render(now_render, std::time::Duration::from_secs(4));
             for pid in due {
                 if let Some(tx) = state.player_sender(pid) {
                     crate::net::session::play::chunks::bots_render(&state, &tx, pid);

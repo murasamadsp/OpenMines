@@ -239,8 +239,8 @@ pub struct GameState {
     pub world: Arc<World>,
     pub db: Arc<Database>,
     pub config: Config,
-    pub active_players: DashMap<PlayerId, ActivePlayer>,
-    pub player_entities: DashMap<PlayerId, Entity>,
+    active_players: DashMap<PlayerId, ActivePlayer>,
+    player_entities: DashMap<PlayerId, Entity>,
     chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
     building_index: DashMap<WorldPos, Entity>,
     botspot_index: DashMap<PlayerId, Entity>,
@@ -994,6 +994,69 @@ impl GameState {
 
     pub fn is_player_connected(&self, pid: PlayerId) -> bool {
         self.player_tx.contains_key(&pid)
+    }
+
+    pub fn active_player_ids(&self) -> Vec<PlayerId> {
+        self.active_players
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn is_player_active(&self, pid: PlayerId) -> bool {
+        self.active_players.contains_key(&pid)
+    }
+
+    pub fn online_count(&self) -> usize {
+        self.active_players.len()
+    }
+
+    pub fn register_active_player(&self, pid: PlayerId, entity: Entity, token: u64) {
+        self.active_players.insert(
+            pid,
+            ActivePlayer {
+                ecs_entity: entity,
+                session_token: token,
+                last_bots_render: Instant::now(),
+            },
+        );
+    }
+
+    pub fn remove_active_player(&self, pid: PlayerId) -> Option<ActivePlayer> {
+        self.active_players.remove(&pid).map(|(_, active)| active)
+    }
+
+    pub fn active_player_entity_for_token(&self, pid: PlayerId, token: u64) -> Option<Entity> {
+        self.active_players
+            .get(&pid)
+            .filter(|active| active.session_token == token)
+            .map(|active| active.ecs_entity)
+    }
+
+    pub fn player_entity_ids(&self) -> Vec<PlayerId> {
+        self.player_entities
+            .iter()
+            .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn register_player_entity(&self, pid: PlayerId, entity: Entity) {
+        self.player_entities.insert(pid, entity);
+    }
+
+    pub fn unregister_player_entity(&self, pid: PlayerId) {
+        self.player_entities.remove(&pid);
+    }
+
+    pub fn take_due_bots_render(&self, now: Instant, interval: Duration) -> Vec<PlayerId> {
+        let mut due = Vec::new();
+        for mut entry in self.active_players.iter_mut() {
+            if now.duration_since(entry.value().last_bots_render) >= interval {
+                entry.value_mut().last_bots_render = now;
+                due.push(*entry.key());
+            }
+        }
+        due
     }
 
     pub fn register_player_sender(

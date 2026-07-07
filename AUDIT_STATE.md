@@ -62,6 +62,10 @@
 - Player sender index `player_tx` закрыт за `GameState`: проверка online,
   получение sender, регистрация и снятие sender больше не идут через публичный
   `DashMap`.
+- Player runtime maps `active_players` и `player_entities` закрыты за
+  `GameState`: online snapshots, token-guard disconnect, reconnect cleanup,
+  active session register/remove и player entity register/remove больше не
+  выполняются через публичные `DashMap`.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
