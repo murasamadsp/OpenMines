@@ -506,8 +506,14 @@ async fn run_game_tick(state: Arc<GameState>, mut shutdown: broadcast::Receiver<
                     && state.world.get_cell_typed(x, y) == conv.required_cell;
                 // ticks_left == 1: выполняем действие, если guard cell совпадает.
                 if should_convert {
-                    state.world.set_cell_typed(x, y, conv.target_cell);
-                    state.world.set_durability(x, y, conv.durability);
+                    state.world.write_world_cell(
+                        x,
+                        y,
+                        crate::world::WorldCell {
+                            cell_type: conv.target_cell,
+                            durability: conv.durability,
+                        },
+                    );
                     crate::game::broadcast_cell_update(&state, x, y);
                     converted_owners.push(conv.owner_pid);
                 }
