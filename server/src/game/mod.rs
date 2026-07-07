@@ -273,7 +273,7 @@ pub struct GameState {
     /// Oneshot-каналы для принудительного кика: `remove` → drop sender → connection-таск
     /// выходит из select!-loop. Также разрешает зомби-соединения при reconnect (новый
     /// insert вытесняет старый sender → старая connection-задача чисто завершается).
-    pub kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
+    kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
     /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `WorldPos` →
     /// `(type, off)`. Клиентский `O`-пакет авторитетен для ВСЕГО чанк-`block_pos`
     /// (`RemoveObjectInBlock` чистит блок целиком), поэтому каждый `O` обязан нести
@@ -1069,6 +1069,18 @@ impl GameState {
 
     pub fn unregister_player_sender(&self, pid: PlayerId) {
         self.player_tx.remove(&pid);
+    }
+
+    pub fn register_kick_channel(&self, pid: PlayerId, tx: tokio::sync::oneshot::Sender<()>) {
+        self.kick_channels.insert(pid, tx);
+    }
+
+    pub fn unregister_kick_channel(&self, pid: PlayerId) {
+        self.kick_channels.remove(&pid);
+    }
+
+    pub fn kick_player(&self, pid: PlayerId) -> bool {
+        self.kick_channels.remove(&pid).is_some()
     }
 
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {

@@ -66,6 +66,9 @@
   `GameState`: online snapshots, token-guard disconnect, reconnect cleanup,
   active session register/remove и player entity register/remove больше не
   выполняются через публичные `DashMap`.
+- Kick channel registry `kick_channels` закрыт за `GameState`: connection
+  lifecycle регистрирует/снимает канал методами, консоль/web/admin command
+  выполняют kick через явный `kick_player`.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.

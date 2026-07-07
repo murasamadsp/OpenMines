@@ -325,7 +325,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Usage: kick -p <ID>");
                     continue;
                 };
-                if state.kick_channels.remove(&pid).is_some() {
+                if state.kick_player(pid) {
                     tracing::info!(target: "console", player_id = %pid, "Kicked player");
                     println!("Kicked player {pid}.");
                 } else {

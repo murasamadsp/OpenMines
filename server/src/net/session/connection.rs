@@ -138,7 +138,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         auth_state = new_auth;
                                         heartbeat_gate.mark_auth_response_queued();
                                         if let Some(kt) = kick_tx_opt.take() {
-                                            state.kick_channels.insert(id, kt);
+                                            state.register_kick_channel(id, kt);
                                         }
                                         tracing::info!(player_id = %id, "Player authenticated");
                                     } else {
@@ -164,7 +164,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                                 auth_state = AuthState::Authenticated { player_id: id };
                                                 heartbeat_gate.mark_auth_response_queued();
                                                 if let Some(kt) = kick_tx_opt.take() {
-                                                    state.kick_channels.insert(id, kt);
+                                                    state.register_kick_channel(id, kt);
                                                 }
                                                 tracing::info!(player_id = %id, "Player registered/logged via GUI");
                                             }
@@ -249,7 +249,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = auth_state.player_id() {
-        state.kick_channels.remove(&id);
+        state.unregister_kick_channel(id);
         on_disconnect(&state, id, session_token);
     }
     Ok(())

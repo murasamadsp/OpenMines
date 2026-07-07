@@ -224,7 +224,7 @@ async fn handle_kick(
     Path(pid_val): Path<i32>,
 ) -> impl IntoResponse {
     let pid = crate::game::player::PlayerId(pid_val);
-    if state.kick_channels.remove(&pid).is_some() {
+    if state.kick_player(pid) {
         (
             StatusCode::OK,
             Json(serde_json::json!({ "success": true, "message": "Player kicked" })),

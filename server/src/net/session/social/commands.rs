@@ -621,7 +621,7 @@ fn handle_chat_kick_command(
     });
     match target_pid {
         Some(tid) => {
-            if state.kick_channels.remove(&tid).is_some() {
+            if state.kick_player(tid) {
                 send_ok(tx, "Кик", &format!("Игрок {target_name} кикнут"));
             } else {
                 send_ok(tx, "Ошибка", "Не удалось кикнуть игрока");
