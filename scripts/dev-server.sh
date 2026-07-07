@@ -36,10 +36,29 @@ cat > "$CONFIG_DIR/config.json" <<JSON
   "gameplay": {
     "cooldowns": {
       "dig_ms": 200,
-      "build_ms": 200
+      "build_ms": 200,
+      "geo_ms": 200
     },
     "skills": {
       "upgrade_cost_base": 100
+    },
+    "spawn": {
+      "x": 10,
+      "y": 10
+    },
+    "programmator": {
+      "direct_action_delay_us": 333333,
+      "blocked_move_penalty_ms": 200,
+      "min_move_delay_ms": 20
+    },
+    "schedules": {
+      "hazards_ms": 10,
+      "physics_ms": 100,
+      "guns_ms": 100,
+      "programmator_ms": 100,
+      "alive_ms": 5000,
+      "building_effects_ms": 1000,
+      "hourly_damage_ms": 3600000
     }
   }
 }

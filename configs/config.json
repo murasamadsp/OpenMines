@@ -15,7 +15,8 @@
   "gameplay": {
     "cooldowns": {
       "dig_ms": 200,
-      "build_ms": 200
+      "build_ms": 200,
+      "geo_ms": 200
     },
     "skills": {
       "upgrade_cost_base": 100

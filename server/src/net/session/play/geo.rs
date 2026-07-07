@@ -39,7 +39,10 @@ pub fn handle_geo(
                     send_geo_state_error(tx);
                     return None;
                 };
-                if !programmatic && cd.last_geo.elapsed() < Duration::from_millis(200) {
+                if !programmatic
+                    && cd.last_geo.elapsed()
+                        < Duration::from_millis(state.config.gameplay.cooldowns.geo_ms)
+                {
                     return None;
                 }
             }

@@ -114,6 +114,7 @@ impl Default for SkillsConfig {
 pub struct CooldownConfig {
     pub dig_ms: u64,
     pub build_ms: u64,
+    pub geo_ms: u64,
 }
 
 // `Default` — НЕ для serde-подстановки (поля обязательны при парсинге), а только
@@ -124,6 +125,7 @@ impl Default for CooldownConfig {
         Self {
             dig_ms: 200,
             build_ms: 200,
+            geo_ms: 200,
         }
     }
 }
@@ -221,8 +223,24 @@ impl Config {
 
 impl GameplayConfig {
     fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
+        self.cooldowns.validate()?;
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
+        Ok(())
+    }
+}
+
+impl CooldownConfig {
+    fn validate(&self) -> Result<()> {
+        if self.dig_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.dig_ms must be greater than 0");
+        }
+        if self.build_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.build_ms must be greater than 0");
+        }
+        if self.geo_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.geo_ms must be greater than 0");
+        }
         Ok(())
     }
 }
@@ -289,7 +307,7 @@ mod tests {
         "world_name": "t", "port": 8090, "world_chunks_w": 4, "world_chunks_h": 4,
         "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
         "cron": {"hourly_log_enabled": true},
-        "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
+        "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -315,6 +333,7 @@ mod tests {
         // Значения читаются из JSON, а не из кода (250/300 ≠ дефолтные 200).
         assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
         assert_eq!(c.gameplay.cooldowns.build_ms, 300);
+        assert_eq!(c.gameplay.cooldowns.geo_ms, 350);
         assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
         assert_eq!(c.gameplay.spawn.x, 12);
         assert_eq!(c.gameplay.spawn.y, 13);
@@ -332,7 +351,7 @@ mod tests {
     fn missing_gameplay_key_is_an_error_not_a_silent_default() {
         // Нет секции gameplay целиком.
         let no_gameplay = FULL.replace(
-            r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300},
+            r#""gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
                      "skills": {"upgrade_cost_base": 100},
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
@@ -360,6 +379,11 @@ mod tests {
         assert!(
             serde_json::from_str::<Config>(&no_build).is_err(),
             "пропущенный build_ms должен быть ошибкой"
+        );
+        let no_geo = FULL.replace(r#", "geo_ms": 350"#, "");
+        assert!(
+            serde_json::from_str::<Config>(&no_geo).is_err(),
+            "пропущенный geo_ms должен быть ошибкой"
         );
         let mut no_spawn: serde_json::Value = serde_json::from_str(FULL).unwrap();
         no_spawn["gameplay"]
@@ -457,6 +481,16 @@ mod tests {
             raw["gameplay"]["spawn"] = spawn;
             let cfg: Config = serde_json::from_value(raw).unwrap();
             assert!(cfg.validate().is_err(), "invalid spawn must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_cooldown_values_are_errors() {
+        for key in ["dig_ms", "build_ms", "geo_ms"] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["cooldowns"][key] = serde_json::json!(0);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
         }
     }
 
