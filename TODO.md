@@ -14,9 +14,10 @@
   закрыт текущим PROG wire-контрактом `Gu -> @P/BH -> #p`: `#p` обновляет source
   и закрывает Unity programmator object. Остаётся общий ручной аудит
   программатора по `docs/PROGRAMMATOR_GUI_PROTOCOL.md`.
-- Shutdown: после `^C` лог доходит до
-  `Shutdown: saving players, buildings, boxes and flushing world...` и выглядит
-  как бесконечное ожидание. Проверить зависание в shutdown-save/flush и таймауты.
+- Shutdown: добавлены фазовые логи и таймауты коммитом `1671fdb`
+  (`players/buildings` 5s, `box` 2s, `world.flush` 5s). `dev-smoke.sh`
+  проходит. Если ручной `^C` снова зависнет, следующий лог обязан показать
+  конкретную фазу-виновника.
 - HORB popup: Unity падает в `PopupManager.ShowHORB` с
   `System.IndexOutOfRangeException` на popup handler. Проверить серверные HORB
   payload'ы, особенно окна программатора/админки; клиент не менять без отдельной
