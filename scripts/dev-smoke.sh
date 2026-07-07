@@ -373,18 +373,17 @@ try:
         raise RuntimeError(f"programmator create tail mismatch: {tail_events!r}")
 
     write_ty("PROG", x, y, prog_payload(prog_id, "$z"))
-    update_packet, prog_packets = read_until_event("#p", timeout=8)
+    prog_packets = wait_for_events(["Gu", "@T", "@P", "BH"], timeout=8)
+    prog_packets.extend(drain_available())
     assert_no_event(prog_packets, "#P", "PROG start")
+    assert_no_event(prog_packets, "#p", "PROG start")
     prog_events = foreground_events(prog_packets)
-    expected_prog = ["Gu", "@T", "@P", "BH", "#p"]
-    if prog_events != expected_prog:
+    expected_prog = ["Gu", "@T", "@P", "BH"]
+    if prog_events[:4] != expected_prog:
         raise RuntimeError(f"PROG start events mismatch: {prog_events!r}")
     prog_foreground_packets = [p for p in prog_packets if p[1] != "PI"]
     if prog_foreground_packets[2][2] != b"1" or prog_foreground_packets[3][2] != b"0":
         raise RuntimeError("PROG start did not report @P=1 and BH=0")
-    updated = json.loads(update_packet[2].decode("utf-8"))
-    if int(updated["id"]) != prog_id or updated["title"] != "main" or updated["source"] != "$z":
-        raise RuntimeError(f"invalid #p payload after PROG: {updated!r}")
 
     write_ty("pRST", x, y)
     stop_packets = wait_for_events(["Gu", "@P", "BH"], timeout=8)

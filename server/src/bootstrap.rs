@@ -16,6 +16,7 @@ pub fn remove_world_files(state_dir: &Path, world_name: &str) {
         state_dir.join(format!("{world_name}_durability.map")),
         state_dir.join(format!("{world_name}_durability.map.bak")),
         state_dir.join(format!("{world_name}_durability.map.tmp")),
+        state_dir.join(format!("{world_name}_world.journal")),
     ];
 
     for path in &targets {

@@ -12,12 +12,88 @@ use anyhow::{Context, Result};
 use cells::{CellDefs, cell_type};
 use map_format::MapStore;
 use memmap2::MmapMut;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::fs::{self, OpenOptions};
+use std::io::{Read as _, Seek as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const CHUNK_SIZE: u32 = 32;
+const JOURNAL_MAGIC: [u8; 4] = *b"OWJ1";
+const JOURNAL_RECORD_LEN: usize = 18;
+
+#[derive(Debug, Clone, Copy)]
+struct JournalRecord {
+    x: i32,
+    y: i32,
+    foreground: u8,
+    road: u8,
+    durability: f32,
+}
+
+struct WorldJournal {
+    path: PathBuf,
+    file: std::fs::File,
+}
+
+impl WorldJournal {
+    fn open(path: PathBuf) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("open world journal {}", path.display()))?;
+        Ok(Self { path, file })
+    }
+
+    fn read_records(path: &Path) -> Result<Vec<JournalRecord>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut bytes = Vec::new();
+        OpenOptions::new()
+            .read(true)
+            .open(path)
+            .with_context(|| format!("read world journal {}", path.display()))?
+            .read_to_end(&mut bytes)?;
+
+        let full_len = bytes.len() - (bytes.len() % JOURNAL_RECORD_LEN);
+        let mut records = Vec::with_capacity(full_len / JOURNAL_RECORD_LEN);
+        for chunk in bytes[..full_len].chunks_exact(JOURNAL_RECORD_LEN) {
+            if chunk[0..4] != JOURNAL_MAGIC {
+                anyhow::bail!("corrupt world journal {}: bad magic", path.display());
+            }
+            records.push(JournalRecord {
+                x: i32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]),
+                y: i32::from_le_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]),
+                foreground: chunk[12],
+                road: chunk[13],
+                durability: f32::from_le_bytes([chunk[14], chunk[15], chunk[16], chunk[17]]),
+            });
+        }
+        Ok(records)
+    }
+
+    fn append(&mut self, record: JournalRecord) -> Result<()> {
+        let mut bytes = [0u8; JOURNAL_RECORD_LEN];
+        bytes[0..4].copy_from_slice(&JOURNAL_MAGIC);
+        bytes[4..8].copy_from_slice(&record.x.to_le_bytes());
+        bytes[8..12].copy_from_slice(&record.y.to_le_bytes());
+        bytes[12] = record.foreground;
+        bytes[13] = record.road;
+        bytes[14..18].copy_from_slice(&record.durability.to_le_bytes());
+        self.file.write_all(&bytes)?;
+        Ok(())
+    }
+
+    fn checkpoint(&mut self) -> Result<()> {
+        self.file.set_len(0)?;
+        self.file.rewind()?;
+        tracing::debug!(path = %self.path.display(), "World journal checkpointed");
+        Ok(())
+    }
+}
 
 /// Поддерживаемые типы данных в слоях карты.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +250,8 @@ pub struct World {
     map_path: PathBuf,
     /// Путь `{name}_road_v2.map` для background/road слоя.
     road_path: PathBuf,
+    /// Append-only crash recovery log for world mutations after the last checkpoint.
+    journal: Mutex<WorldJournal>,
     pub cell_defs: Arc<CellDefs>,
     /// Счётчик вызовов flush: дорогой `.bak` делаем не каждый flush,
     /// а раз в `BACKUP_EVERY_N_FLUSHES` (msync/save — каждый flush).
@@ -295,10 +373,25 @@ impl WorldProvider for World {
         if !self.valid_coord(x, y) {
             return;
         }
+        let mut journal = self.journal.lock();
+        let foreground = self.cells.read().get_cell(x, y);
+        let road = self.road.read().get_cell(x, y);
+        if let Err(err) = journal.append(JournalRecord {
+            x,
+            y,
+            foreground,
+            road,
+            durability: d,
+        }) {
+            tracing::error!(x, y, error = ?err, "World journal append failed; durability mutation skipped");
+            return;
+        }
         let mut layer = self.durability.write();
         let off = layer.cell_offset(x.cast_unsigned(), y.cast_unsigned());
         layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
         layer.mark_dirty(x.cast_unsigned(), y.cast_unsigned());
+        drop(layer);
+        drop(journal);
     }
 
     #[allow(dead_code)]
@@ -318,8 +411,26 @@ impl WorldProvider for World {
         if !self.valid_coord(x, y) {
             return;
         }
+        let mut journal = self.journal.lock();
         let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
-        if self.cell_defs.get_typed(cell.cell_type).cell_is_empty() {
+        let is_empty = self.cell_defs.get_typed(cell.cell_type).cell_is_empty();
+        let foreground = if is_empty { 0 } else { cell.cell_type.0 };
+        let road = if is_empty {
+            cell.cell_type.0
+        } else {
+            self.road.read().get_cell(x, y)
+        };
+        if let Err(err) = journal.append(JournalRecord {
+            x,
+            y,
+            foreground,
+            road,
+            durability: cell.durability,
+        }) {
+            tracing::error!(x, y, error = ?err, "World journal append failed; cell mutation skipped");
+            return;
+        }
+        if is_empty {
             self.cells.write().set_cell(x, y, 0);
             self.road.write().set_cell(x, y, cell.cell_type.0);
         } else {
@@ -329,28 +440,47 @@ impl WorldProvider for World {
         let off = layer.cell_offset(ux, uy);
         layer.mmap[off..off + 4].copy_from_slice(&cell.durability.to_le_bytes());
         layer.mark_dirty(ux, uy);
+        drop(layer);
+        drop(journal);
     }
 
     fn destroy(&self, x: i32, y: i32) {
-        if !self.valid_coord(x, y) || self.is_empty(x, y) {
+        if !self.valid_coord(x, y) {
+            return;
+        }
+        let mut journal = self.journal.lock();
+        if self.is_empty(x, y) {
             return;
         }
         // Выкопанная клетка = EMPTY (как видит клиент по проводу); dur → 0.
-        self.cells.write().set_cell(x, y, 0);
         let r = self.road.read().get_cell(x, y);
-        if r == 0 {
+        let road = if r == 0 { EMPTY_CELL } else { r };
+        if let Err(err) = journal.append(JournalRecord {
+            x,
+            y,
+            foreground: 0,
+            road,
+            durability: 0.0,
+        }) {
+            tracing::error!(x, y, error = ?err, "World journal append failed; destroy skipped");
+            return;
+        }
+        self.cells.write().set_cell(x, y, 0);
+        if road != r {
             self.road.write().set_cell(x, y, EMPTY_CELL);
         }
-        self.set_durability(x, y, 0.0);
+        self.set_durability_direct(x, y, 0.0);
+        drop(journal);
     }
 
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool {
         if !self.valid_coord(x, y) {
             return false;
         }
+        let mut journal = self.journal.lock();
         let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
-        let destroyed = {
-            let mut layer = self.durability.write();
+        let (destroyed, new_durability) = {
+            let layer = self.durability.read();
             let off = layer.cell_offset(ux, uy);
             let d = f32::from_le_bytes([
                 layer.mmap[off],
@@ -358,19 +488,44 @@ impl WorldProvider for World {
                 layer.mmap[off + 2],
                 layer.mmap[off + 3],
             ]);
+            drop(layer);
             if d - dmg <= 0.0 {
-                layer.mmap[off..off + 4].copy_from_slice(&0.0f32.to_le_bytes());
-                layer.mark_dirty(ux, uy);
-                true
+                (true, 0.0)
             } else {
-                layer.mmap[off..off + 4].copy_from_slice(&(d - dmg).to_le_bytes());
-                layer.mark_dirty(ux, uy);
-                false
+                (false, d - dmg)
             }
         };
-        if destroyed {
-            self.destroy(x, y);
+        let foreground = if destroyed {
+            0
+        } else {
+            self.cells.read().get_cell(x, y)
+        };
+        let raw_road = self.road.read().get_cell(x, y);
+        let road = if destroyed && raw_road == 0 {
+            EMPTY_CELL
+        } else {
+            raw_road
+        };
+        if let Err(err) = journal.append(JournalRecord {
+            x,
+            y,
+            foreground,
+            road,
+            durability: new_durability,
+        }) {
+            tracing::error!(x, y, error = ?err, "World journal append failed; damage skipped");
+            return false;
         }
+        if destroyed {
+            self.cells.write().set_cell(x, y, 0);
+            if road != raw_road {
+                self.road.write().set_cell(x, y, EMPTY_CELL);
+            }
+            self.set_durability_direct(x, y, 0.0);
+        } else {
+            self.set_durability_direct(x, y, new_durability);
+        }
+        drop(journal);
         destroyed
     }
 
@@ -407,6 +562,7 @@ impl WorldProvider for World {
     }
 
     fn flush(&self) -> Result<()> {
+        let mut journal = self.journal.lock();
         let do_backup = {
             let n = self
                 .flush_count
@@ -461,6 +617,8 @@ impl WorldProvider for World {
             let _ = fs::copy(&dpath, &tmp);
             let _ = fs::rename(&tmp, &bak);
         }
+        journal.checkpoint()?;
+        drop(journal);
         Ok(())
     }
 
@@ -484,8 +642,10 @@ impl World {
 
         let map_path = state_dir.join(format!("{name}_v2.map"));
         let road_path = state_dir.join(format!("{name}_road_v2.map"));
+        let journal_path = state_dir.join(format!("{name}_world.journal"));
         let is_new = !map_path.exists();
         let needs_legacy_layer_split = map_path.exists() && !road_path.exists();
+        let journal_records = WorldJournal::read_records(&journal_path)?;
 
         let cells = MapStore::open(&map_path, width, height)?;
         let road = MapStore::open(&road_path, width, height)?;
@@ -512,6 +672,7 @@ impl World {
             durability: RwLock::new(durability),
             map_path,
             road_path,
+            journal: Mutex::new(WorldJournal::open(journal_path)?),
             cell_defs: Arc::new(cell_defs),
             flush_count: std::sync::atomic::AtomicU64::new(0),
         };
@@ -525,8 +686,41 @@ impl World {
             world.split_legacy_visible_layer();
             world.flush()?;
         }
+        if !is_new && !journal_records.is_empty() {
+            tracing::warn!(
+                records = journal_records.len(),
+                "Replaying world journal after uncheckpointed shutdown"
+            );
+            world.apply_journal_records(&journal_records);
+            world.flush()?;
+        }
 
         Ok(world)
+    }
+
+    fn set_durability_direct(&self, x: i32, y: i32, d: f32) {
+        let mut layer = self.durability.write();
+        let off = layer.cell_offset(x.cast_unsigned(), y.cast_unsigned());
+        layer.mmap[off..off + 4].copy_from_slice(&d.to_le_bytes());
+        layer.mark_dirty(x.cast_unsigned(), y.cast_unsigned());
+    }
+
+    fn apply_journal_records(&self, records: &[JournalRecord]) {
+        for record in records {
+            if !self.valid_coord(record.x, record.y) {
+                tracing::warn!(
+                    x = record.x,
+                    y = record.y,
+                    "Skipping out-of-bounds world journal record"
+                );
+                continue;
+            }
+            self.cells
+                .write()
+                .set_cell(record.x, record.y, record.foreground);
+            self.road.write().set_cell(record.x, record.y, record.road);
+            self.set_durability_direct(record.x, record.y, record.durability);
+        }
     }
 
     /// Дать генератору mmap durability-слоя (u8-вид f32) под write-локом.
@@ -628,6 +822,7 @@ mod tests {
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_road_v2.map"));
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_durability.map"));
+        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_world.journal"));
     }
 
     #[test]
@@ -667,5 +862,87 @@ mod tests {
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_world.journal")));
+    }
+
+    #[test]
+    fn world_journal_replays_uncheckpointed_cell_write() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!("test_world_journal_replay_{}", std::process::id());
+        let cell_defs_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("shared crate must live inside crates/")
+            .parent()
+            .expect("crates/ must live inside workspace root")
+            .join("configs/cells.json");
+
+        {
+            let world = World::new(
+                &name,
+                1,
+                1,
+                CellDefs::load(&cell_defs_path).unwrap(),
+                &temp_dir,
+            )
+            .unwrap();
+            world.set_cell_typed(10, 10, CellType(cell_type::ROAD));
+            world.set_cell_typed(10, 10, CellType(cell_type::ALIVE_CYAN));
+            world.set_durability(10, 10, 12.0);
+        }
+
+        let reopened = World::new(
+            &name,
+            1,
+            1,
+            CellDefs::load(&cell_defs_path).unwrap(),
+            &temp_dir,
+        )
+        .unwrap();
+        assert_eq!(reopened.get_cell(10, 10), cell_type::ALIVE_CYAN);
+        assert_eq!(reopened.get_solid_cell(10, 10), cell_type::ALIVE_CYAN);
+        assert_eq!(reopened.get_road_cell(10, 10), 0);
+        assert!((reopened.get_durability(10, 10) - 12.0).abs() < f32::EPSILON);
+        reopened.destroy(10, 10);
+        assert_eq!(reopened.get_cell(10, 10), cell_type::ROAD);
+
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_world.journal")));
+    }
+
+    #[test]
+    fn world_flush_checkpoints_journal() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!("test_world_journal_checkpoint_{}", std::process::id());
+        let journal_path = temp_dir.join(format!("{name}_world.journal"));
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
+        let world = World::new(&name, 1, 1, cell_defs, &temp_dir).unwrap();
+
+        world.set_cell_typed(12, 10, CellType(cell_type::GREEN));
+        assert!(
+            std::fs::metadata(&journal_path).unwrap().len() > 0,
+            "world mutation must append to journal before checkpoint"
+        );
+
+        world.flush().unwrap();
+        assert_eq!(
+            std::fs::metadata(&journal_path).unwrap().len(),
+            0,
+            "checkpoint must truncate replay journal"
+        );
+
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(journal_path);
     }
 }
