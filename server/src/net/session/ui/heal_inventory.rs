@@ -1,8 +1,8 @@
 //! Лечение и инвентарь.
 #![allow(clippy::cast_possible_truncation)]
 use crate::game::buildings::{
-    BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats, GridPosition,
-    can_destroy, damage_building, is_damagable,
+    BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, can_destroy, damage_building,
+    is_damagable,
 };
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
@@ -507,22 +507,17 @@ async fn place_building_from_item_with(
         }
     };
     let code = building_db_code_for_item(pack_type);
-    let id = state
-        .db
-        .insert_building(code, bx, by, pid.into(), building_clan, &extra)
-        .await
-        .ok();
-    if let Some(db_id) = id {
-        let spec = BuildingSpawnSpec {
-            id: db_id,
-            pack_type,
-            x: bx,
-            y: by,
-            owner_id: pid,
-            clan_id: building_clan,
-            extra: &extra,
-        };
-        state.spawn_building_runtime(&spec);
+    let insert_spec = crate::game::BuildingInsertSpec {
+        type_code: code,
+        pack_type,
+        x: bx,
+        y: by,
+        owner_id: pid,
+        clan_id: building_clan,
+        extra: &extra,
+    };
+    let created = state.insert_building_runtime(&insert_spec).await;
+    if let Ok((db_id, _)) = created {
         let view = PackView {
             id: db_id,
             pack_type,

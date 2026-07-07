@@ -40,6 +40,9 @@
 - Runtime commit нового здания (`ECS spawn + runtime индексы + mmap footprint`)
   сведён в `GameState::spawn_building_runtime`; session paths после DB insert
   больше не вызывают эти шаги по отдельности.
+- Live creation здания (`DB insert + runtime commit`) сведён в
+  `GameState::insert_building_runtime`; session paths оставляют у себя только
+  возврат денег/предметов при ошибке БД.
 - Runtime removal здания (`runtime индексы + ECS despawn + mmap footprint`) сведён
   в `GameState::remove_building_runtime`; destroy/protector paths больше не
   дублируют ручной cleanup runtime-слоёв.
@@ -52,9 +55,10 @@
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
   type/durability для live-path, box-клетки получили первый boundary, а runtime
-  индексы зданий, mmap footprint, spawn и removal ECS-компонентов зданий сведены
-  в helper boundary. DB insert/delete ещё не включён в эту authoritative операцию
-  из-за разных сценариев возврата ресурсов/ошибок.
+  индексы зданий, mmap footprint, live creation и runtime removal зданий сведены
+  в helper boundary. DB delete и rollback/compensation после runtime failure ещё
+  не включены в эту authoritative операцию из-за разных сценариев возврата
+  ресурсов/ошибок.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.

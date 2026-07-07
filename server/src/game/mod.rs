@@ -15,7 +15,7 @@ pub use world::{direction, sand};
 
 use crate::config::Config;
 use crate::config::ProgrammatorConfig;
-use crate::db::Database;
+use crate::db::{Database, buildings::BuildingExtra};
 use crate::world::{World, WorldProvider};
 use anyhow::Context as _;
 use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
@@ -163,6 +163,16 @@ pub struct PackOverlay {
     pub clan: u8,
     /// 1 если `charge > 0`, 0 иначе ("charged" flag для оверлея).
     pub charged: u8,
+}
+
+pub struct BuildingInsertSpec<'a> {
+    pub type_code: &'a str,
+    pub pack_type: PackType,
+    pub x: i32,
+    pub y: i32,
+    pub owner_id: PlayerId,
+    pub clan_id: i32,
+    pub extra: &'a BuildingExtra,
 }
 
 pub struct IncomingActionsQueue {
@@ -960,6 +970,37 @@ impl GameState {
         self.register_building_entity(spec.x, spec.y, entity);
         self.place_building_footprint(spec.x, spec.y, spec.pack_type);
         entity
+    }
+
+    /// Persist + runtime commit нового здания.
+    /// Ошибку БД возвращает caller'у: возврат денег/предметов остаётся на
+    /// границе конкретного действия.
+    pub async fn insert_building_runtime(
+        &self,
+        spec: &BuildingInsertSpec<'_>,
+    ) -> anyhow::Result<(i32, Entity)> {
+        let id = self
+            .db
+            .insert_building(
+                spec.type_code,
+                spec.x,
+                spec.y,
+                spec.owner_id.into(),
+                spec.clan_id,
+                spec.extra,
+            )
+            .await?;
+        let spawn_spec = BuildingSpawnSpec {
+            id,
+            pack_type: spec.pack_type,
+            x: spec.x,
+            y: spec.y,
+            owner_id: spec.owner_id,
+            clan_id: spec.clan_id,
+            extra: spec.extra,
+        };
+        let entity = self.spawn_building_runtime(&spawn_spec);
+        Ok((id, entity))
     }
 
     /// Runtime removal здания: runtime индексы + ECS despawn + mmap footprint.

@@ -2,7 +2,7 @@
 use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
 use crate::game::broadcast_cell_update;
 use crate::game::buildings::{
-    BuildingFlags, BuildingSpawnSpec, BuildingStorage, PackType, PackView, get_building_config,
+    BuildingFlags, BuildingStorage, PackType, PackView, get_building_config,
 };
 use crate::game::player::{
     PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
@@ -232,12 +232,17 @@ pub async fn handle_place_building(
     } else {
         0
     };
-    let db_id = match state
-        .db
-        .insert_building(type_code, bx, by, pid.into(), initial_clan, &extra)
-        .await
-    {
-        Ok(id) => id,
+    let insert_spec = crate::game::BuildingInsertSpec {
+        type_code,
+        pack_type,
+        x: bx,
+        y: by,
+        owner_id: pid,
+        clan_id: initial_clan,
+        extra: &extra,
+    };
+    let (db_id, entity) = match state.insert_building_runtime(&insert_spec).await {
+        Ok(created) => created,
         Err(_) => {
             let refunded = state
                 .modify_player(pid, |ecs, entity| {
@@ -263,17 +268,6 @@ pub async fn handle_place_building(
             return;
         }
     };
-
-    let spec = BuildingSpawnSpec {
-        id: db_id,
-        pack_type,
-        x: bx,
-        y: by,
-        owner_id: pid,
-        clan_id: initial_clan,
-        extra: &extra,
-    };
-    let entity = state.spawn_building_runtime(&spec);
 
     // Spawn BotSpot entity for Spot buildings (1:1 with C# Spot.Build → new BotSpot).
     if pack_type == PackType::Spot {
