@@ -1,13 +1,19 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
-use crate::db::players::Role;
-use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats};
+use crate::db::players::{PlayerRow, Role, SkillEntry};
+use crate::game::player::{PlayerFlags, PlayerInventory, PlayerSkillsComp, PlayerStats};
 use crate::net::session::outbound::inventory_sync::send_inventory;
+use crate::net::session::outbound::player_sync::{
+    send_player_basket, send_player_health, send_player_level, send_player_skills,
+    send_player_speed,
+};
 use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{building_extra_for_pack_type, modify_pack_with_db};
 use crate::net::session::social::clans::{
     handle_clan_create, handle_clan_kick_by_name, handle_clan_leave,
 };
+use num_traits::ToPrimitive;
+use strum::IntoEnumIterator;
 
 const ADMIN_COMMAND_HELP: &str = concat!(
     "Админские команды:\n",
@@ -17,6 +23,7 @@ const ADMIN_COMMAND_HELP: &str = concat!(
     "/moneyall AMOUNT — добавить денег всем игрокам\n",
     "/tp X Y — телепортироваться\n",
     "/heal — восстановить HP\n",
+    "/skill ИМЯ|me CODE LEVEL [SLOT] [EXP] — установить скилл; /skill codes — wire/DB-коды\n",
     "/kick ИМЯ — кикнуть игрока\n",
     "/role ИМЯ admin|mod|player — установить роль\n",
     "/pack owner X Y OWNER_ID — сменить владельца здания\n",
@@ -29,6 +36,8 @@ const ADMIN_COMMAND_HELP: &str = concat!(
 const CMD_USAGE_GIVE: &str = "Использование: /give ITEM_ID AMOUNT";
 const CMD_USAGE_MONEY: &str = "Использование: /money AMOUNT";
 const CMD_USAGE_MONEY_ALL: &str = "Использование: /moneyall AMOUNT";
+const CMD_USAGE_SKILL: &str =
+    "Использование: /skill ИМЯ|me CODE LEVEL [SLOT] [EXP]. Коды: /skill codes";
 const CMD_USAGE_TP: &str = "Использование: /tp X Y";
 const CMD_USAGE_PACK_OWNER: &str = "Использование: /pack owner X Y OWNER_ID";
 const CMD_USAGE_PACK_CLAN: &str = "Использование: /pack clan X Y CLAN_ID";
@@ -108,6 +117,7 @@ pub async fn handle_chat_command(
         "/giveall" => handle_chat_giveall_command(state, tx, pid),
         "/money" => handle_chat_money_command(state, tx, pid, args),
         "/moneyall" => handle_chat_money_all_command(state, tx, pid, args).await,
+        "/skill" => handle_chat_skill_command(state, tx, pid, args).await,
         "/tp" => handle_chat_teleport_command(state, tx, pid, args),
         "/heal" => handle_chat_heal_command(state, tx, pid),
         "/kick" => handle_chat_kick_command(state, tx, pid, args),
@@ -304,6 +314,227 @@ async fn handle_chat_money_all_command(
         "Банк",
         &format!("Выдано $ {amount} всем игрокам ({count})"),
     );
+}
+
+// ─── /skill ────────────────────────────────────────────────────────────────
+
+async fn handle_chat_skill_command(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    pid: PlayerId,
+    args: &[&str],
+) {
+    if !ensure_admin(tx, state, pid) {
+        return;
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("codes") || arg.eq_ignore_ascii_case("help"))
+    {
+        send_ok(tx, "Скиллы", &admin_skill_codes_help());
+        return;
+    }
+    let (Some(&target_arg), Some(&code), Some(&level_arg)) =
+        (args.first(), args.get(1), args.get(2))
+    else {
+        send_ok(tx, "Скилл", CMD_USAGE_SKILL);
+        return;
+    };
+    let target_pid = match resolve_online_player_arg(state, pid, target_arg) {
+        Some(target_pid) => target_pid,
+        None => {
+            send_ok(tx, "Ошибка", &format!("Игрок '{target_arg}' не в сети"));
+            return;
+        }
+    };
+    let Some(skill_type) = SkillType::from_code(code) else {
+        send_ok(
+            tx,
+            "Скилл",
+            "Неизвестный wire/DB-код скилла. Примеры: U=геология, M=ход, d=копка, l=HP",
+        );
+        return;
+    };
+    let level = match level_arg.parse::<i32>() {
+        Ok(level) if level >= 1 => level,
+        _ => {
+            send_ok(tx, "Скилл", "LEVEL должен быть целым числом >= 1");
+            return;
+        }
+    };
+    let slot = match args.get(3).map(|raw| raw.parse::<i32>()) {
+        Some(Ok(slot)) if slot >= 0 => Some(slot),
+        Some(_) => {
+            send_ok(tx, "Скилл", "SLOT должен быть целым числом >= 0");
+            return;
+        }
+        None => None,
+    };
+    let exp = match args.get(4).map(|raw| raw.parse::<f32>()) {
+        Some(Ok(exp)) if exp >= 0.0 && exp.is_finite() => exp,
+        Some(_) => {
+            send_ok(tx, "Скилл", "EXP должен быть конечным числом >= 0");
+            return;
+        }
+        None => 0.0,
+    };
+
+    let Some((target_name, chosen_slot, row)) =
+        apply_admin_skill_set(state, tx, target_pid, skill_type, level, slot, exp)
+    else {
+        return;
+    };
+    if let Err(e) = state.db.save_player(&row).await {
+        tracing::error!(player_id = %target_pid, error = ?e, "Failed to write-through save player after /skill");
+        send_ok(
+            tx,
+            "Скилл",
+            "Скилл изменён в текущей сессии, но не сохранён в БД.",
+        );
+        return;
+    }
+    send_ok(
+        tx,
+        "Скилл",
+        &format!(
+            "{}: {} level {} slot {} exp {}",
+            target_name,
+            skill_type.code(),
+            level,
+            chosen_slot,
+            exp
+        ),
+    );
+}
+
+fn admin_skill_codes_help() -> String {
+    SkillType::iter()
+        .map(|skill| format!("{}={skill:?}", skill.code()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn resolve_online_player_arg(
+    state: &Arc<GameState>,
+    self_pid: PlayerId,
+    arg: &str,
+) -> Option<PlayerId> {
+    if arg.eq_ignore_ascii_case("me") || arg == "self" {
+        return Some(self_pid);
+    }
+    if let Ok(pid) = arg.parse::<PlayerId>() {
+        return state.is_player_active(pid).then_some(pid);
+    }
+    state.active_player_ids().into_iter().find(|&candidate| {
+        state
+            .query_player(candidate, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerMetadata>(entity)
+                    .is_some_and(|meta| meta.name.eq_ignore_ascii_case(arg))
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn apply_admin_skill_set(
+    state: &Arc<GameState>,
+    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    target_pid: PlayerId,
+    skill_type: SkillType,
+    level: i32,
+    slot: Option<i32>,
+    exp: f32,
+) -> Option<(String, i32, PlayerRow)> {
+    state
+        .modify_player(target_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if ecs.get::<PlayerSkillsComp>(entity).is_none()
+                || ecs.get::<PlayerStats>(entity).is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+                || ecs
+                    .get::<crate::game::player::PlayerMetadata>(entity)
+                    .is_none()
+            {
+                send_command_state_error(tx);
+                return None;
+            }
+
+            let chosen_slot = {
+                let skills = ecs
+                    .get::<PlayerSkillsComp>(entity)
+                    .expect("PlayerSkillsComp checked before admin skill set");
+                choose_admin_skill_slot(&skills.states, skill_type.code(), slot)?
+            };
+            {
+                let mut skills = ecs
+                    .get_mut::<PlayerSkillsComp>(entity)
+                    .expect("PlayerSkillsComp checked before admin skill mutation");
+                skills.states.skills.retain(|&existing_slot, entry| {
+                    existing_slot == chosen_slot || entry.code != skill_type.code()
+                });
+                skills.states.total_slots = skills.states.total_slots.max(chosen_slot + 1);
+                skills.states.skills.insert(
+                    chosen_slot,
+                    SkillEntry {
+                        code: skill_type.code().to_string(),
+                        level,
+                        exp,
+                    },
+                );
+            }
+            if skill_type == SkillType::Health {
+                let max_health = {
+                    let skills = ecs
+                        .get::<PlayerSkillsComp>(entity)
+                        .expect("PlayerSkillsComp checked before admin health recalc");
+                    get_player_skill_effect(&skills.states, SkillType::Health)
+                        .to_i32()
+                        .unwrap_or(0)
+                };
+                let mut player_stats = ecs
+                    .get_mut::<PlayerStats>(entity)
+                    .expect("PlayerStats checked before admin health recalc");
+                player_stats.max_health = max_health;
+                player_stats.health = player_stats.health.min(player_stats.max_health).max(1);
+            }
+            let mut flags = ecs
+                .get_mut::<PlayerFlags>(entity)
+                .expect("PlayerFlags checked before admin skill dirty mark");
+            flags.dirty = true;
+
+            let target_name = ecs
+                .get::<crate::game::player::PlayerMetadata>(entity)
+                .expect("PlayerMetadata checked before admin skill set")
+                .name
+                .clone();
+            let skills = ecs
+                .get::<PlayerSkillsComp>(entity)
+                .expect("PlayerSkillsComp checked before admin skill sync");
+            send_player_skills(tx, skills);
+            send_player_level(tx, skills);
+            send_player_speed(tx, skills);
+            let player_stats = ecs
+                .get::<PlayerStats>(entity)
+                .expect("PlayerStats checked before admin skill sync");
+            send_player_health(tx, player_stats);
+            send_player_basket(tx, player_stats, skills);
+            let row = crate::game::player::extract_player_row(ecs, entity)
+                .expect("Player row checked before admin skill sync");
+            Some((target_name, chosen_slot, row))
+        })
+        .flatten()
+}
+
+fn choose_admin_skill_slot(
+    skills: &crate::db::SkillSlots,
+    code: &str,
+    explicit_slot: Option<i32>,
+) -> Option<i32> {
+    if let Some(slot) = explicit_slot {
+        return Some(slot);
+    }
+    if let Some((&slot, _)) = skills.skills.iter().find(|(_, entry)| entry.code == code) {
+        return Some(slot);
+    }
+    (0..skills.total_slots).find(|slot| !skills.skills.contains_key(slot))
 }
 
 // ─── /tp ────────────────────────────────────────────────────────────────────
@@ -827,6 +1058,13 @@ mod tests {
         ecs.entity_mut(entity).remove::<PlayerFlags>();
     }
 
+    fn make_admin(game_state: &Arc<GameState>, pid: PlayerId) {
+        let entity = game_state.get_player_entity(pid).unwrap();
+        let mut ecs = game_state.ecs.write();
+        let mut admin_stats = ecs.get_mut::<PlayerStats>(entity).unwrap();
+        admin_stats.role = 2;
+    }
+
     fn player_money(game_state: &Arc<GameState>, pid: PlayerId) -> i64 {
         game_state
             .query_player_opt(pid, |ecs, entity| {
@@ -843,6 +1081,146 @@ mod tests {
                 Some((pos.x, pos.y))
             })
             .unwrap()
+    }
+
+    fn player_skill_entry(
+        game_state: &Arc<GameState>,
+        pid: PlayerId,
+        slot: i32,
+    ) -> Option<SkillEntry> {
+        game_state.query_player_opt(pid, |ecs, entity| {
+            let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+            skills.states.skills.get(&slot).cloned()
+        })
+    }
+
+    fn player_skill_count(game_state: &Arc<GameState>, pid: PlayerId, code: &str) -> usize {
+        game_state
+            .query_player_opt(pid, |ecs, entity| {
+                let skills = ecs.get::<PlayerSkillsComp>(entity)?;
+                Some(
+                    skills
+                        .states
+                        .skills
+                        .values()
+                        .filter(|entry| entry.code == code)
+                        .count(),
+                )
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn skill_sets_wire_code_slot_and_syncs_player_packets() {
+        let test = make_command_test_state("skill_set").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin(&test.state, pid);
+
+        handle_chat_skill_command(&test.state, &tx, pid, &["me", "U", "200", "10", "900000"]).await;
+
+        let entry = player_skill_entry(&test.state, pid, 10).unwrap();
+        assert_eq!(entry.code, SkillType::Geology.code());
+        assert_eq!(entry.level, 200);
+        assert!((entry.exp - 900_000.0).abs() < f32::EPSILON);
+        assert_eq!(
+            player_skill_count(&test.state, pid, SkillType::Geology.code()),
+            1
+        );
+        let saved = test
+            .state
+            .db
+            .get_player_by_id(test.player.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let saved_entry = saved.skills.skills.get(&10).unwrap();
+        assert_eq!(saved_entry.code, SkillType::Geology.code());
+        assert_eq!(saved_entry.level, 200);
+        assert!((saved_entry.exp - 900_000.0).abs() < f32::EPSILON);
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|(event, _)| event == "@S"));
+        assert!(events.iter().any(|(event, _)| event == "LV"));
+        assert!(events.iter().any(|(event, _)| event == "sp"));
+        assert!(events.iter().any(|(event, _)| event == "@L"));
+        assert!(events.iter().any(|(event, _)| event == "@B"));
+        assert_eq!(events.last().unwrap().0, "OK");
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_unknown_code_is_explicit_wire_error_without_mutation() {
+        let test = make_command_test_state("skill_unknown").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin(&test.state, pid);
+
+        handle_chat_skill_command(&test.state, &tx, pid, &["me", "GEO", "200", "10", "900000"])
+            .await;
+
+        assert!(player_skill_entry(&test.state, pid, 10).is_none());
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Неизвестный wire/DB-код скилла"));
+        assert!(message.contains("U=геология"));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_codes_help_is_generated_from_wire_codes() {
+        let test = make_command_test_state("skill_codes").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin(&test.state, pid);
+
+        handle_chat_skill_command(&test.state, &tx, pid, &["codes"]).await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("U=Geology"));
+        assert!(message.contains("M=Movement"));
+        assert!(message.contains("d=Digging"));
+        assert!(!message.contains("GEO="));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn skill_missing_flags_is_explicit_error_without_skill_mutation() {
+        let test = make_command_test_state("skill_missing_flags").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin_and_remove_flags(&test.state, pid);
+
+        handle_chat_skill_command(&test.state, &tx, pid, &["me", "U", "200", "10", "900000"]).await;
+
+        assert!(player_skill_entry(&test.state, pid, 10).is_none());
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("Состояние игрока недоступно."));
+
+        test.cleanup();
     }
 
     #[tokio::test]
