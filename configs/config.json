@@ -1,9 +1,9 @@
 {
   "world_name": "test-1",
   "port": 8090,
-  "world_chunks_w": 64,
-  "world_chunks_h": 64,
-  "data_dir": ".",
+  "world_chunks_w": 32,
+  "world_chunks_h": 563,
+  "data_dir": "data",
   "logging": {
     "filter": "info,tokio=warn",
     "format": "pretty",

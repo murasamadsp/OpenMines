@@ -162,13 +162,18 @@ pub struct World {
     pub chunks_w: u32,
     pub chunks_h: u32,
     /// Клетки в клиент-совместимом формате `.map` (см. [`map_format`] /
-    /// `client/Assets/Scripts/MapModel.cs`). Один разреженный файл.
+    /// `client/Assets/Scripts/MapModel.cs`). Foreground/solid слой.
     cells: RwLock<MapStore>,
+    /// Background/road слой. Соответствует C# `World.road`: если foreground
+    /// пустой, клиент видит этот байт.
+    road: RwLock<MapStore>,
     /// Серверная прочность клеток (`damage_cell`). У клиента понятия
     /// durability нет — это серверное состояние, отдельный mmap f32-слой.
     durability: RwLock<Layer>,
     /// Путь `{name}_v2.map` для инкрементального сохранения (как `MapModel`).
     map_path: PathBuf,
+    /// Путь `{name}_road_v2.map` для background/road слоя.
+    road_path: PathBuf,
     pub cell_defs: Arc<CellDefs>,
     /// Счётчик вызовов flush: дорогой `.bak` делаем не каждый flush,
     /// а раз в `BACKUP_EVERY_N_FLUSHES` (msync/save — каждый flush).
@@ -220,7 +225,11 @@ impl WorldProvider for World {
             return 0;
         }
         let b = self.cells.read().get_cell(x, y);
-        if b == 0 { EMPTY_CELL } else { b }
+        if b != 0 {
+            return b;
+        }
+        let r = self.road.read().get_cell(x, y);
+        if r == 0 { EMPTY_CELL } else { r }
     }
 
     fn get_cell_typed(&self, x: i32, y: i32) -> CellType {
@@ -228,21 +237,18 @@ impl WorldProvider for World {
     }
 
     fn get_solid_cell(&self, x: i32, y: i32) -> u8 {
-        let c = self.get_cell(x, y);
-        if self.cell_defs.get(c).cell_is_empty() {
-            0
-        } else {
-            c
+        if !self.valid_coord(x, y) {
+            return 0;
         }
+        self.cells.read().get_cell(x, y)
     }
 
     fn get_road_cell(&self, x: i32, y: i32) -> u8 {
-        let c = self.get_cell(x, y);
-        if self.cell_defs.get(c).cell_is_empty() {
-            c
-        } else {
-            0
+        if !self.valid_coord(x, y) || self.get_solid_cell(x, y) != 0 {
+            return 0;
         }
+        let r = self.road.read().get_cell(x, y);
+        if r == 0 { EMPTY_CELL } else { r }
     }
 
     fn set_cell(&self, x: i32, y: i32, cell: u8) {
@@ -313,7 +319,12 @@ impl WorldProvider for World {
             return;
         }
         let (ux, uy) = (x.cast_unsigned(), y.cast_unsigned());
-        self.cells.write().set_cell(x, y, cell.cell_type.0);
+        if self.cell_defs.get_typed(cell.cell_type).cell_is_empty() {
+            self.cells.write().set_cell(x, y, 0);
+            self.road.write().set_cell(x, y, cell.cell_type.0);
+        } else {
+            self.cells.write().set_cell(x, y, cell.cell_type.0);
+        }
         let mut layer = self.durability.write();
         let off = layer.cell_offset(ux, uy);
         layer.mmap[off..off + 4].copy_from_slice(&cell.durability.to_le_bytes());
@@ -325,7 +336,12 @@ impl WorldProvider for World {
             return;
         }
         // Выкопанная клетка = EMPTY (как видит клиент по проводу); dur → 0.
-        self.set_cell(x, y, EMPTY_CELL);
+        self.cells.write().set_cell(x, y, 0);
+        let r = self.road.read().get_cell(x, y);
+        if r == 0 {
+            self.road.write().set_cell(x, y, EMPTY_CELL);
+        }
+        self.set_durability(x, y, 0.0);
     }
 
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool {
@@ -365,17 +381,28 @@ impl WorldProvider for World {
         }
         let base_x = chunk_x * CHUNK_SIZE;
         let base_y = chunk_y * CHUNK_SIZE;
-        let store = self.cells.read();
         let mut res = Vec::with_capacity(n);
-        // Порядок байт HB 'M' = как кэширует клиент (`MapBlock.data`,
-        // индекс `x + 32*y`): for y:0..32 { for x:0..32 }.
-        for y in 0..CHUNK_SIZE {
-            for x in 0..CHUNK_SIZE {
-                let b = store.get_cell((base_x + x).cast_signed(), (base_y + y).cast_signed());
-                res.push(if b == 0 { EMPTY_CELL } else { b });
+        {
+            let cells = self.cells.read();
+            let road = self.road.read();
+            // Порядок байт HB 'M' = как кэширует клиент (`MapBlock.data`,
+            // индекс `x + 32*y`): for y:0..32 { for x:0..32 }.
+            for y in 0..CHUNK_SIZE {
+                for x in 0..CHUNK_SIZE {
+                    let wx = (base_x + x).cast_signed();
+                    let wy = (base_y + y).cast_signed();
+                    let b = cells.get_cell(wx, wy);
+                    if b != 0 {
+                        res.push(b);
+                    } else {
+                        let r = road.get_cell(wx, wy);
+                        res.push(if r == 0 { EMPTY_CELL } else { r });
+                    }
+                }
             }
+            drop(road);
+            drop(cells);
         }
-        drop(store);
         res
     }
 
@@ -395,10 +422,22 @@ impl WorldProvider for World {
                 store.save(&self.map_path)?;
             }
         }
+        {
+            let mut store = self.road.write();
+            if store.is_dirty() {
+                store.save(&self.road_path)?;
+            }
+        }
         if do_backup && self.map_path.exists() {
             let bak = self.map_path.with_extension("map.bak");
             let tmp = self.map_path.with_extension("map.tmp");
             let _ = fs::copy(&self.map_path, &tmp);
+            let _ = fs::rename(&tmp, &bak);
+        }
+        if do_backup && self.road_path.exists() {
+            let bak = self.road_path.with_extension("map.bak");
+            let tmp = self.road_path.with_extension("map.tmp");
+            let _ = fs::copy(&self.road_path, &tmp);
             let _ = fs::rename(&tmp, &bak);
         }
 
@@ -444,9 +483,12 @@ impl World {
             .map_err(|_| anyhow::anyhow!("world height overflows i32"))?;
 
         let map_path = state_dir.join(format!("{name}_v2.map"));
+        let road_path = state_dir.join(format!("{name}_road_v2.map"));
         let is_new = !map_path.exists();
+        let needs_legacy_layer_split = map_path.exists() && !road_path.exists();
 
         let cells = MapStore::open(&map_path, width, height)?;
+        let road = MapStore::open(&road_path, width, height)?;
         tracing::info!(
             "Map store {}: {}x{}, {} blocks allocated",
             map_path.display(),
@@ -466,8 +508,10 @@ impl World {
             chunks_w,
             chunks_h,
             cells: RwLock::new(cells),
+            road: RwLock::new(road),
             durability: RwLock::new(durability),
             map_path,
+            road_path,
             cell_defs: Arc::new(cell_defs),
             flush_count: std::sync::atomic::AtomicU64::new(0),
         };
@@ -475,6 +519,10 @@ impl World {
         if is_new {
             tracing::info!("Initializing new world...");
             generator::generate(&world, 42);
+            world.flush()?;
+        } else if needs_legacy_layer_split {
+            tracing::info!("Splitting legacy single-layer map into foreground/background layers");
+            world.split_legacy_visible_layer();
             world.flush()?;
         }
 
@@ -494,19 +542,47 @@ impl World {
         let cs = CHUNK_SIZE;
         let w = self.chunks_w * cs;
         let h = self.chunks_h * cs;
-        let mut store = self.cells.write();
-        for y in 0..h {
-            for x in 0..w {
-                let chunk_idx = ((y / cs) + self.chunks_h * (x / cs)) as usize;
-                let cell_in_chunk = ((y % cs) + cs * (x % cs)) as usize;
-                let idx = chunk_idx * (cs * cs) as usize + cell_in_chunk;
-                let cell = flat[idx];
-                store.set_cell(
-                    x.cast_signed(),
-                    y.cast_signed(),
-                    if cell == 0 { EMPTY_CELL } else { cell },
-                );
+        {
+            let mut store = self.cells.write();
+            let mut road = self.road.write();
+            for y in 0..h {
+                for x in 0..w {
+                    let chunk_idx = ((y / cs) + self.chunks_h * (x / cs)) as usize;
+                    let cell_in_chunk = ((y % cs) + cs * (x % cs)) as usize;
+                    let idx = chunk_idx * (cs * cs) as usize + cell_in_chunk;
+                    let cell = flat[idx];
+                    let (x, y) = (x.cast_signed(), y.cast_signed());
+                    if cell == 0 || self.cell_defs.get(cell).cell_is_empty() {
+                        store.set_cell(x, y, 0);
+                        road.set_cell(x, y, if cell == 0 { EMPTY_CELL } else { cell });
+                    } else {
+                        store.set_cell(x, y, cell);
+                    }
+                }
             }
+            drop(road);
+            drop(store);
+        }
+    }
+
+    fn split_legacy_visible_layer(&self) {
+        let w = self.chunks_w * CHUNK_SIZE;
+        let h = self.chunks_h * CHUNK_SIZE;
+        {
+            let mut cells = self.cells.write();
+            let mut road = self.road.write();
+            for y in 0..h {
+                for x in 0..w {
+                    let (x, y) = (x.cast_signed(), y.cast_signed());
+                    let cell = cells.get_cell(x, y);
+                    if cell != 0 && self.cell_defs.get(cell).cell_is_empty() {
+                        cells.set_cell(x, y, 0);
+                        road.set_cell(x, y, cell);
+                    }
+                }
+            }
+            drop(road);
+            drop(cells);
         }
     }
 
@@ -540,21 +616,56 @@ mod tests {
         .unwrap();
         let world = World::new("test_world_facade", 1, 1, cell_defs, &temp_dir).unwrap();
 
-        let cell = WorldCell {
-            cell_type: CellType(cell_type::ROAD),
-            durability: 5.0,
-        };
-        world.write_world_cell(10, 10, cell);
+        world.set_cell_typed(10, 10, CellType(cell_type::ROAD));
 
         let read = world.read_world_cell(10, 10).unwrap();
         assert_eq!(read.cell_type, CellType(cell_type::ROAD));
-        assert!((read.durability - 5.0).abs() < f32::EPSILON);
 
         world.set_cell_typed(11, 10, CellType(cell_type::GREEN));
         assert_eq!(world.get_cell_typed(11, 10), CellType(cell_type::GREEN));
 
         // cleanup temp files if created
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));
+        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_road_v2.map"));
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_durability.map"));
+    }
+
+    #[test]
+    fn solid_cell_preserves_background_road_layer() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!("test_world_layers_{}", std::process::id());
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
+        let world = World::new(&name, 1, 1, cell_defs, &temp_dir).unwrap();
+
+        world.set_cell_typed(10, 10, CellType(cell_type::ROAD));
+        assert_eq!(world.get_cell(10, 10), cell_type::ROAD);
+        assert_eq!(world.get_road_cell(10, 10), cell_type::ROAD);
+        assert_eq!(world.get_solid_cell(10, 10), 0);
+
+        world.set_cell_typed(10, 10, CellType(cell_type::ALIVE_CYAN));
+        assert_eq!(world.get_cell(10, 10), cell_type::ALIVE_CYAN);
+        assert_eq!(world.get_solid_cell(10, 10), cell_type::ALIVE_CYAN);
+        assert_eq!(world.get_road_cell(10, 10), 0);
+
+        world.destroy(10, 10);
+        assert_eq!(world.get_cell(10, 10), cell_type::ROAD);
+        assert_eq!(world.get_road_cell(10, 10), cell_type::ROAD);
+        assert_eq!(world.get_solid_cell(10, 10), 0);
+        assert_eq!(
+            world.read_chunk_cells(0, 0)[10 + 10 * CHUNK_SIZE as usize],
+            cell_type::ROAD
+        );
+
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
     }
 }

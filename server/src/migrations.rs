@@ -38,6 +38,7 @@ pub fn migrate_legacy_state_files(state_dir: &Path, world_name: &str) -> Result<
         "openmines.db-wal".to_string(),
         "openmines.db-shm".to_string(),
         format!("{world_name}_v2.map"),
+        format!("{world_name}_road_v2.map"),
         format!("{world_name}_durability.map"),
     ];
     for name in names {

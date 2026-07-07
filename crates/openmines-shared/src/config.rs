@@ -285,6 +285,9 @@ impl Config {
         if self.data_dir.trim().is_empty() {
             anyhow::bail!("data_dir is empty");
         }
+        if self.data_dir.trim() == "." {
+            anyhow::bail!("data_dir must point to a state directory, not repository root");
+        }
         self.logging.validate()?;
         self.gameplay
             .validate(self.world_chunks_w, self.world_chunks_h)?;
@@ -442,7 +445,7 @@ mod tests {
 
     const FULL: &str = r#"{
         "world_name": "t", "port": 8090, "world_chunks_w": 4, "world_chunks_h": 4,
-        "data_dir": ".", "logging": {"filter": "info", "format": "pretty", "file": null},
+        "data_dir": "data", "logging": {"filter": "info", "format": "pretty", "file": null},
         "cron": {"hourly_log_enabled": true},
         "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
                      "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
@@ -613,6 +616,7 @@ mod tests {
             ("world_chunks_w", serde_json::json!(0)),
             ("world_chunks_h", serde_json::json!(0)),
             ("data_dir", serde_json::json!(" ")),
+            ("data_dir", serde_json::json!(".")),
         ] {
             let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
             raw.as_object_mut().unwrap().insert(key.to_string(), value);
