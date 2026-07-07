@@ -799,6 +799,19 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn shpaak_destroy_item_indices_match_reference_inventory_slots() {
+        assert_eq!(shpaak_item_index(PackType::Teleport), Some(0));
+        assert_eq!(shpaak_item_index(PackType::Resp), Some(1));
+        assert_eq!(shpaak_item_index(PackType::Up), Some(2));
+        assert_eq!(shpaak_item_index(PackType::Market), Some(3));
+        assert_eq!(shpaak_item_index(PackType::Craft), Some(24));
+        assert_eq!(shpaak_item_index(PackType::Gun), Some(26));
+        assert_eq!(shpaak_item_index(PackType::Storage), Some(29));
+        assert_eq!(shpaak_item_index(PackType::Gate), None);
+        assert_eq!(shpaak_item_index(PackType::Spot), None);
+    }
+
     #[tokio::test]
     async fn place_building_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_building_test_state("place_missing_flags").await;
