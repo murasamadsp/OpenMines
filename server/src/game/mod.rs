@@ -10,6 +10,8 @@ pub mod world;
 
 pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
+#[allow(unused_imports)]
+pub use logic::contracts::{GameEvent, PlayerCommand, SaveCommand};
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
 pub use structures::buildings;

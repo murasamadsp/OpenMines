@@ -194,3 +194,8 @@ fmod_editor.log
 tools/tg_parser_session.session
 tools/tg_config.json
 tools/tg_state.json
+
+# Live probe state: локальные auth/cache артефакты, не исходники тулзов
+tools/.repro_creds.json
+tools/.sim_creds.json
+tools/.p2_ref.json
