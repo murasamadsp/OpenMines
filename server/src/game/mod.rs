@@ -909,6 +909,17 @@ impl GameState {
         }
     }
 
+    pub fn broadcast_cell_update(&self, x: i32, y: i32) {
+        use crate::protocol::packets::hb_cell;
+        let cell = self.world.get_cell_typed(x, y);
+        let sub = hb_cell(
+            u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
+            u16::try_from(y.rem_euclid(65536)).unwrap_or(0),
+            cell.0,
+        );
+        self.broadcast_hb_at(x, y, &[sub], None);
+    }
+
     /// Зарегистрировать building entity в обоих runtime-индексах.
     /// Callers не должны вручную синхронизировать `building_index` и
     /// `chunk_buildings`: это единый boundary для position→entity кэшей.
@@ -935,6 +946,36 @@ impl GameState {
     pub fn move_building_entity(&self, old_x: i32, old_y: i32, new_x: i32, new_y: i32) {
         if let Some(entity) = self.remove_building_entity(old_x, old_y) {
             self.register_building_entity(new_x, new_y, entity);
+        }
+    }
+
+    /// Поставить mmap-футпринт здания и разослать HB cell updates.
+    pub fn place_building_footprint(&self, bx: i32, by: i32, pack_type: PackType) {
+        for (cdx, cdy, cell) in pack_type
+            .building_cells()
+            .expect("loaded building pack type must have config")
+        {
+            let (x, y) = (bx + cdx, by + cdy);
+            self.world
+                .set_cell_typed(x, y, crate::world::CellType(cell));
+            self.broadcast_cell_update(x, y);
+        }
+    }
+
+    /// Очистить mmap-футпринт здания и разослать HB cell updates.
+    pub fn clear_building_footprint(&self, view: &PackView) {
+        for (cdx, cdy, _) in view
+            .pack_type
+            .building_cells()
+            .expect("loaded building pack type must have config")
+        {
+            let (x, y) = (view.x + cdx, view.y + cdy);
+            self.world.set_cell_typed(
+                x,
+                y,
+                crate::world::CellType(crate::world::cells::cell_type::EMPTY),
+            );
+            self.broadcast_cell_update(x, y);
         }
     }
 
@@ -1059,14 +1100,7 @@ impl GameState {
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    use crate::protocol::packets::hb_cell;
-    let cell = state.world.get_cell_typed(x, y);
-    let sub = hb_cell(
-        u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
-        u16::try_from(y.rem_euclid(65536)).unwrap_or(0),
-        cell.0,
-    );
-    state.broadcast_hb_at(x, y, &[sub], None);
+    state.broadcast_cell_update(x, y);
 }
 
 fn generate_random_string(len: usize, charset: &[u8]) -> String {

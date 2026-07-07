@@ -1,5 +1,6 @@
 //! Меню построек и установка здания на карте.
 use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
+use crate::game::broadcast_cell_update;
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
     BuildingStorage, GridPosition, PackType, PackView, get_building_config,
@@ -8,7 +9,6 @@ use crate::game::player::{
     PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
 };
 use crate::game::programmator::ProgrammatorState;
-use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
@@ -330,7 +330,7 @@ pub fn place_building_in_world(
     view: &PackView,
     close_gui: bool,
 ) {
-    place_building_cells(state, view.x, view.y, view.pack_type);
+    state.place_building_footprint(view.x, view.y, view.pack_type);
     broadcast_pack_to_nearby(state, view);
     if close_gui {
         let g = gu_close();
@@ -601,45 +601,18 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
     }
 }
 
-pub fn place_building_cells(state: &Arc<GameState>, bx: i32, by: i32, pack_type: PackType) {
-    for (cdx, cdy, cell) in pack_type
-        .building_cells()
-        .expect("loaded building pack type must have config")
-    {
-        state
-            .world
-            .set_cell_typed(bx + cdx, by + cdy, crate::world::CellType(cell));
-        broadcast_cell_update(state, bx + cdx, by + cdy);
-    }
-}
-
-pub fn clear_pack_cells(state: &Arc<GameState>, view: &PackView) {
-    for (cdx, cdy, _) in view
-        .pack_type
-        .building_cells()
-        .expect("loaded building pack type must have config")
-    {
-        state.world.set_cell_typed(
-            view.x + cdx,
-            view.y + cdy,
-            crate::world::CellType(cell_type::EMPTY),
-        );
-        broadcast_cell_update(state, view.x + cdx, view.y + cdy);
-    }
-}
-
 /// Перенос футпринта здания на новую позицию — ЗЕРКАЛО remove+place, чтобы все
 /// слои совпали: клетки мира И O-оверлей пака (иконка). Без оверлей-броадкаста
 /// иконка пака осталась бы на старом месте, хотя клетки/индекс/ECS/БД — на новом.
 pub fn move_pack_cells(state: &Arc<GameState>, old_view: &PackView, nx: i32, ny: i32) {
     // Старая позиция: очистить клетки + снять O-оверлей.
-    clear_pack_cells(state, old_view);
+    state.clear_building_footprint(old_view);
     broadcast_pack_clear(state, old_view);
     // Новая позиция: поставить клетки + O-оверлей (как `place_building_in_world`).
     let mut new_view = old_view.clone();
     new_view.x = nx;
     new_view.y = ny;
-    place_building_cells(state, nx, ny, new_view.pack_type);
+    state.place_building_footprint(nx, ny, new_view.pack_type);
     broadcast_pack_to_nearby(state, &new_view);
 }
 
@@ -716,7 +689,7 @@ pub async fn destroy_damagable_building(
         }
         state.ecs.write().despawn(entity);
     }
-    clear_pack_cells(state, &view);
+    state.clear_building_footprint(&view);
     broadcast_pack_clear(state, &view);
     close_pack_windows(state, &view);
 
