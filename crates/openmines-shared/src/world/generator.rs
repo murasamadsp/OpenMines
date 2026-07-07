@@ -753,7 +753,7 @@ mod tests {
             let name = format!("gendet_{tag}_{pid}");
             // Гарантируем is_new (чистим leftover) → World::new авто-генерирует seed=42.
             let _ = std::fs::remove_file(dir.join(format!("{name}_v2.map")));
-            let _ = std::fs::remove_file(dir.join(format!("{name}_durability.mapb")));
+            let _ = std::fs::remove_file(dir.join(format!("{name}_durability.map")));
             let cd = CellDefs::load(
                 std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .parent()

@@ -27,15 +27,18 @@ scripts/dev-smoke.sh
 Рекомендуемый локальный порядок до полного pre-commit:
 
 ```bash
-cargo check -p openmines-server
-cargo run -- --doctor
+cargo check-server
+cargo doctor
 scripts/dev-smoke.sh
 cargo nextest run --workspace
 ```
 
 Трек ускорения:
 
-- Включить `sccache` через `RUSTC_WRAPPER=sccache`.
+- Для запуска сервера использовать `scripts/dev-run.sh`: он включает `sccache`,
+  если тот установлен, но не делает его обязательной зависимостью.
+- Для коротких команд использовать cargo aliases:
+  `cargo check-server`, `cargo doctor`, `cargo server`.
 - Проверить быстрый linker: `mold` на Linux, `lld` там где стабильно доступен.
 - Использовать `cargo nextest` как основной test runner вместо голого
   `cargo test` для рабочих прогонов.

@@ -811,7 +811,7 @@ mod tests {
         let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
         let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.mapb")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
     }
 
     fn drain_queued_packets(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {

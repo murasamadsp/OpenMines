@@ -10,9 +10,9 @@ pub fn remove_world_files(state_dir: &Path, world_name: &str) {
         state_dir.join(format!("{world_name}_v2.map")),
         state_dir.join(format!("{world_name}_v2.map.bak")),
         state_dir.join(format!("{world_name}_v2.map.tmp")),
-        state_dir.join(format!("{world_name}_durability.mapb")),
-        state_dir.join(format!("{world_name}_durability.mapb.bak")),
-        state_dir.join(format!("{world_name}_durability.mapb.tmp")),
+        state_dir.join(format!("{world_name}_durability.map")),
+        state_dir.join(format!("{world_name}_durability.map.bak")),
+        state_dir.join(format!("{world_name}_durability.map.tmp")),
     ];
 
     for path in &targets {

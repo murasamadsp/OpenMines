@@ -66,7 +66,7 @@ impl Layer {
         // SAFETY: Отображение файла в память (memory mapping) безопасно, так как:
         // 1. Длина файла принудительно устанавливается равной `total_bytes` с помощью `file.set_len`,
         //    что гарантирует корректность границ выделенной области памяти и предотвращает SIGBUS при чтении/записи.
-        // 2. Файл карты {name}_durability.mapb является приватным для данного сервера и не модифицируется
+        // 2. Файл карты {name}_durability.map является приватным для данного сервера и не модифицируется
         //    параллельно другими процессами или потоками вне логики этого приложения, что гарантирует соблюдение
         //    правил алиасинга Rust.
         let mmap = unsafe { MmapMut::map_mut(&file)? };
@@ -455,7 +455,7 @@ impl World {
             cells.allocated_blocks()
         );
         let durability = Layer::open(
-            state_dir.join(format!("{name}_durability.mapb")),
+            state_dir.join(format!("{name}_durability.map")),
             chunks_w,
             chunks_h,
             LayerType::F32,
@@ -555,6 +555,6 @@ mod tests {
 
         // cleanup temp files if created
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));
-        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_durability.mapb"));
+        let _ = std::fs::remove_file(temp_dir.join("test_world_facade_durability.map"));
     }
 }

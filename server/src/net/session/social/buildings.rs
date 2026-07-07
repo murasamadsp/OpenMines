@@ -723,10 +723,8 @@ mod tests {
         fn cleanup(&self) {
             let _ = std::fs::remove_file(&self.db_path);
             let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(
-                self.dir
-                    .join(format!("{}_durability.mapb", self.world_name)),
-            );
+            let _ =
+                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
         }
     }
 

@@ -154,10 +154,8 @@ mod tests {
             let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
             let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
             let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(
-                self.dir
-                    .join(format!("{}_durability.mapb", self.world_name)),
-            );
+            let _ =
+                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
         }
     }
 
