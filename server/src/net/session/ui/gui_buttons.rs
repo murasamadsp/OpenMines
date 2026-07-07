@@ -1507,7 +1507,7 @@ fn open_teleport_gui(
             .collect()
     };
 
-    use super::horb::{Button, Horb};
+    use super::horb::{Button, Horb, ListRow};
 
     let pstats_info = state.query_building_opt(view.x, view.y, |ecs, entity| {
         let pstats = ecs.get::<BuildingStats>(entity)?;
@@ -1537,8 +1537,7 @@ fn open_teleport_gui(
 
     // Мини-карта: rect на чанк вокруг телепорта (цвет по пустоте центральной
     // клетки, 1:1 C# ConvertMapPart) + кликабельные ТП-точки прямо на канвасе
-    // (markers): клик по точке = телепорт (`tp:x:y`). Те же ТП дублируются
-    // кнопками-списком ниже (пользователь хотел и список, и точки на карте).
+    // (markers): клик по точке = телепорт (`tp:x:y`).
     let markers: Vec<(i32, i32, String)> = nearby_tps
         .iter()
         .map(|&(tpx, tpy)| (tpx, tpy, format!("tp:{tpx}:{tpy}")))
@@ -1558,8 +1557,9 @@ fn open_teleport_gui(
     );
 
     for (tpx, tpy) in &nearby_tps {
-        win = win.button(Button::new(
+        win = win.list_row(ListRow::new(
             format!("TP {tpx}:{tpy}"),
+            "ТЕЛЕПОРТ",
             format!("tp:{tpx}:{tpy}"),
         ));
     }
@@ -3249,6 +3249,41 @@ mod tests {
         test.cleanup();
     }
 
+    #[tokio::test]
+    async fn teleport_gui_uses_list_rows_for_many_destinations_not_horb_buttons() {
+        let test = make_teleport_test_state("tp_many_destinations", 8).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let view = test.state.get_pack_at(10, 10).unwrap();
+        open_teleport_gui(&test.state, &tx, test.player.id.into(), &view);
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "GU");
+        let payload = std::str::from_utf8(&events[0].1).unwrap();
+        let json = payload.strip_prefix("horb:").unwrap_or(payload);
+        let cfg: serde_json::Value = serde_json::from_str(json).unwrap();
+
+        let buttons = cfg["buttons"].as_array().unwrap();
+        assert_eq!(
+            buttons.len() / 2,
+            4,
+            "teleport destinations must not be encoded as bottom HORB buttons"
+        );
+        let list = cfg["list"].as_array().unwrap();
+        assert_eq!(list.len() / 3, 8);
+        assert!(
+            list.iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|value| value.starts_with("tp:")),
+            "destination actions must stay clickable through list rows"
+        );
+
+        test.cleanup();
+    }
+
     async fn make_craft_test_state(label: &str, player_x: i32, player_y: i32) -> CraftTestState {
         let dir = std::env::temp_dir();
         let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
@@ -3283,6 +3318,67 @@ mod tests {
             world_name: world_name.clone(),
             port: 8090,
             world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::default(),
+            cron: crate::config::CronConfig::default(),
+            gameplay: crate::config::GameplayConfig::default(),
+        };
+        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
+            "configs/buildings.json",
+        ));
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+
+        CraftTestState {
+            state,
+            player,
+            db_path,
+            world_name,
+            dir,
+        }
+    }
+
+    async fn make_teleport_test_state(label: &str, destination_count: i32) -> CraftTestState {
+        let dir = std::env::temp_dir();
+        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
+        let db_path = dir.join(format!("teleport_{nonce}.db"));
+        let _ = std::fs::remove_file(&db_path);
+
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database.create_player("tp-user", "p", "h").await.unwrap();
+        player.x = 10;
+        player.y = 10;
+        player.money = 10_000;
+
+        let extra = crate::db::BuildingExtra {
+            hp: 1000,
+            max_hp: 1000,
+            charge: 100,
+            max_charge: 1000,
+            ..crate::db::BuildingExtra::default()
+        };
+        database
+            .insert_building("T", 10, 10, player.id, 0, &extra)
+            .await
+            .unwrap();
+        for i in 0..destination_count {
+            database
+                .insert_building("T", 42 + i * 32, 10, player.id, 0, &extra)
+                .await
+                .unwrap();
+        }
+
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("teleport_world_{nonce}");
+        let world = crate::world::World::new(&world_name, 40, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 40,
             world_chunks_h: 2,
             data_dir: dir.to_string_lossy().to_string(),
             logging: crate::config::LoggingConfig::default(),
