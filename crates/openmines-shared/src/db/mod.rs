@@ -24,7 +24,6 @@ pub struct Database {
     pub pool: SqlitePool,
 }
 
-#[allow(dead_code)]
 impl Database {
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};

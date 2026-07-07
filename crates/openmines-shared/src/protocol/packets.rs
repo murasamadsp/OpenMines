@@ -709,9 +709,7 @@ impl TyPacket {
         std::str::from_utf8(&self.event_name).unwrap_or("????")
     }
 
-    // TODO: will be used when client-side timestamp handling is fully wired
     #[must_use]
-    #[allow(dead_code)]
     pub const fn client_timestamp(&self) -> u32 {
         self.time
     }
@@ -771,8 +769,6 @@ impl<'a> AuClientPacket<'a> {
 
 /// Decode Pong (client→server, inside TY or standalone): "resp:time"
 pub struct PongClient {
-    // TODO: response field will be used when ping/pong roundtrip validation is wired
-    #[allow(dead_code)]
     pub response: i32,
     pub current_time: i32,
 }
@@ -853,7 +849,6 @@ pub fn decode_gui_button(data: &[u8]) -> Option<Cow<'_, str>> {
 /// Decode local chat (inside TY `sub_payload`): the whole payload is UTF-8 text.
 pub struct LoclClient<'a> {
     // Kept as byte length for call sites that expect the decoded packet shape.
-    #[allow(dead_code)]
     pub length: i32,
     pub message: &'a str,
 }

@@ -4,7 +4,6 @@ use sqlx::Row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(i32)]
-#[allow(dead_code)]
 pub enum ClanRank {
     None = 0,
     Member = 10,
@@ -293,7 +292,6 @@ impl Database {
         Ok(invites)
     }
 
-    #[allow(dead_code)]
     pub async fn accept_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()> {
         self.accept_clan_request(clan_id, player_id).await
     }

@@ -21,6 +21,10 @@
   `System.IndexOutOfRangeException` на popup handler. Проверить серверные HORB
   payload'ы, особенно окна программатора/админки; клиент не менять без отдельной
   явной задачи.
+- `allow(dead_code)`: первый безопасный pass сделан. Нельзя чистить удалением
+  “мёртвого” кода. Оставшиеся вхождения снимать только через понятное feature
+  wiring: BotSpot programmator, skill hooks, programmator actions, provider/world
+  boundaries, protocol HB packets.
 
 ---
 

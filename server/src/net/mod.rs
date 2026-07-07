@@ -2,6 +2,7 @@ pub mod session;
 pub mod web;
 
 use crate::game::GameState;
+use crate::metrics;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -41,12 +42,15 @@ pub async fn run(state: Arc<GameState>, shutdown: broadcast::Sender<()>) -> Resu
             }
         };
         tracing::info!(client_ip = %addr, "New connection accepted");
+        metrics::TCP_CONNECTIONS_TOTAL.inc();
+        metrics::TCP_CONNECTIONS_CURRENT.inc();
         let state = state.clone();
         let _shutdown_rx = shutdown.subscribe();
         tokio::spawn(async move {
             if let Err(e) = session::handle(Arc::clone(&state), stream, addr).await {
                 tracing::warn!(client_ip = %addr, error = ?e, "Session ended");
             }
+            metrics::TCP_CONNECTIONS_CURRENT.dec();
         });
     }
     Ok(())

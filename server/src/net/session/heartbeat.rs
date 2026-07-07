@@ -1,3 +1,4 @@
+use crate::net::session::constants;
 use crate::protocol::packets::{PongClient, ping};
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ impl SessionHeartbeat {
         Self {
             pong_at: now,
             pi_sent_at: None,
-            rtt_ms: 50,
+            rtt_ms: constants::HEARTBEAT_RTT_BASE_MS,
             pong_client_time: 0,
         }
     }
@@ -28,6 +29,13 @@ impl SessionHeartbeat {
 
     pub fn record_pong(&mut self, pong: &PongClient, now: Instant) {
         self.pong_at = now;
+        if pong.response != constants::HEARTBEAT_PONG_RESPONSE {
+            tracing::warn!(
+                expected = constants::HEARTBEAT_PONG_RESPONSE,
+                actual = pong.response,
+                "Unexpected PO response id"
+            );
+        }
         if let Some(sent) = self.pi_sent_at {
             let rtt_ms = now.saturating_duration_since(sent).as_millis();
             self.rtt_ms = i32::try_from(rtt_ms).unwrap_or(i32::MAX).clamp(1, 99_999);
@@ -44,6 +52,6 @@ impl SessionHeartbeat {
             .saturating_add(1);
         let text = format!("{} ", self.rtt_ms);
         self.pi_sent_at = Some(now);
-        ping(52, client_time, &text)
+        ping(constants::HEARTBEAT_PONG_RESPONSE, client_time, &text)
     }
 }

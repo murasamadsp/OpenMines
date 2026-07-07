@@ -2,7 +2,6 @@ use super::Database;
 use anyhow::{Result, bail};
 use sqlx::Row;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProgramRow {
     pub id: i32,

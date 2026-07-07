@@ -12,7 +12,6 @@ pub enum Role {
     Admin = 2,
 }
 
-#[allow(dead_code)]
 impl Role {
     #[must_use]
     pub const fn from_db(v: i32) -> Self {
@@ -175,7 +174,6 @@ pub struct PlayerRow {
     pub last_bonus_at: i64,
 }
 
-#[allow(dead_code)]
 impl PlayerRow {
     #[inline]
     #[must_use]
@@ -529,7 +527,6 @@ impl Database {
         Ok(count > 0)
     }
 
-    #[allow(dead_code)]
     pub async fn update_player_resp(
         &self,
         player_id: i32,

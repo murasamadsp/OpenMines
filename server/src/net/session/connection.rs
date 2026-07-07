@@ -7,6 +7,7 @@ use crate::net::session::outbox::flush_outbox;
 use crate::net::session::player::init::on_disconnect;
 use crate::net::session::prelude::*;
 use crate::net::session::state::HeartbeatGate;
+use crate::net::session::{constants, wire};
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -89,7 +90,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 // `Session.CheckDisconnected`). Реальный разрыв также
                 // ловится `read_buf`==0 ниже.
                 let now = Instant::now();
-                if heartbeat_state.is_timed_out(now, Duration::from_secs(30)) {
+                if heartbeat_state.is_timed_out(now, constants::HEARTBEAT_DISCONNECT_TIMEOUT) {
                     tracing::warn!("Pong timeout (>30s). Closing connection");
                     break;
                 }
@@ -113,6 +114,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                     match Packet::try_decode(&mut buf) {
                         Ok(Some(packet)) => {
                     let ev = packet.event_str();
+                    crate::metrics::PACKETS_IN_TOTAL.with_label_values(&[ev]).inc();
                     // PO (Pong) обрабатывается в любом состоянии — как в референсе Session.Ping()
                     if ev == "PO" {
                         if let Some(pong) = PongClient::decode(&packet.payload) {
@@ -180,7 +182,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         if is_tick_action(event) {
                                             tracing::debug!(
                                                 event = event,
-                                                time = ty.time,
+                                                time = ty.client_timestamp(),
                                                 "<<< [TY] enqueued"
                                             );
                                             state.incoming_actions.push(id, tx.clone(), ty);
@@ -188,7 +190,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                             let event_owned = event.to_string();
                                             tracing::debug!(
                                                 event = %event_owned,
-                                                time = ty.time,
+                                                time = ty.client_timestamp(),
                                                 "<<< [TY] spawned async"
                                             );
                                             let state_c = state.clone();
@@ -226,6 +228,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                 error = %err,
                                 buf_len = buf.len(),
                                 preview = %preview,
+                                decoded = %wire::describe_wire_packet(&buf[..preview_len]),
                                 "Wire decode error"
                             );
                             break;

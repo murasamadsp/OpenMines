@@ -98,6 +98,13 @@
 - `PROG` больше не создаёт неявную программу `id/name=program`: `save_program`
   обновляет только существующую owned-программу. Успешный запуск шлёт `#p` после
   статуса, чтобы Unity обновил source и закрыл редактор.
+- Первый проход по `allow(dead_code)` закрыт без удаления live-контрактов:
+  подключены TCP/packet/TY metrics и `/metrics`, PO response id валидируется,
+  typed `PlayerRow::as_role/as_clan_rank` используется при hydrate игрока,
+  сняты исторические allow с DB API и clan GUI module. Текущий срез:
+  `rg dead_code server crates -g '!target'` -> 48 строк; оставшееся требует
+  feature wiring (BotSpot, skills hooks, programmator, provider/world/protocol),
+  а не удаления кода.
 
 ## Не считать закрытым
 
@@ -117,6 +124,9 @@
 - Скиллы не считать “готовыми” как систему: текущий runtime coverage зафиксирован
   в `docs/SKILLS_STATUS.md`, многие `SkillType` ещё не имеют доказанного gameplay
   hook / exp hook / UI sync.
+- `allow(dead_code)` не считать закрытым: оставшиеся вхождения можно снимать
+  только через подключение понятной live-фичи или typed boundary с тестом. Если
+  уверенность ниже 90%, оставить код и записать долг.
 
 ## Следующий правильный порядок
 
@@ -126,3 +136,5 @@
 2. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
 3. Любую намеренную девиацию от C#/JS reference сразу записывать в
    `docs/DEVIATIONS.md`.
+4. `allow(dead_code)` чистить по системам: сначала подключать реально понятный
+   runtime path, потом снимать allow и гонять `cargo check/clippy/test`.

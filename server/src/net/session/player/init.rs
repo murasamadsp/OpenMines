@@ -145,10 +145,10 @@ pub fn connect_in_tick(
                 money: player.money,
                 creds: player.creds,
                 crystals: player.crystals,
-                role: player.role,
+                role: player.as_role() as i32,
                 skin: player.skin,
                 clan_id: player.clan_id,
-                clan_rank: player.clan_rank,
+                clan_rank: player.as_clan_rank() as i32,
                 last_bonus_at: player.last_bonus_at,
             },
             PlayerInventory {

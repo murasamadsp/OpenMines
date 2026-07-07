@@ -28,6 +28,9 @@ pub async fn dispatch_ty_packet(
     packet: &TyPacket,
 ) -> Result<()> {
     let event = packet.event_str();
+    crate::metrics::TY_EVENTS_TOTAL
+        .with_label_values(&[event])
+        .inc();
     let __d0 = std::time::Instant::now();
     // Имена событий 1:1 с референсом (case-sensitive!).
     match event {
@@ -62,6 +65,7 @@ pub async fn dispatch_ty_packet(
         }
         "Locl" => {
             if let Some(locl) = LoclClient::decode(&packet.sub_payload) {
+                tracing::debug!(player_id = %pid, len = locl.length, "Local chat payload decoded");
                 handle_local_chat(state, tx, pid, locl.message).await;
             }
         }

@@ -145,7 +145,6 @@ impl Database {
         Ok(result.rows_affected())
     }
 
-    #[allow(dead_code)]
     pub async fn update_building_extra(&self, id: i32, extra: &BuildingExtra) -> Result<()> {
         let data_json = serde_json::to_string(extra)?;
         let result = sqlx::query("UPDATE buildings SET data = ?1 WHERE id = ?2")

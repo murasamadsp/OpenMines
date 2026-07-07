@@ -353,6 +353,13 @@ async fn handle_update_market(
     (StatusCode::OK, Json(serde_json::json!({ "success": true })))
 }
 
+async fn handle_metrics() -> impl IntoResponse {
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .body(Body::from(crate::metrics::gather_text()))
+        .unwrap()
+}
+
 async fn static_handler(uri: Uri) -> impl IntoResponse {
     let mut path = uri.path().trim_start_matches('/').to_string();
     if path.is_empty() {
@@ -401,6 +408,7 @@ pub async fn run_web_server(
     let app = Router::new()
         .nest("/api", api_routes)
         .route("/api/auth", post(handle_auth).layer(Extension(token)))
+        .route("/metrics", get(handle_metrics))
         .fallback(static_handler);
 
     let addr = format!("0.0.0.0:{port}");

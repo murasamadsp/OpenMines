@@ -1,5 +1,5 @@
 //! Меню и действия клана.
-#![allow(dead_code, clippy::uninlined_format_args)]
+#![allow(clippy::uninlined_format_args)]
 use crate::net::session::prelude::*;
 use crate::net::session::ui::horb::{Button, Horb};
 

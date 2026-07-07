@@ -68,8 +68,6 @@ fn preview_payload(payload: &[u8]) -> String {
     }
 }
 
-// TODO: will be used when wire-level packet debugging is enabled
-#[allow(dead_code)]
 pub fn describe_wire_packet(data: &[u8]) -> String {
     if data.len() < 4 {
         return format!("invalid packet (len={})", data.len());
