@@ -654,13 +654,7 @@ pub async fn destroy_damagable_building(
         None
     };
 
-    if let Some(entity) = state.remove_building_entity(bx, by) {
-        if view.pack_type == PackType::Spot {
-            despawn_botspot(state, view.owner_id);
-        }
-        state.ecs.write().despawn(entity);
-    }
-    state.clear_building_footprint(&view);
+    state.remove_building_runtime(&view);
     broadcast_pack_clear(state, &view);
     close_pack_windows(state, &view);
 
@@ -751,20 +745,6 @@ fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) 
     }
     state.put_box_cell(x, y, crystals);
     broadcast_cell_update(state, x, y);
-}
-
-/// Despawn a `BotSpot` entity when its Spot building is removed.
-pub fn despawn_botspot(state: &Arc<GameState>, owner_id: PlayerId) {
-    if let Some((_, entity)) = state.botspot_index.remove(&owner_id) {
-        // Remove from spatial index.
-        state
-            .chunk_botspots
-            .iter_mut()
-            .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
-
-        state.ecs.write().despawn(entity);
-        tracing::info!(owner_id = %owner_id, "Despawned BotSpot entity");
-    }
 }
 
 #[cfg(test)]

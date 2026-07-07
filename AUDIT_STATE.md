@@ -40,6 +40,9 @@
 - Runtime commit нового здания (`ECS spawn + runtime индексы + mmap footprint`)
   сведён в `GameState::spawn_building_runtime`; session paths после DB insert
   больше не вызывают эти шаги по отдельности.
+- Runtime removal здания (`runtime индексы + ECS despawn + mmap footprint`) сведён
+  в `GameState::remove_building_runtime`; destroy/protector paths больше не
+  дублируют ручной cleanup runtime-слоёв.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
@@ -49,9 +52,9 @@
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
   type/durability для live-path, box-клетки получили первый boundary, а runtime
-  индексы зданий, mmap footprint и spawn ECS-компонентов зданий сведены в helper
-  boundary. DB insert/delete ещё не включён в эту authoritative операцию из-за
-  разных сценариев возврата ресурсов/ошибок.
+  индексы зданий, mmap footprint, spawn и removal ECS-компонентов зданий сведены
+  в helper boundary. DB insert/delete ещё не включён в эту authoritative операцию
+  из-за разных сценариев возврата ресурсов/ошибок.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.

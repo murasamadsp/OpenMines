@@ -962,6 +962,31 @@ impl GameState {
         entity
     }
 
+    /// Runtime removal здания: runtime индексы + ECS despawn + mmap footprint.
+    /// DB delete остаётся перед этим шагом, потому что call-sites по-разному
+    /// обрабатывают ошибку БД, дропы и async-контекст.
+    pub fn remove_building_runtime(&self, view: &PackView) -> Option<Entity> {
+        let entity = self.remove_building_entity(view.x, view.y);
+        if entity.is_some() && view.pack_type == PackType::Spot {
+            self.remove_botspot_runtime(view.owner_id);
+        }
+        if let Some(entity) = entity {
+            self.ecs.write().despawn(entity);
+        }
+        self.clear_building_footprint(view);
+        entity
+    }
+
+    /// Runtime removal `BotSpot`, связанного со Spot-зданием.
+    pub fn remove_botspot_runtime(&self, owner_id: PlayerId) -> Option<Entity> {
+        let (_, entity) = self.botspot_index.remove(&owner_id)?;
+        self.chunk_botspots
+            .iter_mut()
+            .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
+        self.ecs.write().despawn(entity);
+        Some(entity)
+    }
+
     /// Поставить mmap-футпринт здания и разослать HB cell updates.
     pub fn place_building_footprint(&self, bx: i32, by: i32, pack_type: PackType) {
         for (cdx, cdy, cell) in pack_type

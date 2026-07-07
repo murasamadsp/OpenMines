@@ -806,28 +806,16 @@ fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
             if !state.world.valid_coord(tgt_x, tgt_y) {
                 continue;
             }
-            // Destroy gates in range
-            // (Gate buildings are in building_index; check and remove if it's a Gate)
-            // Считываем entity + DB-id + is_gate, ОТПУСКАЯ DashMap-ref ДО remove:
-            // раньше `remove` звался при живом `get`-ref на том же ключе → потенциальный
-            // same-shard дедлок. Берём (entity, id) и выходим из ref.
-            let gate = state.building_index.get(&(tgt_x, tgt_y)).and_then(|e| {
-                let ent = *e;
-                let ecs = state.ecs.read();
-                let meta = ecs.get::<BuildingMetadata>(ent)?;
-                (meta.pack_type == PackType::Gate).then_some((ent, meta.id))
-            });
-            if let Some((_, gate_id)) = gate {
-                if let Some(entity) = state.remove_building_entity(tgt_x, tgt_y) {
-                    state.ecs.write().despawn(entity);
-                }
-                state
-                    .world
-                    .set_cell_typed(tgt_x, tgt_y, crate::world::CellType(cell_type::EMPTY));
-                broadcast_cell_update(state, tgt_x, tgt_y);
+            // Destroy gates in range through the runtime building boundary.
+            let gate = state
+                .get_pack_at(tgt_x, tgt_y)
+                .filter(|view| view.pack_type == PackType::Gate);
+            if let Some(view) = gate {
+                state.remove_building_runtime(&view);
                 // Удалить из БД — иначе гейт ВОСКРЕСАЕТ при рестарте (рассинхрон
                 // слоёв: world/ECS чисты, а DB-строка осталась). Async detached.
                 let db = state.db.clone();
+                let gate_id = view.id;
                 tokio::spawn(async move {
                     if let Err(e) = db.delete_building(gate_id).await {
                         tracing::error!(error = ?e, "gate DB delete failed");
