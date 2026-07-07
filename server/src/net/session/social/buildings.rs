@@ -1,5 +1,4 @@
 //! Меню построек и установка здания на карте.
-use crate::game::botspot::{BotSpotBasket, BotSpotData, BotSpotMarker};
 use crate::game::broadcast_cell_update;
 use crate::game::buildings::{
     BuildingFlags, BuildingStorage, PackType, PackView, get_building_config,
@@ -7,7 +6,6 @@ use crate::game::buildings::{
 use crate::game::player::{
     PlayerConnection, PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI,
 };
-use crate::game::programmator::ProgrammatorState;
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
@@ -588,34 +586,7 @@ pub fn spawn_botspot(
     clan_id: i32,
     building_entity: Entity,
 ) {
-    let botspot_entity = state
-        .ecs
-        .write()
-        .spawn((
-            BotSpotMarker,
-            BotSpotData {
-                bot_id: (-owner_id).into(),
-                owner_id,
-                clan_id,
-                x,
-                y,
-                dir: 0,
-                building_entity,
-            },
-            BotSpotBasket::default(),
-            ProgrammatorState::new(),
-        ))
-        .id();
-
-    state.botspot_index.insert(owner_id, botspot_entity);
-    let (cx, cy) = crate::world::World::chunk_pos(x, y);
-    state
-        .chunk_botspots
-        .entry((cx, cy).into())
-        .or_default()
-        .push(botspot_entity);
-
-    tracing::info!(owner_id = %owner_id, x, y, "Spawned BotSpot entity for Spot building");
+    state.spawn_botspot_runtime(owner_id, x, y, clan_id, building_entity);
 }
 
 /// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.

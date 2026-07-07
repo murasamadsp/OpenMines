@@ -224,6 +224,15 @@ pub struct GameSchedule {
     pub last_run: Mutex<Instant>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct BotSpotView {
+    pub bot_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub dir: i32,
+    pub clan_id: i32,
+}
+
 // ─── GameState ───────────────────────────────────────────────────────────────
 
 pub struct GameState {
@@ -514,15 +523,7 @@ impl GameState {
                         programmator::ProgrammatorState::new(),
                     ))
                     .id();
-                state
-                    .botspot_index
-                    .insert(row.owner_id.into(), botspot_entity);
-                let (cx, cy) = World::chunk_pos(row.x, row.y);
-                state
-                    .chunk_botspots
-                    .entry((cx, cy).into())
-                    .or_default()
-                    .push(botspot_entity);
+                state.register_botspot_entity(row.owner_id.into(), row.x, row.y, botspot_entity);
                 spot_count += 1;
             }
         }
@@ -787,6 +788,10 @@ impl GameState {
         Self::find_pack_covering_with(&ecs, &self.chunk_buildings, x, y)
     }
 
+    pub fn find_pack_covering_in_ecs(&self, ecs: &EcsWorld, x: i32, y: i32) -> Option<(i32, i32)> {
+        Self::find_pack_covering_with(ecs, &self.chunk_buildings, x, y)
+    }
+
     pub fn pack_block_pos(&self, x: i32, y: i32) -> Option<i32> {
         if !self.world.valid_coord(x, y) {
             return None;
@@ -884,6 +889,16 @@ impl GameState {
     pub fn access_gun_full(&self, x: i32, y: i32, player_clan_id: i32) -> (bool, bool) {
         let ecs = self.ecs.read();
         Self::access_gun_with(&ecs, &self.chunk_buildings, x, y, player_clan_id)
+    }
+
+    pub fn access_gun_full_in_ecs(
+        &self,
+        ecs: &EcsWorld,
+        x: i32,
+        y: i32,
+        player_clan_id: i32,
+    ) -> (bool, bool) {
+        Self::access_gun_with(ecs, &self.chunk_buildings, x, y, player_clan_id)
     }
 
     /// Паки (HB-оверлей) ровно в ОДНОМ чанке `(cx, cy)`. В отличие от
@@ -1085,6 +1100,73 @@ impl GameState {
             .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
         self.ecs.write().despawn(entity);
         Some(entity)
+    }
+
+    /// Runtime spawn `BotSpot`, связанного со Spot-зданием.
+    pub fn spawn_botspot_runtime(
+        &self,
+        owner_id: PlayerId,
+        x: i32,
+        y: i32,
+        clan_id: i32,
+        building_entity: Entity,
+    ) -> Entity {
+        let botspot_entity = self
+            .ecs
+            .write()
+            .spawn((
+                botspot::BotSpotMarker,
+                botspot::BotSpotData {
+                    bot_id: -i32::from(owner_id),
+                    owner_id,
+                    clan_id,
+                    x,
+                    y,
+                    dir: 0,
+                    building_entity,
+                },
+                botspot::BotSpotBasket::default(),
+                programmator::ProgrammatorState::new(),
+            ))
+            .id();
+        self.register_botspot_entity(owner_id, x, y, botspot_entity);
+        tracing::info!(owner_id = %owner_id, x, y, "Spawned BotSpot entity for Spot building");
+        botspot_entity
+    }
+
+    fn register_botspot_entity(&self, owner_id: PlayerId, x: i32, y: i32, entity: Entity) {
+        self.botspot_index.insert(owner_id, entity);
+        let (cx, cy) = World::chunk_pos(x, y);
+        self.chunk_botspots
+            .entry((cx, cy).into())
+            .or_default()
+            .push(entity);
+    }
+
+    pub fn botspots_in_chunk(&self, cx: u32, cy: u32) -> Vec<BotSpotView> {
+        let entities = self
+            .chunk_botspots
+            .get(&(cx, cy).into())
+            .map(|chunk| chunk.clone())
+            .unwrap_or_default();
+        if entities.is_empty() {
+            return Vec::new();
+        }
+
+        let ecs = self.ecs.read();
+        entities
+            .into_iter()
+            .filter_map(|entity| {
+                let data = ecs.get::<botspot::BotSpotData>(entity)?;
+                Some(BotSpotView {
+                    bot_id: data.bot_id,
+                    x: data.x,
+                    y: data.y,
+                    dir: data.dir,
+                    clan_id: data.clan_id,
+                })
+            })
+            .collect()
     }
 
     /// Поставить mmap-футпринт здания и разослать HB cell updates.

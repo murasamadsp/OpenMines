@@ -177,8 +177,7 @@ pub fn handle_move(
             // `building_index` хранит ТОЛЬКО origin — раньше вход в не-origin
             // клетку ворот обходил чек, и игрок застревал внутри. Ищем пак,
             // ПОКРЫВАЮЩИЙ клетку (1:1 C# `PackPart`), затем здание по его origin.
-            if let Some((ox, oy)) =
-                GameState::find_pack_covering_with(ecs, &state.chunk_buildings, target_x, target_y)
+            if let Some((ox, oy)) = state.find_pack_covering_in_ecs(ecs, target_x, target_y)
                 && let Some(bld_entity) = state.building_entity_at(ox, oy)
             {
                 if let (Some(meta), Some(ownership)) = (

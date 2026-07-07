@@ -45,6 +45,12 @@
   использует boundary-методы.
 - Активные consumable overlay-паки (boom/protector/razryadka) переведены на
   typed key `WorldPos` и доступны session-коду только через методы `GameState`.
+- BotSpot runtime (`botspot_index` + `chunk_botspots`) закрыт за `GameState`:
+  создание Spot-bot, регистрация, удаление и HB-снимки больше не читаются и не
+  синхронизируются напрямую из session-кода.
+- Session-код больше не передаёт сырой `chunk_buildings` в static helpers:
+  проверки pack footprint и AccessGun идут через instance boundary `GameState`,
+  включая места, где уже удерживается ECS lock.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.
@@ -73,10 +79,10 @@
   всё ещё живут в разных местах.
 - Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
   type/durability для live-path, box-клетки получили первый boundary, центральные
-  индексы box/building используют `WorldPos`, а runtime индексы зданий, mmap
-  footprint, live creation, destroy и runtime removal зданий сведены в helper
-  boundary. Rollback/compensation после runtime failure ещё не включён в эту
-  authoritative операцию из-за разных сценариев возврата ресурсов/ошибок.
+  индексы box/building используют `WorldPos`, runtime индексы зданий/BotSpot,
+  mmap footprint, live creation, destroy и runtime removal зданий сведены в
+  helper boundary. Rollback/compensation после runtime failure ещё не включён в
+  эту authoritative операцию из-за разных сценариев возврата ресурсов/ошибок.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.

@@ -89,28 +89,19 @@ pub fn check_chunk_changed(
         }
 
         // BotSpot entities (C# BotSpot: skin=3, tail=1, id=-owner_id)
-        {
-            if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy).into()) {
-                let ecs = state.ecs.read();
-                for &botspot_entity in botspot_entities.iter() {
-                    if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity)
-                    {
-                        // C# `BotSpot.tail => 1` (always 1, unlike Player which checks running).
-                        // C# casts negative bot_id to u16 (wraps around).
-                        let wire_id = data.bot_id as u16;
-                        sub_packets.push(hb_bot(
-                            wire_id,
-                            net_u16_nonneg(data.x),
-                            net_u16_nonneg(data.y),
-                            net_u8_clamped(data.dir, 3),
-                            crate::game::botspot::BotSpotData::SKIN,
-                            net_u16_nonneg(data.clan_id),
-                            crate::game::botspot::BotSpotData::TAIL,
-                        ));
-                        sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-                    }
-                }
-            }
+        for botspot in state.botspots_in_chunk(ncx, ncy) {
+            // C# `BotSpot.tail => 1` (always 1, unlike Player which checks running).
+            // C# casts negative bot_id to u16 (wraps around).
+            sub_packets.push(hb_bot(
+                botspot.bot_id as u16,
+                net_u16_nonneg(botspot.x),
+                net_u16_nonneg(botspot.y),
+                net_u8_clamped(botspot.dir, 3),
+                crate::game::botspot::BotSpotData::SKIN,
+                net_u16_nonneg(botspot.clan_id),
+                crate::game::botspot::BotSpotData::TAIL,
+            ));
+            sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
         }
 
         // Постройки шлём ПОСЛЕ всех чанков, сгруппированными по block_pos
@@ -149,14 +140,9 @@ pub fn check_chunk_changed(
         }
 
         // Notify BotSpots removal
-        if let Some(botspot_entities) = state.chunk_botspots.get(&(ocx, ocy).into()) {
-            let ecs = state.ecs.read();
-            for &botspot_entity in botspot_entities.iter() {
-                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
-                    sub_packets.push(hb_bot_del(data.bot_id as u16));
-                    sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
-                }
-            }
+        for botspot in state.botspots_in_chunk(ocx, ocy) {
+            sub_packets.push(hb_bot_del(botspot.bot_id as u16));
+            sub_batch_bytes += sub_packets.last().map_or(0, |p| p.len());
         }
 
         // Notify buildings removal — собираем уникальные block_pos, чтобы не
@@ -313,21 +299,16 @@ pub fn bots_render(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
         }
 
         // BotSpot-сущности (skin/tail константы, id = wrap отрицательного owner).
-        if let Some(botspot_entities) = state.chunk_botspots.get(&(ncx, ncy).into()) {
-            let ecs = state.ecs.read();
-            for &botspot_entity in botspot_entities.iter() {
-                if let Some(data) = ecs.get::<crate::game::botspot::BotSpotData>(botspot_entity) {
-                    subs.push(hb_bot(
-                        data.bot_id as u16,
-                        net_u16_nonneg(data.x),
-                        net_u16_nonneg(data.y),
-                        net_u8_clamped(data.dir, 3),
-                        crate::game::botspot::BotSpotData::SKIN,
-                        net_u16_nonneg(data.clan_id),
-                        crate::game::botspot::BotSpotData::TAIL,
-                    ));
-                }
-            }
+        for botspot in state.botspots_in_chunk(ncx, ncy) {
+            subs.push(hb_bot(
+                botspot.bot_id as u16,
+                net_u16_nonneg(botspot.x),
+                net_u16_nonneg(botspot.y),
+                net_u8_clamped(botspot.dir, 3),
+                crate::game::botspot::BotSpotData::SKIN,
+                net_u16_nonneg(botspot.clan_id),
+                crate::game::botspot::BotSpotData::TAIL,
+            ));
         }
     }
 

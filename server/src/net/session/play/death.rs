@@ -102,10 +102,7 @@ pub fn apply_player_death_core(
                 state.world.cell_defs().get_typed(cell).can_place_over()
             },
         ) {
-            Some((bx, by))
-                if GameState::find_pack_covering_with(ecs, &state.chunk_buildings, bx, by)
-                    .is_none() =>
-            {
+            Some((bx, by)) if state.find_pack_covering_in_ecs(ecs, bx, by).is_none() => {
                 // C-2 фикс: in-memory put + отложенная персистенция вместо
                 // sync `db.upsert_box` под удерживаемым `ecs.write()` (death
                 // flush в tick-цикле) — фризило при каждой смерти.

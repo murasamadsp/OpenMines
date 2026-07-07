@@ -82,7 +82,7 @@ pub fn handle_geo(
             let mut broadcast: Vec<(i32, i32)> = Vec::new();
 
             if state.world.valid_coord(tgt_x, tgt_y)
-                && GameState::access_gun_with(ecs, &state.chunk_buildings, tgt_x, tgt_y, cid).0
+                && state.access_gun_full_in_ecs(ecs, tgt_x, tgt_y, cid).0
             {
                 let cell = state.world.get_cell_typed(tgt_x, tgt_y);
                 let defs = state.world.cell_defs();
@@ -90,13 +90,7 @@ pub fn handle_geo(
                 let pickable = cell_props.nature.is_pickable && !cell_props.cell_is_empty();
                 let place_here = cell_props.cell_is_empty()
                     && cell_props.can_place_over()
-                    && GameState::find_pack_covering_with(
-                        ecs,
-                        &state.chunk_buildings,
-                        tgt_x,
-                        tgt_y,
-                    )
-                    .is_none();
+                    && state.find_pack_covering_in_ecs(ecs, tgt_x, tgt_y).is_none();
 
                 if pickable {
                     {
