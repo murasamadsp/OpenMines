@@ -71,6 +71,12 @@ cat > "$CONFIG_DIR/config.json" <<JSON
       "game_loop_tick_rate_ms": 10,
       "game_loop_panic_backoff_ms": 200,
       "session_disconnect_timeout_secs": 30
+    },
+    "rate_limits": {
+      "chat_burst": 5,
+      "chat_per_sec": 3,
+      "gui_burst": 10,
+      "gui_per_sec": 5
     }
   }
 }

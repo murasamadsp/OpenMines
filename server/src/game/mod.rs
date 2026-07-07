@@ -257,6 +257,9 @@ pub struct GameState {
     pub consumable_packs: DashMap<WorldPos, (u8, u8)>,
     /// Счётчик активных фоновых транзакций/записей в базу данных (используется при shutdown).
     pub db_pending_tasks: std::sync::atomic::AtomicUsize,
+    /// Per-player GCRA rate limiters (чат, GUI). Создаются лениво при первом пакете,
+    /// удаляются при дисконнекте через `remove_rate_limiter`.
+    pub rate_limiters: DashMap<PlayerId, crate::net::session::rate_limit::PlayerLimiters>,
 }
 
 impl GameState {
@@ -403,6 +406,7 @@ impl GameState {
             kick_channels: DashMap::new(),
             consumable_packs: DashMap::new(),
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
+            rate_limiters: DashMap::new(),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
@@ -524,6 +528,39 @@ impl GameState {
     pub fn next_session_token(&self) -> u64 {
         self.session_token_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Проверить chat rate limit для игрока. Возвращает `true` если разрешено.
+    pub fn check_chat_rate(&self, pid: PlayerId) -> bool {
+        let rl = &self.config.gameplay.rate_limits;
+        let limiters = self.rate_limiters.entry(pid).or_insert_with(|| {
+            crate::net::session::rate_limit::PlayerLimiters::new(
+                rl.chat_per_sec,
+                rl.chat_burst,
+                rl.gui_per_sec,
+                rl.gui_burst,
+            )
+        });
+        limiters.chat.check().is_ok()
+    }
+
+    /// Проверить GUI rate limit для игрока. Возвращает `true` если разрешено.
+    pub fn check_gui_rate(&self, pid: PlayerId) -> bool {
+        let rl = &self.config.gameplay.rate_limits;
+        let limiters = self.rate_limiters.entry(pid).or_insert_with(|| {
+            crate::net::session::rate_limit::PlayerLimiters::new(
+                rl.chat_per_sec,
+                rl.chat_burst,
+                rl.gui_per_sec,
+                rl.gui_burst,
+            )
+        });
+        limiters.gui.check().is_ok()
+    }
+
+    /// Удалить rate limiter при дисконнекте игрока (утечка памяти иначе).
+    pub fn remove_rate_limiter(&self, pid: PlayerId) {
+        self.rate_limiters.remove(&pid);
     }
 
     /// Поставить команду жизненного цикла в очередь (из conn-таска).

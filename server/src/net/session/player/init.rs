@@ -36,6 +36,7 @@ pub fn init_player(
 
 /// Conn-таск: ставит выход игрока в lifecycle-очередь (см. `init_player`).
 pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId, token: u64) {
+    state.remove_rate_limiter(pid);
     state.enqueue_life(LifeCmd::Disconnect { pid, token });
 }
 

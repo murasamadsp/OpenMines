@@ -23,6 +23,7 @@ mod constants;
 pub mod dispatch;
 pub mod outbound;
 mod prelude;
+pub mod rate_limit;
 pub mod util;
 pub mod wire;
 

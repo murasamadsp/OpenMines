@@ -33,6 +33,32 @@ pub struct GameplayConfig {
     pub spawn: SpawnConfig,
     pub programmator: ProgrammatorConfig,
     pub schedules: ScheduleConfig,
+    pub rate_limits: RateLimitConfig,
+}
+
+/// Настройки rate limiting для защиты от спама.
+/// `burst` — максимальный всплеск (GCRA bucket depth).
+/// `replenish_per_sec` — сколько токенов добавляется за секунду.
+/// Все поля обязательны (fail-fast при старте).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Чат (`Locl`, `Chat`, `Cpri`) — сообщений в секунду + burst.
+    pub chat_burst: u32,
+    pub chat_per_sec: u32,
+    /// GUI-кнопки (`GUI_`) — на случай автокликера.
+    pub gui_burst: u32,
+    pub gui_per_sec: u32,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            chat_burst: 5,
+            chat_per_sec: 3,
+            gui_burst: 10,
+            gui_per_sec: 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -274,6 +300,7 @@ impl GameplayConfig {
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
         self.schedules.validate()?;
+        self.rate_limits.validate()?;
         Ok(())
     }
 }
@@ -370,6 +397,24 @@ impl ScheduleConfig {
     }
 }
 
+impl RateLimitConfig {
+    fn validate(self) -> Result<()> {
+        if self.chat_burst == 0 {
+            anyhow::bail!("gameplay.rate_limits.chat_burst must be greater than 0");
+        }
+        if self.chat_per_sec == 0 {
+            anyhow::bail!("gameplay.rate_limits.chat_per_sec must be greater than 0");
+        }
+        if self.gui_burst == 0 {
+            anyhow::bail!("gameplay.rate_limits.gui_burst must be greater than 0");
+        }
+        if self.gui_per_sec == 0 {
+            anyhow::bail!("gameplay.rate_limits.gui_per_sec must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
 impl LoggingConfig {
     fn validate(&self) -> Result<()> {
         if self.filter.trim().is_empty() {
@@ -420,6 +465,12 @@ mod tests {
                         "game_loop_tick_rate_ms": 10,
                         "game_loop_panic_backoff_ms": 200,
                         "session_disconnect_timeout_secs": 30
+                      },
+                      "rate_limits": {
+                        "chat_burst": 5,
+                        "chat_per_sec": 3,
+                        "gui_burst": 10,
+                        "gui_per_sec": 5
                       }}
     }"#;
 

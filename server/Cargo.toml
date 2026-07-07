@@ -33,3 +33,4 @@ rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 num-traits = { workspace = true }
 sqlx = { workspace = true }
+governor = { workspace = true }

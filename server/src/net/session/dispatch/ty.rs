@@ -59,11 +59,19 @@ pub async fn dispatch_ty_packet(
             }
         }
         "GUI_" => {
+            if !state.check_gui_rate(pid) {
+                tracing::debug!(player_id = %pid, "gui rate limited (GUI_)");
+                return Ok(());
+            }
             if let Some(button) = decode_gui_button(&packet.sub_payload) {
                 handle_gui_button(state, tx, pid, button.as_ref()).await;
             }
         }
         "Locl" => {
+            if !state.check_chat_rate(pid) {
+                tracing::debug!(player_id = %pid, "chat rate limited (Locl)");
+                return Ok(());
+            }
             if let Some(locl) = LoclClient::decode(&packet.sub_payload) {
                 tracing::debug!(player_id = %pid, len = locl.length, "Local chat payload decoded");
                 handle_local_chat(state, tx, pid, locl.message).await;
@@ -96,6 +104,10 @@ pub async fn dispatch_ty_packet(
             }
         }
         "Chat" => {
+            if !state.check_chat_rate(pid) {
+                tracing::debug!(player_id = %pid, "chat rate limited (Chat)");
+                return Ok(());
+            }
             handle_channel_chat(state, tx, pid, &packet.sub_payload).await;
         }
         "Chin" => {
@@ -120,6 +132,10 @@ pub async fn dispatch_ty_packet(
             handle_chat_settings(state, tx, pid, &packet.sub_payload).await;
         }
         "Cpri" => {
+            if !state.check_chat_rate(pid) {
+                tracing::debug!(player_id = %pid, "chat rate limited (Cpri)");
+                return Ok(());
+            }
             handle_chat_private(state, tx, pid, &packet.sub_payload).await;
         }
         "RESP" => {
