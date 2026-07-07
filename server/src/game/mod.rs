@@ -1016,10 +1016,11 @@ impl GameState {
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
     use crate::protocol::packets::hb_cell;
+    let cell = state.world.get_cell_typed(x, y);
     let sub = hb_cell(
         u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
         u16::try_from(y.rem_euclid(65536)).unwrap_or(0),
-        state.world.get_cell(x, y),
+        cell.0,
     );
     state.broadcast_hb_at(x, y, &[sub], None);
 }

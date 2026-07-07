@@ -20,8 +20,8 @@
 - `gameplay.cooldowns`, `skills`, `spawn`, `programmator`, `schedules` вынесены в
   typed config без silent defaults.
 - `WorldProvider` имеет typed cell API: `get_cell_typed` / `set_cell_typed`.
-- Программаторные проверки acid/slime/living и часть physics/actions используют
-  `CellType`, а не raw `u8`.
+- Live-path gameplay/session cell access переведён на `CellType` API; raw
+  `get_cell/set_cell` остаётся только на низкоуровневой map/wire boundary и в тестах.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
@@ -29,8 +29,8 @@
 
 - Единый владелец клетки не готов: тип клетки, durability, здания, SQLite и кэши
   всё ещё живут в разных местах.
-- Полный переход live-path на `CellType` не завершён; raw `get_cell` ещё допустим
-  только там, где это явно wire/map boundary или тесты.
+- Полный единый владелец клетки не завершён; `CellType` закрывает raw byte-ошибки,
+  но ещё не объединяет type/durability/pack/DB в один authoritative boundary.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
@@ -39,9 +39,8 @@
 
 ## Следующий правильный порядок
 
-1. Добирать typed cell API по live-path маленькими коммитами.
-2. Спроектировать фасад `WorldCell { type, durability, pack }` как единый read/write
+1. Спроектировать фасад `WorldCell { type, durability, pack }` как единый read/write
    boundary, не переписывая весь мир одним махом.
-3. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
-4. Любую намеренную девиацию от C#/JS reference сразу записывать в
+2. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
+3. Любую намеренную девиацию от C#/JS reference сразу записывать в
    `docs/DEVIATIONS.md`.
