@@ -2,26 +2,35 @@
 
 ## Dev-сахар / локальная проверка
 
-- Scenario-smoke для реального wire/gameplay: headless runner должен проходить
-  сценарий `connect -> auth/register -> init packets -> move -> dig -> programmator
-  start/stop -> reconnect` и проверять ответные пакеты. Это главный guardrail
-  против регрессий, которые сейчас ловятся только руками через Unity.
+Закрыто:
+
+- `openmines-server --doctor`: schema/resource + SQLite integrity/migration
+  validation без запуска TCP/admin-сервера.
+- Rust quality tooling: `cargo-deny`, `cargo-audit`, `cargo-machete`,
+  `cargo-nextest`, `dev-smoke` подключены к tracked pre-commit/CI-контуру.
+- Dev-run ergonomics: cargo aliases `check-server`, `doctor`, `server`,
+  `test-fast`; `scripts/dev-run.sh` включает `sccache`, если он установлен.
+- Tools hygiene: `docs/TOOLS_AUDIT.md`, `scripts/tools-audit.sh`, state/cache
+  probe-файлы выведены из tracking и игнорируются.
+- Базовый scenario-smoke: `scripts/dev-smoke.sh` проходит
+  `connect -> auth-failure -> GUI register -> init packets -> PO/Xdig/Xmov` и
+  проверяет, что сессия остаётся responsive.
+
+Осталось:
+
+- Scenario-smoke расширить до полного программатор/reconnect сценария:
+  `programmator start/stop -> reconnect -> persisted state`. Базовый
+  auth/init/move/dig smoke уже есть; следующий guardrail должен ловить именно
+  программаторные GUI/wire регрессии.
 - GUI/Wire Codex: единый машинно-читаемый реестр `клиентская кнопка -> TY event ->
   серверный handler -> server packets`, особенно HORB/programmator/admin окна.
   Цель — убрать гадание по GUI payload cardinality.
 - Live debug dashboard в админке: tickprof sections, queue sizes, dirty
   players/buildings/boxes, active programmators, schedule intervals, last save
   errors.
-- `openmines-server --doctor`: локальная проверка config/cells/buildings/data dir
-  без запуска игрового TCP/admin-сервера. Первый срез — schema/resource doctor;
-  дальше расширять до optional DB/migrations check без неявного создания мира.
-- Rust tooling: держать `cargo-deny`, `cargo-audit`, `cargo-machete` как
-  обязательный fast gate; периодически запускать `cargo outdated`, `cargo geiger`,
-  `cargo bloat` вручную и заносить реальные находки, а не добавлять crates ради
-  “современности”.
-- Ускорить dev/test цикл: `sccache`, быстрый linker (`mold`/`lld` где доступен),
-  `cargo nextest`, таргетированные сценарии вместо полного `cargo test` на каждую
-  правку, запрет на параллельный запуск тяжёлых cargo-gate на одной машине.
+- Rust tooling: периодически запускать `cargo outdated`, `cargo geiger`,
+  `cargo bloat` вручную и заносить реальные находки. Проверить быстрый linker
+  (`mold`/`lld`) отдельным измеряемым срезом.
 - Implicit defaults audit: запретить runtime-подстановки доменного состояния.
   Начато с fail-fast загрузки boxes/events; дальше разбирать `serde(default)` и
   `unwrap_or` только там, где это скрывает повреждение config/DB/game state.

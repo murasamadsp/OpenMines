@@ -127,6 +127,7 @@ popd >/dev/null
 
 python3 - "$PORT" "$SERVER_PID" "$LOG_FILE" <<'PY'
 import os
+import json
 import socket
 import struct
 import sys
@@ -202,15 +203,61 @@ def write_u(event, payload):
     sock.sendall(struct.pack("<i", len(body) + 4) + body)
 
 
-try:
-    sock.settimeout(5)
+def write_ty(event4, x, y, sub_payload=b"", packet_time=0):
+    if isinstance(sub_payload, str):
+        sub_payload = sub_payload.encode("utf-8")
+    inner = (
+        event4.encode("ascii")
+        + struct.pack("<III", packet_time & 0xFFFFFFFF, x & 0xFFFFFFFF, y & 0xFFFFFFFF)
+        + sub_payload
+    )
+    body = b"B" + b"TY" + inner
+    sock.sendall(struct.pack("<i", len(body) + 4) + body)
+
+
+def write_gui(button):
+    write_ty("GUI_", 0, 0, json.dumps({"b": button}, separators=(",", ":")).encode("utf-8"))
+
+
+def connect_client():
+    client = socket.create_connection(("127.0.0.1", port), timeout=5)
+    client.settimeout(5)
+    return client
+
+
+def expect_handshake(label):
     initial = [read_packet() for _ in range(3)]
     initial_events = [p[1] for p in initial]
     if initial_events != ["ST", "AU", "PI"]:
-        raise RuntimeError(f"initial events mismatch: {initial_events!r}")
+        raise RuntimeError(f"{label}: initial events mismatch: {initial_events!r}")
     sid = initial[1][2].decode("utf-8", errors="strict")
     if len(sid) != 5:
-        raise RuntimeError(f"session id length mismatch: {sid!r}")
+        raise RuntimeError(f"{label}: session id length mismatch: {sid!r}")
+    return sid
+
+
+def wait_for_events(wanted, timeout=8):
+    found = []
+    end = time.monotonic() + timeout
+    while time.monotonic() < end and wanted:
+        sock.settimeout(max(0.1, min(0.5, end - time.monotonic())))
+        try:
+            packet = read_packet()
+        except socket.timeout:
+            continue
+        found.append(packet)
+        if packet[1] == wanted[0]:
+            wanted.pop(0)
+    if wanted:
+        raise RuntimeError(
+            f"missing events {wanted!r}; observed tail={[p[1] for p in found[-20:]]!r}"
+        )
+    return found
+
+
+try:
+    sock.settimeout(5)
+    expect_handshake("auth-failure")
 
     time.sleep(1.5)
     write_u("AU", "smoke_NO_AUTH")
@@ -222,9 +269,47 @@ try:
 finally:
     sock.close()
 
+sock = None
+try:
+    sock = connect_client()
+    sock.settimeout(5)
+    expect_handshake("gui-register")
+
+    nick = f"smoke{int(time.time() * 1000) % 1_000_000}"
+    write_u("AU", "smokereg_NO_x")
+    wait_for_events(["cf", "BI", "HB", "GU"], timeout=8)
+
+    write_gui("newakk")
+    wait_for_events(["GU"], timeout=4)
+    write_gui(f"newnick:{nick}")
+    wait_for_events(["GU"], timeout=4)
+    write_gui("passwd:pw")
+
+    auth_packets = wait_for_events(["AH", "cf", "Gu"], timeout=8)
+    ah_payload = auth_packets[0][2].decode("utf-8", errors="strict")
+    if "_" not in ah_payload:
+        raise RuntimeError(f"invalid AH payload after registration: {ah_payload!r}")
+
+    init_packets = wait_for_events(["BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P"], timeout=12)
+    tp_payload = next(p[2] for p in init_packets if p[1] == "@T").decode("utf-8", errors="strict")
+    xs, _, ys = tp_payload.partition(":")
+    x = int(xs)
+    y = int(ys)
+
+    write_u("PO", f"0:{int(time.time() * 1000) & 0x7FFFFFFF}")
+    write_ty("Xdig", x, y, "3")
+    time.sleep(0.25)
+    write_ty("Xmov", x + 1, y, "3", int(time.time() * 1000))
+    wait_for_events(["PI"], timeout=8)
+finally:
+    if sock is not None:
+        sock.close()
+
 print("OK: local TCP smoke passed")
 print("    initial: ST AU PI")
 print("    auth-failure: cf BI HB GU")
+print("    gui-register: AH cf Gu + init packets")
+print("    gameplay: PO/Xdig/Xmov kept session responsive")
 PY
 
 echo "==> Stopping smoke server"
