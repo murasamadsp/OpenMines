@@ -143,8 +143,14 @@ pub fn sand_physics_system(
             // до полной при падении. Читаем durability ДО очистки источника.
             let dur = world.get_durability(sx, sy);
             world.set_cell_typed(sx, sy, crate::world::CellType(cell_type::EMPTY));
-            world.set_cell_typed(dest_x, dest_y, cell);
-            world.set_durability(dest_x, dest_y, dur);
+            world.write_world_cell(
+                dest_x,
+                dest_y,
+                crate::world::WorldCell {
+                    cell_type: cell,
+                    durability: dur,
+                },
+            );
 
             bcast_q.0.push(BroadcastEffect::CellUpdate((sx, sy).into()));
             bcast_q

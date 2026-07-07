@@ -187,9 +187,17 @@ pub fn alive_physics_system(
 
     // Apply actions.
     for action in &actions {
-        world.set_cell_typed(action.x, action.y, action.cell);
-        if let Some(dur) = action.durability {
-            world.set_durability(action.x, action.y, dur);
+        if let Some(durability) = action.durability {
+            world.write_world_cell(
+                action.x,
+                action.y,
+                crate::world::WorldCell {
+                    cell_type: action.cell,
+                    durability,
+                },
+            );
+        } else {
+            world.set_cell_typed(action.x, action.y, action.cell);
         }
         bcast_q
             .0

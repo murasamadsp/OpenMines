@@ -508,8 +508,14 @@ pub fn handle_dig(
             let dur = state.world.get_durability(tgt_x, tgt_y);
             state.world.destroy(tgt_x, tgt_y);
             broadcast_cell_update(state, tgt_x, tgt_y);
-            state.world.set_cell_typed(bx, by, cell);
-            state.world.set_durability(bx, by, dur);
+            state.world.write_world_cell(
+                bx,
+                by,
+                crate::world::WorldCell {
+                    cell_type: cell,
+                    durability: dur,
+                },
+            );
             broadcast_cell_update(state, bx, by);
             true
         } else {

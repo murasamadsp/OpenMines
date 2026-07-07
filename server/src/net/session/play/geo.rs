@@ -108,7 +108,6 @@ pub fn handle_geo(
                 } else if place_here {
                     if let Some(cplaceable) = ecs.get_mut::<PlayerGeoStack>(entity)?.0.pop() {
                         let place_cell = crate::world::CellType(cplaceable);
-                        state.world.set_cell_typed(tgt_x, tgt_y, place_cell);
                         let d = if place_cell.is_crystal() {
                             0.0
                         } else {
@@ -119,7 +118,14 @@ pub fn handle_geo(
                                 defs.get_typed(place_cell).durability
                             }
                         };
-                        state.world.set_durability(tgt_x, tgt_y, d);
+                        state.world.write_world_cell(
+                            tgt_x,
+                            tgt_y,
+                            crate::world::WorldCell {
+                                cell_type: place_cell,
+                                durability: d,
+                            },
+                        );
                         broadcast.push((tgt_x, tgt_y));
                     }
                 }

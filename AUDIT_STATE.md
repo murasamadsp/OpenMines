@@ -22,6 +22,8 @@
 - `WorldProvider` имеет typed cell API: `get_cell_typed` / `set_cell_typed`.
 - Live-path gameplay/session cell access переведён на `CellType` API; raw
   `get_cell/set_cell` остаётся только на низкоуровневой map/wire boundary и в тестах.
+- Первые live-path операции, которые меняют и тип клетки, и durability вместе
+  (sand move, alive actions, boulder push, geo placement), пишут через `WorldCell`.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
 
@@ -29,8 +31,9 @@
 
 - Единый владелец клетки не готов: тип клетки, durability, здания, SQLite и кэши
   всё ещё живут в разных местах.
-- Полный единый владелец клетки не завершён; `CellType` закрывает raw byte-ошибки,
-  но ещё не объединяет type/durability/pack/DB в один authoritative boundary.
+- Полный единый владелец клетки не завершён; `WorldCell` уже объединяет
+  type/durability для части live-path, но ещё не включает pack/DB/index state в один
+  authoritative boundary.
 - Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
   нагрузки или конкретного hot path.
 - Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
