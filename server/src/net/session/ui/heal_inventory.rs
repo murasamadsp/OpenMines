@@ -654,13 +654,13 @@ fn send_consumable_pack(state: &Arc<GameState>, x: i32, y: i32, off: u8) {
     if state.pack_block_pos(x, y).is_none() {
         return;
     }
-    state.consumable_packs.insert((x, y), (b'B', off));
+    state.put_consumable_pack(x, y, b'B', off);
     crate::net::session::social::buildings::broadcast_block_at(state, x, y);
 }
 
 /// Снять спрайт расходника: удалить из реестра и ре-бродкастить остаток блока.
 fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
-    state.consumable_packs.remove(&(x, y));
+    state.remove_consumable_pack(x, y);
     crate::net::session::social::buildings::broadcast_block_at(state, x, y);
 }
 

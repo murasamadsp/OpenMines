@@ -43,6 +43,8 @@
 - Для обхода зданий добавлен `GameState::building_entities_snapshot`; прямой
   доступ к `building_index` теперь остаётся внутри `GameState`, а session-код
   использует boundary-методы.
+- Активные consumable overlay-паки (boom/protector/razryadka) переведены на
+  typed key `WorldPos` и доступны session-коду только через методы `GameState`.
 - Mmap-футпринт зданий пишется/очищается через `GameState::place_building_footprint`
   / `clear_building_footprint`; session-модуль построек больше не держит ручной
   цикл `set_cell_typed + broadcast` для footprint.

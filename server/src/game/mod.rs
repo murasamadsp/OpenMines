@@ -265,12 +265,12 @@ pub struct GameState {
     /// выходит из select!-loop. Также разрешает зомби-соединения при reconnect (новый
     /// insert вытесняет старый sender → старая connection-задача чисто завершается).
     pub kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
-    /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `(x,y)` →
+    /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `WorldPos` →
     /// `(type, off)`. Клиентский `O`-пакет авторитетен для ВСЕГО чанк-`block_pos`
     /// (`RemoveObjectInBlock` чистит блок целиком), поэтому каждый `O` обязан нести
     /// и здания, и все активные расходники блока — иначе один бум стирает здания и
     /// другие бумы. `gather_block_packs` читает этот реестр. В памяти, transient.
-    pub consumable_packs: DashMap<(i32, i32), (u8, u8)>,
+    pub consumable_packs: DashMap<WorldPos, (u8, u8)>,
     /// Счётчик активных фоновых транзакций/записей в базу данных (используется при shutdown).
     pub db_pending_tasks: std::sync::atomic::AtomicUsize,
 }
@@ -792,6 +792,28 @@ impl GameState {
             return None;
         }
         block_pos_from_cell(x, y, self.world.chunks_w().cast_signed())
+    }
+
+    pub fn put_consumable_pack(&self, x: i32, y: i32, typ: u8, off: u8) {
+        self.consumable_packs.insert((x, y).into(), (typ, off));
+    }
+
+    pub fn remove_consumable_pack(&self, x: i32, y: i32) {
+        self.consumable_packs.remove(&((x, y).into()));
+    }
+
+    pub fn consumable_packs_in_block(&self, block_pos: i32) -> Vec<(i32, i32, u8, u8)> {
+        self.consumable_packs
+            .iter()
+            .filter_map(|entry| {
+                let pos = *entry.key();
+                let (x, y) = (pos.0, pos.1);
+                (self.pack_block_pos(x, y) == Some(block_pos)).then(|| {
+                    let (typ, off) = *entry.value();
+                    (x, y, typ, off)
+                })
+            })
+            .collect()
     }
 
     /// C# `World.AccessGun` → `(access, anygun)`. `access`: нет вражеской ЗАРЯЖЕННОЙ

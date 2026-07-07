@@ -427,12 +427,8 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
     // Активные расходники-спрайты (boom/prot/raz) того же блока. ОБЯЗАТЕЛЬНО:
     // клиентский `O` чистит весь block_pos, поэтому пакет должен нести и здания,
     // и расходники вместе — иначе апдейт здания стирает бумы, а бум — здания.
-    for entry in &state.consumable_packs {
-        let &(cx, cy) = entry.key();
-        if state.pack_block_pos(cx, cy) == Some(block_pos) {
-            let (typ, off) = *entry.value();
-            out.push((typ, net_u16_nonneg(cx), net_u16_nonneg(cy), 0, off));
-        }
+    for (cx, cy, typ, off) in state.consumable_packs_in_block(block_pos) {
+        out.push((typ, net_u16_nonneg(cx), net_u16_nonneg(cy), 0, off));
     }
     out
 }
