@@ -9,20 +9,12 @@
   ssh -fN -L 18090:127.0.0.1:8090 vps
   python3 tools/sim_players.py --host 127.0.0.1 --port 18090 --players 8 --secs 90
 """
-import argparse, hashlib, json, os, random, socket, struct, sys, threading, time
+import argparse, hashlib, json, os, random, sys, threading, time
+sys.path.insert(0, os.path.dirname(__file__))
+from om_net import OpenMinesClient, frame, ty
 
 CREDS = os.path.join(os.path.dirname(__file__), ".sim_creds.json")
 _creds_lock = threading.Lock()
-
-
-def frame(dt, ev, payload):
-    body = dt + ev + payload
-    return struct.pack("<i", 4 + len(body)) + body
-
-
-def ty(ev4, x, y, sub, t=0):
-    inner = ev4 + struct.pack("<III", t & 0xFFFFFFFF, x & 0xFFFFFFFF, y & 0xFFFFFFFF) + sub
-    return frame(b"B", b"TY", inner)
 
 
 def md5_token(h, sid):
@@ -45,120 +37,60 @@ def save_cred(nick, pid, h):
         json.dump(d, open(CREDS, "w"))
 
 
-class Bot:
+class Bot(OpenMinesClient):
     def __init__(self, idx, host, port):
+        super().__init__(host, port, auto_connect=False)
         self.idx = idx
         self.nick = f"simbot{idx}"
-        self.host, self.port = host, port
-        self.s = None
-        self.buf = bytearray()
-        self.lock = threading.Lock()
-        self.last_recv = time.time()
-        self.sid = None
-        self.spawn = None
-        self.ah = None
-        self.pi = 0
-        self.alive = True
         self.moves = 0
         self.max_silence = 0.0
         self.froze_at = None
         self.err = None
-        self.respawns = 0          # death detection (big @T jump after spawn)
-        self.cur = None            # last known (x,y) for jump detection
-
-    def _parse(self):
-        while len(self.buf) >= 4:
-            total = struct.unpack("<i", self.buf[:4])[0]
-            if total < 7 or total > 1 << 20 or len(self.buf) < total:
-                break
-            pkt = bytes(self.buf[:total]); del self.buf[:total]
-            ev, pl = pkt[5:7], pkt[7:]
-            if ev == b"PI":
-                self.pi += 1
-            elif ev == b"AU" and self.sid is None:
-                self.sid = pl.decode("utf-8", "replace").strip()
-            elif ev == b"AH":
-                a, _, h = pl.decode("utf-8", "replace").partition("_")
-                try:
-                    self.ah = (int(a), h)
-                except ValueError:
-                    pass
-            elif ev == b"@T":
-                try:
-                    xs, _, ys = pl.decode().partition(":")
-                    tx, ty = int(xs), int(ys)
-                except (ValueError, UnicodeDecodeError):
-                    continue
-                if self.spawn is None:
-                    self.spawn = (tx, ty)
-                    self.cur = (tx, ty)
-                elif self.cur is not None:
-                    # большой скачок @T = респаун (смерть) → бокс с кристаллами
-                    if abs(tx - self.cur[0]) + abs(ty - self.cur[1]) > 40:
-                        self.respawns += 1
-                    self.cur = (tx, ty)
-
-    def _reader(self):
-        while self.alive:
-            try:
-                c = self.s.recv(65536)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if not c:
-                break
-            with self.lock:
-                self.last_recv = time.time()
-                self.buf += c
-                self._parse()
-
-    def _wait(self, pred, to):
-        end = time.time() + to
-        while time.time() < end:
-            with self.lock:
-                if pred():
-                    return True
-            time.sleep(0.02)
-        return False
-
-    def _open(self):
-        self.s = socket.create_connection((self.host, self.port), timeout=10)
-        self.s.settimeout(0.4)
-        threading.Thread(target=self._reader, daemon=True).start()
-        return self._wait(lambda: self.sid is not None, 6)
 
     def register(self):
         """GUI-регистрация (1 NoAuth-failure на IP — учитывать rate-limit
         AUTH_FAILURE_LIMIT=6 / 30s). Сохраняет creds и закрывает соединение."""
-        if not self._open():
-            self.err = "no sid (register)"; return False
-        self.s.sendall(frame(b"U", b"AU", b"b_NO_x")); time.sleep(0.5)
-        self.s.sendall(ty(b"GUI_", 0, 0, b'{"b":"newakk"}')); time.sleep(0.5)
-        self.s.sendall(ty(b"GUI_", 0, 0,
-                          json.dumps({"b": f"newnick:{self.nick}"}).encode())); time.sleep(0.5)
-        self.s.sendall(ty(b"GUI_", 0, 0, b'{"b":"passwd:pw"}'))
-        ok = self._wait(lambda: self.ah is not None, 10)
+        try:
+            self.connect()
+        except OSError:
+            self.err = "no sid (register)"
+            return False
+        if not self.wait(lambda: self.sid is not None, 6):
+            self.err = "no sid (register)"
+            return False
+        self.send(frame(b"U", b"AU", b"b_NO_x"))
+        time.sleep(0.5)
+        self.send(ty(b"GUI_", 0, 0, b'{"b":"newakk"}'))
+        time.sleep(0.5)
+        self.send(ty(b"GUI_", 0, 0,
+                     json.dumps({"b": f"newnick:{self.nick}"}).encode()))
+        time.sleep(0.5)
+        self.send(ty(b"GUI_", 0, 0, b'{"b":"passwd:pw"}'))
+        ok = self.wait(lambda: self.ah is not None, 10)
         if ok:
             save_cred(self.nick, self.ah[0], self.ah[1])
-        self.alive = False
-        try:
-            self.s.close()
-        except OSError:
-            pass
+        self.close()
         return ok
 
     def connect_auth(self):
         """Только Regular-auth по кешу creds (0 failures → 0 rate-limit)."""
         cred = load_creds().get(self.nick)
         if not cred:
-            self.err = "no cached creds (register first)"; return False
-        if not self._open():
-            self.err = "no sid"; return False
-        self.s.sendall(frame(b"U", b"AU",
-                             f"b{self.idx}_{cred['id']}_{md5_token(cred['hash'], self.sid)}".encode()))
-        if not self._wait(lambda: self.spawn is not None, 10):
-            self.err = "no spawn (regular auth failed)"; return False
+            self.err = "no cached creds (register first)"
+            return False
+        try:
+            self.connect()
+        except OSError:
+            self.err = "no sid"
+            return False
+        if not self.wait(lambda: self.sid is not None, 6):
+            self.err = "no sid"
+            return False
+        self.send(frame(b"U", b"AU",
+                        f"b{self.idx}_{cred['id']}_{md5_token(cred['hash'], self.sid)}".encode()))
+        if not self.wait(lambda: self.spawn is not None, 10):
+            self.err = "no spawn (regular auth failed)"
+            return False
         return True
 
     def run(self, secs, t0):
@@ -174,8 +106,8 @@ class Bot:
             now = time.time()
             if now - last_po > 3:
                 try:
-                    self.s.sendall(frame(b"U", b"PO",
-                                         f"0:{int(now*1000)&0x7FFFFFFF}".encode()))
+                    self.send(frame(b"U", b"PO",
+                                    f"0:{int(now*1000)&0x7FFFFFFF}".encode()))
                 except OSError:
                     break
                 last_po = now
@@ -187,9 +119,9 @@ class Bot:
             dx, dy = DIRS[d]
             nx, ny = x + dx, y + dy
             try:
-                self.s.sendall(ty(b"Xdig", nx, ny, str(d).encode()))
+                self.send(ty(b"Xdig", nx, ny, str(d).encode()))
                 time.sleep(0.26)
-                self.s.sendall(ty(b"Xmov", nx, ny, str(d).encode(), int(now * 1000)))
+                self.send(ty(b"Xmov", nx, ny, str(d).encode(), int(now * 1000)))
             except OSError:
                 break
             time.sleep(0.12)
@@ -202,11 +134,7 @@ class Bot:
             self.max_silence = max(self.max_silence, sil)
             if sil > 3.0 and self.froze_at is None:
                 self.froze_at = round(now - t0, 2)
-        self.alive = False
-        try:
-            self.s.close()
-        except OSError:
-            pass
+        self.close()
 
 
 def main():

@@ -1,0 +1,16 @@
+event:/player/death
+event:/player/dizz
+event:/player/geology
+event:/player/heal
+event:/player/hurt
+event:/ui/basket
+event:/ui/signal
+event:/world/bomb
+event:/world/bomb_tick
+event:/world/c190
+event:/world/destroy
+event:/world/emi
+event:/world/mining
+event:/world/tp_in
+event:/world/tp_out
+event:/world/volcano

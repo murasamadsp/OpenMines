@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -200,44 +200,39 @@ pub const fn is_living_crystal(cell: u8) -> bool {
 }
 
 /// Dig/build interaction flags (≤3 bools per struct for `clippy::struct_excessive_bools`).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellDefPhysical {
-    #[serde(default, rename = "can_place_over")]
+    #[serde(rename = "can_place_over")]
     pub can_place_over: bool,
-    #[serde(default)]
     pub is_diggable: bool,
-    #[serde(default)]
     pub is_destructible: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellDefNature {
-    #[serde(default, rename = "isPickable")]
+    #[serde(rename = "isPickable")]
     pub is_pickable: bool,
-    #[serde(default, rename = "isSand")]
+    #[serde(rename = "isSand")]
     pub is_sand: bool,
-    #[serde(default, rename = "isBoulder")]
+    #[serde(rename = "isBoulder")]
     pub is_boulder: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellDefPresence {
-    #[serde(default, rename = "isEmpty")]
+    #[serde(rename = "isEmpty")]
     pub is_empty: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CellDef {
     /// В референсном `cells.json` часто `"name": null`.
-    #[serde(default, deserialize_with = "deserialize_name_or_null")]
+    #[serde(deserialize_with = "deserialize_name_or_null")]
     pub name: String,
-    #[serde(default, rename = "type")]
+    #[serde(rename = "type")]
     pub cell_type: u8,
-    #[serde(default)]
     pub fall_damage: i32,
-    #[serde(default)]
     pub durability: f32,
-    #[serde(default)]
     pub damage: i32,
     #[serde(flatten)]
     pub physical: CellDefPhysical,
@@ -280,14 +275,9 @@ impl CellDefs {
         let parsed: Vec<CellDef> = serde_json::from_str(&data)?;
 
         // 1:1 reference contract: `cells.json` is an array of 126 entries indexed by type (0..125).
-        // We normalize the loaded file into a dense 126-slot table keyed by `type` to preserve
-        // client expectations even if the JSON order is shuffled or has holes.
-        let mut cells: Vec<CellDef> = (0..CELL_TYPE_COUNT)
-            .map(|i| CellDef {
-                cell_type: i,
-                ..Default::default()
-            })
-            .collect();
+        // We normalize the loaded file into a dense 126-slot table keyed by `type`.
+        // Missing entries are rejected below; no synthetic/default cell definitions.
+        let mut cells: Vec<Option<CellDef>> = (0..CELL_TYPE_COUNT).map(|_| None).collect();
         // Валидация: все типы должны быть 0..125, дубликаты — ошибка.
         let mut seen = HashSet::new();
         for def in &parsed {
@@ -310,8 +300,15 @@ impl CellDefs {
 
         for def in parsed {
             let idx = def.cell_type as usize;
-            cells[idx] = def;
+            cells[idx] = Some(def);
         }
+        let cells = cells
+            .into_iter()
+            .enumerate()
+            .map(|(idx, cell)| {
+                cell.with_context(|| format!("Missing cell type {idx} in cells.json after load"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(Self { cells })
     }
 
@@ -436,6 +433,27 @@ impl From<CellType> for u8 {
 mod tests {
     use super::*;
 
+    fn explicit_cell_def(cell_type: u8) -> CellDef {
+        CellDef {
+            name: String::new(),
+            cell_type,
+            fall_damage: 0,
+            durability: 0.0,
+            damage: 0,
+            physical: CellDefPhysical {
+                can_place_over: false,
+                is_diggable: false,
+                is_destructible: false,
+            },
+            nature: CellDefNature {
+                is_pickable: false,
+                is_sand: false,
+                is_boulder: false,
+            },
+            presence: CellDefPresence { is_empty: false },
+        }
+    }
+
     #[test]
     fn is_road_matches_csharp_set() {
         // C# World.isRoad (World.cs:394): Road | GoldenRoad | PolymerRoad | BuildingDoor.
@@ -497,12 +515,7 @@ mod tests {
     #[test]
     fn cell_defs_get_rejects_unknown_cell_id_instead_of_falling_back_to_zero() {
         let defs = CellDefs {
-            cells: (0..CELL_TYPE_COUNT)
-                .map(|cell_type| CellDef {
-                    cell_type,
-                    ..Default::default()
-                })
-                .collect(),
+            cells: (0..CELL_TYPE_COUNT).map(explicit_cell_def).collect(),
         };
 
         assert_eq!(defs.get(0).cell_type, 0);
@@ -520,7 +533,22 @@ mod tests {
             CELL_TYPE_COUNT
         ));
         let defs: Vec<_> = (0..CELL_TYPE_COUNT - 1)
-            .map(|cell_type| serde_json::json!({ "type": cell_type }))
+            .map(|cell_type| {
+                serde_json::json!({
+                    "name": "",
+                    "type": cell_type,
+                    "fall_damage": 0,
+                    "durability": 0.0,
+                    "damage": 0,
+                    "can_place_over": false,
+                    "is_diggable": false,
+                    "is_destructible": false,
+                    "isPickable": false,
+                    "isSand": false,
+                    "isBoulder": false,
+                    "isEmpty": false
+                })
+            })
             .collect();
         std::fs::write(&path, serde_json::to_vec(&defs).unwrap()).unwrap();
 
@@ -533,5 +561,52 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cell_def_parsing_accepts_explicit_null_name() {
+        let json = serde_json::json!({
+            "name": null,
+            "type": 1,
+            "fall_damage": 0,
+            "durability": 0.0,
+            "damage": 0,
+            "can_place_over": false,
+            "is_diggable": false,
+            "is_destructible": false,
+            "isPickable": false,
+            "isSand": false,
+            "isBoulder": false,
+            "isEmpty": false
+        });
+
+        let def: CellDef = serde_json::from_value(json).unwrap();
+        assert_eq!(def.name, "");
+        assert_eq!(def.cell_type, 1);
+    }
+
+    #[test]
+    fn cell_def_parsing_rejects_missing_fields_instead_of_defaulting() {
+        let mut json = serde_json::json!({
+            "name": "",
+            "type": 1,
+            "fall_damage": 0,
+            "durability": 0.0,
+            "damage": 0,
+            "can_place_over": false,
+            "is_diggable": false,
+            "is_destructible": false,
+            "isPickable": false,
+            "isSand": false,
+            "isBoulder": false,
+            "isEmpty": false
+        });
+        json.as_object_mut().unwrap().remove("isSand");
+
+        let err = serde_json::from_value::<CellDef>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("isSand"),
+            "unexpected error: {err}"
+        );
     }
 }

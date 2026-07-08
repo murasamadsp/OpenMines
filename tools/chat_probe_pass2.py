@@ -16,22 +16,14 @@
 
 Тоннель: ssh -fN -L 18090:127.0.0.1:8090 vps
 """
-import argparse, hashlib, json, os, socket, struct, sys, threading, time
+import argparse, hashlib, json, os, sys, time
 from datetime import datetime, timedelta
+sys.path.insert(0, os.path.dirname(__file__))
+from om_net import OpenMinesClient, frame, ty
 
 CREDS = os.path.join(os.path.dirname(__file__), ".repro_creds.json")
 REF = os.path.join(os.path.dirname(__file__), ".p2_ref.json")
 DOTNET_UNIX_EPOCH_MIN = 1_035_593_280  # (621_355_968_000_000_000/10000/60000)
-
-
-def frame(dt: bytes, ev: bytes, pl: bytes) -> bytes:
-    body = dt + ev + pl
-    return struct.pack("<i", 4 + len(body)) + body
-
-
-def ty(ev4: bytes, x: int, y: int, sub: bytes, t: int = 0) -> bytes:
-    inner = ev4 + struct.pack("<III", t & 0xFFFFFFFF, x & 0xFFFFFFFF, y & 0xFFFFFFFF) + sub
-    return frame(b"B", b"TY", inner)
 
 
 def parse_mu(payload: bytes):
@@ -49,75 +41,6 @@ def parse_mu(payload: bytes):
             "ch": obj.get("ch"),
         })
     return out
-
-
-class C:
-    def __init__(self, host, port):
-        self.s = socket.create_connection((host, port), timeout=10)
-        self.s.settimeout(0.4)
-        self.buf = bytearray()
-        self.sid = None
-        self.spawn = None
-        self.alive = True
-        self.mus = []  # raw mU payloads
-        self.evlog = []  # (t_rel, ev, len, head) ВСЕ пакеты — для diag
-        self.t0 = time.time()
-        self.lock = threading.Lock()
-        threading.Thread(target=self._rd, daemon=True).start()
-
-    def _rd(self):
-        while self.alive:
-            try:
-                ch = self.s.recv(65536)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if not ch:
-                break
-            with self.lock:
-                self.buf += ch
-                self._parse()
-
-    def _parse(self):
-        while len(self.buf) >= 4:
-            total = struct.unpack("<i", self.buf[:4])[0]
-            if total < 7 or total > 1 << 20 or len(self.buf) < total:
-                break
-            pkt = bytes(self.buf[:total]); del self.buf[:total]
-            ev = pkt[5:7]; pl = pkt[7:]
-            self.evlog.append((round(time.time() - self.t0, 3),
-                               ev.decode("ascii", "replace"), len(pl), pl[:80]))
-            if ev == b"AU" and self.sid is None:
-                self.sid = pl.decode("utf-8", "replace").strip()
-            elif ev == b"@T" and self.spawn is None:
-                try:
-                    xs, _, ys = pl.decode().partition(":")
-                    self.spawn = (int(xs), int(ys))
-                except (ValueError, UnicodeDecodeError):
-                    pass
-            elif ev == b"mU":
-                self.mus.append(pl)
-
-    def send(self, b):
-        try:
-            self.s.sendall(b)
-        except OSError:
-            self.alive = False
-
-    def wait(self, pred, to):
-        end = time.time() + to
-        while time.time() < end:
-            with self.lock:
-                if pred():
-                    return True
-            time.sleep(0.02)
-        return False
-
-    def drain_mu(self):
-        with self.lock:
-            r = list(self.mus); self.mus.clear()
-            return r
 
 
 def auth(c) -> int:
@@ -347,7 +270,7 @@ def main():
     ap.add_argument("--port", type=int, default=18090)
     ap.add_argument("--phase", choices=("send", "verify", "diag", "watch"), required=True)
     a = ap.parse_args()
-    c = C(a.host, a.port)
+    c = OpenMinesClient(a.host, a.port)
     bot_id = auth(c)
     print(f"sid={c.sid} spawn={c.spawn} bot_id={bot_id}")
     rc = ({"send": phase_send, "verify": phase_verify,

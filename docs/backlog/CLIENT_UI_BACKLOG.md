@@ -698,7 +698,7 @@ client-only fix или product decision.
 ### UI-026. Нужна серверная state-machine спецификация программатора
 
 - Минимальный сценарий: `Pope` список -> `createprog` -> `#P` open ->
-  `PROG` save+run -> `Gu` close -> `#p` update -> `@P 1` -> `pRST` stop ->
+  `PROG` save+run -> `Gu` close -> `@P 1` -> `BH 0` -> `#p` update -> `pRST` stop ->
   `Gu` -> `@P 0`; stopped `pRST` не должен открывать `#P`.
 - Что делать: оформить в `docs/PROTOCOL.md` или отдельном тест-доке и покрыть
   protocol-пробой.

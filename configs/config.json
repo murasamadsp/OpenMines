@@ -36,19 +36,19 @@
     },
     "programmator": {
       "direct_action_delay_us": 333333,
-      "blocked_move_penalty_ms": 200,
       "min_move_delay_ms": 20
     },
     "schedules": {
       "hazards_ms": 10,
       "physics_ms": 400,
       "guns_ms": 100,
-      "programmator_ms": 100,
+      "programmator_ms": 10,
       "alive_ms": 5000,
       "building_effects_ms": 500,
       "hourly_damage_ms": 3600000,
       "game_loop_tick_rate_ms": 10,
       "game_loop_panic_backoff_ms": 200,
+      "schedule_warn_threshold_ms": 50,
       "session_disconnect_timeout_secs": 30
     },
     "rate_limits": {

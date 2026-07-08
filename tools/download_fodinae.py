@@ -4,7 +4,7 @@ import urllib.error
 import time
 
 BASE_URL = "https://fodinae.online"
-TARGET_DIR = "/Users/murasama/Projects/games/OpenMines/js_reference"
+TARGET_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "js_reference"))
 
 HTML_CSS_JS = [
     "", # index.html

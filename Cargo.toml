@@ -1,6 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/openmines-shared", "server", "tools/loadtest", "tools/proxy"]
+members = [
+    "crates/openmines-protocol",
+    "crates/openmines-shared",
+    "crates/openmines-server",
+    "crates/openmines-loadtest",
+    "crates/openmines-proxy"
+]
+
+[workspace.package]
+version = "0.0.2"
+edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
 tokio = { version = "1.52.3", features = [
@@ -22,7 +33,7 @@ md5 = "0.7.0"
 sha2 = "0.10.9"
 rand = "0.9.4"
 dashmap = "6.2.1"
-parking_lot = "0.12.5"
+parking_lot = { version = "0.12.5", features = ["deadlock_detection"] }
 rayon = "1.12.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
@@ -44,29 +55,27 @@ strum = { version = "0.28.0", features = ["derive"] }
 dotnet-rng = "1.0.5"
 clap = { version = "4.5.31", features = ["derive", "env"] }
 axum = "0.7.9"
-tower-http = { version = "0.5.2", features = ["cors", "fs", "trace"] }
 rust-embed = "8.5.0"
 mime_guess = "2.0.5"
 num-traits = "0.2.19"
 governor = "0.10.4"
 
 # Internal workspace dependency
+openmines-protocol = { path = "crates/openmines-protocol" }
 openmines-shared = { path = "crates/openmines-shared" }
 
 [profile.dev]
-debug = 1
-codegen-units = 32
+debug = 2
+incremental = true
 
 [profile.test]
-debug = 1
-codegen-units = 32
-incremental = false
+debug = 2
+incremental = true
 
 [profile.release]
 opt-level = 3
-lto = "fat"
-codegen-units = 1
-strip = true
+lto = "thin"
+strip = false
 
 [profile.release.build-override]
 strip = false

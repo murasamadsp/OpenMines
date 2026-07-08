@@ -24,10 +24,12 @@ quality_run_audit_if_available
 quality_run_machete_if_available
 quality_run_tests
 quality_run_wire_smoke
+quality_prune_target_cache
 
 if [[ "${PRE_COMMIT_EXTENDED:-0}" == "1" ]]; then
   quality_run_outdated_if_available
   quality_run_geiger_if_available
   quality_run_bloat_if_available
   quality_run_docs
+  quality_run_fmod_events
 fi

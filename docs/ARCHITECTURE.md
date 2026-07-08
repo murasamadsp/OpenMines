@@ -4,12 +4,11 @@
 
 Сервер строится по модульной модели:
 
-- `config` — чтение обязательного `configs/config.json` и логирование.
-- `world` — создание мира, управление чанками, загрузка определений ячеек из `cells.json`.
-- `db` — инициализация SQLite-базы, миграции данных, работа с игроками, кланами и постройками.
-- `game` — игровая логика (ECS на базе `bevy_ecs`), состояния игроков, крафт, навыки, чат.
-- `net` — сетевой уровень: TCP-сессии (сериализация/десериализация).
-- `protocol` — описание и логика обработки бинарных пакетов.
+- `openmines-protocol` — wire-контракт legacy Unity-клиента: бинарный фрейм, packet builders/decoders, HB sub-packets, golden-тесты.
+- `openmines-shared` — общие серверные библиотеки: обязательные конфиги, SQLite, мир, логирование, метрики, время.
+- `openmines-server` — игровой сервер: ECS-геймплей, TCP-сессии, HTTP-админка, фоновые задачи.
+- `openmines-loadtest` — нагрузочный клиент поверх общего protocol/db API.
+- `openmines-proxy` — TCP-прокси поверх общего protocol decoder.
 
 ## Поток запуска
 
@@ -72,17 +71,19 @@ state.tokio_handle.spawn(async move {
 "gameplay": {
   "schedules": {
     "game_loop_tick_rate_ms": 10,
-    "game_loop_panic_backoff_ms": 200
+    "game_loop_panic_backoff_ms": 200,
+    "schedule_warn_threshold_ms": 50
   }
 }
 ```
 
 - `game_loop_tick_rate_ms` — целевая длительность одного тика в миллисекундах. Если тик выполнен быстрее — поток засыпает на остаток. Должен быть > 0, иначе старт завершается ошибкой.
 - `game_loop_panic_backoff_ms` — задержка перед следующим тиком после паники (ECS может быть в неконсистентном состоянии). Должен быть > 0.
+- `schedule_warn_threshold_ms` — порог warning для одного ECS schedule. Должен быть >= `game_loop_tick_rate_ms`.
 
-### Диагностика тиков (`target=tickprof`)
+### Диагностика тиков (`target=tickprof`, `target=scheduler`)
 
-Каждые N тиков в лог пишется сводка по максимальным значениям за окно:
+Каждые N тиков в `debug` пишется сводка по максимальным значениям за окно:
 
 ```
 [tickprof] ticks=100 over_budget=3 max_total=12.3ms
@@ -90,7 +91,33 @@ state.tokio_handle.spawn(async move {
   side: broadcasts=0.4ms pack_resends=0.2ms ...
 ```
 
-Выводится только при выходе за бюджет (`dt_total > game_loop_tick_rate_ms`), не чаще раза в 500ms.
+`tickprof` выводит over-budget только при выходе за бюджет
+(`dt_total > game_loop_tick_rate_ms`), не чаще раза в 500ms.
+
+Обычная 5-секундная `tickprof` summary не должна шуметь в prod при `info`.
+Для расследования performance включать явно: `M3R_LOG=tickprof=debug`.
+
+`scheduler` warning и detailed `SLOW hazards system` выводятся, когда ECS
+schedule выполнялся дольше `schedule_warn_threshold_ms`. Это отсекает шум от
+обычных 5-20ms physics/hazards проходов при 10ms tick budget, но оставляет
+видимыми реальные стопоры вроде 80ms schedule. Для каждого превышения лог пишет
+фактическую длительность и configured threshold.
+
+Game loop watchdog работает из отдельного OS-потока и не ждёт завершения тика.
+Если tick-loop не обновляет heartbeat дольше `max(200 * game_loop_tick_rate_ms, 2s)`,
+он пишет `GAME TICK WATCHDOG` с последней стадией (`dispatch`, `schedule_run`,
+`flush_queues`, `side_*`), именем schedule, номером тика, числом игроков и
+количеством pending DB tasks. Это нужно именно для зависаний без последующего
+`5s summary`: обычный slow-log срабатывает только после возврата управления.
+Если стадия оканчивается на `_ecs_lock_wait`, тик стоит не внутри работы этой
+секции, а на ожидании ECS write-lock; в таком случае смотреть надо backtrace
+`PARKING_LOT DEADLOCK DETECTED`.
+
+Отдельно включён `parking_lot` deadlock detector. Он каждые 10s проверяет
+циклические deadlock-и `parking_lot::{Mutex,RwLock}` и при обнаружении пишет
+`PARKING_LOT DEADLOCK DETECTED` с thread id и backtrace каждого участника. Это
+не заменяет watchdog: detector ловит только lock-циклы, watchdog ловит любой
+стопор game-tick'а.
 
 ## Управление данными (State)
 
@@ -100,7 +127,21 @@ state.tokio_handle.spawn(async move {
 
 ## Взаимодействие с клиентом
 
-Сетевой протокол реализован в `crates/openmines-shared/src/protocol`. Каждый подключённый клиент получает `Session`, которая обрабатывает входящие пакеты и синхронизирует состояние (игроки, инвентарь, мир).
+Сетевой протокол реализован в `crates/openmines-protocol`. Каждый подключённый клиент получает `Session`, которая обрабатывает входящие пакеты и синхронизирует состояние (игроки, инвентарь, мир).
+
+## Admin Control Plane
+
+Админ-возможности имеют три поверхности: in-game slash-команды, интерактивная
+server console и web admin. Источник правды по списку команд — единый registry
+`crates/openmines-server/src/admin/mod.rs`.
+
+- in-game `/admin` строит help из registry;
+- console `help` строит help из registry;
+- web отдаёт тот же registry через `GET /api/admin/commands`.
+
+Следующий архитектурный шаг: вынести исполнение команд из
+`net/session/social/commands.rs` и `console.rs` в общий admin command service.
+Web должен быть GUI над тем же service, а не четвёртой реализацией правил.
 
 ---
 

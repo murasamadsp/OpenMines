@@ -26,6 +26,7 @@
 | `server/src/net/session/ui/gui_buttons.rs` | Порядок кнопок маркета: «Продать» → «Продать всё» | **[UX]** удобнее; wire-нейтрально |
 | `server/src/game/mechanics/combat.rs` | Урон пушки — округлённый каст после `AntiGun`, клампится снизу; базовое значение настраивается через `gameplay.combat.gun_damage` (default 60) | float→int без потери паритета, config-driven tuning |
 | `server/src/game/actors/programmator.rs` + `gameplay.programmator.min_move_delay_ms` | Настраиваемый floor задержки движения программы (в C# пола нет) | **[SAFETY]** анти-infinite-loop / CPU-stall |
+| `server/src/game/actors/programmator.rs` | Не портируем C# `delay += 200ms` для хода программатора | **[USER]** скорость движения робота определяется только прокачкой/базовым конфигом, без скрытых штрафов программатора |
 | `server/src/game/actors/programmator.rs` | `MacrosBuild` (id 142) намеренно не в этой ветке | 1:1 C# `PAction.Execute` его не имеет |
 | `server/src/net/session/ui/up_building.rs` `handle_skill_upgrade` | Апгрейд скилла СТОИТ денег (`cost = gameplay.skills.upgrade_cost_base * уровень`), списывает + блокирует при нехватке. В C# `Skill.Up` бесплатный (только exp) | **[USER]** «каждый апгрейд стоит денег» — экономика, конфиг-тюнинг |
 

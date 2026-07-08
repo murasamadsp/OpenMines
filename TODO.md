@@ -4,6 +4,7 @@
 
 Закрыто:
 
+- Безопасность локальной разработки: глобально в Mac OS заблокировано использование деструктивных команд Git (`git reset`, `git clean`, `git restore`) через алиасы в `~/.gitconfig` во избежание случайной потери незакоммиченной работы.
 - `openmines-server --doctor`: schema/resource + SQLite integrity/migration
   validation без запуска TCP/admin-сервера.
 - Rust quality tooling: `cargo-deny`, `cargo-audit`, `cargo-machete`,
@@ -45,8 +46,10 @@
   Начато с fail-fast загрузки boxes/events; дальше разбирать `serde(default)` и
   `unwrap_or` только там, где это скрывает повреждение config/DB/game state.
 - Config baseline cleanup: runtime config-структуры больше не реализуют
-  `Default`; тесты/фикстуры используют явный `runtime_baseline()`, а загрузка
-  `config.json` остаётся fail-fast без serde-подстановок.
+  `Default`, а загрузка `config.json` остаётся fail-fast без serde-подстановок.
+  Убран тест, который требовал совпадения `configs/config.json` с кодовым
+  baseline. Оставшийся `runtime_baseline()` — временная фабрика тестовых
+  фикстур, не источник правды runtime.
 
 ## Входящие баги от ручной проверки 2026-07-07
 

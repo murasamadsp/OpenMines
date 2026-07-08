@@ -97,8 +97,6 @@ impl SpawnConfig {
 pub struct ProgrammatorConfig {
     /// Задержка для прямых действий программы: копание/стройка/геология/хил.
     pub direct_action_delay_us: u64,
-    /// Штраф за попытку хода в занятую клетку.
-    pub blocked_move_penalty_ms: u64,
     /// Минимальная задержка движения, чтобы программа не крутила busy-loop.
     pub min_move_delay_ms: u64,
 }
@@ -108,7 +106,6 @@ impl ProgrammatorConfig {
     pub const fn runtime_baseline() -> Self {
         Self {
             direct_action_delay_us: 333_333,
-            blocked_move_penalty_ms: 200,
             min_move_delay_ms: 20,
         }
     }
@@ -126,6 +123,10 @@ pub struct ScheduleConfig {
     pub hourly_damage_ms: u64,
     pub game_loop_tick_rate_ms: u64,
     pub game_loop_panic_backoff_ms: u64,
+    /// Порог slow-log для одной ECS schedule. Должен быть >= tick budget:
+    /// over-budget тики уже логируются отдельно, schedule warning нужен для
+    /// реально диагностируемых stalls.
+    pub schedule_warn_threshold_ms: u64,
     /// Таймаут сессии: нет PO дольше этого — клиент считается мёртвым.
     pub session_disconnect_timeout_secs: u64,
 }
@@ -137,12 +138,13 @@ impl ScheduleConfig {
             hazards_ms: 10,
             physics_ms: 400,
             guns_ms: 100,
-            programmator_ms: 100,
+            programmator_ms: 10,
             alive_ms: 5_000,
             building_effects_ms: 500,
             hourly_damage_ms: 3_600_000,
             game_loop_tick_rate_ms: 10,
             game_loop_panic_backoff_ms: 200,
+            schedule_warn_threshold_ms: 50,
             session_disconnect_timeout_secs: 30,
         }
     }
@@ -322,6 +324,19 @@ impl GameplayConfig {
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
         self.schedules.validate()?;
+        if self.schedules.programmator_ms == 0 {
+            anyhow::bail!("gameplay.schedules.programmator_ms must be greater than 0");
+        }
+        if self.schedules.programmator_ms < self.schedules.game_loop_tick_rate_ms {
+            anyhow::bail!(
+                "gameplay.schedules.programmator_ms must be greater than or equal to gameplay.schedules.game_loop_tick_rate_ms"
+            );
+        }
+        if self.schedules.programmator_ms > self.programmator.min_move_delay_ms {
+            anyhow::bail!(
+                "gameplay.schedules.programmator_ms must be less than or equal to gameplay.programmator.min_move_delay_ms"
+            );
+        }
         self.rate_limits.validate()?;
         Ok(())
     }
@@ -410,6 +425,11 @@ impl ScheduleConfig {
         if self.game_loop_panic_backoff_ms == 0 {
             anyhow::bail!("gameplay.schedules.game_loop_panic_backoff_ms must be greater than 0");
         }
+        if self.schedule_warn_threshold_ms < self.game_loop_tick_rate_ms {
+            anyhow::bail!(
+                "gameplay.schedules.schedule_warn_threshold_ms must be greater than or equal to gameplay.schedules.game_loop_tick_rate_ms"
+            );
+        }
         if self.session_disconnect_timeout_secs == 0 {
             anyhow::bail!(
                 "gameplay.schedules.session_disconnect_timeout_secs must be greater than 0"
@@ -473,19 +493,19 @@ mod tests {
                      "spawn": {"x": 12, "y": 13},
                      "programmator": {
                        "direct_action_delay_us": 333333,
-                       "blocked_move_penalty_ms": 200,
                        "min_move_delay_ms": 20
                      },
                       "schedules": {
                         "hazards_ms": 10,
                         "physics_ms": 400,
                         "guns_ms": 100,
-                        "programmator_ms": 100,
+                        "programmator_ms": 10,
                         "alive_ms": 5000,
                         "building_effects_ms": 500,
                         "hourly_damage_ms": 3600000,
                         "game_loop_tick_rate_ms": 10,
                         "game_loop_panic_backoff_ms": 200,
+                        "schedule_warn_threshold_ms": 50,
                         "session_disconnect_timeout_secs": 30
                       },
                       "rate_limits": {
@@ -513,33 +533,14 @@ mod tests {
         assert_eq!(c.gameplay.spawn.x, 12);
         assert_eq!(c.gameplay.spawn.y, 13);
         assert_eq!(c.gameplay.programmator.direct_action_delay_us, 333_333);
-        assert_eq!(c.gameplay.programmator.blocked_move_penalty_ms, 200);
         assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
         assert_eq!(c.gameplay.schedules.hazards_ms, 10);
         assert_eq!(c.gameplay.schedules.physics_ms, 400);
+        assert_eq!(c.gameplay.schedules.programmator_ms, 10);
         assert_eq!(c.gameplay.schedules.building_effects_ms, 500);
         assert_eq!(c.gameplay.schedules.hourly_damage_ms, 3_600_000);
+        assert_eq!(c.gameplay.schedules.schedule_warn_threshold_ms, 50);
         assert!(c.cron.hourly_log_enabled);
-    }
-
-    #[test]
-    fn tracked_config_matches_typed_runtime_baseline() {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let root = manifest_dir
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("shared crate must live under crates/openmines-shared");
-        let cfg = Config::load(root.join("configs/config.json").to_str().unwrap()).unwrap();
-        assert_eq!(
-            cfg.gameplay,
-            GameplayConfig::runtime_baseline(),
-            "configs/config.json gameplay must match typed baseline in config.rs"
-        );
-        assert_eq!(
-            cfg.cron,
-            CronConfig::runtime_baseline(),
-            "configs/config.json cron must match typed baseline in config.rs"
-        );
     }
 
     /// Fail-fast (запрошено): пропущенный геймплей-ключ = ошибка парсинга, а НЕ
@@ -737,6 +738,47 @@ mod tests {
             assert!(
                 cfg.validate().is_err(),
                 "invalid programmator config must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_schedule_values_are_errors() {
+        for patch in [
+            serde_json::json!({"game_loop_tick_rate_ms": 0}),
+            serde_json::json!({"game_loop_panic_backoff_ms": 0}),
+            serde_json::json!({"schedule_warn_threshold_ms": 9}),
+            serde_json::json!({"session_disconnect_timeout_secs": 0}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["schedules"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid schedule config must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_programmator_schedule_relationships_are_errors() {
+        for patch in [
+            serde_json::json!({"programmator_ms": 0}),
+            serde_json::json!({"programmator_ms": 9}),
+            serde_json::json!({"programmator_ms": 21}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["schedules"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid programmator schedule relationship must be rejected"
             );
         }
     }

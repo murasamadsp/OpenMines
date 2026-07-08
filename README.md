@@ -28,6 +28,8 @@ cargo run --release
 
 По умолчанию сервер слушает `0.0.0.0:8090`.
 
+Подробнее о режимах запуска, отладке и использовании встроенной консоли читайте в **[docs/DEBUG.md](file:///Users/murasama/Projects/games/OpenMines/docs/DEBUG.md)**.
+
 ### 2.1. Локальная dev-сессия без VPS
 
 Быстрая проверка локального wire-контура без Unity и без VPS:

@@ -1,15 +1,13 @@
 //! Аукционные ордера (1:1 C# `Sys_Market/Order.cs` + `MarketSystem` CRUD).
 //! Доменная логика (`Bet`/`CheckReady`) и GUI — в game/net слое; здесь только
-//! персистентность. Методы пока вызываются доменом/тиком аукциона (следующий
-//! слайс) — `#[allow(dead_code)]` как в `db/mod.rs` для стейдж-методов.
+//! персистентность. Методы вызываются GUI аукциона, bootstrap-регенерацией и
+//! фоновым тиком финализации.
 use super::Database;
 use anyhow::{Context as _, Result, bail};
 use sqlx::Row;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-// Поля читаются доменом `Bet`/`CheckReady` и GUI аукциона (следующий слайс).
-#[allow(dead_code)]
 pub struct OrderRow {
     pub id: i32,
     pub initiator_id: i32,
@@ -22,7 +20,6 @@ pub struct OrderRow {
     pub bet_time: i64,
 }
 
-#[allow(dead_code)]
 impl Database {
     /// Создать ордер (`MarketSystem.CreateOrder`). Возвращает id.
     pub async fn create_order(

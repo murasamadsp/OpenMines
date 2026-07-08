@@ -76,11 +76,12 @@ env \
   -u M3R_PORT \
   -u M3R_DATA_DIR \
   -u M3R_REGEN_WORLD \
-  -u M3R_GRANT_ADMIN \
   -u M3R_USE_CTRL_C \
   -u M3R_ABORT_ON_PANIC \
   -u M3R_LOG \
   -u RUST_LOG \
+  M3R_ADMIN_TOKEN=dev-smoke-admin \
+  M3R_GRANT_ADMIN=smokeadmin \
   "$BIN" >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 popd >/dev/null
@@ -287,7 +288,7 @@ try:
     sock.settimeout(5)
     expect_handshake("gui-register")
 
-    nick = f"smoke{int(time.time() * 1000) % 1_000_000}"
+    nick = "smokeadmin"
     write_u("AU", "smokereg_NO_x")
     wait_for_events(["cf", "BI", "HB", "GU"], timeout=8)
 
@@ -309,12 +310,65 @@ try:
     xs, _, ys = tp_payload.partition(":")
     x = int(xs)
     y = int(ys)
+finally:
+    if sock is not None:
+        sock.close()
+
+sock = None
+try:
+    sock = connect_client()
+    sock.settimeout(5)
+    sid = expect_handshake("grant-admin-reconnect")
+    token = hashlib.md5(f"{user_hash}{sid}".encode("utf-8")).hexdigest()
+    write_u("AU", f"smokere_{user_id}_{token}")
+    admin_login_packets = wait_for_events(["cf", "Gu", "BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P"], timeout=12)
+    tp_payload = next(p[2] for p in admin_login_packets if p[1] == "@T").decode("utf-8", errors="strict")
+    xs, _, ys = tp_payload.partition(":")
+    x = int(xs)
+    y = int(ys)
 
     write_u("PO", f"0:{int(time.time() * 1000) & 0x7FFFFFFF}")
     write_ty("Xdig", x, y, "3")
     time.sleep(0.25)
     write_ty("Xmov", x + 1, y, "3", int(time.time() * 1000))
     wait_for_events(["PI"], timeout=8)
+    x += 1
+
+    write_ty("Locl", x, y, "/money 10000")
+    money_packets = wait_for_events(["P$"], timeout=8)
+    money_payload = json.loads(first_payload(money_packets, "P$").decode("utf-8"))
+    if money_payload["money"] < 10_000:
+        raise RuntimeError(f"admin /money did not grant funds: {money_payload!r}")
+
+    write_ty("Blds", x, y)
+    blds_packets = wait_for_events(["GU"], timeout=8)
+    blds_payload = first_payload(blds_packets, "GU").decode("utf-8", errors="replace")
+    if "Мои здания" not in blds_payload:
+        raise RuntimeError(f"Blds did not open owned-buildings window: {blds_payload!r}")
+
+    write_gui("open_buildings")
+    buildings_packets = wait_for_events(["GU"], timeout=8)
+    buildings_payload = first_payload(buildings_packets, "GU").decode("utf-8", errors="replace")
+    if "bld_place:O" not in buildings_payload:
+        raise RuntimeError(f"buildings menu missing Spot placement route: {buildings_payload!r}")
+
+    write_gui("bld_place:O")
+    placed_packets = wait_for_events(["P$", "HB", "Gu"], timeout=8)
+    placed_events = foreground_events(placed_packets)
+    if placed_events[0] != "P$" or "HB" not in placed_events or placed_events[-1] != "Gu":
+        raise RuntimeError(f"building placement events mismatch: {placed_events!r}")
+
+    for step in range(1, 4):
+        expected_event = "GU" if step == 3 else "HB"
+        write_ty("Xmov", x + step, y, "3", int(time.time() * 1000))
+        wait_for_events([expected_event], timeout=8)
+    x += 3
+
+    write_ty("ADMN", x, y)
+    admin_packets = wait_for_events(["GU"], timeout=8)
+    admin_payload = first_payload(admin_packets, "GU").decode("utf-8", errors="replace")
+    if "pack_save:%R%" not in admin_payload:
+        raise RuntimeError(f"pack admin GUI missing save route: {admin_payload!r}")
 
     write_ty("Pope", x, y)
     wait_for_events(["GU"], timeout=8)
@@ -444,6 +498,7 @@ print("    initial: ST AU PI")
 print("    auth-failure: cf BI HB GU")
 print("    gui-register: AH cf Gu + init packets")
 print("    gameplay: PO/Xdig/Xmov kept session responsive")
+print("    building/admin: Blds/open_buildings/bld_place/ADMN HORB wire contract")
 print("    programmator: Pope/create/open/rename/copy/delete/PROG/pRST wire contract")
 print("    settings: TAGR and settings save wire contract")
 print("    reconnect: selected program restored without #P editor open")

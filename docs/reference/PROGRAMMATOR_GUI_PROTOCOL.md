@@ -63,10 +63,10 @@ C# reference:
 - `StaticGUI.StartedProg` сохраняет source, запускает программу, затем шлёт
   `UpdateProgrammatorPacket` (`#p`).
 
-Сервер обязан сохранить source, запустить runtime и отправить `#p` перед `@P`.
-Без `#p` Unity не вызывает `UpdateProgramm()`, а значит не сбрасывает
-`ProgrammerView.active=false`; следующий `@P 1` активирует programmator object
-поверх игры и визуально открывает редактор.
+Сервер обязан сохранить source, запустить runtime, отправить `@P 1`, затем
+`#p` последним. Unity `@P 1` активирует programmator object, а `#p` вызывает
+`UpdateProgramm()` и сбрасывает `ProgrammerView.active=false`; если поменять
+порядок, редактор снова появляется поверх игры.
 
 Сервер должен:
 
@@ -78,7 +78,7 @@ C# reference:
 - запустить программу;
 - закрыть HORB/window state на сервере;
 - отправить статус в порядке, совместимом с Unity:
-  `Gu`, optional `@T`, затем `#p`, `@P`, `BH`;
+  `Gu`, optional `@T`, затем `@P`, `BH`, `#p`;
 - не отправлять `#P` на успешном старте программы.
 
 Пакеты `@P/#p/#P/Gu` нельзя менять без ручной проверки клиента:
@@ -199,7 +199,8 @@ Unity handler:
 
 Использовать:
 
-- после успешного `PROG` save/start перед `@P`, чтобы закрыть editor state;
+- после успешного running `PROG` save/start последним пакетом после `@P/BH`,
+  чтобы закрыть editor state, который `@P 1` активирует в Unity;
 - после rename;
 - на login, если selected program есть и нужно восстановить client-side
   `ProgrammerView.programId/source`, но не открыть редактор.
@@ -240,12 +241,18 @@ Unity `ProgrammatorHandler`:
 
 В `Player.Init()` после `#F`:
 
-- если selected program есть: сервер должен отправить `#p` с id/name/source;
-- затем сервер отправляет `@P 0`, если программа не запущена.
+- сервер отправляет `@P` с фактическим running-статусом;
+- затем `BH` с фактическим hand-mode;
+- если selected program есть: сервер отправляет `#p` с id/name/source последним
+  в блоке программатора.
 
 Это нужно, чтобы после входа клиент знал `ProgrammerView.programId` и source.
 Если `#p` не отправить, кнопка play может отправить `PROG` с `program_id = 0`
 или открыть список вместо запуска.
+Для offline-running программы `#p` должен идти после `@P/BH`: `@P 1` включает
+programmator object, а `#p` гидратит selected source и снова скрывает editor
+view. Регрессия покрыта тестом
+`init_running_selected_program_hydrates_without_opening_editor`.
 
 Сервер не должен выбирать “последнюю” или “единственную” программу неявно.
 Selected program должен быть явным persistent состоянием игрока.

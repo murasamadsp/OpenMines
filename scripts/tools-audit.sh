@@ -17,6 +17,13 @@ err() {
   fail=1
 }
 
+tracked_shell_tools() {
+  {
+    [[ -e ".githooks/pre-commit" ]] && printf '%s\n' ".githooks/pre-commit"
+    find scripts -maxdepth 1 -type f -name '*.sh' | sort
+  }
+}
+
 echo "==> Checking Git hook topology"
 hooks_path="$(git config --get core.hooksPath || true)"
 if [[ "$hooks_path" != ".githooks" ]]; then
@@ -33,9 +40,9 @@ echo "==> Checking executable bit for shell tooling"
 while IFS= read -r path; do
   [[ -z "$path" ]] && continue
   if [[ ! -x "$path" ]]; then
-    err "tracked shell tool is not executable: $path"
+    err "shell tool is not executable: $path"
   fi
-done < <(git ls-files '.githooks/pre-commit' 'scripts/*.sh')
+done < <(tracked_shell_tools)
 
 echo "==> Checking tools audit registry coverage"
 registry="docs/TOOLS_AUDIT.md"
@@ -45,16 +52,16 @@ else
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     if ! rg -Fq "\`$path\`" "$registry"; then
-      err "tracked script is missing from $registry: $path"
+      err "script is missing from $registry: $path"
     fi
-  done < <(git ls-files '.githooks/pre-commit' 'scripts/*.sh')
+  done < <(tracked_shell_tools)
 
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     if ! rg -Fq "\`$path\`" "$registry"; then
       warn "tracked tool is missing from $registry: $path"
     fi
-  done < <(git ls-files 'tools/*.py' 'tools/requirements.txt' 'tools/*/Cargo.toml')
+  done < <(git ls-files 'tools/*.py' 'tools/requirements.txt' 'crates/openmines-loadtest/Cargo.toml' 'crates/openmines-proxy/Cargo.toml')
 fi
 
 echo "==> Checking tracked generated Python artifacts"

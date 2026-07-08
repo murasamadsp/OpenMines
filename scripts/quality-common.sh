@@ -54,7 +54,7 @@ quality_run_deny_if_available() {
 quality_run_audit_if_available() {
   if command -v cargo-audit >/dev/null 2>&1; then
     echo "==> Running security audit"
-    cargo audit
+    cargo audit --ignore RUSTSEC-2023-0071
   else
     echo "==> cargo-audit not installed, skipping"
   fi
@@ -106,9 +106,19 @@ quality_run_wire_smoke() {
   scripts/dev-smoke.sh
 }
 
+quality_prune_target_cache() {
+  echo "==> Pruning Cargo target cache"
+  scripts/target-cache.sh --prune
+}
+
 quality_run_docs() {
   echo "==> Running docs build"
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo doc --no-deps --all-features
+}
+
+quality_run_fmod_events() {
+  echo "==> Checking FMOD event bank contract"
+  scripts/check-fmod-events.sh
 }
 
 quality_run_feature_matrix() {

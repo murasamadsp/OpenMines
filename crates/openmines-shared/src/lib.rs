@@ -22,6 +22,5 @@ pub mod db;
 pub mod env_config;
 pub mod logging;
 pub mod metrics;
-pub mod protocol;
 pub mod time;
 pub mod world;

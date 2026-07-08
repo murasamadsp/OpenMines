@@ -21,10 +21,11 @@ pub struct BuildingRow {
     pub craft_recipe_id: Option<i32>,
     pub craft_num: i32,
     pub craft_end_ts: i64,
+    pub craft_ready: bool,
     pub clanzone: i32,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildingExtra {
     pub charge: i32,
     pub max_charge: i32,
@@ -40,6 +41,8 @@ pub struct BuildingExtra {
     pub craft_num: i32,
     /// Crafter: unix-ts завершения крафта. 0 = простаивает.
     pub craft_end_ts: i64,
+    /// Crafter: completion resend already emitted. Mirrors C# `Crafter.ready`.
+    pub craft_ready: bool,
     /// Resp: клановая зона (admin-настройка; хранится, геймплейного эффекта нет — 1:1 C#).
     pub clanzone: i32,
 }
@@ -73,6 +76,7 @@ fn parse_building_row(r: &sqlx::sqlite::SqliteRow) -> Result<BuildingRow> {
         craft_recipe_id: extra.craft_recipe_id,
         craft_num: extra.craft_num,
         craft_end_ts: extra.craft_end_ts,
+        craft_ready: extra.craft_ready,
         clanzone: extra.clanzone,
     })
 }
@@ -238,6 +242,7 @@ impl Database {
             craft_recipe_id: row.craft_recipe_id,
             craft_num: row.craft_num,
             craft_end_ts: row.craft_end_ts,
+            craft_ready: row.craft_ready,
             clanzone: row.clanzone,
         };
         let type_code = row.type_code.chars().next().map_or(b' ', |c| c as u8);
@@ -271,6 +276,7 @@ impl Database {
                 craft_recipe_id: row.craft_recipe_id,
                 craft_num: row.craft_num,
                 craft_end_ts: row.craft_end_ts,
+                craft_ready: row.craft_ready,
                 clanzone: row.clanzone,
             };
             let type_code = row.type_code.chars().next().map_or(b' ', |c| c as u8);
@@ -355,6 +361,7 @@ mod tests {
             craft_recipe_id: None,
             craft_num: 0,
             craft_end_ts: 0,
+            craft_ready: false,
             clanzone: 0,
         };
         database
@@ -381,6 +388,7 @@ mod tests {
             "craft_recipe_id": null,
             "craft_num": 0,
             "craft_end_ts": 0,
+            "craft_ready": false,
             "clanzone": 0
         }"#;
         assert!(serde_json::from_str::<BuildingExtra>(json).is_err());
@@ -401,6 +409,7 @@ mod tests {
             craft_recipe_id: None,
             craft_num: 0,
             craft_end_ts: 0,
+            craft_ready: false,
             clanzone: 0,
         };
 
@@ -442,6 +451,7 @@ mod tests {
             craft_recipe_id: None,
             craft_num: 0,
             craft_end_ts: 0,
+            craft_ready: false,
             clanzone: 0,
         };
         let building_id = database

@@ -1,0 +1,19 @@
+[package]
+name = "openmines-loadtest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "loadtest"
+path = "src/main.rs"
+
+[dependencies]
+openmines-protocol = { workspace = true }
+openmines-shared = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+clap = { workspace = true }
+md5 = { workspace = true }

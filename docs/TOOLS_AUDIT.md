@@ -17,7 +17,8 @@
 | `scripts/dev-server.sh` | active | Локальный Unity-dev сервер в `.local/`. | Оставить. |
 | `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
 | `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
-| `scripts/rust-modern.sh` | active manual | Тяжёлые ручные проверки: nextest/features/coverage/mutants/vet/cache. | Оставить, не pre-commit. |
+| `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить как явный gate sound-трека; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
+| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/coverage/mutants/vet/fmod/cache. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
 | `scripts/arch-guard.sh` | active | Static architecture gate. | Оставить в CI/full gate. |
 | `scripts/arch-audit.sh` | diagnostic | Read-only отчёт по архитектурным leakage. | Оставить как manual audit. |
 | `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`. | Оставить, но `--clean` запускать только явно. |
@@ -29,10 +30,10 @@
 
 | Файл | Статус | Назначение | Действие |
 |---|---|---|---|
-| `tools/loadtest` | active | Rust loadtest crate. | Оставить. |
-| `tools/loadtest/Cargo.toml` | active | Manifest Rust loadtest crate. | Оставить. |
-| `tools/proxy` | active | Rust proxy crate. | Оставить. |
-| `tools/proxy/Cargo.toml` | active | Manifest Rust proxy crate. | Оставить. |
+| `crates/openmines-loadtest` | active | Rust loadtest crate. | Оставить. |
+| `crates/openmines-loadtest/Cargo.toml` | active | Manifest Rust loadtest crate. | Оставить. |
+| `crates/openmines-proxy` | active | Rust proxy crate. | Оставить. |
+| `crates/openmines-proxy/Cargo.toml` | active | Manifest Rust proxy crate. | Оставить. |
 | `tools/proxy_smoke.py` | active | E2E smoke для proxy restart/replay. | Оставить. |
 
 ## Python Diagnostics
@@ -47,6 +48,7 @@
 | `tools/chat_probe_pass2.py` | live probe | Chat persistence pass-2 probe. | Оставить, требует local ref/cache. |
 | `tools/download_fodinae.py` | reference fetch | Скачивает JS reference assets. | Manual only; не pre-commit. |
 | `tools/tg_parser.py` | external data tool | Telegram parser. | Под вопросом: не игровой dev-loop, требует секреты/session. |
+| `tools/om_net.py` | active | Shared Python network utilities. | Оставить. |
 | `tools/requirements.txt` | active | Python deps (`telethon`). | Оставить пока есть `tg_parser.py`. |
 
 ## Tracked State Risk

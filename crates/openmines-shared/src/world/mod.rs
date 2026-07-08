@@ -215,10 +215,7 @@ pub trait WorldProvider: Send + Sync {
     fn valid_coord(&self, x: i32, y: i32) -> bool;
     fn get_cell(&self, x: i32, y: i32) -> u8;
     fn get_cell_typed(&self, x: i32, y: i32) -> CellType;
-    // TODO: get_solid_cell/get_road_cell will be used when layer-specific cell queries are needed
-    #[allow(dead_code)]
     fn get_solid_cell(&self, x: i32, y: i32) -> u8;
-    #[allow(dead_code)]
     fn get_road_cell(&self, x: i32, y: i32) -> u8;
     fn set_cell(&self, x: i32, y: i32, cell: u8);
     fn set_cell_typed(&self, x: i32, y: i32, cell: CellType);
@@ -394,7 +391,6 @@ impl WorldProvider for World {
         drop(journal);
     }
 
-    #[allow(dead_code)]
     fn read_world_cell(&self, x: i32, y: i32) -> Option<WorldCell> {
         if !self.valid_coord(x, y) {
             return None;

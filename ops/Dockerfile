@@ -6,28 +6,26 @@ WORKDIR /app
 # Только Rust-сервер — без Unity `client/`, без DLL и прочего мусора из корня репозитория.
 COPY Cargo.toml Cargo.lock ./
 COPY crates/openmines-shared/Cargo.toml ./crates/openmines-shared/Cargo.toml
-COPY server/Cargo.toml ./server/Cargo.toml
-COPY tools/loadtest/Cargo.toml ./tools/loadtest/Cargo.toml
-COPY tools/proxy/Cargo.toml ./tools/proxy/Cargo.toml
+COPY crates/openmines-server/Cargo.toml ./crates/openmines-server/Cargo.toml
+COPY crates/openmines-loadtest/Cargo.toml ./crates/openmines-loadtest/Cargo.toml
+COPY crates/openmines-proxy/Cargo.toml ./crates/openmines-proxy/Cargo.toml
 
 # Предварительная сборка зависимостей (deps layer). Workspace members должны
 # существовать, иначе Cargo падает на резолве путей.
-RUN mkdir -p crates/openmines-shared/src server/src tools/loadtest/src tools/proxy/src && \
+RUN mkdir -p crates/openmines-shared/src crates/openmines-server/src crates/openmines-loadtest/src crates/openmines-proxy/src && \
     echo "" > crates/openmines-shared/src/lib.rs && \
-    echo "fn main() {}" > server/src/main.rs && \
-    echo "fn main() {}" > tools/loadtest/src/main.rs && \
-    echo "fn main() {}" > tools/proxy/src/main.rs && \
+    echo "fn main() {}" > crates/openmines-server/src/main.rs && \
+    echo "fn main() {}" > crates/openmines-loadtest/src/main.rs && \
+    echo "fn main() {}" > crates/openmines-proxy/src/main.rs && \
     cargo build --release --bin openmines-server --bin openmines-proxy && \
-    rm -rf crates server tools
+    rm -rf crates
 
 COPY crates ./crates
-COPY server ./server
-COPY tools ./tools
 COPY configs ./configs
 # Миграции встроены compile-time макросом из crates/openmines-shared/migrations.
 
 # Сборка проекта (touch для инвалидации fingerprints после заглушки).
-RUN find crates server tools -name '*.rs' -exec touch {} + && \
+RUN find crates -name '*.rs' -exec touch {} + && \
     cargo build --release --bin openmines-server --bin openmines-proxy && \
     cp target/release/openmines-server /usr/local/bin/openmines-server && \
     cp target/release/openmines-proxy /usr/local/bin/openmines-proxy

@@ -11,6 +11,7 @@ CONFIG_DIR="$WORK_DIR/configs"
 STATE_DIR="$WORK_DIR/data"
 PORT="${M3R_DEV_PORT:-8090}"
 ADMIN_PORT="${M3R_DEV_ADMIN_PORT:-8091}"
+ADMIN_TOKEN="${M3R_DEV_ADMIN_TOKEN:-local-dev-admin}"
 WORLD_CHUNKS_W="${M3R_DEV_WORLD_CHUNKS_W:-8}"
 WORLD_CHUNKS_H="${M3R_DEV_WORLD_CHUNKS_H:-8}"
 LOG_FILTER="${M3R_DEV_LOG:-openmines_server=info,openmines_shared=info,tickprof=error,scheduler=error,tokio=warn,h2=warn}"
@@ -46,7 +47,7 @@ echo "    config:    $CONFIG_DIR/config.json"
 echo "    state:     $STATE_DIR"
 echo "    world:     ${WORLD_CHUNKS_W}x${WORLD_CHUNKS_H} chunks"
 echo "    endpoint:  127.0.0.1:$PORT"
-echo "    admin:     http://127.0.0.1:$ADMIN_PORT/?token=admin"
+echo "    admin:     http://127.0.0.1:$ADMIN_PORT/?token=$ADMIN_TOKEN"
 echo "    log:       $LOG_FILTER"
 echo
 echo "Unity Editor:"
@@ -65,4 +66,5 @@ exec env \
   -u M3R_ABORT_ON_PANIC \
   -u M3R_LOG \
   -u RUST_LOG \
+  M3R_ADMIN_TOKEN="$ADMIN_TOKEN" \
   cargo run --manifest-path "$ROOT/Cargo.toml" -- --admin-port "$ADMIN_PORT" "$@"
