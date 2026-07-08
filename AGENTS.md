@@ -99,7 +99,7 @@ OpenMines — MMORPG sandbox-майнинг игра завязанная на �
 
 ```bash
 cargo build --release
-M3R_ADMIN_TOKEN=local-dev-admin cargo run --release
+scripts/dev-run.sh                            # быстрый локальный запуск с явным dev-token
 scripts/dev-server.sh                         # локальный Unity-dev: quiet logs, isolated .local state
 scripts/dev-smoke.sh                          # быстрый wire smoke без Unity/VPS
 cargo test --all-targets --all-features
@@ -109,7 +109,7 @@ cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W 
 cargo fmt --all
 ```
 
-Регенерация мира: `M3R_ADMIN_TOKEN=local-dev-admin cargo run --release -- --regen` или `M3R_REGEN_WORLD=1`
+Регенерация мира: `scripts/dev-run.sh --regen` или `M3R_REGEN_WORLD=1 scripts/dev-run.sh`
 
 Конфиг: `configs/config.json` обязателен. Отсутствующий или неполный конфиг — ошибка старта, автогенерации дефолтов нет. Порт берётся из конфига или явного `--port`/`M3R_PORT`.
 

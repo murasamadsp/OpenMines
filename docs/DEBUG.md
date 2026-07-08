@@ -72,8 +72,9 @@
     ```
 *   **Ошибка `M3R_ADMIN_TOKEN is required`:**
     Отсутствует переменная окружения с токеном авторизации.
-    *Решение:* При запуске из терминала используйте:
+    *Решение:* Для локальной разработки используйте wrapper, он выставляет явный dev-token и печатает URL админки:
     ```bash
-    M3R_ADMIN_TOKEN=local-dev-admin cargo run
+    ./scripts/dev-run.sh
     ```
+    Для прямого `cargo run` токен всё ещё нужно передать явно: `M3R_ADMIN_TOKEN=local-dev-admin cargo run`.
     При запуске из VS Code убедитесь, что вы используете один из преднастроенных лаунч-профилей из `.vscode/launch.json`.

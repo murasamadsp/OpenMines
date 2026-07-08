@@ -23,7 +23,7 @@
 
 ```bash
 cargo build --release
-cargo run --release
+./scripts/dev-run.sh
 ```
 
 По умолчанию сервер слушает `0.0.0.0:8090`.
@@ -80,10 +80,10 @@ Headless production build требует явного профиля:
 Дополнительные опции:
 
 ```bash
-cargo run --release -- --regen
+./scripts/dev-run.sh --regen
 # или
-cargo run --release -- --regen-world
-M3R_REGEN_WORLD=1 cargo run --release
+./scripts/dev-run.sh --regen-world
+M3R_REGEN_WORLD=1 ./scripts/dev-run.sh
 ```
 
 ### 3. Запуск через Docker
