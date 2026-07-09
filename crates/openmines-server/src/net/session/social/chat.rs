@@ -1,5 +1,5 @@
 //! Чат: локальный, канальный, навигация (Cmen/Choo/Cset/Cpri), broadcast.
-//! Навигации НЕТ в `server_reference` — спец по `docs/CLIENT_PROTOCOL_GAPS.md`.
+//! Навигации НЕТ в `server_reference` — спец по `docs/reference/CLIENT_PROTOCOL_GAPS.md`.
 use crate::net::session::outbound::chat_sync::{
     chat_access, parse_private_tag, send_channel_list, send_enter_channel,
 };
@@ -182,7 +182,7 @@ pub async fn handle_channel_chat(
     // ⚠ Граница безопасности (клиент не доверенный; `current_chat`
     // ставится только `send_enter_channel`, но клан мог измениться, а
     // защита приватных обязательна). Проверяем ПО АКТУАЛЬНОМУ состоянию
-    // ДО записи/рассылки. См. docs/CLIENT_PROTOCOL_GAPS.md (безопасность).
+    // ДО записи/рассылки. См. docs/reference/CLIENT_PROTOCOL_GAPS.md.
     let is_global = state
         .chat_channels
         .read()
@@ -267,7 +267,7 @@ pub async fn handle_channel_chat(
     } else if let Some(pair) = priv_ids {
         // Приват: wire-тег = сам `_a_b` (клиент обоих участников держит
         // `currentChat == _a_b`). Рассылка ТОЛЬКО {a,b} — НЕ всем
-        // (утечка ЛС). docs/CLIENT_PROTOCOL_GAPS.md §6.
+        // (утечка ЛС). docs/reference/CLIENT_PROTOCOL_GAPS.md §6.
         let pkt = chat_messages(&channel_tag, &[msg]).1;
         let users: [i32; 2] = pair.into();
         send_mu_to_users(state, &pkt, &users);
@@ -289,11 +289,10 @@ pub fn extract_channel_message_text(payload: &[u8]) -> String {
 /// TY `Chin` — РЕСИНК чата (НЕ no-op). Клиент `WorldInitScript.cs`:
 /// первый вход → `Chin "_"`; реконнект → `Chin "1:cur:TAG#id#TAG#id…"`
 /// (`getLasts()` = свои наибольшие id по каналам). Реф `Session.Chin`
-/// ПУСТ (реф неполон) — контракт по клиенту. login шлёт только `mO`;
-/// история — здесь, чтобы на реконнекте НЕ слать всё заново (клиент
-/// `muHandler` `AddLine`'ит каждое сообщение пакета при `ch==currentChat`,
-/// дедуп только словаря History, не визуала → дубли).
-/// `docs/CLIENT_PROTOCOL_GAPS.md` §2.
+/// ПУСТ (реф неполон) — контракт по клиенту. Текущий login шлёт `mO` + bounded
+/// `mU`; этот обработчик остаётся источником полного/инкрементального resync
+/// по `getLasts()` клиента.
+/// `docs/reference/CLIENT_PROTOCOL_GAPS.md` §2.
 ///
 /// - `"_"` (первый вход, History клиента пуста) → полная история текущего
 ///   канала (`mU`). `mO` уже прислан login'ом.
@@ -379,7 +378,7 @@ pub async fn handle_chat_resync(
 }
 
 /// TY `Cmen` (`"_"`) — открыть список каналов. Клиент `ChatManager.cs:67`
-/// `OnMenu`. Ждёт `mL`+`mN`. `docs/CLIENT_PROTOCOL_GAPS.md` §3.
+/// `OnMenu`. Ждёт `mL`+`mN`. `docs/reference/CLIENT_PROTOCOL_GAPS.md` §3.
 pub async fn handle_chat_menu(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -391,7 +390,7 @@ pub async fn handle_chat_menu(
 
 /// TY `Choo <tag>` — войти/переключить канал. Клиент `ChatManager.cs:176`
 /// (клик по каналу в `mL`). `send_enter_channel` валидирует доступ.
-/// `docs/CLIENT_PROTOCOL_GAPS.md` §4.
+/// `docs/reference/CLIENT_PROTOCOL_GAPS.md` §4.
 pub async fn handle_chat_choose(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -407,7 +406,7 @@ pub async fn handle_chat_choose(
 
 /// TY `Cset` (`"_"`) — циклически сменить цвет поля ввода чата. Клиент
 /// `ChatManager.cs:60` `OnSettings`, ответ-обработчик `mcHandler`
-/// (`short.Parse`). `docs/CLIENT_PROTOCOL_GAPS.md` §5.
+/// (`short.Parse`). `docs/reference/CLIENT_PROTOCOL_GAPS.md` §5.
 pub async fn handle_chat_settings(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,
@@ -426,7 +425,7 @@ pub async fn handle_chat_settings(
 /// TY `Cpri <userId>` — открыть ЛС с игроком. Клиент `ChatManager.cs:307`
 /// (клик по строке сообщения → `message.gid`). Тег `_min_max` стабилен
 /// для пары. Валидация: цель существует, не сам с собой.
-/// `docs/CLIENT_PROTOCOL_GAPS.md` §6.
+/// `docs/reference/CLIENT_PROTOCOL_GAPS.md` §6.
 pub async fn handle_chat_private(
     state: &Arc<GameState>,
     tx: &mpsc::UnboundedSender<Vec<u8>>,

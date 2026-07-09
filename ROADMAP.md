@@ -97,18 +97,18 @@ ECS-миграция (Раздел 10, гейтнута паритетом, эт
   `chat_messages` (дедуп клиента `LastIDs`); color 10 live / 1 история
   (1:1 `Chat.cs:44`/`Chat.GetMessages`); FED/DNO история грузится из БД при
   старте (переживает рестарт). Verified: unit-тест + probe на live VPS.
-- [x] **`Chin` = РЕСИНК чата (НЕ no-op) + login=mO-only — корень «меню
+- [x] **`Chin` = РЕСИНК чата (НЕ no-op) + login=mO/mU — корень «меню
   открывается / дубли на реконнекте»**. Эволюция (честно): (1) прежний
   `handle_chat_init_ty`→`send_chat_init` слал `mL` → клиент в «СПИСОК
   ЧАТОВ» поверх FED → «нельзя зайти». (2) Промежуточно: `Chin`=no-op
   (убрало `mL`-поломку, но login слал полную историю `mU` → на
   реконнекте клиент `muHandler` `AddLine`'ил всё повторно → ДУБЛИ,
-  репорт юзера). (3) ИТОГ: login шлёт только `mO`; история — через
-  `Chin`-resync по `getLasts()` клиента (`WorldInitScript.cs:109`):
+  репорт юзера). (3) ТЕКУЩИЙ КОД: login снова шлёт `mO` + bounded `mU`
+  из текущего канала (`player/init.rs`), а `Chin`-resync по `getLasts()`
+  клиента (`WorldInitScript.cs:109`) остаётся incremental-догрузкой:
   `"_"`→полная, `"1:cur:lasts"`→инкремент `id>lastid` (доступ
   гейтится). Реф `Session.Chin` ПУСТ — реф неполон, контракт по
-  клиенту. Probe-verified: login=mO-only, `Chin "_"`→полный mU,
-  реконнект с актуальным lastid→`mU h=[]` (без дублей). Спец:
+  клиенту. Спец:
   `docs/reference/CLIENT_PROTOCOL_GAPS.md` §2.
 - [x] **DNO routing — «в дно не показываются»** (репорт юзера). C#
   `Chat.cs:44` хардкодит wire-`ch="FED"` для ЛЮБОГО global (DNO —
@@ -304,8 +304,9 @@ lock-freeze, юзер играет соло; отдельная заметка.
 - [x] Навигация `Cmen`/`Choo`/`Cset`/`Cpri` (реф НЕ реализует;
   по клиенту, с гейтом прав) — probe-verified
 - [x] `Chin`-ресинк (реф `Chin` ПУСТ/неполон — клиент шлёт `getLasts()`):
-  login=`mO`-only; `Chin "_"`→полная, `"1:cur:lasts"`→инкремент.
-  Снят баг дублей на реконнекте — probe-verified
+  текущий login=`mO+mU`; `Chin "_"`→полная, `"1:cur:lasts"`→инкремент.
+  Дубли на реконнекте зависят от клиентского `lastid` и текущего init-порядка;
+  не утверждать `mO`-only без проверки текущего кода.
 - [x] Локальный чат HB bubble — Locl → hb_chat broadcast
 - [x] Консоль команды — /give, /money, /moneyall, /tp, /heal, /clan, /pack
 - [x] История FED/DNO переживает рестарт (грузится из БД в `GameState::new`)
