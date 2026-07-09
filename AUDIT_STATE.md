@@ -89,7 +89,8 @@
 - Protector gate destroy больше не делает detached DB delete: он await'ит
   `GameState::delete_building_runtime` внутри своей async detonation task.
 - Веб-админка уже умеет менять роль online/offline игрока через
-  `POST /api/players/:id/role`; frontend select есть в `server/admin/app.js`.
+  `POST /api/players/:id/role`; frontend select есть в
+  `crates/openmines-server/admin/app.js`.
 - `skill_effect` и `exp_needed` больше не используют wildcard `match`: каждый
   `SkillType` явно получает формулу эффекта и требование опыта, новый вариант
   теперь ломает компиляцию до осознанного решения.
