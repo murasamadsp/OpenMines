@@ -26,6 +26,7 @@
 | `scripts/wipe-players.sh` | dangerous/dev | Деструктивная dev-утилита для игроков. | Требует отдельной проверки перед использованием. |
 | `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
 | `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures в сервере и sync-lock guard через `.await`. | Оставить в `arch-guard` и pre-commit. |
+| `scripts/ub-audit.sh` | active | Static Rust soundness guard: allowlist для `unsafe`, запрет raw pointer/FFI зон и adjacent atomics без padding в server hot structs. | Оставить в `arch-guard` и pre-commit. |
 
 ## Rust Tools
 

@@ -78,10 +78,15 @@ cargo tree -e features --depth 1
 ```bash
 cargo geiger
 cargo bloat --release --crates
+scripts/ub-audit.sh
 ```
 
 `cargo geiger` и `cargo bloat` не являются fast gate. Они нужны для осознанных
 аудитов unsafe/размера бинаря, а не для блокировки каждой правки.
+
+`scripts/ub-audit.sh` — fast gate для soundness-границ проекта. Новый `unsafe`,
+raw pointers, `UnsafeCell`, FFI или adjacent hot atomics должны быть явным
+архитектурным решением, а не случайным побочным эффектом.
 
 ## Feature trimming
 

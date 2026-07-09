@@ -1784,6 +1784,7 @@ dependencies = [
  "bevy_ecs",
  "bytes",
  "clap",
+ "crossbeam-utils",
  "dashmap",
  "governor",
  "lzma-rs",

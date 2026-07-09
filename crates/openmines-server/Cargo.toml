@@ -24,6 +24,7 @@ md5 = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
+crossbeam-utils = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

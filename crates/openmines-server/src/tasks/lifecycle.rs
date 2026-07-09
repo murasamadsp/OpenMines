@@ -4,6 +4,7 @@
 use crate::game::GameState;
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::Entity;
+use crossbeam_utils::CachePadded;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -285,20 +286,20 @@ const TICK_WATCHDOG_MIN_WARN_MS: u64 = 2_000;
 
 struct TickHeartbeat {
     started_at: Instant,
-    last_mark_ms: AtomicU64,
-    tick_seq: AtomicU64,
-    stage: AtomicU8,
-    schedule_index: AtomicU64,
+    last_mark_ms: CachePadded<AtomicU64>,
+    tick_seq: CachePadded<AtomicU64>,
+    stage: CachePadded<AtomicU8>,
+    schedule_index: CachePadded<AtomicU64>,
 }
 
 impl TickHeartbeat {
     const fn new(started_at: Instant) -> Self {
         Self {
             started_at,
-            last_mark_ms: AtomicU64::new(0),
-            tick_seq: AtomicU64::new(0),
-            stage: AtomicU8::new(TickStage::Idle as u8),
-            schedule_index: AtomicU64::new(u64::MAX),
+            last_mark_ms: CachePadded::new(AtomicU64::new(0)),
+            tick_seq: CachePadded::new(AtomicU64::new(0)),
+            stage: CachePadded::new(AtomicU8::new(TickStage::Idle as u8)),
+            schedule_index: CachePadded::new(AtomicU64::new(u64::MAX)),
         }
     }
 

@@ -37,6 +37,7 @@ md5 = "0.7.0"
 sha2 = "0.10.9"
 rand = "0.9.4"
 dashmap = "6.2.1"
+crossbeam-utils = "0.8.21"
 parking_lot = { version = "0.12.5", features = ["deadlock_detection"] }
 rayon = "1.12.0"
 tracing = "0.1.44"

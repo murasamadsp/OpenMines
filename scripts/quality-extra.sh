@@ -17,6 +17,7 @@ Usage:
   scripts/quality-extra.sh mutants    Run cargo-mutants
   scripts/quality-extra.sh vet        Run cargo-vet
   scripts/quality-extra.sh fmod       Check FMOD event bank contract
+  scripts/quality-extra.sh ub         Run unsafe/soundness boundary audit
   scripts/quality-extra.sh cache      Show sccache stats
   scripts/quality-extra.sh stop-cache Stop sccache server
 EOF
@@ -45,6 +46,9 @@ case "${1:-}" in
     ;;
   fmod)
     quality_run_fmod_events
+    ;;
+  ub)
+    scripts/ub-audit.sh
     ;;
   cache)
     sccache --show-stats

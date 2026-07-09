@@ -24,5 +24,6 @@ check_forbidden "direct ECS schedule run from session layer" "crates/openmines-s
 check_forbidden "direct background task spawn from gameplay modules" "crates/openmines-server/src/game" 'tokio::spawn|spawn_blocking'
 
 scripts/ownership-audit.sh || fail=1
+scripts/ub-audit.sh || fail=1
 
 exit "$fail"
