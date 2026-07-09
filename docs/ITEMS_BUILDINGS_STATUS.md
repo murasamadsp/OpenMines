@@ -1,7 +1,7 @@
 # Опись предметов и зданий — что работает / что нет
 
 Источник истины: **клиент** (`client/`) рисует все типы; **C# референс**
-(`server_reference/Inventory.cs`, `Buildings/`) — неполный (не оригинал);
+(`docs/reference/server_reference/.../Inventory.cs`, `Buildings/`) — неполный (не оригинал);
 **Rust сервер** (`crates/openmines-server/`) — что реально реализовано.
 
 Дата сверки: 2026-06-23.

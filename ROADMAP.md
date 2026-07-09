@@ -109,7 +109,7 @@ ECS-миграция (Раздел 10, гейтнута паритетом, эт
   гейтится). Реф `Session.Chin` ПУСТ — реф неполон, контракт по
   клиенту. Probe-verified: login=mO-only, `Chin "_"`→полный mU,
   реконнект с актуальным lastid→`mU h=[]` (без дублей). Спец:
-  `docs/CLIENT_PROTOCOL_GAPS.md` §2.
+  `docs/reference/CLIENT_PROTOCOL_GAPS.md` §2.
 - [x] **DNO routing — «в дно не показываются»** (репорт юзера). C#
   `Chat.cs:44` хардкодит wire-`ch="FED"` для ЛЮБОГО global (DNO —
   реальный канал) → DNO-зритель не видел DNO, оно текло в FED.
@@ -125,15 +125,16 @@ ECS-миграция (Раздел 10, гейтнута паритетом, эт
   мелкий шрифт) — миграция-бэкфилл `player_id` по `player_name`→
   `players.name`; прод-лог `backfilled … 23 rows`; probe после:
   26/26 `gid>0`, 0 мелких. `tools/chat_probe_pass2.py` (send/verify/
-  diag/watch). Спец — `docs/CLIENT_PROTOCOL_GAPS.md` §1.
+  diag/watch). Спец — `docs/reference/CLIENT_PROTOCOL_GAPS.md` §1.
 
 ### Известные открытые (НЕ серверный фикс — честно, 2026-05-17)
 
 - [ ] **Мигание ползунка чата — КЛИЕНТСКИЙ Unity-баг, НЕ сервер,
   deferred.** Доказано: интернет ВЫКЛ → мигание есть. Корень —
   `m1client.unity` чат-`ScrollRect` `AutoHideAndExpandViewport`
-  (петля layout). Клиент неизменяем → серверного рычага нет. Решение
-  юзера: забить (косметика). `docs/CLIENT_PROTOCOL_GAPS.md` §1.
+  (петля layout). В рамках серверного трека рычага нет; клиент трогать
+  только отдельной задачей. Решение юзера: забить (косметика).
+  `docs/reference/CLIENT_PROTOCOL_GAPS.md` §1.
 - [x] **PI-флуд ИСПРАВЛЕН умно (2026-05-17, deployed + user-verified
   в реальном клиенте под нагрузкой).** Был ~17/с (673/40с): клиент
   шлёт 1 PO/PI на след. кадре, сервер отвечал PI мгновенно →
@@ -203,7 +204,7 @@ ECS-миграция (Раздел 10, гейтнута паритетом, эт
   (RSA-имена, анализ `client/`). Не реализовывать вслепую.
 - [x] **Chat-навигация `Cmen`/`Choo`/`Cset`/`Cpri` РЕАЛИЗОВАНА** по
   контракту клиента (референс их не обрабатывает — `Session.cs` только
-  пустой `Chin`; полная спека — `docs/CLIENT_PROTOCOL_GAPS.md` §3–6).
+  пустой `Chin`; полная спека — `docs/reference/CLIENT_PROTOCOL_GAPS.md` §3–6).
   `Cmen`→`mL`+`mN` (список каналов: глобал+клан+приваты); `Choo tag`→
   `mO`+`mU` (вход, с валидацией прав); `Cset`→цикл `chat_color` (новая
   колонка+миграция)→`mC`; `Cpri uid`→ЛС `_min_max` (валидация: цель
@@ -292,7 +293,7 @@ lock-freeze, юзер играет соло; отдельная заметка.
 
 ## 6. Чат
 
-> Авторитетный источник по чату — `docs/CLIENT_PROTOCOL_GAPS.md`
+> Авторитетный источник по чату — `docs/reference/CLIENT_PROTOCOL_GAPS.md`
 > (реф неполон: `/////FIX THIS SH`; контракт по клиенту). Прежние `[x]`
 > здесь были ЛОЖЬЮ (сверка с неполным референсом, без проверки клиента).
 

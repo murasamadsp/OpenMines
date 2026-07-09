@@ -1,6 +1,6 @@
 ---
 name: port-cs-reference
-description: Use when porting any feature from server_reference/ (C#) to server/ (Rust) in OpenMines — before reading any C# code, before planning, before implementing. Also use when C# and client behavior seem to conflict, or when a feature exists in the client but not in server_reference/.
+description: Use when porting any feature from docs/reference/server_reference/ (C#) to crates/openmines-server/ (Rust) in OpenMines — before reading any C# code, before planning, before implementing. Also use when C# and client behavior seem to conflict, or when a feature exists in the client but not in docs/reference/server_reference/.
 ---
 
 # Перенос C# → Rust (OpenMines)
@@ -8,12 +8,14 @@ description: Use when porting any feature from server_reference/ (C#) to server/
 ## Иерархия истины
 
 ```
-1. КЛИЕНТ (client/*.cs) — абсолютный эталон поведения
-2. C# РЕФЕРЕНС (server_reference/) — источник логики реализации
-3. Rust сервер (server/) — что мы пишем
+1. JS РЕФЕРЕНС (docs/reference/js_reference/) — эталон, если конфликтует с C# или клиентом
+2. КЛИЕНТ (client/*.cs) — эталон wire-ожиданий и GUI-поведения
+3. C# РЕФЕРЕНС (docs/reference/server_reference/) — источник логики реализации
+4. Rust сервер (crates/openmines-server/) — что мы пишем
 ```
 
-Клиент неизменяем. Сервер подстраивается под него.
+Wire-формат неизменяем. Сервер подстраивается под legacy-клиент; `client/`
+трогать только по явному запросу и с обязательной компиляцией.
 
 **Никогда не начинай с C#. Начни с клиента.**
 
@@ -21,7 +23,7 @@ description: Use when porting any feature from server_reference/ (C#) to server/
 
 ### 1. Проверь CLIENT_PROTOCOL_GAPS.md
 
-`docs/CLIENT_PROTOCOL_GAPS.md` — список мест, где клиент расходится с C#.
+`docs/reference/CLIENT_PROTOCOL_GAPS.md` — список мест, где клиент расходится с C#.
 
 Читай ДО любого кода. Если фича там есть — это источник правды, не C#.
 
@@ -61,9 +63,9 @@ description: Use when porting any feature from server_reference/ (C#) to server/
 | `player.Mine()` метод | ECS система: `fn handle_dig(query: Query<...>)` |
 | `null` / `T?` nullable | `Option<T>` |
 | `DateTime` / cooldown поле | `Instant` + `Duration::from_millis(N)` |
-| `World.W` синглтон | `Arc<GameState>` |
+| `World.W` синглтон | `GameState`/ECS resources in `crates/openmines-server/` |
 | EF `[NotMapped]` | Поле в Component (не в DB row) |
-| `using var db = new DataBase()` | Функция в `db/` модуле |
+| `using var db = new DataBase()` | Функция в `crates/openmines-shared/src/db/` |
 | `Dictionary<K,V>` | `HashMap<K,V>` |
 | Наследование / interface | Trait или `enum` с вариантами |
 | `static` helper | Свободная `fn` в модуле |
@@ -72,11 +74,12 @@ description: Use when porting any feature from server_reference/ (C#) to server/
 
 | Ситуация | Действие |
 | - | - |
-| Клиент ведёт себя иначе, чем C# | Следуй клиенту, задокументируй в `docs/CLIENT_PROTOCOL_GAPS.md` |
-| Явный баг C# (доказан клиентом) | Следуй клиенту, добавь запись в CLIENT_PROTOCOL_GAPS.md |
+| `docs/reference/js_reference/` расходится с C# или клиентом | Следуй JS-референсу, зафиксируй расхождение |
+| Клиент ведёт себя иначе, чем C# | Следуй клиенту, задокументируй в `docs/reference/CLIENT_PROTOCOL_GAPS.md` |
+| Явный баг C# (доказан клиентом/JS) | Следуй верхнему источнику, добавь запись в `docs/reference/CLIENT_PROTOCOL_GAPS.md` |
 | Rust idiom (Option вместо null, enum) | Следуй Rust, сохраняй семантику |
 | Deadlock / async safety | Реструктурируй без изменения логики |
-| Намеренная девиация (уже задокументирована в ROADMAP) | Следуй документации, не «чини» |
+| Намеренная девиация (уже задокументирована в `docs/DEVIATIONS.md`) | Следуй документации, не «чини» |
 
 **Не отклоняться, если:**
 
@@ -93,7 +96,7 @@ C# реф неполный (временами содержит `/////FIX THIS S
 1. Клиент шлёт пакет — C# обработчик пустой или отсутствует
 2. Читай **клиент**: что он отправляет, что ждёт в ответ
 3. Реализуй по клиенту
-4. Задокументируй в `docs/CLIENT_PROTOCOL_GAPS.md`
+4. Задокументируй в `docs/reference/CLIENT_PROTOCOL_GAPS.md`
 
 *Примеры: `Chin` в Session.cs — пустой метод; реальный контракт в `WorldInitScript.cs:109`.*
 
@@ -101,19 +104,19 @@ C# реф неполный (временами содержит `/////FIX THIS S
 
 1. Зафиксируй расхождение через клиентский код (конкретная строка)
 2. Реализуй по клиенту (не по C#)
-3. Задокументируй в `docs/CLIENT_PROTOCOL_GAPS.md`
+3. Задокументируй в `docs/reference/CLIENT_PROTOCOL_GAPS.md`
 
 *Примеры: `Chat.cs:44` хардкодит `ch="FED"` → DNO ломалось; `GCMessage.Encode` — неверный формат, клиент важнее.*
 
 ### Намеренная девиация (1:1 регрессирует)
 
-Задокументируй в ROADMAP с пометкой «НАМЕРЕННАЯ ДЕВИАЦИЯ» и объяснением.
+Задокументируй в `docs/DEVIATIONS.md` с объяснением.
 
 *Пример: C# `Thread.Sleep(200)` в PI-ответе убран — добавлял 200ms UX-регресс.*
 
 ## Красные флаги
 
-- **«Не смотрел CLIENT_PROTOCOL_GAPS.md»** — стоп, читай первым
+- **«Не смотрел docs/reference/CLIENT_PROTOCOL_GAPS.md»** — стоп, читай первым
 - **«Не смотрел client/»** — стоп, клиент всегда проверяется
 - **«Архитектура другая, поэтому пропускаю X»** — нет. Найди способ перевести
 - **«C# здесь явно неправильный»** — докажи через клиент, прежде чем пропускать
@@ -121,10 +124,10 @@ C# реф неполный (временами содержит `/////FIX THIS S
 
 ## Чеклист
 
-- [ ] Проверил `docs/CLIENT_PROTOCOL_GAPS.md`
+- [ ] Проверил `docs/reference/CLIENT_PROTOCOL_GAPS.md`
 - [ ] Нашёл и прочитал клиентский обработчик в `ServerController.cs` (или смежный файл)
 - [ ] Прочитал C# референс
 - [ ] Определил все wire-пакеты (что, в каком порядке, формат)
 - [ ] Реализовал 1:1 (или задокументировал причину отклонения)
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` — 0 ошибок
-- [ ] Если отклонение — запись в `docs/CLIENT_PROTOCOL_GAPS.md` или ROADMAP
+- [ ] Если отклонение — запись в `docs/reference/CLIENT_PROTOCOL_GAPS.md` или `docs/DEVIATIONS.md`

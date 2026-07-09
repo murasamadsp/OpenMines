@@ -42,8 +42,8 @@ mkdir -p /tmp/genparity/src && cd /tmp/genparity
 dotnet new console
 # дословные исходники:
 cp crates/openmines-shared/src/world/anl_reference/*.cs            src/   # шум TinkerWorX (9 файлов)
-cp server_reference/.../Generator/SectorCell.cs src/
-cp server_reference/.../Generator/Sectors.cs    src/
+cp docs/reference/server_reference/.../Generator/SectorCell.cs src/
+cp docs/reference/server_reference/.../Generator/Sectors.cs    src/
 ```
 
 Правки в копиях харнесса (только чтобы скомпилировать скелет без боевых зависимостей):
