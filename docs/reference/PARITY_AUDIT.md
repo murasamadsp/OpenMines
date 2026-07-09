@@ -77,17 +77,17 @@
 | World/Generator                            | 22   | 0       | 0       | 2         | 26    |
 | World/Physics                              | 13   | 0       | 0       | 6         | 19    |
 
-**Итого (34 бакета, 32 исходных слайса; Programmator/Parser+AST и Player/Inventory+Basket разбиты надвое из-за таймаутов):**
+**Итого по бакет-таблице выше** (34 бакета, 32 исходных слайса; Programmator/Parser+AST и Player/Inventory+Basket разбиты надвое из-за таймаутов). `intentional` здесь вычислен как `строк всего - done - partial - missing - divergent`; сами бакеты требуют отдельной ревизии перед product-roadmap:
 
 | Статус                                     | Кол-во  |
 | ------------------------------------------ | ------- |
-| done                                       | 376     |
-| partial                                    | 17      |
-| missing                                    | 50      |
-| divergent                                  | 100     |
-| intentional                                | 45      |
-| **строк всего**                            | **587** |
-| **≈ разрывов (partial+missing+divergent)** | **167** |
+| done                                       | 293     |
+| partial                                    | 14      |
+| missing                                    | 73      |
+| divergent                                  | 160     |
+| intentional                                | 43      |
+| **строк всего**                            | **583** |
+| **≈ разрывов (partial+missing+divergent)** | **247** |
 
 ### Топ разрывов по приоритету (для Под-проекта 2)
 
