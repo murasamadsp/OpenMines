@@ -65,29 +65,29 @@
 | `ST`, `AU`, `PI`, `PO`, `cf` | implemented | core handshake |
 | `AE` | weak/rare | auth error path should be audited against client UI |
 | `AH` | implemented in protocol, unclear live use | reconnection/auth-hash flow needs audit |
-| `RC` | missing/unclear | reconnect notification not proven |
+| `RC` | missing | no Rust builder/live sender found; reconnect notification absent |
 | `BI`, `@T`, `sp`, `@L`, `@S`, `@B`, `LV`, `P$` | implemented | core gameplay |
-| `@t` | packet documented, live Rust source not proven | smooth teleport missing unless found |
+| `@t` | missing | C# packet exists, but no Rust builder/live sender found; smooth teleport absent |
 | `NL`, `ON` | implemented | `ON online:0` шлётся активным игрокам раз в минуту; покрыто `online_count_broadcast_sends_on_to_active_players` |
 | `GU`, `Gu`, `OK`, `IN` | implemented | `IN show:{all}:{selected}:{grid}` and `IN full:{selected}:{grid}` are covered by wire/unit tests; GUI regressions remain high-risk |
-| `GR` | packet exists in client/ref, Rust live source not proven | open-url feature missing |
+| `GR` | missing | C# packet exists, but no Rust builder/live sender found; open-url feature absent |
 | `cS`, `cH` | implemented | clan partial |
-| `$$` | packet exists in client/ref, Rust live source not proven | purchase flow missing/unclear |
-| `PM` | packet exists in client/ref, Rust live source not proven | modules feature missing |
+| `$$` | missing | C# packet exists, but no Rust builder/live sender found; purchase response absent |
+| `PM` | missing | C# packet exists, but no Rust builder/live sender found; modules feature absent |
 | `@P`, `#P`, `#p`, `BH` | implemented | central risk: Unity `@P 1` opens ProgrammatorWindow; successful PROG/login must use `@P/BH -> #p` and never `#P` |
-| `BC` | packet exists in client/ref, Rust live source not proven | bad-cells feature missing |
+| `BC` | missing | C# packet exists, but no Rust builder/live sender found; bad-cells feature absent |
 | `BA`, `BD` | implemented | aggression/autodig status |
 | `BR` | missing | auto-respawn status missing with `TAUR` |
-| `SP` | packet exists in client/ref, Rust live source not proven | state panel missing |
+| `SP` | missing | C# packet exists, but no Rust builder/live sender found; state panel absent |
 | `GE` | implemented with limited data | region/name source incomplete |
-| `SU` | packet exists in client/ref, Rust live source not proven | ban-hammer/moderation UI missing |
+| `SU` | missing | C# packet exists, but no Rust builder/live sender found; ban-hammer/moderation UI absent |
 | `BB` | implemented | sound signal path |
-| `@R` | packet exists in client/ref, Rust live source not proven | respawn point UI missing |
-| `GO` | packet exists in client/ref, Rust live source not proven | navigation arrow missing |
+| `@R` | missing | C# packet exists, but no Rust builder/live sender found; respawn point UI absent |
+| `GO` | missing | C# packet exists, but no Rust builder/live sender found; navigation arrow absent |
 | `DR` | implemented | daily reward |
 | `#F`, `#S` | implemented | config/settings |
 | `MM` | live minimal hide on `Miso` + `openmines-protocol` helper | mission panel content missing |
-| `MN` | `openmines-protocol` packet helper only | tutorial/mission notice missing |
+| `MN` | `openmines-protocol` builder only; no live sender found | tutorial/mission notice missing |
 | `MP` | `openmines-protocol` builder parity; no live sender found in Rust or C# reference | not an active wire gap by itself; mission subsystem still missing |
 | `mO`, `mU`, `mL`, `mN`, `mC` | implemented enough | chat UX still needs live testing |
 | `HB` tags `M`, `X`, `L`, `O`, `F`, `D`, `C`, `B`, `Z` | mostly implemented in protocol | tag `S`/`B` live usage should be audited before removing dead-code allows |
@@ -110,8 +110,10 @@
    hotkeys only. Rust treats it as an explicit no-op with payload validation so
    it does not pollute `Unknown TY event` logs. Do not guess whether it means
    filter, quick-select, or legacy no-op.
-5. Server-only outgoing packets (`GR`, `PM`, `BC`, `SP`, `SU`, `@R`, `GO`, `$$`)
-   should be traced from C# feature owners before Rust implementation.
+5. Server-only outgoing packets (`RC`, `@t`, `GR`, `PM`, `BC`, `SP`, `SU`,
+   `@R`, `GO`, `$$`) have C#/client packet contracts but no Rust builder/live
+   sender in the current code. Trace each from the owning gameplay feature
+   before implementation; do not add orphan packet helpers without state logic.
 
 ## Unity Client Evidence Notes
 
