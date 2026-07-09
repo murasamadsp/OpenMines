@@ -73,12 +73,14 @@ openmines-storage = { path = "crates/openmines-storage" }
 openmines-world = { path = "crates/openmines-world" }
 
 [profile.dev]
-debug = 2
+debug = 1
 incremental = true
+split-debuginfo = "unpacked"
 
 [profile.test]
-debug = 2
+debug = 1
 incremental = true
+split-debuginfo = "unpacked"
 
 [profile.release]
 opt-level = 3

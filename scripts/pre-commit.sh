@@ -17,6 +17,7 @@ source "$ROOT_DIR/scripts/quality-common.sh"
 
 quality_run_rustfmt_apply_staged
 quality_run_rustfmt_check
+quality_run_arch_guard
 quality_run_doctor
 quality_run_clippy_strict
 quality_run_deny_if_available

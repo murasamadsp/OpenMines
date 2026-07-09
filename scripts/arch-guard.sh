@@ -23,4 +23,6 @@ check_forbidden "direct ECS write from TCP connection lifecycle" "crates/openmin
 check_forbidden "direct ECS schedule run from session layer" "crates/openmines-server/src/net/session" '\.schedule\.write\(\)\.run\('
 check_forbidden "direct background task spawn from gameplay modules" "crates/openmines-server/src/game" 'tokio::spawn|spawn_blocking'
 
+scripts/ownership-audit.sh || fail=1
+
 exit "$fail"
