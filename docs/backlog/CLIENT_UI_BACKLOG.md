@@ -7,7 +7,7 @@
 client-only fix или product decision.
 
 Для отдельного плана модернизации самого Unity UI под разные разрешения и DPI
-см. `docs/CLIENT_UI_MODERNIZATION_PLAN.md`. Этот backlog оставлен шире: здесь
+см. `docs/backlog/CLIENT_UI_MODERNIZATION_PLAN.md`. Этот backlog оставлен шире: здесь
 есть и wire-проблемы, и client-only дефекты.
 
 ## Критические
@@ -30,7 +30,7 @@ client-only fix или product decision.
   физической короткой стороны MacBook, чтобы logical и Retina backing sizes не
   давали разный HUD.
 - Что делать: вести это отдельным frontend-треком по
-  `CLIENT_UI_MODERNIZATION_PLAN.md`; не пытаться лечить layout серверными
+  `docs/backlog/CLIENT_UI_MODERNIZATION_PLAN.md`; не пытаться лечить layout серверными
   пакетами.
 
 ### UI-034. Масштаб HUD зависит от `Screen.dpi` и требует desktop/laptop cap
@@ -339,7 +339,7 @@ client-only fix или product decision.
 
 ### UI-021. Crafter GUI сейчас отличается от ожидаемого inventory-grid
 
-- По `docs/PARITY_AUDIT.md`: C# использует `InventoryItem` grid для выбора
+- По `docs/reference/PARITY_AUDIT.md`: C# использует `InventoryItem` grid для выбора
   рецептов, Rust местами отдавал текст+кнопки.
 - Симптом: выбор рецепта выглядит/работает не как оригинальный клиентский GUI.
 - Что делать: перевести выбор рецепта на inventory/card/list контракт, который
