@@ -11,8 +11,8 @@
 - Unity: `client/Assets/Scripts/UI/ProgPanel.cs`
 - Unity: `client/Assets/Scripts/UI/ProgrammerView.cs`
 - Unity: `client/Assets/Scripts/Gameplay/ServerController.Handlers.cs`
-- C# reference: `references/server_reference/Server/Session.cs`
-- C# reference: `references/server_reference/GameShit/Programmator/StaticGUI.cs`
+- C# reference: `docs/reference/server_reference/Server/Session.cs`
+- C# reference: `docs/reference/server_reference/GameShit/Programmator/StaticGUI.cs`
 - Wire: `docs/PROTOCOL.md`
 
 Клиент менять нельзя для серверного фикса. Сервер обязан подстроиться под эти

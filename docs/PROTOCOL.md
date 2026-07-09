@@ -36,7 +36,7 @@
 
 1. `uniq` — серверная авторизация (только имя).
 2. `uniq_NO` / `uniq_NOAUTH` — без авторизации.
-3. `uniq_userid_token` — стандартная авторизация. В `server_reference/Server/Auth.cs` токен = **MD5**(`player.hash + sid`), hex lowercase, байты строки как в UTF-8. Сервер OpenMines принимает и **MD5**, и **SHA256** (на случай других сборок клиента).
+3. `uniq_userid_token` — стандартная авторизация. В `docs/reference/server_reference/Server/Auth.cs` токен = **MD5**(`player.hash + sid`), hex lowercase, байты строки как в UTF-8. Сервер OpenMines принимает и **MD5**, и **SHA256** (на случай других сборок клиента).
 
 ### 3. Ответ на авторизацию (сервер → клиент)
 
@@ -375,7 +375,7 @@ Unity `NetworkProtocol` ожидает эти server events. Основная т
 
 ## Статус реализации (Rust сервер)
 
-Источник правды по поведению: локальный **`server_reference/`** (C#, `Session`, `Auth`, `Player`, `SettingsPacket`, …).
+Источник правды по поведению: локальный **`docs/reference/server_reference/`** (C#, `Session`, `Auth`, `Player`, `SettingsPacket`, …).
 
 ### Реализовано и работает
 
@@ -391,7 +391,7 @@ Wire и пакеты как у референса: `ST`, `AU`, `PI`, `PO`/`PI` p
 
 ### Шифрование
 
-В **`server_reference/Server/Session.cs`** исходящие пакеты кодируются через `Packet.Encode` и уходят **в открытом виде** — отдельного RSA-слоя на сервере в этом референсе нет. Клиентский RSA из таблицы выше — сторона Unity-клиента при приёме.
+В **`docs/reference/server_reference/Server/Session.cs`** исходящие пакеты кодируются через `Packet.Encode` и уходят **в открытом виде** — отдельного RSA-слоя на сервере в этом референсе нет. Клиентский RSA из таблицы выше — сторона Unity-клиента при приёме.
 
 ### Известные баги
 

@@ -10,7 +10,7 @@
 
 - Unity client: `client/Assets/Scripts/Network/NetworkProtocol.cs`;
 - текущий Rust dispatcher: `crates/openmines-server/src/net/session/dispatch/ty.rs`;
-- C# reference: `references/server_reference/Server/Session.cs` и packet files;
+- C# reference: `docs/reference/server_reference/Server/Session.cs` и packet files;
 - протокол: `docs/PROTOCOL.md`.
 
 ## Client -> Server TY

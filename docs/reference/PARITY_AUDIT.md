@@ -1,8 +1,12 @@
 # PARITY_AUDIT — матрица паритета C# → Rust (OpenMines)
 
-> Построчный аудит паритета C#-референса (`server_reference/`) и Rust-сервера (`server/`).
+> Построчный аудит паритета C#-референса (`docs/reference/server_reference/`) и Rust-сервера (`crates/openmines-server/`).
 > Метод: субагент `port-verifier` + скилл `port-cs-reference`, иерархия истины **Клиент → C# референс → Rust**.
 > Сгенерировано фан-аутом ~32 агентов (Sonnet). **Под-проект 1** трека «полный порт 1:1».
+>
+> В таблицах ниже короткий путь `server_reference/...` означает локальный
+> `docs/reference/server_reference/...`; это path alias, а не отдельный каталог в
+> корне репозитория.
 
 ## ⚠️ Как читать
 

@@ -92,6 +92,12 @@
 
 > Каркас — факт из репозитория, `‹…›` — за владельцем звука (вкус / таргеты).
 
+Текущий технический контракт звука ведётся в
+`docs/reference/SOUND_FMOD_CONTRACT.md`. Он является источником правды по
+`SoundManager.cs`, numeric sound ids, FMOD event paths, wire-trigger paths и
+текущему FMOD blocker. Этот файл оставляет общие правила звуковой спеки и
+человеческой приёмки.
+
 ### Образ
 
 ‹Какой звук у игры: 1 абзац + 2–3 референса.›
@@ -101,13 +107,16 @@
 - FMOD Studio 2.03, проект `client/FMODProject/`.
 - Бэйк по F7 → `client/Assets/StreamingAssets/`; банки `.bank` в git-ignore.
 
-### Интеграция (сейчас НЕ написана)
+### Интеграция
 
-В `client/Assets/Scripts/` **ноль** обращений к FMOD — слоя «игровое событие →
-FMOD-ивент» ещё нет. Его пишут на C#: `FMODUnity` + `RuntimeManager.PlayOneShot(path)`
-в точках, где клиент уже ловит событие. Главные точки — обработчики в
-`ServerController.Handlers.cs` (dig/build) и разбор FX из HB-бандла (`HubTranslator`,
-теги `F`/`D`/`Z`). Пока этого нет — игра молчит, как бы хорош ни был FMOD-проект.
+`client/Assets/Scripts/Utility/SoundManager.cs` уже вызывает FMOD через
+`FMODUnity.RuntimeManager.CreateInstance(eventPath)` и содержит 16 стабильных
+`event:/...` путей. Клиентские триггеры приходят из `BB`, локального `@B`, HB
+`F` и HB `D`; сервер не получает отдельный универсальный sound packet.
+
+FMOD не считается завершённым, пока `scripts/check-fmod-events.sh` не докажет,
+что все пути из `docs/reference/FMOD_EVENTS.txt` одновременно есть в
+`SoundManager.cs` и в собранном `Master.strings.bank`.
 
 ### Звук ↔ игра
 
@@ -115,12 +124,12 @@ FMOD-ивент» ещё нет. Его пишут на C#: `FMODUnity` + `Runti
 
 | Событие | Источник в коде | FMOD-ивент |
 | - | - | - |
-| копка / удар по блоку | `Xdig` / dig-хендлер | ‹event:/…› |
-| стройка | `Xbld` | ‹…› |
-| выстрел гана | HB-тег `Z` | ‹…› |
-| FX: взрыв / кристалл / направленный | HB-теги `F` / `D` | ‹…› |
-| смерть / респаун | death-флоу | ‹…› |
-| чат-баббл / бибика | HB-тег `C` / ивент `BB` | ‹…› |
+| копка / удар по блоку | HB `D` fx=0 (`AddBz`) | `event:/world/mining` |
+| бибика | `BB` | `event:/ui/signal` |
+| корзина | локальный `@B` при `ownSounds` | `event:/ui/basket` |
+| смерть | HB `F` fx=2 | `event:/player/death` |
+| лечение | HB `D` fx=5 | `event:/player/heal` |
+| урон | HB `D` fx=6 | `event:/player/hurt` |
 
 ### Лауднес (платформа: ПК / десктоп)
 
@@ -131,9 +140,9 @@ FMOD-ивент» ещё нет. Его пишут на C#: `FMODUnity` + `Runti
 
 ### Конвенции
 
-- Схема имён ивентов: ‹…›
-- Шины и роутинг: ‹…›
-- Потолок голосов / приоритеты: ‹…›
+- Схема имён ивентов: зафиксирована в `docs/reference/FMOD_EVENTS.txt`.
+- Шины и роутинг: ещё не зафиксированы.
+- Потолок голосов / приоритеты: ещё не зафиксированы.
 
 ### Не трогать
 
@@ -142,4 +151,4 @@ FMOD-ивент» ещё нет. Его пишут на C#: `FMODUnity` + `Runti
   `Assets/Scripts/`.
 - Wire-формат и имена сетевых событий клиента заморожены (`docs/PROTOCOL.md`) — это
   про сеть, не про звук, но ломать нельзя.
-- ‹Что ещё нельзя менять.›
+- `docs/reference/FMOD_EVENTS.txt` и `SoundManager.cs` должны меняться синхронно.

@@ -5,7 +5,7 @@
 > Refer to the "Implementation Status" ("Статус реализации") section in [AGENTS.md](file:///Users/murasama/Projects/games/OpenMines/AGENTS.md) as the single honest source of truth.
 
 Восстановление Mines 3. Клиент: Unity 2019.4.10f1. Сервер: Rust + SQLite + `.map` world files, TCP-binary.
-Все пункты верифицируются по C# референсу (`server_reference/`).
+Все пункты верифицируются по локальному C# референсу (`docs/reference/server_reference/`).
 
 ---
 
@@ -19,7 +19,8 @@ inventory, clans, chat, movement — читали клиент+C#+Rust) подт
 **⚠️ ТОП-ИЗВЕСТНЫЙ БАГ (НЕ исправлен — нужно решение):** clans — HB bot шлёт
 `clan_id` вместо `icon`; клиент рендерит `sprites[value-1]` → неверные иконки в
 мире + краш (IndexOutOfRange) при clan_id>218. C# имеет clan.id==icon, Rust
-разделил (fdeacbf). Фикс широкий+wire+дизайн-вопрос. Детали — `.remember/remember.md`.
+разделил (fdeacbf). Фикс широкий+wire+дизайн-вопрос. Актуальный статус сверять
+по `docs/reference/CLIENT_PROTOCOL_GAPS.md` и `docs/reference/PARITY_AUDIT.md`.
 
 Найдено и **исправлено** (13 коммитов, каждый прошёл pre-commit; выделенные требуют
 live-проверки в клиенте):
@@ -39,7 +40,7 @@ live-проверки в клиенте):
 
 **Намеренно НЕ применено — спорные кварки C# (решение пользователя):** dig D1 (списание
 кристаллов при стройке в стену), D4 (бесплатные дороги на высоком lvl), D5 (durability
-дорог=0). Детали — `.remember/remember.md`.
+дорог=0). Актуальные намеренные отступления фиксируются в `docs/DEVIATIONS.md`.
 
 **Два реально больших трека впереди (оба требуют решения, НЕ автономно):**
 ECS-миграция (Раздел 10, гейтнута паритетом, этапы 2-6 = точка невозврата) и
@@ -248,7 +249,7 @@ lock-freeze, юзер играет соло; отдельная заметка.
 
 ## 2. Копание и стройка
 
-- [x] TY-события 1:1 (референс `server_reference/Server/Session.cs`, типовые пакеты в `server_reference/Server/Network/TypicalEvents/*`):
+- [x] TY-события 1:1 (референс `docs/reference/server_reference/Server/Session.cs`, типовые пакеты в `docs/reference/server_reference/Server/Network/TypicalEvents/*`):
   - [x] `Xdig`: 200ms cooldown, BOX/MilitaryBlock special cases, crystal FX(fx=2), cb accumulator, boulder push every hit, exp on destroy only — 1:1
   - [x] `Xbld`: 200ms cooldown, crystal cost from skill.Effect, AccessGun/PackPart checks, build exp, durability from skill — 1:1
   - [x] `TADG`: toggle авто-копания 1:1
