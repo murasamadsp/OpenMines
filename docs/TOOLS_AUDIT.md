@@ -21,7 +21,7 @@
 | `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/coverage/mutants/vet/fmod/cache. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
 | `scripts/arch-guard.sh` | active | Static architecture gate. | Оставить в CI/full gate. |
 | `scripts/arch-audit.sh` | diagnostic | Read-only отчёт по архитектурным leakage. | Оставить как manual audit. |
-| `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`. | Оставить, но `--clean` запускать только явно. |
+| `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`; `--prune` удаляет incremental cache и может замедлить следующий `cargo run`. | Оставить ручным; в pre-commit запускать только через `PRE_COMMIT_PRUNE_TARGET=1`. |
 | `scripts/build-client.sh` | explicit client task | Unity client compile gate. | Оставить; запускать только при client-задачах. |
 | `scripts/wipe-players.sh` | dangerous/dev | Деструктивная dev-утилита для игроков. | Требует отдельной проверки перед использованием. |
 | `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
