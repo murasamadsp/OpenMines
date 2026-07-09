@@ -1,5 +1,17 @@
 //! Мелкие обработчики: auto-dig, whoi, программатор TY, настройки.
 use crate::net::session::prelude::*;
+use crate::protocol::packets::open_programmator;
+
+async fn load_owned_program_name(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    prog_id: i32,
+) -> anyhow::Result<Option<String>> {
+    let program = state.db.get_program(prog_id).await?;
+    Ok(program
+        .filter(|p| p.player_id == pid.as_i32())
+        .map(|p| p.name))
+}
 
 fn send_programmator_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     send_u_packet(
@@ -294,6 +306,27 @@ pub async fn handle_prog_ty(
                     );
                     return;
                 }
+                let prog_name = match load_owned_program_name(state, pid, prog_id).await {
+                    Ok(Some(name)) => name,
+                    Ok(None) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, "Saved program is missing after PROG save");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Программа недоступна.").1,
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed after PROG save");
+                        send_u_packet(
+                            tx,
+                            "OK",
+                            &ok_message("ПРОГРАММАТОР", "Не удалось прочитать программу.").1,
+                        );
+                        return;
+                    }
+                };
                 let run_state = state
                     .modify_player(pid, |ecs, entity| {
                         let server_pos = ecs
@@ -335,11 +368,12 @@ pub async fn handle_prog_ty(
                 send_u_packet(tx, "Gu", &gu_close().1);
                 send_programmator_start_position(tx, server_pos, running);
                 if running {
-                    // Client contract: both #P and #p call GUIManager.*Programm
-                    // and touch ProgrammerView.Show(). PROG-start must not send
-                    // either editor packet; @P is the gameplay mode switch.
+                    // Unity @P=1 activates the whole ProgrammatorWindow. #p must
+                    // be last: UpdateProgramm hydrates selected state and ends by
+                    // hiding that window again.
                     send_u_packet(tx, "@P", &programmator_status(true).1);
                     send_u_packet(tx, "BH", &hand_mode(false).1);
+                    send_u_packet(tx, "#p", &open_programmator(prog_id, &prog_name, &source).1);
                 } else {
                     send_u_packet(tx, "@P", &programmator_status(false).1);
                     send_u_packet(tx, "BH", &hand_mode(false).1);
@@ -814,13 +848,16 @@ mod tests {
 
         let events = drain_events(&mut rx);
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, vec!["Gu", "@T", "@P", "BH"]);
+        assert_eq!(names, vec!["Gu", "@T", "@P", "BH", "#p"]);
         assert!(!names.contains(&"#P"));
-        assert!(!names.contains(&"#p"));
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"17:23");
         assert_eq!(events[2].1, b"1");
         assert_eq!(events[3].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[4].1).unwrap();
+        assert_eq!(update_json["id"], prog_id);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "$z");
 
         test.cleanup();
     }

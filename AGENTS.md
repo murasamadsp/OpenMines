@@ -85,6 +85,12 @@
 
 Не заглушайте предупреждения clippy вроде `cast_possible_truncation` с помощью `#[allow(...)]`. Вместо этого используйте безопасные методы `.to_i32()` или `.to_u64()` из библиотеки `num-traits`, которые обрабатывают переполнения безопасно и сохраняют чистоту кода.
 
+### Урок 8: Не чинить серверный wire по частичному чтению клиента
+
+В регрессии GUI программатора прочитал только handlers `#P/#p/@P` и сделал вывод, что достаточно убрать `#p` на `PROG` start/login. Это ухудшило поведение, потому что не была построена полная клиентская state-machine: `GUIManager.programToSend`, `ProgrammerView.opened/active`, `ProgPanel.playing/handMode`, `GUIManager.OnProgButton()`, `ProgPanel.OnPlayStop()`, `ProgrammerManager.OnStartButton()` и блокировки движения в `ClientController`.
+
+**Правило:** для UI/wire багов сначала картографировать весь клиентский поток от кнопки до handler-а и всех mutable flags. Только после этого менять сервер. Частичное чтение клиента запрещено считать доказательством.
+
 ## Документация
 
 - **`docs/PROTOCOL.md`** — полная спецификация сетевого протокола (актуальная)
@@ -507,7 +513,7 @@ GameState {
 
 **Скиллы:** ✅ портировано — дерево, формулы (Health x*3, Movement, Digging, Packing, Mine*, AntiGun, Repair), exp threshold flat 1.0, @S/@LV пакеты. ❌ нет Up GUI.
 
-**Программатор:** ⚠️ ядро работает частично — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, стоп не кидает назад. Критичный GUI-контракт: `#P` и `#p` оба идут через editor path (`ProgrammerView.Show()`), поэтому PROG start/login/reconnect running-программы должны слать только `Gu`/optional `@T`/`@P`/`BH`, без `#P/#p`. НЕ хватает: постройка по типу (опкоды 162-165), hand mode (179/180), полная верификация If/Loop.
+**Программатор:** ⚠️ ядро работает частично — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, стоп не кидает назад. Критичный GUI-контракт: `@P 1` включает `ProgrammatorWindow`; `#p` должен идти последним после `@P/BH`, чтобы `UpdateProgramm()` гидратил selected program и снова скрыл окно. `#P` на PROG start/login запрещён. НЕ хватает: постройка по типу (опкоды 162-165), hand mode (179/180), полная верификация If/Loop.
 
 **Здания GUI:** ❌ — все здания показывают generic GUI (take money/crystals/delete). Нет: Teleport list+TP, Resp fill, Market buy/sell, Crafter recipes, Storage deposit, Up skills.
 

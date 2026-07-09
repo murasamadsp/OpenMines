@@ -201,9 +201,9 @@ client-only fix или product decision.
 - Клиент: `GUIManager.UpdateProgramm` загружает source, вызывает `Show()`, затем
   `programmator.SetActive(false)` и `ProgrammerView.active = false`.
 - Что делать: сервер должен отправлять `#p` только в явных editor-update
-  сценариях. Для простого открытия использовать `#P`; для `PROG` start/login не
-  слать ни `#P`, ни `#p`.
-- Статус: `PROG` start/login/reconnect покрыты smoke как no `#P/#p`;
+  сценариях и как post-status closer после `@P/BH`. Для простого открытия
+  использовать `#P`; для `PROG` start/login не слать `#P`.
+- Статус: `PROG` start/login/reconnect покрыты smoke как `@P/BH -> #p`;
   rename остаётся editor-update flow.
 
 ### UI-008. Chat scrollbar flicker
@@ -696,7 +696,7 @@ client-only fix или product decision.
 ### UI-026. Нужна серверная state-machine спецификация программатора
 
 - Минимальный сценарий: `Pope` список -> `createprog` -> `#P` open ->
-  `PROG` save+run -> `Gu` close -> `@P 1` -> `BH 0` -> `pRST` stop ->
+  `PROG` save+run -> `Gu` close -> `@P 1` -> `BH 0` -> `#p` update -> `pRST` stop ->
   `Gu` -> `@P 0`; stopped `pRST` не должен открывать `#P`.
 - Что делать: оформить в `docs/PROTOCOL.md` или отдельном тест-доке и покрыть
   protocol-пробой.

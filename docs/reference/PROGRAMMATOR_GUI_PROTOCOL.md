@@ -63,10 +63,10 @@ C# reference:
 - `StaticGUI.StartedProg` сохраняет source, запускает программу, затем шлёт
   `UpdateProgrammatorPacket` (`#p`).
 
-Rust intentionally diverges here because the Unity client source is the live
-wire authority: `#p` calls `GUIManager.UpdateProgramm(...)`, which still calls
-`ProgrammerView.Show()`. Therefore `#p` is an editor packet and must not be sent
-on `PROG` start.
+Rust keeps `#p`, but the order is critical. Unity `@P 1` activates the whole
+`ProgrammatorWindow`; `#p` calls `GUIManager.UpdateProgramm(...)`, hydrates
+`programId/source`, and finally hides that window again. Therefore `#p` must be
+last, after `@P/BH`.
 
 Сервер должен:
 
@@ -78,8 +78,8 @@ on `PROG` start.
 - запустить программу;
 - закрыть HORB/window state на сервере;
 - отправить статус в порядке, совместимом с Unity:
-  `Gu`, optional `@T`, затем `@P`, `BH`;
-- не отправлять `#P` или `#p` на успешном старте программы.
+  `Gu`, optional `@T`, затем `@P`, `BH`, `#p`;
+- не отправлять `#P` на успешном старте программы.
 
 Пакеты `@P/#p/#P/Gu` нельзя менять без ручной проверки клиента:
 
@@ -87,7 +87,7 @@ on `PROG` start.
   `ProgPanel.playing = true`;
 - `#P` вызывает `GUIManager.OpenProgramm(...)` и оставляет editor path активным;
 - `#p` вызывает `GUIManager.UpdateProgramm(...)`, загружает source, вызывает
-  `ProgrammerView.Show()`, и только затем пытается скрыть editor state.
+  `ProgrammerView.Show()`, и затем скрывает `ProgrammatorWindow`.
 
 Итог после успешного запуска: программа работает, `ProgPanel.playing == true`,
 редактор не висит поверх игры.
@@ -242,13 +242,12 @@ Unity `ProgrammatorHandler`:
 В `Player.Init()` после `#F`:
 
 - сервер отправляет `@P` с фактическим running-статусом;
-- затем `BH` с фактическим hand-mode.
+- затем `BH` с фактическим hand-mode;
+- если selected program есть, затем `#p` с id/name/source.
 
-Login/init не должен отправлять `#P` или `#p` для selected/running программы.
-Клиент вызывает `ProgrammerView.Show()` для обоих пакетов:
-`#P -> OpenProgramm(...)`, `#p -> UpdateProgramm(...)`. Если пользователь
-открывает программатор вручную, клиент отправит `Pope`, и сервер вернёт список
-или редактор в явном editor-flow.
+Login/init не должен отправлять `#P` для selected/running программы. `#p`
+должен идти после `@P/BH`: если `@P 1` включил `ProgrammatorWindow`,
+`UpdateProgramm()` гидратит selected program и снова скрывает окно.
 
 Сервер не должен выбирать “последнюю” или “единственную” программу неявно.
 Selected program должен быть явным persistent состоянием игрока.
@@ -280,7 +279,8 @@ Opcode `Stop` внутри программы:
 - Создавать программу `id=0`, `name="program"` при `PROG program_id=0`.
 - Открывать список программ как fallback для валидного `PROG`.
 - Молча выбирать другую программу, если selected отсутствует.
-- Слать `#P` или `#p` на успешном `PROG` start.
+- Слать `#P` на успешном `PROG` start.
+- Слать `#p` до `@P/BH` на successful running `PROG`.
 - Менять порядок `@P/#p/#P/Gu` без сверки с Unity handlers.
 - Чистить только клиентский или только серверный state: GUI state, ECS runtime
   state и wire status должны сходиться.

@@ -74,7 +74,7 @@
 | `cS`, `cH` | implemented | clan partial |
 | `$$` | packet exists in client/ref, Rust live source not proven | purchase flow missing/unclear |
 | `PM` | packet exists in client/ref, Rust live source not proven | modules feature missing |
-| `@P`, `#P`, `#p`, `BH` | implemented | central risk: Unity `#P` opens editor and `#p` also touches `ProgrammerView.Show()`; PROG start/login must use `@P/BH` without editor packets |
+| `@P`, `#P`, `#p`, `BH` | implemented | central risk: Unity `@P 1` opens ProgrammatorWindow; successful PROG/login must use `@P/BH -> #p` and never `#P` |
 | `BC` | packet exists in client/ref, Rust live source not proven | bad-cells feature missing |
 | `BA`, `BD` | implemented | aggression/autodig status |
 | `BR` | missing | auto-respawn status missing with `TAUR` |

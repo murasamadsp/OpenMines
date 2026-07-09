@@ -324,16 +324,16 @@ Unity `NetworkProtocol` ожидает эти server events. Основная т
 ## Programmator State Machine
 
 Цель этого контракта — держать Unity UI в предсказуемом состоянии. По клиенту
-`#P` и `#p` оба проходят через `GUIManager.*Programm(...)` и вызывают
-`ProgrammerView.Show()`. Поэтому оба считаются editor-пакетами и запрещены на
-старте/логине running-программы.
+`@P 1` сам включает `ProgrammatorWindow`; `#p` тоже проходит через
+`ProgrammerView.Show()`, но в конце `UpdateProgramm()` выключает окно обратно.
+Поэтому `#p` нужен только как последний post-status hydrator/closer.
 
 | Вход клиента | Условие | Серверный эффект | Ответ клиенту |
 | --- | --- | --- | --- |
 | `Pope` | игрок открывает меню программатора | загрузить список программ игрока | `GU horb:{...}` со списком/созданием |
 | `createprog` GUI | имя валидно | создать пустую программу | `#P {id,title,source}` |
 | `openprog:<id>` GUI | программа принадлежит игроку | выбрать программу | `#P {id,title,source}` |
-| `PROG` | payload валиден и программа запущена | сохранить source, выбрать программу, запустить | `Gu`, optional `@T`, затем `@P 1`, `BH 0` |
+| `PROG` | payload валиден и программа запущена | сохранить source, выбрать программу, запустить | `Gu`, optional `@T`, затем `@P 1`, `BH 0`, `#p {id,title,source}` |
 | `PROG` | payload валиден, но программа не запущена | сохранить source, выбрать программу, вернуть ошибку запуска | `Gu`, затем `@P 0`, `BH 0`, затем `OK` |
 | `PROG` | payload битый/truncated | не сохранять и остановить старый running state | `@P 0`, затем `OK` |
 | `pRST` | программа запущена | остановить running state | `Gu`, затем `@P 0`, `BH 0` |
@@ -348,8 +348,10 @@ Unity `NetworkProtocol` ожидает эти server events. Основная т
 
 - Сервер не должен отправлять ложный `@P 1`, если parse/run программы не
   удался.
-- `PROG`-start не должен отправлять `#P` или `#p`: Unity-клиент на оба пакета
-  вызывает editor path (`OpenProgramm`/`UpdateProgramm` -> `ProgrammerView.Show()`).
+- `PROG`-start не должен отправлять `#P`.
+- `#p` на successful running `PROG` обязателен последним после `@P/BH`: Unity
+  `@P 1` включает `ProgrammatorWindow`, а `UpdateProgramm()` в конце выключает
+  его и гидратит selected program.
 - Простое открытие и создание должны возвращать `#P`, чтобы редактор оставался
   открыт.
 - Rename должен возвращать `#p`, потому что это update выбранной программы.

@@ -52,10 +52,11 @@ stopped `pRST` как pre-open/reset сигнал из `GUIManager.OnProgButton(
 Успешный `PROG`:
 
 ```text
-Gu -> optional @T -> @P 1 -> BH 0
+Gu -> optional @T -> @P 1 -> BH 0 -> #p
 ```
 
-`#P` и `#p` запрещены на старте программы. Оба пакета попадают в editor path.
+`#P` запрещён на старте программы. `#p` нужен последним после `@P/BH`: `@P 1`
+включает `ProgrammatorWindow`, а `UpdateProgramm()` в конце выключает его.
 
 Stopped `pRST`:
 
@@ -72,8 +73,8 @@ Gu -> @P 0 -> BH 0
 ## Что запрещено
 
 - Успешный `PROG` с `#P`.
-- Успешный `PROG` с `#p`.
-- Login/reconnect running-программы с `#P` или `#p`.
+- Успешный `PROG` с `#p` до `@P/BH`.
+- Login/reconnect running-программы с `#P`.
 - Stopped `pRST` с `#P`.
 - Документировать девиацию от C# без live-проверки Unity и без строки в
   `docs/DEVIATIONS.md`.

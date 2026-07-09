@@ -468,6 +468,17 @@ fn send_initial_sync(
         .unwrap_or((false, false));
     send_u_packet(tx, "@P", &programmator_status(prog_running).1);
     send_u_packet(tx, "BH", &hand_mode(hand_mode_active).1);
+    // Unity @P=1 activates the whole ProgrammatorWindow. If a selected program
+    // exists, #p must follow @P/BH so UpdateProgramm hydrates programId/source
+    // and hides the window again.
+    if let Some(program) = &player.selected_program {
+        send_u_packet(
+            tx,
+            "#p",
+            &crate::protocol::packets::open_programmator(program.id, &program.name, &program.code)
+                .1,
+        );
+    }
     // 17. DR — индикатор ежедневного бонуса (мигание кнопки БОНУСЫ): "1" если
     // доступен (прошло ≥ кулдауна с последнего клейма), иначе "0".
     let dr = if crate::net::session::play::bonus::bonus_available(
@@ -592,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_running_selected_program_sends_status_without_editor_packets() {
+    async fn init_running_selected_program_hydrates_after_status() {
         let (state, db_path, dir, world_name) =
             make_init_test_state("init_running_selected_program").await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -614,19 +625,20 @@ mod tests {
             events.iter().all(|(event, _)| event != "#P"),
             "login hydration must not open the editor with #P; events: {events:?}"
         );
-        assert!(
-            events.iter().all(|(event, _)| event != "#p"),
-            "login hydration must not call GUIManager.UpdateProgramm; client opens editor path on #p too: {events:?}"
-        );
         let config_idx = event_index(&events, "#F");
         let status_idx = event_index(&events, "@P");
         let hand_idx = event_index(&events, "BH");
+        let update_idx = event_index(&events, "#p");
         assert!(
-            config_idx < status_idx && status_idx < hand_idx,
-            "init programmator wire must be #F -> @P -> BH without #P/#p editor packets; events: {events:?}"
+            config_idx < status_idx && status_idx < hand_idx && hand_idx < update_idx,
+            "init programmator wire must be #F -> @P -> BH -> #p; events: {events:?}"
         );
         assert_eq!(events[status_idx].1, b"1");
         assert_eq!(events[hand_idx].1, b"0");
+        let update_json: serde_json::Value = serde_json::from_slice(&events[update_idx].1).unwrap();
+        assert_eq!(update_json["id"], 7);
+        assert_eq!(update_json["title"], "main");
+        assert_eq!(update_json["source"], "$z");
 
         cleanup_init_test(&db_path, &dir, &world_name);
     }

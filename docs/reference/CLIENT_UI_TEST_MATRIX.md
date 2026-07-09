@@ -183,7 +183,7 @@ Static audit:
 - открыть список программ;
 - создать новую программу;
 - открыть существующую через `#P`;
-- сохранить и запустить через `PROG -> Gu/optional @T/@P/BH`;
+- сохранить и запустить через `PROG -> Gu/optional @T/@P/BH/#p`;
 - stop/reset через `pRST`;
 - copy через `PCOP`;
 - rename/delete;
