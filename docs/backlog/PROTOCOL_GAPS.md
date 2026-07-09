@@ -68,7 +68,7 @@
 | `RC` | missing/unclear | reconnect notification not proven |
 | `BI`, `@T`, `sp`, `@L`, `@S`, `@B`, `LV`, `P$` | implemented | core gameplay |
 | `@t` | packet documented, live Rust source not proven | smooth teleport missing unless found |
-| `NL`, `ON` | implemented enough | verify broadcast cadence later |
+| `NL`, `ON` | implemented | `ON online:0` шлётся активным игрокам раз в минуту; покрыто `online_count_broadcast_sends_on_to_active_players` |
 | `GU`, `Gu`, `OK`, `IN` | implemented | `IN show:{all}:{selected}:{grid}` and `IN full:{selected}:{grid}` are covered by wire/unit tests; GUI regressions remain high-risk |
 | `GR` | packet exists in client/ref, Rust live source not proven | open-url feature missing |
 | `cS`, `cH` | implemented | clan partial |
@@ -86,7 +86,7 @@
 | `GO` | packet exists in client/ref, Rust live source not proven | navigation arrow missing |
 | `DR` | implemented | daily reward |
 | `#F`, `#S` | implemented | config/settings |
-| `MM` | `openmines-protocol` packet helper + minimal hide only | mission panel content missing |
+| `MM` | live minimal hide on `Miso` + `openmines-protocol` helper | mission panel content missing |
 | `MN` | `openmines-protocol` packet helper only | tutorial/mission notice missing |
 | `MP` | `openmines-protocol` packet helper only | mission progress missing |
 | `mO`, `mU`, `mL`, `mN`, `mC` | implemented enough | chat UX still needs live testing |
