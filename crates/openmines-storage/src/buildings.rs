@@ -27,24 +27,77 @@ pub struct BuildingRow {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildingExtra {
+    #[serde(deserialize_with = "json_int::i32")]
     pub charge: i32,
+    #[serde(deserialize_with = "json_int::i32")]
     pub max_charge: i32,
+    #[serde(deserialize_with = "json_int::i32")]
     pub cost: i32,
+    #[serde(deserialize_with = "json_int::i32")]
     pub hp: i32,
+    #[serde(deserialize_with = "json_int::i32")]
     pub max_hp: i32,
+    #[serde(deserialize_with = "json_int::i64")]
     pub money_inside: i64,
     pub crystals_inside: [i64; 6],
     pub items_inside: HashMap<i32, i32>,
     /// Crafter: текущий рецепт. None = крафтер простаивает.
     pub craft_recipe_id: Option<i32>,
     /// Crafter: сколько единиц крафтится.
+    #[serde(deserialize_with = "json_int::i32")]
     pub craft_num: i32,
     /// Crafter: unix-ts завершения крафта. 0 = простаивает.
+    #[serde(deserialize_with = "json_int::i64")]
     pub craft_end_ts: i64,
     /// Crafter: completion resend already emitted. Mirrors C# `Crafter.ready`.
     pub craft_ready: bool,
     /// Resp: клановая зона (admin-настройка; хранится, геймплейного эффекта нет — 1:1 C#).
+    #[serde(deserialize_with = "json_int::i32")]
     pub clanzone: i32,
+}
+
+mod json_int {
+    use num_traits::ToPrimitive as _;
+    use serde::Deserialize as _;
+
+    pub fn i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        parse_i64(&value)
+            .and_then(|v| i32::try_from(v).ok())
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!("expected integer-compatible i32, got {value}"))
+            })
+    }
+
+    pub fn i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        parse_i64(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!("expected integer-compatible i64, got {value}"))
+        })
+    }
+
+    fn parse_i64(value: &serde_json::Value) -> Option<i64> {
+        match value {
+            serde_json::Value::Number(n) => n
+                .as_i64()
+                .or_else(|| n.as_u64().and_then(|v| i64::try_from(v).ok()))
+                .or_else(|| {
+                    let f = n.as_f64()?;
+                    if f.is_finite() && f.fract().abs() < f64::EPSILON {
+                        f.to_i64()
+                    } else {
+                        None
+                    }
+                }),
+            _ => None,
+        }
+    }
 }
 
 /// Преобразует строку sqlx в `BuildingRow` (переиспользуется в нескольких методах).
@@ -392,6 +445,28 @@ mod tests {
             "clanzone": 0
         }"#;
         assert!(serde_json::from_str::<BuildingExtra>(json).is_err());
+    }
+
+    #[test]
+    fn building_extra_accepts_integer_legacy_float_charge_state() {
+        let json = r#"{
+            "charge": 0.0,
+            "max_charge": 100.0,
+            "cost": 10,
+            "hp": 100,
+            "max_hp": 100,
+            "money_inside": 0,
+            "crystals_inside": [0,0,0,0,0,0],
+            "items_inside": {},
+            "craft_recipe_id": null,
+            "craft_num": 0,
+            "craft_end_ts": 0,
+            "craft_ready": false,
+            "clanzone": 0
+        }"#;
+        let extra = serde_json::from_str::<BuildingExtra>(json).unwrap();
+        assert_eq!(extra.charge, 0);
+        assert_eq!(extra.max_charge, 100);
     }
 
     #[tokio::test]

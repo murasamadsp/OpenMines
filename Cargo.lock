@@ -1815,6 +1815,7 @@ name = "openmines-storage"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "num-traits",
  "openmines-core",
  "rand 0.9.4",
  "serde",
