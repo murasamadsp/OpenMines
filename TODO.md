@@ -23,15 +23,19 @@
   не должны слать `#P`; `#p` должен идти последним после `@P/BH`.
 - Settings/toggles scenario-smoke: `scripts/dev-smoke.sh` проверяет `TAGR -> BA`
   и `Sett -> save:%R% -> #S/GU`.
+- Building/admin scenario-smoke: `scripts/dev-smoke.sh` проверяет
+  `Blds -> open_buildings -> bld_place:O -> ADMN` и базовый HORB wire-contract
+  для списка построек, постановки Spot и админ-кнопки.
 - GUI/Wire Codex: начальный машинно-читаемый реестр добавлен в
   `docs/reference/GUI_WIRE_CODEX.md` для auth, programmator, toggles и common
   HORB routes.
 
 Осталось:
 
-- Scenario-smoke добить по оставшимся крупным GUI routes: auction/building/admin
-  HORB. Базовые programmator routes (`openprog`, `PREN`, `rename`, `PDEL`,
-  `PCOP`), `TAGR` и settings save уже закрыты.
+- Scenario-smoke добить по оставшимся крупным GUI routes: auction/market HORB.
+  Базовые building/admin routes (`Blds`, `open_buildings`, `bld_place:O`,
+  `ADMN`), programmator routes (`openprog`, `PREN`, `rename`, `PDEL`, `PCOP`),
+  `TAGR` и settings save уже закрыты.
 - GUI/Wire Codex расширить до полного покрытия HORB/admin/building/auction
   окон. Начальный реестр есть; теперь каждую GUI правку начинать с обновления
   строки в `docs/reference/GUI_WIRE_CODEX.md`.
