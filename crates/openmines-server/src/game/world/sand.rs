@@ -6,6 +6,10 @@ use bevy_ecs::prelude::*;
 use rand::Rng;
 use std::time::{Duration, Instant};
 
+const SAND_SCAN_RADIUS: i32 = 16;
+const SAND_CACHE_X_PAD: i32 = 1;
+const SAND_CACHE_Y_LOOKAHEAD: i32 = 3;
+
 /// Проходима ли клетка для падающего блока. База — `is_empty` (≡ JS
 /// `!BlockStats[id].solid`): песок течёт сквозь фон/обычную дорогу(35)/ворота(30).
 /// НО плюс C#-блоклист `TrueEmpty`: `cell ∉ {0,36,37,39}` — инфраструктура зданий
@@ -25,28 +29,85 @@ fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
         )
 }
 
-/// Есть ли у клетки `falltype` (песок/валун) — JS `BlockStats[id].falltype != null`.
-fn has_falltype(world: &crate::world::World, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
-    if !world.valid_coord(x, y) {
-        return false;
-    }
-    let cell = world.get_cell_typed(x, y);
+fn cell_is_passable(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool {
+    use crate::world::cells::cell_type as ct;
+    cell_defs.get_typed(cell).cell_is_empty()
+        && !matches!(
+            cell.0,
+            ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
+        )
+}
+
+fn cell_has_falltype(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool {
     cell_defs.get_typed(cell).is_sand() || cell.is_boulder()
+}
+
+struct SandScanCache {
+    min_x: i32,
+    min_y: i32,
+    width: usize,
+    height: usize,
+    cells: Vec<Option<crate::world::CellType>>,
+}
+
+impl SandScanCache {
+    fn new(world: &crate::world::World, player_x: i32, player_y: i32) -> Self {
+        let min_x = player_x - SAND_SCAN_RADIUS - SAND_CACHE_X_PAD;
+        let max_x = player_x + SAND_SCAN_RADIUS + SAND_CACHE_X_PAD;
+        let min_y = player_y - SAND_SCAN_RADIUS;
+        let max_y = player_y + SAND_SCAN_RADIUS + SAND_CACHE_Y_LOOKAHEAD;
+        let width = usize::try_from(max_x - min_x + 1).expect("sand cache width is positive");
+        let height = usize::try_from(max_y - min_y + 1).expect("sand cache height is positive");
+        let mut cells = Vec::with_capacity(width * height);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                cells.push(world.valid_coord(x, y).then(|| world.get_cell_typed(x, y)));
+            }
+        }
+        Self {
+            min_x,
+            min_y,
+            width,
+            height,
+            cells,
+        }
+    }
+
+    fn get(&self, x: i32, y: i32) -> Option<crate::world::CellType> {
+        let rx = x.checked_sub(self.min_x)?;
+        let ry = y.checked_sub(self.min_y)?;
+        let rx = usize::try_from(rx).ok()?;
+        let ry = usize::try_from(ry).ok()?;
+        if rx >= self.width || ry >= self.height {
+            return None;
+        }
+        self.cells[ry * self.width + rx]
+    }
+
+    fn is_passable(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
+        self.get(x, y)
+            .is_some_and(|cell| cell_is_passable(cell_defs, cell))
+    }
+
+    fn has_falltype(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
+        self.get(x, y)
+            .is_some_and(|cell| cell_has_falltype(cell_defs, cell))
+    }
 }
 
 /// JS `GeoPhisics.DownFree`: 1 = падать прямо вниз, 0 = диагональный соскок,
 /// 2 = ждать/заблокировано (хода нет).
-fn down_free(world: &crate::world::World, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
-    if is_passable(world, x, y + 1) {
-        if has_falltype(world, cell_defs, x, y + 2) {
-            if !is_passable(world, x, y + 3) {
+fn down_free_cached(cache: &SandScanCache, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
+    if cache.is_passable(cell_defs, x, y + 1) {
+        if cache.has_falltype(cell_defs, x, y + 2) {
+            if !cache.is_passable(cell_defs, x, y + 3) {
                 return 1;
             }
             return 2;
         }
         return 1;
     }
-    if has_falltype(world, cell_defs, x, y + 1) {
+    if cache.has_falltype(cell_defs, x, y + 1) {
         return 0;
     }
     2
@@ -74,19 +135,18 @@ pub fn sand_physics_system(
     for pos in &query {
         players_scanned += 1;
         let (player_x, player_y) = (pos.x, pos.y);
+        let cache = SandScanCache::new(world, player_x, player_y);
 
         // Scan 33x33 area around player
-        for dy in (-16..=16_i32).rev() {
-            for dx in -16..=16_i32 {
+        for dy in (-SAND_SCAN_RADIUS..=SAND_SCAN_RADIUS).rev() {
+            for dx in -SAND_SCAN_RADIUS..=SAND_SCAN_RADIUS {
                 cells_scanned += 1;
                 let sx = player_x + dx;
                 let sy = player_y + dy;
 
-                if !world.valid_coord(sx, sy) {
+                let Some(cell) = cache.get(sx, sy) else {
                     continue;
-                }
-
-                let cell = world.get_cell_typed(sx, sy);
+                };
                 let is_s = cell_defs.get_typed(cell).is_sand();
                 let is_b = cell.is_boulder();
 
@@ -97,7 +157,7 @@ pub fn sand_physics_system(
 
                 // JS `FallingCycle`: ветвление по `DownFree`.
                 // df==1 — прямо вниз; df==0 — диагональ; df==2 — стоим.
-                let df = down_free(world, &cell_defs, sx, sy);
+                let df = down_free_cached(&cache, &cell_defs, sx, sy);
                 if df == 1 {
                     tasks.push((sx, sy, sx, sy + 1, cell));
                     continue;
@@ -115,7 +175,8 @@ pub fn sand_physics_system(
                     (sx - 1, sx + 1)
                 };
                 let can_slide = |tx: i32| {
-                    is_passable(world, tx, sy + 1) && (is_s || is_passable(world, tx, sy))
+                    cache.is_passable(&cell_defs, tx, sy + 1)
+                        && (is_s || cache.is_passable(&cell_defs, tx, sy))
                 };
                 if can_slide(first_x) {
                     tasks.push((sx, sy, first_x, sy + 1, cell));

@@ -29,7 +29,10 @@ impl SessionHeartbeat {
 
     pub fn record_pong(&mut self, pong: &PongClient, now: Instant) {
         self.pong_at = now;
-        if pong.response != constants::HEARTBEAT_PONG_RESPONSE {
+        if !matches!(
+            pong.response,
+            constants::HEARTBEAT_HANDSHAKE_PONG_RESPONSE | constants::HEARTBEAT_PONG_RESPONSE
+        ) {
             tracing::warn!(
                 expected = constants::HEARTBEAT_PONG_RESPONSE,
                 actual = pong.response,
@@ -53,5 +56,25 @@ impl SessionHeartbeat {
         let text = format!("{} ", self.rtt_ms);
         self.pi_sent_at = Some(now);
         ping(constants::HEARTBEAT_PONG_RESPONSE, client_time, &text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handshake_pong_zero_is_valid_liveness() {
+        let now = Instant::now();
+        let mut heartbeat = SessionHeartbeat::new(now);
+        let pong = PongClient {
+            response: constants::HEARTBEAT_HANDSHAKE_PONG_RESPONSE,
+            current_time: 123,
+        };
+
+        heartbeat.record_pong(&pong, now + Duration::from_millis(10));
+
+        assert!(!heartbeat.is_timed_out(now + Duration::from_millis(11), Duration::from_millis(1)));
+        assert_eq!(heartbeat.pong_client_time, 123);
     }
 }
