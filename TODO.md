@@ -87,7 +87,7 @@
 
 ## Tickprof: оптимизировать найденный `side` hot path
 
-Статус: первичная детализация сделана. `server/src/tasks/lifecycle.rs` теперь
+Статус: первичная детализация сделана. `crates/openmines-server/src/tasks/lifecycle.rs` теперь
 пишет в `tickprof` per-section timings для `side`-стадии: `broadcasts`,
 `pack_resends`, `box_persist`, `cell_conversions`, `programmator_actions`, `death`,
 `bots_render`.
@@ -115,7 +115,7 @@ hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` 
 
 # Программатор: текущий статус и следующий аудит
 
-Текущая серверная реализация: `server/src/game/actors/programmator.rs`.
+Текущая серверная реализация: `crates/openmines-server/src/game/actors/programmator.rs`.
 
 Актуальные проверенные факты:
 - Unity text-format `#S/#E` мапится как `Start/Stop`.
@@ -130,7 +130,7 @@ hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` 
 
 Осталось:
 - Перед следующим изменением программатора сверять конкретный GUI/wire-сценарий с
-  Unity-клиентом и `server_reference/`, а не с устаревшими аудитами.
+  Unity-клиентом и `docs/reference/server_reference/`, а не с устаревшими аудитами.
 - Если добавляется новая намеренная девиация от C# — сразу заносить в
   `docs/DEVIATIONS.md`.
 
