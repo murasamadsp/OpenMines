@@ -21,6 +21,8 @@
 7. **Запуск сервисов**:
    - `net::run`: Основной TCP-сервер игрового протокола.
    - `game::run_game_loop_thread`: Отдельный OS-поток игрового тика (см. ниже).
+   - `net::web::run_web_server`: HTTP admin server на `M3R_ADMIN_PORT`/`--admin-port`.
+   - `console::run_repl`: интерактивная server console.
 
 ## Игровой цикл (Game Loop Thread)
 
@@ -171,7 +173,11 @@ Web должен быть GUI над тем же service, а не четвёрт
 - `M3R_USE_CTRL_C` — включает/выключает обработку Ctrl+C в shutdown-сигналах. Допустимые bool-значения: `1,true,yes,on,0,false,no,off`; иное значение — ошибка старта.
 - `M3R_ABORT_ON_PANIC` — завершать процесс с кодом `101` после panic hook. Допустимые bool-значения: `1,true,yes,on,0,false,no,off`; иное значение — ошибка старта.
 - `M3R_GRANT_ADMIN=name1,name2` — автоматически выдать права администратора указанным игрокам.
+- `M3R_ADMIN_PORT` — порт HTTP admin server; default `8091`. Не должен совпадать с игровым TCP-портом.
+- `M3R_ADMIN_TOKEN` — обязательный токен HTTP admin server. Без него обычный старт сервера падает fail-fast; `--doctor` только валидирует состояние и не требует токен.
 
 ### Аргументы запуска
 
 - `--regen` / `--regen-world` — аналогично `M3R_REGEN_WORLD`.
+- `--admin-port` — аналогично `M3R_ADMIN_PORT`.
+- `--admin-token` — аналогично `M3R_ADMIN_TOKEN`.
