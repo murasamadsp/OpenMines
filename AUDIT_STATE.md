@@ -137,8 +137,9 @@
 - `allow(dead_code)` не считать закрытым: оставшиеся вхождения можно снимать
   только через подключение понятной live-фичи или typed boundary с тестом. Если
   уверенность ниже 90%, оставить код и записать долг.
-- `--doctor` не считать полным readiness-check: пока он не открывает SQLite, не
-  гоняет миграции и не выполняет wire/gameplay scenario-smoke.
+- `--doctor` не считать полным readiness-check: он уже проверяет SQLite
+  integrity/migrations и ресурсы, но не выполняет wire/gameplay scenario-smoke
+  и не доказывает runtime-поведение живого сервера.
 - Ускорение разработки не закрыто: нужен отдельный срез `sccache`/fast linker/
   `cargo nextest`/разделение быстрых и полных gates.
 
