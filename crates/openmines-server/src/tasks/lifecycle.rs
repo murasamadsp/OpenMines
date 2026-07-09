@@ -494,6 +494,91 @@ impl SideProfile {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct SimProfile {
+    player_entities: usize,
+    online_players: usize,
+    offline_player_entities: usize,
+    running_programmators: usize,
+    online_running_programmators: usize,
+    offline_running_programmators: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct QueueProfile {
+    broadcasts: usize,
+    pack_resends: usize,
+    box_ops: usize,
+    cell_conversions_in: usize,
+    cell_conversions_remaining: usize,
+    cell_conversions_applied: usize,
+    programmator_actions: usize,
+    deaths: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ProgrammatorActionProfile {
+    moves: usize,
+    digs: usize,
+    builds: usize,
+    geo: usize,
+    heal: usize,
+    set_auto_dig: usize,
+    set_aggression: usize,
+    set_hand_mode: usize,
+    fill_gun: usize,
+    set_status: usize,
+}
+
+impl ProgrammatorActionProfile {
+    const fn count(&mut self, action: &crate::game::ProgrammatorAction) {
+        match action {
+            crate::game::ProgrammatorAction::Move { .. } => self.moves += 1,
+            crate::game::ProgrammatorAction::Dig { .. } => self.digs += 1,
+            crate::game::ProgrammatorAction::Build { .. } => self.builds += 1,
+            crate::game::ProgrammatorAction::Geo { .. } => self.geo += 1,
+            crate::game::ProgrammatorAction::Heal { .. } => self.heal += 1,
+            crate::game::ProgrammatorAction::SetAutoDig { .. } => self.set_auto_dig += 1,
+            crate::game::ProgrammatorAction::SetAggression { .. } => self.set_aggression += 1,
+            crate::game::ProgrammatorAction::SetHandMode { .. } => self.set_hand_mode += 1,
+            crate::game::ProgrammatorAction::FillGun { .. } => self.fill_gun += 1,
+            crate::game::ProgrammatorAction::SetProgrammatorStatus { .. } => self.set_status += 1,
+        }
+    }
+}
+
+fn collect_sim_profile(ecs: &mut bevy_ecs::world::World, online_players: usize) -> SimProfile {
+    let player_entities = ecs
+        .query::<&crate::game::player::PlayerPosition>()
+        .iter(ecs)
+        .count();
+    let (running_programmators, online_running_programmators) = ecs
+        .query::<(
+            Option<&crate::game::player::PlayerConnection>,
+            &crate::game::programmator::ProgrammatorState,
+        )>()
+        .iter(ecs)
+        .fold(
+            (0usize, 0usize),
+            |(running, online_running), (conn, prog)| {
+                if !prog.running {
+                    return (running, online_running);
+                }
+                (running + 1, online_running + usize::from(conn.is_some()))
+            },
+        );
+
+    SimProfile {
+        player_entities,
+        online_players,
+        offline_player_entities: player_entities.saturating_sub(online_players),
+        running_programmators,
+        online_running_programmators,
+        offline_running_programmators: running_programmators
+            .saturating_sub(online_running_programmators),
+    }
+}
+
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn run_game_tick_sync(
     state: &Arc<GameState>,
@@ -571,12 +656,15 @@ fn run_game_tick_sync(
         box_ops,
         sched_lock_wait,
         sched_run,
+        schedule_runs,
+        sim_profile,
     ) = {
         let building_entities = state.building_entities_snapshot();
         heartbeat.mark(TickStage::EcsLockWait);
         let mut ecs = state.ecs.write();
         let lw = sched_t0.elapsed();
         let run_t0 = Instant::now();
+        let mut schedule_runs: Vec<(String, std::time::Duration)> = Vec::new();
 
         let now = Instant::now();
         for (idx, gs) in state.schedules.iter().enumerate() {
@@ -593,6 +681,7 @@ fn run_game_tick_sync(
                     gs.schedule.write().run(&mut ecs);
                 }));
                 let elapsed = schedule_t0.elapsed();
+                schedule_runs.push((gs.name.clone(), elapsed));
                 if elapsed > schedule_warn_threshold {
                     tracing::warn!(
                         target: "scheduler",
@@ -628,13 +717,21 @@ fn run_game_tick_sync(
         let convs =
             std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
         let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
+        let sim_profile = collect_sim_profile(&mut ecs, state.online_count());
         drop(ecs);
-        (p, bc, pa, convs, pr, bp, lw, rn)
+        (p, bc, pa, convs, pr, bp, lw, rn, schedule_runs, sim_profile)
     };
     let dt_schedule = sched_t0.elapsed();
     if dt_schedule > schedule_warn_threshold {
         tracing::warn!(
             target: "tickprof",
+            sim_player_entities = sim_profile.player_entities,
+            sim_online_players = sim_profile.online_players,
+            sim_offline_player_entities = sim_profile.offline_player_entities,
+            sim_running_programmators = sim_profile.running_programmators,
+            sim_online_running_programmators = sim_profile.online_running_programmators,
+            sim_offline_running_programmators = sim_profile.offline_running_programmators,
+            schedule_runs = ?schedule_runs,
             "SLOW schedule: total={dt_schedule:?} lock_wait={sched_lock_wait:?} \
              run={sched_run:?} flush={:?} threshold={schedule_warn_threshold:?}",
             dt_schedule
@@ -646,6 +743,19 @@ fn run_game_tick_sync(
     // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
     let side_t0 = Instant::now();
     let mut side_profile = SideProfile::default();
+    let mut programmator_action_profile = ProgrammatorActionProfile::default();
+    for action in &prog_actions {
+        programmator_action_profile.count(action);
+    }
+    let mut queue_profile = QueueProfile {
+        broadcasts: broadcasts.len(),
+        pack_resends: pack_resends.len(),
+        box_ops: box_ops.len(),
+        cell_conversions_in: cell_conversions.len(),
+        programmator_actions: prog_actions.len(),
+        deaths: pending.len(),
+        ..QueueProfile::default()
+    };
 
     let section_t0 = Instant::now();
     heartbeat.mark(TickStage::SideBroadcasts);
@@ -733,10 +843,12 @@ fn run_game_tick_sync(
                     },
                 );
                 crate::game::broadcast_cell_update(state, x, y);
+                queue_profile.cell_conversions_applied += 1;
                 converted_owners.push(conv.owner_pid);
             }
         }
     }
+    queue_profile.cell_conversions_remaining = remaining_conversions.len();
     let ctx = crate::game::ExpContext::from_state(state);
     let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, (&'static str, Vec<u8>))> =
         Vec::new();
@@ -887,6 +999,31 @@ fn run_game_tick_sync(
         *last_warn = Instant::now();
         tracing::warn!(
             target: "tickprof",
+            sim_player_entities = sim_profile.player_entities,
+            sim_online_players = sim_profile.online_players,
+            sim_offline_player_entities = sim_profile.offline_player_entities,
+            sim_running_programmators = sim_profile.running_programmators,
+            sim_online_running_programmators = sim_profile.online_running_programmators,
+            sim_offline_running_programmators = sim_profile.offline_running_programmators,
+            queue_broadcasts = queue_profile.broadcasts,
+            queue_pack_resends = queue_profile.pack_resends,
+            queue_box_ops = queue_profile.box_ops,
+            queue_cell_conversions_in = queue_profile.cell_conversions_in,
+            queue_cell_conversions_remaining = queue_profile.cell_conversions_remaining,
+            queue_cell_conversions_applied = queue_profile.cell_conversions_applied,
+            queue_programmator_actions = queue_profile.programmator_actions,
+            queue_deaths = queue_profile.deaths,
+            prog_moves = programmator_action_profile.moves,
+            prog_digs = programmator_action_profile.digs,
+            prog_builds = programmator_action_profile.builds,
+            prog_geo = programmator_action_profile.geo,
+            prog_heal = programmator_action_profile.heal,
+            prog_set_auto_dig = programmator_action_profile.set_auto_dig,
+            prog_set_aggression = programmator_action_profile.set_aggression,
+            prog_set_hand_mode = programmator_action_profile.set_hand_mode,
+            prog_fill_gun = programmator_action_profile.fill_gun,
+            prog_set_status = programmator_action_profile.set_status,
+            schedule_runs = ?schedule_runs,
             "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
              schedule={dt_schedule:?} side={dt_side:?} actions={n_actions} \
              side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \

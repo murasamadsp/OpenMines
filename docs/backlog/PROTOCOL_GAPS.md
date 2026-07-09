@@ -74,7 +74,7 @@
 | `cS`, `cH` | implemented | clan partial |
 | `$$` | packet exists in client/ref, Rust live source not proven | purchase flow missing/unclear |
 | `PM` | packet exists in client/ref, Rust live source not proven | modules feature missing |
-| `@P`, `#P`, `#p`, `BH` | implemented | central risk: Unity `#P` opens editor, `#p` hydrates then hides editor, `@P 1` shows programmator object, `BH 1` enables hand-mode movement |
+| `@P`, `#P`, `#p`, `BH` | implemented | central risk: Unity `#P` opens editor and `#p` also touches `ProgrammerView.Show()`; PROG start/login must use `@P/BH` without editor packets |
 | `BC` | packet exists in client/ref, Rust live source not proven | bad-cells feature missing |
 | `BA`, `BD` | implemented | aggression/autodig status |
 | `BR` | missing | auto-respawn status missing with `TAUR` |
@@ -119,7 +119,8 @@
   - `#P` calls `GUIManager.OpenProgramm(...)` and leaves editor visible.
   - `#p` calls `GUIManager.UpdateProgramm(...)`; for real program ids it loads
     source, calls `Show()`, then hides `programmator` and sets
-    `ProgrammerView.active=false`.
+    `ProgrammerView.active=false`. Because it still calls `Show()`, server must
+    treat it as an editor packet outside explicit editor/update flows.
   - `@P "1"` sets `ProgPanel.playing=true`, `ClientController.isProgrammator=true`,
     and stops automove.
   - `BH "1"` only sets `ProgPanel.handMode=true`; movement gates check

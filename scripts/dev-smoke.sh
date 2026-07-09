@@ -450,18 +450,16 @@ try:
         raise RuntimeError(f"settings save did not update #S payload: {settings_payload!r}")
 
     write_ty("PROG", x, y, prog_payload(prog_id, "$z"))
-    prog_packets = wait_for_events(["Gu", "@T", "#p", "@P", "BH"], timeout=8)
+    prog_packets = wait_for_events(["Gu", "@T", "@P", "BH"], timeout=8)
     prog_packets.extend(drain_available())
     assert_no_event(prog_packets, "#P", "PROG start")
+    assert_no_event(prog_packets, "#p", "PROG start")
     prog_events = foreground_events(prog_packets)
-    expected_prog = ["Gu", "@T", "#p", "@P", "BH"]
-    if prog_events[:5] != expected_prog:
+    expected_prog = ["Gu", "@T", "@P", "BH"]
+    if prog_events[:4] != expected_prog:
         raise RuntimeError(f"PROG start events mismatch: {prog_events!r}")
-    prog_update = json.loads(first_payload(prog_packets, "#p").decode("utf-8"))
-    if prog_update.get("id") != prog_id or prog_update.get("source") != "$z":
-        raise RuntimeError(f"PROG start #p payload mismatch: {prog_update!r}")
     prog_foreground_packets = [p for p in prog_packets if p[1] != "PI"]
-    if prog_foreground_packets[3][2] != b"1" or prog_foreground_packets[4][2] != b"0":
+    if prog_foreground_packets[2][2] != b"1" or prog_foreground_packets[3][2] != b"0":
         raise RuntimeError("PROG start did not report @P=1 and BH=0")
 
     write_ty("pRST", x, y)
@@ -480,13 +478,10 @@ try:
     sid = expect_handshake("reconnect")
     token = hashlib.md5(f"{user_hash}{sid}".encode("utf-8")).hexdigest()
     write_u("AU", f"smokere_{user_id}_{token}")
-    reconnect_packets = wait_for_events(["cf", "Gu", "BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P", "BH", "#p"], timeout=12)
+    reconnect_packets = wait_for_events(["cf", "Gu", "BD", "GE", "@L", "BI", "sp", "@B", "P$", "LV", "IN", "@T", "#S", "mO", "mU", "#F", "@P", "BH"], timeout=12)
     reconnect_events = foreground_events(reconnect_packets)
     assert_no_event(reconnect_packets, "#P", "reconnect init")
-    reconnect_update = next(p for p in reconnect_packets if p[1] == "#p")
-    reconnect_prog = json.loads(reconnect_update[2].decode("utf-8"))
-    if int(reconnect_prog["id"]) != prog_id or reconnect_prog["title"] != "renamed" or reconnect_prog["source"] != "$z":
-        raise RuntimeError(f"selected program was not restored on reconnect: {reconnect_prog!r}")
+    assert_no_event(reconnect_packets, "#p", "reconnect init")
     if first_payload(reconnect_packets, "@P") != b"0" or first_payload(reconnect_packets, "BH") != b"0":
         raise RuntimeError(f"reconnect programmator status mismatch: {reconnect_events!r}")
 finally:
@@ -501,7 +496,7 @@ print("    gameplay: PO/Xdig/Xmov kept session responsive")
 print("    building/admin: Blds/open_buildings/bld_place/ADMN HORB wire contract")
 print("    programmator: Pope/create/open/rename/copy/delete/PROG/pRST wire contract")
 print("    settings: TAGR and settings save wire contract")
-print("    reconnect: selected program restored without #P editor open")
+print("    reconnect: selected program restored without #P/#p editor packets")
 PY
 
 echo "==> Stopping smoke server"

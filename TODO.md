@@ -18,10 +18,9 @@
   проверяет, что сессия остаётся responsive.
 - Programmator/reconnect scenario-smoke: `scripts/dev-smoke.sh` теперь проверяет
   `Pope -> createprog -> #P -> openprog -> rename -> PCOP -> PDEL -> PROG
-  -> Gu/@T/#p/@P/BH -> pRST -> Gu/@P/BH` и reconnect через сохранённый
-  `AH`/legacy token. Критично: PROG-start должен слать `#p`, но не `#P`;
-  reconnect обязан восстановить selected program через `#p` и не открыть
-  редактор через `#P`.
+  -> Gu/@T/@P/BH -> pRST -> Gu/@P/BH` и reconnect через сохранённый
+  `AH`/legacy token. Критично: PROG-start и login/reconnect running-программы
+  не должны слать ни `#P`, ни `#p`; оба пакета в Unity идут через editor path.
 - Settings/toggles scenario-smoke: `scripts/dev-smoke.sh` проверяет `TAGR -> BA`
   и `Sett -> save:%R% -> #S/GU`.
 - GUI/Wire Codex: начальный машинно-читаемый реестр добавлен в
@@ -62,9 +61,9 @@
   имеют сомнительную формулу. Нужен отдельный аудит `SkillType` -> gameplay hook
   -> exp hook -> UI/packet sync. Текущий честный статус: `docs/SKILLS_STATUS.md`.
 - Программатор GUI: регресс "после запуска остаётся/открывается редактор"
-  закрывается PROG wire-контрактом `Gu -> optional @T -> #p -> @P/BH`.
-  `#p` обязателен на запуске программы, потому что Unity только через
-  `UpdateProgramm()` сбрасывает editor-state. `#P` на запуске запрещён.
+  закрывается PROG wire-контрактом `Gu -> optional @T -> @P/BH`.
+  `#P` и `#p` на запуске запрещены: клиент вызывает `ProgrammerView.Show()` для
+  обоих пакетов.
   Остаётся общий ручной аудит программатора по
   `docs/reference/PROGRAMMATOR_GUI_PROTOCOL.md`.
 - Программатор smoke: локально подтверждён сценарий

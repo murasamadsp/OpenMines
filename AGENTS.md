@@ -507,7 +507,7 @@ GameState {
 
 **Скиллы:** ✅ портировано — дерево, формулы (Health x*3, Movement, Digging, Packing, Mine*, AntiGun, Repair), exp threshold flat 1.0, @S/@LV пакеты. ❌ нет Up GUI.
 
-**Программатор:** ⚠️ ядро работает (после фиксов 2026-06-24) — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, окно не открывается на запуске, стоп не кидает назад. Корень прежних багов был СЕРВЕРНЫЙ (`chunk_players` спавна, порядок `@P`/`#p`, `current_window`). НЕ хватает: постройка по типу (опкоды 162-165), hand mode (179/180), полная верификация If/Loop.
+**Программатор:** ⚠️ ядро работает частично — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, стоп не кидает назад. Критичный GUI-контракт: `#P` и `#p` оба идут через editor path (`ProgrammerView.Show()`), поэтому PROG start/login/reconnect running-программы должны слать только `Gu`/optional `@T`/`@P`/`BH`, без `#P/#p`. НЕ хватает: постройка по типу (опкоды 162-165), hand mode (179/180), полная верификация If/Loop.
 
 **Здания GUI:** ❌ — все здания показывают generic GUI (take money/crystals/delete). Нет: Teleport list+TP, Resp fill, Market buy/sell, Crafter recipes, Storage deposit, Up skills.
 
