@@ -63,6 +63,9 @@ jobs:
       - name: install cargo-nextest
         run: cargo install --locked cargo-nextest
 
+      - name: install CI tools
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: rustfmt
         run: cargo fmt --all -- --check
 
