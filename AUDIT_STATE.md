@@ -103,9 +103,9 @@
   подключены TCP/packet/TY metrics и `/metrics`, PO response id валидируется,
   typed `PlayerRow::as_role/as_clan_rank` используется при hydrate игрока,
   сняты исторические allow с DB API и clan GUI module. Текущий срез:
-  `rg dead_code server crates -g '!target'` -> 36 строк; оставшееся требует
-  feature wiring (BotSpot, skills hooks, programmator, provider/world/protocol),
-  а не удаления кода.
+  `rg -n '#\[allow\(dead_code\)\]|dead_code' crates/openmines-server/src crates/openmines-shared/src --glob '!target/**' | wc -l`
+  -> 21 строка; оставшееся требует feature wiring (BotSpot, skills hooks,
+  programmator, provider/world/protocol), а не удаления кода.
 - Добавлен `openmines-server --doctor`: schema/resource doctor валидирует config,
   port collision, state dir path, cells/buildings configs и геометрию мира без
   запуска TCP/admin-сервера и без создания БД/мира.

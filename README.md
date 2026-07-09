@@ -92,6 +92,7 @@ M3R_REGEN_WORLD=1 ./scripts/dev-run.sh
 docker build -t openmines-server -f ops/Dockerfile .
 docker run --rm -p 8090:8090 -p 8091:8091 \
   -e M3R_ADMIN_TOKEN=local-dev-admin \
+  -e M3R_DATA_DIR=/data \
   -v openmines_state:/data \
   openmines-server
 ```
@@ -100,8 +101,8 @@ docker run --rm -p 8090:8090 -p 8091:8091 \
 там). `M3R_ADMIN_TOKEN` обязателен: без него сервер падает fail-fast при
 старте admin web. Конфиги (`config.json`, `cells.json`, `buildings.json`)
 запекаются в образ в рабочий каталог `/app` и читаются оттуда; том `/data`
-(`M3R_DATA_DIR`) хранит только состояние — базу (`openmines.db`) и слои мира в
-`/data/data/`. Поэтому `WORKDIR` образа — `/app`, а не `/data` (иначе том
+(`M3R_DATA_DIR`) хранит только состояние — базу (`openmines.db`) и слои мира.
+Поэтому `WORKDIR` образа — `/app`, а не `/data` (иначе том
 затенил бы запечённые конфиги).
 
 ### 4. Деплой (CI/CD)

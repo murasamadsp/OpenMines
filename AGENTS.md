@@ -359,7 +359,8 @@ cargo fmt --all
     - `ui/` — внутриигровой интерфейс HORB (`auction_gui.rs`, `gui_buttons.rs`, `heal_inventory.rs`, `horb.rs`, `up_building.rs`).
 - **`tasks/`** — фоновые асинхронные задачи Bevy/Tokio:
   - `auction.rs` — фоновый планировщик аукционов и покупок.
-  - `lifecycle.rs` — фоновые циклы: world flush (60s), player save (10s), building save (45s), game tick (1s).
+  - `lifecycle.rs` — фоновые циклы: world flush, player/building save,
+    command dispatch и 10ms game tick с независимыми ECS schedules.
 - **`cli.rs`**, **`console.rs`**, **`migrations.rs`**, **`shutdown.rs`** — системные модули инициализации и завершения работы.
 
 ### GameState — центральный объект

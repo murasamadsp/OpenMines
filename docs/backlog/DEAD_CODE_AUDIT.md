@@ -22,6 +22,7 @@
 | Area | Current state | Decision |
 |---|---|---|
 | `crates/openmines-server/src/game/logic/contracts.rs` | `PlayerCommand::{Connect,Disconnect,Ty}` live; остальные variants пока не подключены | Не удалять точечно. Нужен отдельный архитектурный проход: либо закончить command-bus, либо сузить enum до реально используемого API. |
+| `crates/openmines-server/src/game/logic/contracts.rs` | `GameEvent` и `SaveCommand` пока не имеют live dispatcher/persistence worker | Не расширять искусственно. Либо довести event/save bus до runtime, либо удалить эти enums вместе с недоделанным contracts-layer решением. |
 | `crates/openmines-shared/src/db/provider.rs` | `DatabaseProvider` целиком не используется runtime-кодом | Не расширять искусственно. Либо подключать как реальный persistence port, либо удалить после архитектурного решения. |
 | `crates/openmines-server/src/game/actors/botspot.rs` | Spot entity/rendering live, programmator basket/execution не завершены | Не удалять: это незавершённая фича BotSpot programmator. Сначала закрыть `docs/backlog/BOTSPOT_PROGRAMMATOR.md`. |
 | `crates/openmines-server/src/game/actors/programmator.rs::ActionType` | Enum intentionally wider than local call sites | Не удалять variants: это wire/reference surface программатора. |
