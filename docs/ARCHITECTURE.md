@@ -5,9 +5,13 @@
 Сервер строится по модульной модели:
 
 - `openmines-protocol` — wire-контракт legacy Unity-клиента: бинарный фрейм, packet builders/decoders, HB sub-packets, golden-тесты.
-- `openmines-shared` — общие серверные библиотеки: обязательные конфиги, SQLite, мир, логирование, метрики, время.
+- `openmines-core` — лёгкие доменные value objects: player/world ids, позиции, роли, ранги и direction helpers; без tokio/sqlx/bevy.
+- `openmines-config` — обязательные fail-fast runtime-конфиги и их validation.
+- `openmines-world` — mmap-слои мира, cells, durability, journal/checkpoint и worldgen.
+- `openmines-storage` — SQLite/sqlx, row-типы и миграции.
+- `openmines-runtime` — runtime-инструменты: logging, metrics, env parsing, wall-clock helpers.
 - `openmines-server` — игровой сервер: ECS-геймплей, TCP-сессии, HTTP-админка, фоновые задачи.
-- `openmines-loadtest` — нагрузочный клиент поверх общего protocol/db API.
+- `openmines-loadtest` — нагрузочный клиент поверх общего protocol/storage API.
 - `openmines-proxy` — TCP-прокси поверх общего protocol decoder.
 
 ## Поток запуска

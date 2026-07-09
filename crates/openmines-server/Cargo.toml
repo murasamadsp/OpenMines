@@ -10,8 +10,12 @@ name = "openmines-server"
 path = "src/main.rs"
 
 [dependencies]
+openmines-config = { workspace = true }
+openmines-core = { workspace = true }
 openmines-protocol = { workspace = true }
-openmines-shared = { workspace = true }
+openmines-runtime = { workspace = true }
+openmines-storage = { workspace = true }
+openmines-world = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }

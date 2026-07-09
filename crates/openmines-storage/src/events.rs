@@ -1,4 +1,4 @@
-use crate::db::Database;
+use crate::Database;
 use anyhow::Result;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, sqlx::FromRow)]

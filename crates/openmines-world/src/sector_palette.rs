@@ -1,7 +1,7 @@
 //! Пороги глубины и наборы `types` / `crys` из `server_reference/.../Sector.cs` (`GenerateInsides`).
 //! `CellType.GRock` в enum референса битый (=112); в `cells.json` тип **122** — здесь везде **122**.
 
-use crate::world::cells::cell_type;
+use crate::cells::cell_type;
 
 /// Индекс тира по `depth` (= минимальный Y сектора), как `switch (depth)` в референсе.
 #[inline]

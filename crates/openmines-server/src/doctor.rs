@@ -77,7 +77,7 @@ pub async fn run(args: &cli::Args, cfg: &config::Config) -> Result<()> {
                 .await
                 .context("read applied SQLite migrations")?;
 
-        let migrator = sqlx::migrate!("../openmines-shared/migrations");
+        let migrator = sqlx::migrate!("../openmines-storage/migrations");
         let mut missing_migrations = Vec::new();
         for m in migrator.iter() {
             if !applied_versions.contains(&m.version) {

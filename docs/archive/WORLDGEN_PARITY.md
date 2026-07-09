@@ -41,7 +41,7 @@ C# использует три источника случайности:
 mkdir -p /tmp/genparity/src && cd /tmp/genparity
 dotnet new console
 # дословные исходники:
-cp crates/openmines-shared/src/world/anl_reference/*.cs            src/   # шум TinkerWorX (9 файлов)
+cp crates/openmines-world/anl_reference/*.cs            src/   # шум TinkerWorX (9 файлов)
 cp docs/reference/server_reference/.../Generator/SectorCell.cs src/
 cp docs/reference/server_reference/.../Generator/Sectors.cs    src/
 ```

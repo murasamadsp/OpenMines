@@ -140,7 +140,7 @@ async fn main() {
 /// Идемпотентно (`ON CONFLICT` обновляет хэш). Возвращает `(id, hash)` по индексу.
 async fn seed_players(db_path: &str, n: u32) -> Result<Vec<(i64, String)>, anyhow::Error> {
     use sqlx::Row;
-    let database = openmines_shared::db::Database::open(db_path).await?;
+    let database = openmines_storage::Database::open(db_path).await?;
     let mut out = Vec::with_capacity(n as usize);
     let mut tx = database.pool.begin().await?;
     for i in 0..n {

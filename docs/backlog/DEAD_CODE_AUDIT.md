@@ -23,10 +23,10 @@
 |---|---|---|
 | `crates/openmines-server/src/game/logic/contracts.rs` | `PlayerCommand::{Connect,Disconnect,Ty}` live; остальные variants пока не подключены | Не удалять точечно. Нужен отдельный архитектурный проход: либо закончить command-bus, либо сузить enum до реально используемого API. |
 | `crates/openmines-server/src/game/logic/contracts.rs` | `GameEvent` и `SaveCommand` пока не имеют live dispatcher/persistence worker | Не расширять искусственно. Либо довести event/save bus до runtime, либо удалить эти enums вместе с недоделанным contracts-layer решением. |
-| `crates/openmines-shared/src/db/provider.rs` | `DatabaseProvider` целиком не используется runtime-кодом | Не расширять искусственно. Либо подключать как реальный persistence port, либо удалить после архитектурного решения. |
+| `crates/openmines-storage/src/provider.rs` | `DatabaseProvider` целиком не используется runtime-кодом | Не расширять искусственно. Либо подключать как реальный persistence port, либо удалить после архитектурного решения. |
 | `crates/openmines-server/src/game/actors/botspot.rs` | Spot entity/rendering live, programmator basket/execution не завершены | Не удалять: это незавершённая фича BotSpot programmator. Сначала закрыть `docs/backlog/BOTSPOT_PROGRAMMATOR.md`. |
 | `crates/openmines-server/src/game/actors/programmator.rs::ActionType` | Enum intentionally wider than local call sites | Не удалять variants: это wire/reference surface программатора. |
-| `crates/openmines-shared/src/world/cells.rs::cell_type` | Reference constants; часть используется генератором/механиками | Не удалять константы механически. |
-| `crates/openmines-shared/src/world/anl.rs` | 1:1 port reference noise code with clippy/dead-code suppressions | Не трогать без dedicated generator parity audit. |
-| `crates/openmines-shared/src/world/sectors_gen.rs` | Generated/reference-like worldgen fields | Не трогать без dedicated generator audit. |
-| `crates/openmines-shared/src/world/sector_palette.rs::merged_palette_buf` | Alternative helper, not current reference behavior | Не подключать вслепую: может изменить generation distribution. |
+| `crates/openmines-world/src/cells.rs::cell_type` | Reference constants; часть используется генератором/механиками | Не удалять константы механически. |
+| `crates/openmines-world/src/anl.rs` | 1:1 port reference noise code with clippy/dead-code suppressions | Не трогать без dedicated generator parity audit. |
+| `crates/openmines-world/src/sectors_gen.rs` | Generated/reference-like worldgen fields | Не трогать без dedicated generator audit. |
+| `crates/openmines-world/src/sector_palette.rs::merged_palette_buf` | Alternative helper, not current reference behavior | Не подключать вслепую: может изменить generation distribution. |

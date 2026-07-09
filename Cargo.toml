@@ -1,8 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/openmines-config",
+    "crates/openmines-core",
     "crates/openmines-protocol",
-    "crates/openmines-shared",
+    "crates/openmines-runtime",
+    "crates/openmines-storage",
+    "crates/openmines-world",
     "crates/openmines-server",
     "crates/openmines-loadtest",
     "crates/openmines-proxy"
@@ -61,8 +65,12 @@ num-traits = "0.2.19"
 governor = "0.10.4"
 
 # Internal workspace dependency
+openmines-config = { path = "crates/openmines-config" }
+openmines-core = { path = "crates/openmines-core" }
 openmines-protocol = { path = "crates/openmines-protocol" }
-openmines-shared = { path = "crates/openmines-shared" }
+openmines-runtime = { path = "crates/openmines-runtime" }
+openmines-storage = { path = "crates/openmines-storage" }
+openmines-world = { path = "crates/openmines-world" }
 
 [profile.dev]
 debug = 2

@@ -691,7 +691,7 @@ mod tests {
         let chunks_h = h / CHUNK_SZ;
         let total = (w * h) as usize;
 
-        let skel = crate::world::sectors_gen::generate_skeleton(w, h, seed);
+        let skel = crate::sectors_gen::generate_skeleton(w, h, seed);
         let mut cells = vec![0u8; total];
         for x in 0..w {
             for y in 0..h {
@@ -742,8 +742,8 @@ mod tests {
     /// детерминизм даёт фикс-seed Rust + засев харнесса.)
     #[test]
     fn full_world_generation_is_byte_deterministic() {
-        use crate::world::cells::CellDefs;
-        use crate::world::{World, WorldProvider as _};
+        use crate::cells::CellDefs;
+        use crate::{World, WorldProvider as _};
 
         const CW: u32 = 3;
         const CH: u32 = 3;

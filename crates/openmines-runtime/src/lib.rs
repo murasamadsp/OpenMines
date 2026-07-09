@@ -17,10 +17,7 @@
     clippy::too_long_first_doc_paragraph
 )]
 
-pub mod config;
-pub mod db;
 pub mod env_config;
 pub mod logging;
 pub mod metrics;
 pub mod time;
-pub mod world;

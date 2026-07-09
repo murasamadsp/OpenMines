@@ -1,8 +1,8 @@
 //! Инициализация `tracing`: фильтр, формат, опциональный файл с ротацией по дням.
 
-use crate::config::{LogFileConfig, LogFormat, LoggingConfig};
 use crate::env_config;
 use anyhow::{Context, Result};
+use openmines_config::{LogFileConfig, LogFormat, LoggingConfig};
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use tracing_subscriber::fmt::time::SystemTime;

@@ -1709,6 +1709,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "openmines-config"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "openmines-core"
+version = "0.0.2"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "openmines-loadtest"
 version = "0.0.2"
 dependencies = [
@@ -1717,7 +1733,7 @@ dependencies = [
  "clap",
  "md5",
  "openmines-protocol",
- "openmines-shared",
+ "openmines-storage",
  "sqlx",
  "tokio",
 ]
@@ -1747,6 +1763,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "openmines-runtime"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "openmines-config",
+ "prometheus",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "openmines-server"
 version = "0.0.2"
 dependencies = [
@@ -1762,8 +1790,12 @@ dependencies = [
  "md5",
  "mime_guess",
  "num-traits",
+ "openmines-config",
+ "openmines-core",
  "openmines-protocol",
- "openmines-shared",
+ "openmines-runtime",
+ "openmines-storage",
+ "openmines-world",
  "parking_lot",
  "rand 0.9.4",
  "rust-embed",
@@ -1778,23 +1810,30 @@ dependencies = [
 ]
 
 [[package]]
-name = "openmines-shared"
+name = "openmines-storage"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "openmines-core",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "openmines-world"
 version = "0.0.2"
 dependencies = [
  "anyhow",
  "dotnet-rng",
  "memmap2",
  "parking_lot",
- "prometheus",
- "rand 0.9.4",
  "rayon",
  "serde",
  "serde_json",
- "sqlx",
- "tokio",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
 ]
 
 [[package]]

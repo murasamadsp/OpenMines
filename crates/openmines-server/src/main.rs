@@ -1,11 +1,11 @@
+pub use openmines_config as config;
 pub use openmines_protocol as protocol;
-pub use openmines_shared::config;
-pub use openmines_shared::db;
-pub use openmines_shared::env_config;
-pub use openmines_shared::logging;
-pub use openmines_shared::metrics;
-pub use openmines_shared::time;
-pub use openmines_shared::world;
+pub use openmines_runtime::env_config;
+pub use openmines_runtime::logging;
+pub use openmines_runtime::metrics;
+pub use openmines_runtime::time;
+pub use openmines_storage as db;
+pub use openmines_world as world;
 
 mod admin;
 mod bootstrap;

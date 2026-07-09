@@ -6,7 +6,7 @@
 //! (`fr.Get(x, y)`). 3D/4D/6D, `BasisType.White` (индекс 4 никогда не выпадает
 //! в `rand.Next(0,4)`) опущены намеренно.
 //!
-//! Источник дословно: `crates/openmines-shared/src/world/anl_reference/{Noise.cs,
+//! Источник дословно: `crates/openmines-world/anl_reference/{Noise.cs,
 //! ImplicitBasisFunction.cs, ImplicitFractal.cs, NoiseLookupTable.cs}`.
 
 #![allow(

@@ -14,7 +14,7 @@ ADMIN_PORT="${M3R_DEV_ADMIN_PORT:-8091}"
 ADMIN_TOKEN="${M3R_DEV_ADMIN_TOKEN:-local-dev-admin}"
 WORLD_CHUNKS_W="${M3R_DEV_WORLD_CHUNKS_W:-8}"
 WORLD_CHUNKS_H="${M3R_DEV_WORLD_CHUNKS_H:-8}"
-LOG_FILTER="${M3R_DEV_LOG:-openmines_server=info,openmines_shared=info,tickprof=error,scheduler=error,tokio=warn,h2=warn}"
+LOG_FILTER="${M3R_DEV_LOG:-openmines_server=info,openmines_runtime=info,openmines_world=info,openmines_storage=info,tickprof=error,scheduler=error,tokio=warn,h2=warn}"
 
 mkdir -p "$CONFIG_DIR" "$STATE_DIR"
 ln -sfn "$ROOT/configs/cells.json" "$CONFIG_DIR/cells.json"

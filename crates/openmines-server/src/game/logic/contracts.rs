@@ -4,12 +4,12 @@
 
 use bytes::Bytes;
 use openmines_protocol::Packet;
-use openmines_shared::db::buildings::BuildingRow;
-use openmines_shared::db::chats::ChatRow;
-use openmines_shared::db::clans::ClanRow;
-use openmines_shared::db::orders::OrderRow;
-use openmines_shared::db::players::PlayerRow;
-use openmines_shared::db::programs::ProgramRow;
+use openmines_storage::buildings::BuildingRow;
+use openmines_storage::chats::ChatRow;
+use openmines_storage::clans::ClanRow;
+use openmines_storage::orders::OrderRow;
+use openmines_storage::players::PlayerRow;
+use openmines_storage::programs::ProgramRow;
 
 use crate::game::actors::player::PlayerId;
 
@@ -19,7 +19,7 @@ use crate::game::actors::player::PlayerId;
 pub enum PlayerCommand {
     /// Initial connection handshake and registration.
     Connect {
-        row: Box<openmines_shared::db::players::PlayerRow>,
+        row: Box<openmines_storage::players::PlayerRow>,
         tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
         token: u64,
     },

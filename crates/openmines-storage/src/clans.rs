@@ -1,27 +1,7 @@
 use super::Database;
 use anyhow::{Result, bail};
+pub use openmines_core::ClanRank;
 use sqlx::Row;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(i32)]
-pub enum ClanRank {
-    None = 0,
-    Member = 10,
-    Officer = 50,
-    Leader = 100,
-}
-
-impl ClanRank {
-    #[must_use]
-    pub const fn from_db(v: i32) -> Self {
-        match v {
-            100 => Self::Leader,
-            50 => Self::Officer,
-            10 => Self::Member,
-            _ => Self::None,
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ClanRow {

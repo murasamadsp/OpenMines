@@ -44,15 +44,15 @@
 
 | Где | Девиация | Причина |
 |-----|----------|---------|
-| `crates/openmines-shared/src/world/generator.rs:144` | `random_sized_parts`: редро сегментов **без cap** | **[KEEP-BUG]** 1:1 C# (тоже безлимитный); на реальных секторах сходится. ⚠️ багованный seed теоретически вешает worldgen-поток |
-| `crates/openmines-shared/src/world/generator.rs` (f64) | Базис шума переведён `f32→f64` | байт-паритет с .NET `NextDouble()` |
-| `crates/openmines-shared/src/world/anl.rs:7` | Опущены мёртвые ветки `rand.Next(0,4)` | в C# недостижимы |
+| `crates/openmines-world/src/generator.rs:144` | `random_sized_parts`: редро сегментов **без cap** | **[KEEP-BUG]** 1:1 C# (тоже безлимитный); на реальных секторах сходится. ⚠️ багованный seed теоретически вешает worldgen-поток |
+| `crates/openmines-world/src/generator.rs` (f64) | Базис шума переведён `f32→f64` | байт-паритет с .NET `NextDouble()` |
+| `crates/openmines-world/src/anl.rs:7` | Опущены мёртвые ветки `rand.Next(0,4)` | в C# недостижимы |
 
 ## Модель данных
 
 | Где | Девиация | Причина |
 |-----|----------|---------|
-| `crates/openmines-shared/src/db/clans.rs:39` | `clan_id == icon`, диапазон 1..=218, иначе отказ | 1:1 C#-модель (клиент рисует иконку по id) |
+| `crates/openmines-storage/src/clans.rs:39` | `clan_id == icon`, диапазон 1..=218, иначе отказ | 1:1 C#-модель (клиент рисует иконку по id) |
 | `crates/openmines-server/src/bootstrap.rs` `regen_clear_world_state` | При `--regen` позиции игроков сбрасываются на `gameplay.spawn` | **[SAFETY]** старые `x/y` указывают внутрь нового рельефа → смерть на спавне |
 
 ---

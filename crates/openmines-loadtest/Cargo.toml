@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 openmines-protocol = { workspace = true }
-openmines-shared = { workspace = true }
+openmines-storage = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

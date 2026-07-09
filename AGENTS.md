@@ -307,21 +307,22 @@ cargo fmt --all
 
 ## Архитектура Rust-сервера
 
-Проект разделен на независимые Cargo packages: `openmines-protocol` (wire-контракт), `openmines-shared` (config/db/world), `openmines-server` (игровой сервер), `openmines-loadtest` и `openmines-proxy`. Entry point игрового сервера — `crates/openmines-server/src/main.rs`.
+Проект разделен на независимые Cargo packages: `openmines-core` (лёгкие доменные value objects), `openmines-config` (fail-fast конфиги), `openmines-protocol` (wire-контракт), `openmines-world` (mmap-мир/worldgen), `openmines-storage` (SQLite/sqlx), `openmines-runtime` (logging/metrics/env/time), `openmines-server` (игровой сервер), `openmines-loadtest` и `openmines-proxy`. Entry point игрового сервера — `crates/openmines-server/src/main.rs`.
 
 ### Структура `crates/openmines-protocol/src/` (Wire-контракт)
 
 - **`lib.rs`** — общий бинарный фрейм `[len][type][event][payload]`.
 - **`packets.rs`** — билдеры/декодеры server↔client пакетов и HB sub-packets.
 - **`chat.rs`** — wire-формат чата.
-- **`wire_tests.rs`** — golden-тесты байт-в-байт. Этот крейт не должен зависеть от `openmines-shared` или `openmines-server`.
+- **`wire_tests.rs`** — golden-тесты байт-в-байт. Этот крейт не должен зависеть от `openmines-server` или инфраструктурных крейтов (`openmines-storage`, `openmines-world`, `openmines-runtime`).
 
-### Структура `crates/openmines-shared/src/` (Общая логика)
+### Cargo packages нижних слоёв
 
-- **`config.rs`** — загрузка файлов конфигурации: `config.json`, `cells.json`, `buildings.json`.
-- **`world/`** — мир в клиентском `.map`-формате: foreground `*_v2.map`, background/road `*_road_v2.map`, durability `*_durability.map`, crash-recovery journal `*_world.journal`. Чанки 32×32. Dirty-tracking + checkpoint.
-- **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
-- **`time.rs`** — утилиты для работы со временем.
+- **`openmines-core`** — `PlayerId`, `WorldPos`, `ChunkPos`, `Role`, `ClanRank`, `dir_offset`; без тяжёлых зависимостей.
+- **`openmines-config`** — загрузка и validation `config.json`.
+- **`openmines-world`** — мир в клиентском `.map`-формате: foreground `*_v2.map`, background/road `*_road_v2.map`, durability `*_durability.map`, crash-recovery journal `*_world.journal`. Чанки 32×32. Dirty-tracking + checkpoint.
+- **`openmines-storage`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
+- **`openmines-runtime`** — logging, metrics, env parsing, утилиты времени.
 
 ### Структура `crates/openmines-server/src/` (Игровой сервер)
 

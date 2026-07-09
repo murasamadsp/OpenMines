@@ -50,14 +50,14 @@ TCP-соединение без TLS — пароль виден в дампе т
 
 ### [FIXED] IDOR: принудительное добавление в клан
 
-**Файл:** `crates/openmines-shared/src/db/clans.rs` — `accept_clan_request`
+**Файл:** `crates/openmines-storage/src/clans.rs` — `accept_clan_request`
 **Суть:** Офицер мог добавить любого игрока в клан без его согласия crafted `GUI_`-пакетом.
 UPDATE в БД выполнялся без проверки наличия заявки.
 **Фикс:** UPDATE теперь условный через `EXISTS (SELECT ... FROM clan_requests)`.
 
 ### [FIXED] IDOR: повышение ранга игрока из чужого клана
 
-**Файл:** `crates/openmines-shared/src/db/clans.rs` — `set_clan_rank`
+**Файл:** `crates/openmines-storage/src/clans.rs` — `set_clan_rank`
 **Суть:** Owner мог выдать ранг Officer любому игроку в любом другом клане.
 **Фикс:** SQL добавлен фильтр `AND clan_id = ?`.
 
@@ -83,7 +83,7 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 
 ### [FIXED] Пароли хранились в открытом виде
 
-**Файлы:** `crates/openmines-shared/src/db/players.rs`, `crates/openmines-server/src/net/session/auth/gui_flow.rs`
+**Файлы:** `crates/openmines-storage/src/players.rs`, `crates/openmines-server/src/net/session/auth/gui_flow.rs`
 **Суть:** Пароли записывались в SQLite сырым текстом, сравнивались прямым `==`.
 **Фикс:** Новые пароли: `SHA-256(user_hash + ":" + passwd)`. Старые plaintext мигрируются
 автоматически при следующем логине игрока.
