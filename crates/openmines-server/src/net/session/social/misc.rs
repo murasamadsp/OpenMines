@@ -262,26 +262,15 @@ pub async fn handle_prog_ty(
             let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
             if let Some((prog_id, source)) = decoded {
                 if prog_id <= 0 {
-                    let has_selected = state
-                        .query_player(pid, |ecs, entity| {
-                            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                                .is_some_and(|ps| ps.selected_id.is_some())
-                        })
-                        .unwrap_or(false);
-                    if has_selected {
-                        tracing::error!(player_id = %pid, program_id = prog_id, "PROG received invalid id while server has selected program");
-                        send_u_packet(
-                            tx,
-                            "OK",
-                            &ok_message("ПРОГРАММАТОР", "Некорректный идентификатор программы.").1,
-                        );
-                    } else {
-                        crate::net::session::social::buildings::handle_programmator_pope_menu(
-                            state, tx, pid,
-                        )
-                        .await;
-                    }
-                    send_u_packet(tx, "@P", &programmator_status(false).1);
+                    tracing::warn!(
+                        player_id = %pid,
+                        program_id = prog_id,
+                        "PROG received no selected client program; opening program list"
+                    );
+                    crate::net::session::social::buildings::handle_programmator_pope_menu(
+                        state, tx, pid,
+                    )
+                    .await;
                     return;
                 }
                 if let Err(e) = state.db.save_program(pid.into(), prog_id, &source).await {
@@ -888,6 +877,55 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Не удалось сохранить программу."));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prog_zero_id_opens_program_list_even_when_server_has_stale_selected_program() {
+        let test = make_test_state("prog_zero_id_opens_list").await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let prog_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "$z")
+            .await
+            .unwrap();
+        test.state
+            .db
+            .set_selected_program(test.player.id, Some(prog_id))
+            .await
+            .unwrap();
+        let pid = PlayerId(test.player.id);
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.selected_id = Some(prog_id);
+            ps.selected_data = Some("$z".to_string());
+            Some(())
+        });
+
+        let payload = prog_payload(0, 0, &[], "");
+        handle_prog_ty(&test.state, &tx, pid, "PROG", &payload).await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "GU");
+        let payload = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(payload.starts_with("horb:"));
+        assert!(payload.contains("ПРОГРАММАТОР"));
+        assert!(payload.contains("main"));
+        assert!(
+            !events
+                .iter()
+                .any(|(event, _)| event == "OK" || event == "@P"),
+            "fallback must open the picker, not report an invalid program or toggle run status"
+        );
+
+        let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
+        assert_eq!(saved.code, "$z");
 
         test.cleanup();
     }
