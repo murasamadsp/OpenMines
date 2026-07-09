@@ -6,7 +6,7 @@ use crate::world::WorldProvider;
 use bevy_ecs::prelude::Entity;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 /// Периодический flush mmap-слоёв мира.
@@ -235,15 +235,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                 "ECS Game Thread started"
             );
 
-            let mut win_start = Instant::now();
-            let mut win_ticks: u64 = 0;
-            let mut win_over: u64 = 0;
-            let mut win_max_total = std::time::Duration::ZERO;
-            let mut win_max_dispatch = std::time::Duration::ZERO;
-            let mut win_max_schedule = std::time::Duration::ZERO;
-            let mut win_max_side = std::time::Duration::ZERO;
-            let mut win_max_side_profile = SideProfile::default();
-            let mut win_max_actions: usize = 0;
+            let mut tick_window = TickWindowProfile::new(Instant::now());
             let mut last_warn = Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or_else(Instant::now);
@@ -265,16 +257,8 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                         &state_clone,
                         &mut rx,
                         &heartbeat,
-                        &mut win_ticks,
-                        &mut win_over,
-                        &mut win_max_total,
-                        &mut win_max_dispatch,
-                        &mut win_max_schedule,
-                        &mut win_max_side,
-                        &mut win_max_side_profile,
-                        &mut win_max_actions,
+                        &mut tick_window,
                         &mut last_warn,
-                        &mut win_start,
                     );
                 }));
 
@@ -494,6 +478,100 @@ impl SideProfile {
     }
 }
 
+struct TickWindowProfile {
+    start: Instant,
+    ticks: u64,
+    over_budget: u64,
+    max_total: Duration,
+    max_dispatch: Duration,
+    max_schedule: Duration,
+    max_side: Duration,
+    max_unprofiled: Duration,
+    max_side_profile: SideProfile,
+    max_actions: usize,
+    max_top_schedule: Duration,
+    max_top_schedule_name: String,
+}
+
+impl TickWindowProfile {
+    fn new(start: Instant) -> Self {
+        Self {
+            start,
+            ticks: 0,
+            over_budget: 0,
+            max_total: Duration::ZERO,
+            max_dispatch: Duration::ZERO,
+            max_schedule: Duration::ZERO,
+            max_side: Duration::ZERO,
+            max_unprofiled: Duration::ZERO,
+            max_side_profile: SideProfile::default(),
+            max_actions: 0,
+            max_top_schedule: Duration::ZERO,
+            max_top_schedule_name: "-".to_string(),
+        }
+    }
+
+    fn record(
+        &mut self,
+        durations: TickDurations,
+        side_profile: SideProfile,
+        actions: usize,
+        top_schedule: Option<(&str, Duration)>,
+        tick_budget: Duration,
+    ) {
+        self.ticks += 1;
+        if durations.total > tick_budget {
+            self.over_budget += 1;
+        }
+        self.max_total = self.max_total.max(durations.total);
+        self.max_dispatch = self.max_dispatch.max(durations.dispatch);
+        self.max_schedule = self.max_schedule.max(durations.schedule);
+        self.max_side = self.max_side.max(durations.side);
+        self.max_unprofiled = self.max_unprofiled.max(durations.unprofiled);
+        self.max_side_profile.update_max(side_profile);
+        self.max_actions = self.max_actions.max(actions);
+        if let Some((name, elapsed)) = top_schedule
+            && elapsed > self.max_top_schedule
+        {
+            self.max_top_schedule = elapsed;
+            self.max_top_schedule_name.clear();
+            self.max_top_schedule_name.push_str(name);
+        }
+    }
+
+    fn reset(&mut self, start: Instant) {
+        *self = Self::new(start);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TickDurations {
+    total: Duration,
+    dispatch: Duration,
+    schedule: Duration,
+    side: Duration,
+    unprofiled: Duration,
+}
+
+fn dominant_tick_section(durations: TickDurations) -> &'static str {
+    [
+        ("dispatch", durations.dispatch),
+        ("schedule", durations.schedule),
+        ("side", durations.side),
+        ("unprofiled", durations.unprofiled),
+    ]
+    .into_iter()
+    .max_by_key(|(_, elapsed)| *elapsed)
+    .map_or("unknown", |(name, _)| name)
+}
+
+fn top_schedule_run(schedule_runs: &[(String, Duration)]) -> Option<(&str, Duration)> {
+    schedule_runs
+        .iter()
+        .max_by_key(|(_, elapsed)| *elapsed)
+        .map(|(name, elapsed)| (name.as_str(), *elapsed))
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct SimProfile {
     player_entities: usize,
@@ -579,21 +657,13 @@ fn collect_sim_profile(ecs: &mut bevy_ecs::world::World, online_players: usize) 
     }
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn run_game_tick_sync(
     state: &Arc<GameState>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::PlayerCommand>,
     heartbeat: &TickHeartbeat,
-    win_ticks: &mut u64,
-    win_over: &mut u64,
-    win_max_total: &mut std::time::Duration,
-    win_max_dispatch: &mut std::time::Duration,
-    win_max_schedule: &mut std::time::Duration,
-    win_max_side: &mut std::time::Duration,
-    win_max_side_profile: &mut SideProfile,
-    win_max_actions: &mut usize,
+    tick_window: &mut TickWindowProfile,
     last_warn: &mut Instant,
-    win_start: &mut Instant,
 ) {
     let tick_budget =
         std::time::Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
@@ -982,16 +1052,26 @@ fn run_game_tick_sync(
     heartbeat.mark(TickStage::Summary);
     let dt_side = side_t0.elapsed();
     let dt_total = tick_t0.elapsed();
-    *win_ticks += 1;
-    if dt_total > tick_budget {
-        *win_over += 1;
-    }
-    *win_max_total = (*win_max_total).max(dt_total);
-    *win_max_dispatch = (*win_max_dispatch).max(dt_dispatch);
-    *win_max_schedule = (*win_max_schedule).max(dt_schedule);
-    *win_max_side = (*win_max_side).max(dt_side);
-    win_max_side_profile.update_max(side_profile);
-    *win_max_actions = (*win_max_actions).max(n_actions);
+    let dt_unprofiled = dt_total
+        .saturating_sub(dt_dispatch)
+        .saturating_sub(dt_schedule)
+        .saturating_sub(dt_side);
+    let durations = TickDurations {
+        total: dt_total,
+        dispatch: dt_dispatch,
+        schedule: dt_schedule,
+        side: dt_side,
+        unprofiled: dt_unprofiled,
+    };
+    let top_schedule = top_schedule_run(&schedule_runs);
+    let dominant_section = dominant_tick_section(durations);
+    tick_window.record(
+        durations,
+        side_profile,
+        n_actions,
+        top_schedule,
+        tick_budget,
+    );
 
     if dt_total > schedule_warn_threshold
         && last_warn.elapsed() >= std::time::Duration::from_millis(500)
@@ -1023,12 +1103,15 @@ fn run_game_tick_sync(
             prog_set_hand_mode = programmator_action_profile.set_hand_mode,
             prog_fill_gun = programmator_action_profile.fill_gun,
             prog_set_status = programmator_action_profile.set_status,
+            dominant_section,
+            top_schedule = top_schedule.map_or("-", |(name, _)| name),
+            top_schedule_elapsed = ?top_schedule.map_or(Duration::ZERO, |(_, elapsed)| elapsed),
             schedule_runs = ?schedule_runs,
             "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
-             schedule={dt_schedule:?} side={dt_side:?} actions={n_actions} \
-             side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
-             side_cell_conversions={:?} side_programmator_actions={:?} \
-             side_death={:?} side_bots_render={:?}",
+             schedule={dt_schedule:?} side={dt_side:?} unprofiled={dt_unprofiled:?} \
+             actions={n_actions} side_broadcasts={:?} side_pack_resends={:?} \
+             side_box_persist={:?} side_cell_conversions={:?} \
+             side_programmator_actions={:?} side_death={:?} side_bots_render={:?}",
             side_profile.broadcasts,
             side_profile.pack_resends,
             side_profile.box_persist,
@@ -1039,33 +1122,35 @@ fn run_game_tick_sync(
         );
     }
 
-    if win_start.elapsed() >= std::time::Duration::from_secs(5) {
+    if tick_window.start.elapsed() >= std::time::Duration::from_secs(5) {
         tracing::debug!(
             target: "tickprof",
-            "5s summary: ticks={win_ticks} over_budget={win_over} \
-             max_total={win_max_total:?} max_dispatch={win_max_dispatch:?} \
-             max_schedule={win_max_schedule:?} max_side={win_max_side:?} \
-             max_actions={win_max_actions} max_side_broadcasts={:?} \
+            "5s summary: ticks={} over_budget={} \
+             max_total={:?} max_dispatch={:?} \
+             max_schedule={:?} max_side={:?} \
+             max_unprofiled={:?} max_actions={} max_top_schedule={} max_top_schedule_elapsed={:?} max_side_broadcasts={:?} \
              max_side_pack_resends={:?} max_side_box_persist={:?} \
              max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
              max_side_death={:?} max_side_bots_render={:?}",
-            win_max_side_profile.broadcasts,
-            win_max_side_profile.pack_resends,
-            win_max_side_profile.box_persist,
-            win_max_side_profile.cell_conversions,
-            win_max_side_profile.programmator_actions,
-            win_max_side_profile.death,
-            win_max_side_profile.bots_render,
+            tick_window.ticks,
+            tick_window.over_budget,
+            tick_window.max_total,
+            tick_window.max_dispatch,
+            tick_window.max_schedule,
+            tick_window.max_side,
+            tick_window.max_unprofiled,
+            tick_window.max_actions,
+            tick_window.max_top_schedule_name,
+            tick_window.max_top_schedule,
+            tick_window.max_side_profile.broadcasts,
+            tick_window.max_side_profile.pack_resends,
+            tick_window.max_side_profile.box_persist,
+            tick_window.max_side_profile.cell_conversions,
+            tick_window.max_side_profile.programmator_actions,
+            tick_window.max_side_profile.death,
+            tick_window.max_side_profile.bots_render,
         );
-        *win_start = Instant::now();
-        *win_ticks = 0;
-        *win_over = 0;
-        *win_max_total = std::time::Duration::ZERO;
-        *win_max_dispatch = std::time::Duration::ZERO;
-        *win_max_schedule = std::time::Duration::ZERO;
-        *win_max_side = std::time::Duration::ZERO;
-        *win_max_side_profile = SideProfile::default();
-        *win_max_actions = 0;
+        tick_window.reset(Instant::now());
     }
     heartbeat.mark(TickStage::Idle);
 }
