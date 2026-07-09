@@ -50,7 +50,7 @@
 | `Cmen` | implemented | no C# Session case found | client-driven extension |
 | `Choo` | implemented | no C# Session case found | client-driven extension |
 | `Cpri` | implemented | no C# Session case found | client-driven extension |
-| `Miso` | minimal `MM` hide via `openmines-protocol` helper | mission packet exists | missing missions |
+| `Miso` | live minimal `MM` hide via `openmines-protocol` helper | mission packet exists | missing missions |
 | `THID` | telemetry-only no-op | tutorial packet exists | missing tutorial state |
 | `Miss` | validated no-op | no Session case | accepts only `"0"`/`"1"`; keep no-op until mission system exists |
 | `Rndm` | validated no-op | no Session case | accepts only `"hash=..."`; keep no-op unless auth/device hash needs it |
