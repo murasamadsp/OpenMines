@@ -477,7 +477,7 @@ GameState {
 | Настройки | Partial: RichList save/parser и `#S` после сохранения есть; login-init пока шлёт дефолтный `#S`, загрузка сохранённых настроек не доказана |
 | GUI-регистрация | `auth/gui_flow.rs`: `newakk` → ник → пароль, затем `AH`, `cf`, `Gu`, init |
 | Песок/Боулдеры | Падение вниз/диагональ есть; нет прохода через Gate |
-| Программатор | Ядро (ход/копка/автокопа/петли/окно/стоп) заработало после фиксов 2026-06-24. Нет: постройка по типу (опкоды 162-165 B1/B2/B3/VB), hand mode (179/180), полная проверка If/Loop |
+| Программатор | Ядро работает частично: ход/копка/автокопа/петли/окно/стоп, build-opcodes 162-165 и hand mode 179/180 подключены. Не считать готовым: нужна полная проверка If/Loop, DebugMessage/DebugPause, runtime variables и offline-state |
 | Alive-клетки | 7 типов поведения (AliveCyan flood, AliveBlack colony, …) — нет ECS-системы |
 
 ---
@@ -527,11 +527,11 @@ GameState {
 
 ### Механики из референса — статус портирования
 
-**Скиллы:** ✅ портировано — дерево, формулы (Health x*3, Movement, Digging, Packing, Mine*, AntiGun, Repair), exp threshold flat 1.0, @S/@LV пакеты. ❌ нет Up GUI.
+**Скиллы:** ⚠️ частично — дерево, формулы, @S/@LV пакеты и Up GUI есть, но не все навыки подключены к gameplay/exp hooks. Честный статус держать в `docs/SKILLS_STATUS.md`.
 
-**Программатор:** ⚠️ ядро работает частично — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, стоп не кидает назад. Критичный GUI-контракт: `@P 1` включает `ProgrammatorWindow`; `#p` должен идти последним после `@P/BH`, чтобы `UpdateProgramm()` гидратил selected program и снова скрыл окно. `#P` на PROG start/login запрещён. НЕ хватает: постройка по типу (опкоды 162-165), hand mode (179/180), полная верификация If/Loop.
+**Программатор:** ⚠️ ядро работает частично — PROG мутирует running, бот ходит/копает/автокопает, петли крутятся, стоп не кидает назад. Критичный GUI-контракт: `@P 1` включает `ProgrammatorWindow`; `#p` должен идти последним после `@P/BH`, чтобы `UpdateProgramm()` гидратил selected program и снова скрыл окно. `#P` на PROG start/login запрещён. Build-opcodes 162-165 и hand mode 179/180 подключены и покрыты тестом `unity_hand_mode_bytecodes_map_to_hand_mode_actions`. НЕ хватает: полная верификация If/Loop, DebugMessage/DebugPause, runtime variables и offline-state.
 
-**Здания GUI:** ❌ — все здания показывают generic GUI (take money/crystals/delete). Нет: Teleport list+TP, Resp fill, Market buy/sell, Crafter recipes, Storage deposit, Up skills.
+**Здания GUI:** ⚠️ частично — есть отдельные handlers для Pack/Resp/Gun/Market/Auction/Crafter/Storage/Up/Spot и базовый building/admin smoke. Не считать закрытым без сверки конкретного HORB-контракта в `docs/reference/GUI_WIRE_CODEX.md`.
 
 **Настройки:** ⚠️ — ключи определены, #S отправляется при логине. Нет полного Settings GUI (RichList с слайдерами).
 
