@@ -6,9 +6,9 @@ use bevy_ecs::prelude::*;
 use rand::Rng;
 use std::time::{Duration, Instant};
 
-const SAND_SCAN_RADIUS: i32 = 16;
-const SAND_CACHE_X_PAD: i32 = 1;
-const SAND_CACHE_Y_LOOKAHEAD: i32 = 3;
+const GRANULAR_SCAN_RADIUS: i32 = 16;
+const GRANULAR_CACHE_X_PAD: i32 = 1;
+const GRANULAR_CACHE_Y_LOOKAHEAD: i32 = 3;
 
 /// Проходима ли клетка для падающего блока. База — `is_empty` (≡ JS
 /// `!BlockStats[id].solid`): песок течёт сквозь фон/обычную дорогу(35)/ворота(30).
@@ -38,11 +38,11 @@ fn cell_is_passable(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool 
         )
 }
 
-fn cell_has_falltype(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool {
+fn cell_is_granular(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool {
     cell_defs.get_typed(cell).is_sand() || cell.is_boulder()
 }
 
-struct SandScanCache {
+struct GranularScanCache {
     min_x: i32,
     min_y: i32,
     width: usize,
@@ -50,14 +50,14 @@ struct SandScanCache {
     cells: Vec<Option<crate::world::CellType>>,
 }
 
-impl SandScanCache {
+impl GranularScanCache {
     fn new(world: &crate::world::World, player_x: i32, player_y: i32) -> Self {
-        let min_x = player_x - SAND_SCAN_RADIUS - SAND_CACHE_X_PAD;
-        let max_x = player_x + SAND_SCAN_RADIUS + SAND_CACHE_X_PAD;
-        let min_y = player_y - SAND_SCAN_RADIUS;
-        let max_y = player_y + SAND_SCAN_RADIUS + SAND_CACHE_Y_LOOKAHEAD;
-        let width = usize::try_from(max_x - min_x + 1).expect("sand cache width is positive");
-        let height = usize::try_from(max_y - min_y + 1).expect("sand cache height is positive");
+        let min_x = player_x - GRANULAR_SCAN_RADIUS - GRANULAR_CACHE_X_PAD;
+        let max_x = player_x + GRANULAR_SCAN_RADIUS + GRANULAR_CACHE_X_PAD;
+        let min_y = player_y - GRANULAR_SCAN_RADIUS;
+        let max_y = player_y + GRANULAR_SCAN_RADIUS + GRANULAR_CACHE_Y_LOOKAHEAD;
+        let width = usize::try_from(max_x - min_x + 1).expect("granular cache width is positive");
+        let height = usize::try_from(max_y - min_y + 1).expect("granular cache height is positive");
         let mut cells = Vec::with_capacity(width * height);
         for y in min_y..=max_y {
             for x in min_x..=max_x {
@@ -89,17 +89,17 @@ impl SandScanCache {
             .is_some_and(|cell| cell_is_passable(cell_defs, cell))
     }
 
-    fn has_falltype(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
+    fn is_granular(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
         self.get(x, y)
-            .is_some_and(|cell| cell_has_falltype(cell_defs, cell))
+            .is_some_and(|cell| cell_is_granular(cell_defs, cell))
     }
 }
 
 /// JS `GeoPhisics.DownFree`: 1 = падать прямо вниз, 0 = диагональный соскок,
 /// 2 = ждать/заблокировано (хода нет).
-fn down_free_cached(cache: &SandScanCache, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
+fn down_free_cached(cache: &GranularScanCache, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
     if cache.is_passable(cell_defs, x, y + 1) {
-        if cache.has_falltype(cell_defs, x, y + 2) {
+        if cache.is_granular(cell_defs, x, y + 2) {
             if !cache.is_passable(cell_defs, x, y + 3) {
                 return 1;
             }
@@ -107,14 +107,14 @@ fn down_free_cached(cache: &SandScanCache, cell_defs: &CellDefs, x: i32, y: i32)
         }
         return 1;
     }
-    if cache.has_falltype(cell_defs, x, y + 1) {
+    if cache.is_granular(cell_defs, x, y + 1) {
         return 0;
     }
     2
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn sand_physics_system(
+pub fn granular_physics_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
@@ -135,11 +135,11 @@ pub fn sand_physics_system(
     for pos in &query {
         players_scanned += 1;
         let (player_x, player_y) = (pos.x, pos.y);
-        let cache = SandScanCache::new(world, player_x, player_y);
+        let cache = GranularScanCache::new(world, player_x, player_y);
 
         // Scan 33x33 area around player
-        for dy in (-SAND_SCAN_RADIUS..=SAND_SCAN_RADIUS).rev() {
-            for dx in -SAND_SCAN_RADIUS..=SAND_SCAN_RADIUS {
+        for dy in (-GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS).rev() {
+            for dx in -GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS {
                 cells_scanned += 1;
                 let sx = player_x + dx;
                 let sy = player_y + dy;
@@ -147,6 +147,8 @@ pub fn sand_physics_system(
                 let Some(cell) = cache.get(sx, sy) else {
                     continue;
                 };
+                // Два класса сыпучки: обычная (`falltype=sand`, включая слизь)
+                // и валуны (`boulder`) с более строгой диагональю.
                 let is_s = cell_defs.get_typed(cell).is_sand();
                 let is_b = cell.is_boulder();
 
@@ -234,14 +236,14 @@ pub fn sand_physics_system(
             apply_time = ?apply_time,
             total = ?total,
             threshold = ?threshold,
-            "SLOW sand physics system"
+            "SLOW granular physics system"
         );
     }
 }
 
 #[cfg(test)]
 mod physics_repro {
-    //! Изолированный прогон cell-мутирующих систем (sand/alive) без сети:
+    //! Изолированный прогон cell-мутирующих систем (granular/alive) без сети:
     //! реальный `World`, игрок-entity, форс таймеров → проверяем (1) двигает ли
     //! физика клетки вообще, (2) не плодит ли НЕВАЛИДНЫЕ байты (порча карты).
     use crate::game::player::PlayerPosition;
@@ -289,7 +291,7 @@ mod physics_repro {
         });
 
         let mut sched = Schedule::default();
-        sched.add_systems(super::sand_physics_system);
+        sched.add_systems(super::granular_physics_system);
         sched.add_systems(alive::alive_physics_system);
 
         for _ in 0..80 {
@@ -405,7 +407,7 @@ mod physics_repro {
         w.spawn(PlayerPosition { x, y: 60, dir: 0 });
 
         let mut sched = Schedule::default();
-        sched.add_systems(super::sand_physics_system);
+        sched.add_systems(super::granular_physics_system);
         for _ in 0..40 {
             sched.run(&mut w);
         }
@@ -466,7 +468,7 @@ mod physics_repro {
         ));
         w.spawn(PlayerPosition { x, y: 56, dir: 0 });
         let mut sched = Schedule::default();
-        sched.add_systems(super::sand_physics_system);
+        sched.add_systems(super::granular_physics_system);
         for _ in 0..30 {
             sched.run(&mut w);
         }

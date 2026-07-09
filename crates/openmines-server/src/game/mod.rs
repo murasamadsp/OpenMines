@@ -14,7 +14,7 @@ pub use logic::contracts::PlayerCommand;
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
 pub use structures::buildings;
-pub use world::{direction, sand};
+pub use world::{direction, granular};
 
 use crate::config::CombatConfig;
 use crate::config::Config;
@@ -410,7 +410,7 @@ impl GameState {
         schedule_hazards.add_systems(combat::standing_cell_hazard_system);
 
         let mut schedule_physics = Schedule::default();
-        schedule_physics.add_systems(sand::sand_physics_system);
+        schedule_physics.add_systems(granular::granular_physics_system);
 
         let mut schedule_guns = Schedule::default();
         schedule_guns.add_systems(combat::gun_firing_system);
