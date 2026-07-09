@@ -154,7 +154,7 @@ pub fn spawn_building_dirty_flush_loop(
 
             let mut dirty_entities = Vec::new();
             {
-                let mut ecs = state.ecs.write();
+                let mut ecs = state.ecs_write_profiled("building_dirty_flush.scan");
                 let mut query = ecs.query::<(Entity, &crate::game::BuildingFlags)>();
                 for (entity, flags) in query.iter(&ecs) {
                     if flags.dirty {
@@ -731,7 +731,7 @@ fn run_game_tick_sync(
     ) = {
         let building_entities = state.building_entities_snapshot();
         heartbeat.mark(TickStage::EcsLockWait);
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("tick.schedule");
         let lw = sched_t0.elapsed();
         let run_t0 = Instant::now();
         let mut schedule_runs: Vec<(String, std::time::Duration)> = Vec::new();
@@ -792,23 +792,9 @@ fn run_game_tick_sync(
         (p, bc, pa, convs, pr, bp, lw, rn, schedule_runs, sim_profile)
     };
     let dt_schedule = sched_t0.elapsed();
-    if dt_schedule > schedule_warn_threshold {
-        tracing::warn!(
-            target: "tickprof",
-            sim_player_entities = sim_profile.player_entities,
-            sim_online_players = sim_profile.online_players,
-            sim_offline_player_entities = sim_profile.offline_player_entities,
-            sim_running_programmators = sim_profile.running_programmators,
-            sim_online_running_programmators = sim_profile.online_running_programmators,
-            sim_offline_running_programmators = sim_profile.offline_running_programmators,
-            schedule_runs = ?schedule_runs,
-            "SLOW schedule: total={dt_schedule:?} lock_wait={sched_lock_wait:?} \
-             run={sched_run:?} flush={:?} threshold={schedule_warn_threshold:?}",
-            dt_schedule
-                .saturating_sub(sched_lock_wait)
-                .saturating_sub(sched_run)
-        );
-    }
+    let sched_flush = dt_schedule
+        .saturating_sub(sched_lock_wait)
+        .saturating_sub(sched_run);
 
     // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
     let side_t0 = Instant::now();
@@ -924,7 +910,7 @@ fn run_game_tick_sync(
         Vec::new();
     {
         heartbeat.mark(TickStage::SideCellConversionsEcsLockWait);
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("tick.side_cell_conversions");
         heartbeat.mark(TickStage::SideCellConversions);
         ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining_conversions;
         for owner in converted_owners {
@@ -1106,6 +1092,9 @@ fn run_game_tick_sync(
             dominant_section,
             top_schedule = top_schedule.map_or("-", |(name, _)| name),
             top_schedule_elapsed = ?top_schedule.map_or(Duration::ZERO, |(_, elapsed)| elapsed),
+            sched_lock_wait = ?sched_lock_wait,
+            sched_run = ?sched_run,
+            sched_flush = ?sched_flush,
             schedule_runs = ?schedule_runs,
             "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
              schedule={dt_schedule:?} side={dt_side:?} unprofiled={dt_unprofiled:?} \

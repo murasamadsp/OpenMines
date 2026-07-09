@@ -25,7 +25,8 @@ use crate::world::{World, WorldProvider};
 use anyhow::Context as _;
 use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -66,6 +67,72 @@ pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
 
 #[derive(Resource, Default)]
 pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
+
+const ECS_LOCK_PROFILE_THRESHOLD: Duration = Duration::from_millis(25);
+
+pub struct ProfiledEcsReadGuard<'a> {
+    label: &'static str,
+    acquired_at: Instant,
+    guard: RwLockReadGuard<'a, EcsWorld>,
+}
+
+impl Deref for ProfiledEcsReadGuard<'_> {
+    type Target = EcsWorld;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl Drop for ProfiledEcsReadGuard<'_> {
+    fn drop(&mut self) {
+        let held = self.acquired_at.elapsed();
+        if held > ECS_LOCK_PROFILE_THRESHOLD {
+            tracing::warn!(
+                target: "tickprof",
+                label = self.label,
+                held = ?held,
+                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
+                "ECS read lock held over threshold"
+            );
+        }
+    }
+}
+
+pub struct ProfiledEcsWriteGuard<'a> {
+    label: &'static str,
+    acquired_at: Instant,
+    guard: RwLockWriteGuard<'a, EcsWorld>,
+}
+
+impl Deref for ProfiledEcsWriteGuard<'_> {
+    type Target = EcsWorld;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for ProfiledEcsWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for ProfiledEcsWriteGuard<'_> {
+    fn drop(&mut self) {
+        let held = self.acquired_at.elapsed();
+        if held > ECS_LOCK_PROFILE_THRESHOLD {
+            tracing::warn!(
+                target: "tickprof",
+                label = self.label,
+                held = ?held,
+                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
+                "ECS write lock held over threshold"
+            );
+        }
+    }
+}
 
 pub enum BroadcastEffect {
     CellUpdate(WorldPos),
@@ -292,6 +359,46 @@ pub struct GameState {
 
 impl GameState {
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
+
+    pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
+        let wait_started_at = Instant::now();
+        let guard = self.ecs.read();
+        let wait = wait_started_at.elapsed();
+        if wait > ECS_LOCK_PROFILE_THRESHOLD {
+            tracing::warn!(
+                target: "tickprof",
+                label,
+                wait = ?wait,
+                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
+                "ECS read lock wait over threshold"
+            );
+        }
+        ProfiledEcsReadGuard {
+            label,
+            acquired_at: Instant::now(),
+            guard,
+        }
+    }
+
+    pub fn ecs_write_profiled(&self, label: &'static str) -> ProfiledEcsWriteGuard<'_> {
+        let wait_started_at = Instant::now();
+        let guard = self.ecs.write();
+        let wait = wait_started_at.elapsed();
+        if wait > ECS_LOCK_PROFILE_THRESHOLD {
+            tracing::warn!(
+                target: "tickprof",
+                label,
+                wait = ?wait,
+                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
+                "ECS write lock wait over threshold"
+            );
+        }
+        ProfiledEcsWriteGuard {
+            label,
+            acquired_at: Instant::now(),
+            guard,
+        }
+    }
 
     #[allow(clippy::too_many_lines)]
     pub async fn new(
@@ -614,7 +721,7 @@ impl GameState {
         F: FnOnce(&EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
-        let ecs = self.ecs.read();
+        let ecs = self.ecs_read_profiled("game.query_player");
         if !ecs.entities().contains(entity) {
             tracing::warn!(player_id = %pid, ?entity, "Player entity exists in active_players but is missing from ECS world!");
             drop(ecs);
@@ -644,7 +751,7 @@ impl GameState {
             tracing::debug!(player_id = %pid, context = context, "Expected player entity not found in active_players (player offline)");
             return None;
         };
-        let ecs = self.ecs.read();
+        let ecs = self.ecs_read_profiled("game.query_player_expected");
         if !ecs.entities().contains(entity) {
             tracing::warn!(player_id = %pid, ?entity, context = context, "Player exists in active_players but entity is missing from ECS world!");
             drop(ecs);
@@ -663,7 +770,7 @@ impl GameState {
         F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
         let entity = self.get_player_entity(pid)?;
-        let mut ecs = self.ecs.write();
+        let mut ecs = self.ecs_write_profiled("game.modify_player");
         if !ecs.entities().contains(entity) {
             tracing::warn!(player_id = %pid, ?entity, "Player entity exists in active_players but is missing from ECS world during modify!");
             drop(ecs);
@@ -689,7 +796,7 @@ impl GameState {
     where
         F: FnOnce(&mut EcsWorld, Entity) -> R,
     {
-        let mut ecs = self.ecs.write();
+        let mut ecs = self.ecs_write_profiled("game.modify_building");
         f(&mut ecs, entity)
     }
 
@@ -1189,7 +1296,7 @@ impl GameState {
     /// обрабатывают ошибку БД и возврат ресурсов игроку.
     pub fn spawn_building_runtime(&self, spec: &BuildingSpawnSpec<'_>) -> Entity {
         let entity = {
-            let mut ecs = self.ecs.write();
+            let mut ecs = self.ecs_write_profiled("game.spawn_building_runtime");
             buildings::spawn_building_from_extra(&mut ecs, spec)
         };
         self.register_building_entity(spec.x, spec.y, entity);
@@ -1237,7 +1344,8 @@ impl GameState {
             self.remove_botspot_runtime(view.owner_id);
         }
         if let Some(entity) = entity {
-            self.ecs.write().despawn(entity);
+            self.ecs_write_profiled("game.remove_building_runtime")
+                .despawn(entity);
         }
         self.clear_building_footprint(view);
         entity
@@ -1257,7 +1365,8 @@ impl GameState {
         self.chunk_botspots
             .iter_mut()
             .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
-        self.ecs.write().despawn(entity);
+        self.ecs_write_profiled("game.remove_botspot_runtime")
+            .despawn(entity);
         Some(entity)
     }
 

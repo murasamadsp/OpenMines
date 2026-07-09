@@ -191,7 +191,7 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let width = state.world.cells_width();
     let height = state.world.cells_height();
 
-    let mut ecs = state.ecs.write();
+    let mut ecs = state.ecs_write_profiled("web.map");
 
     let mut players = Vec::new();
     for pid in state.active_player_ids() {
