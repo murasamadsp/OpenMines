@@ -158,6 +158,7 @@ jobs:
             STACK="${{ secrets.VPS_STACK_DIR }}"
             VOL=openmines_server_data
             BACKUP_DIR="${{ secrets.VPS_BACKUP_DIR }}"
+            ADMIN_TOKEN_FILE="$STACK/.admin_token"
 
             echo "[deploy] login ghcr"
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -179,6 +180,13 @@ jobs:
             # ротация: держим последние 10 бэкапов
             ls -1t "$BACKUP_DIR"/world-*.tgz | tail -n +11 | xargs -r rm -f
 
+            if [ ! -s "$ADMIN_TOKEN_FILE" ]; then
+              echo "[deploy] create persistent admin token file"
+              umask 077
+              openssl rand -hex 32 > "$ADMIN_TOKEN_FILE"
+            fi
+            ADMIN_TOKEN="$(cat "$ADMIN_TOKEN_FILE")"
+
             cd "$STACK"
             # Самодостаточный prod-compose (image-based — VPS не собирает Rust).
             # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды.
@@ -196,6 +204,7 @@ jobs:
                 environment:
                   - RUST_BACKTRACE=1
                   - M3R_DATA_DIR=/data
+                  - M3R_ADMIN_TOKEN=${ADMIN_TOKEN}
                   - M3R_GRANT_ADMIN=1337
                   - M3R_REGEN_WORLD=0
                   - M3R_USE_CTRL_C=false
@@ -224,7 +233,9 @@ jobs:
             echo "[deploy] health-check: port 8090"
             ok=0
             for i in $(seq 1 10); do
-              if timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8090' 2>/dev/null; then
+              CID="$(docker compose ps -q server || true)"
+              if [ -n "$CID" ] && [ "$(docker inspect -f '{{.State.Status}}/{{.State.Restarting}}' "$CID")" = "running/false" ] \
+                && timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8090' 2>/dev/null; then
                 echo "[deploy] port 8090 OPEN (attempt $i)"; ok=1; break
               fi
               echo "[deploy] health $i/10 failed, retry in 5s"; sleep 5
