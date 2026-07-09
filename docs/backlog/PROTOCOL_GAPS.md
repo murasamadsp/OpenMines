@@ -92,6 +92,30 @@
 | `mO`, `mU`, `mL`, `mN`, `mC` | implemented enough | chat UX still needs live testing |
 | `HB` tags `M`, `X`, `L`, `O`, `F`, `D`, `C`, `B`, `Z` | mostly implemented in protocol | tag `S`/`B` live usage should be audited before removing dead-code allows |
 
+## Unity Handler Effects
+
+Источник: `client/Assets/Scripts/Network/NetworkProtocol.cs`,
+`client/Assets/Scripts/Gameplay/ServerController.cs`,
+`client/Assets/Scripts/Gameplay/ServerController.Handlers.cs`,
+`client/Assets/Scripts/Network/ServerTime.cs`.
+
+| Event | Unity effect | Contract risk |
+|---|---|---|
+| `GR` | `Application.OpenURL(payload)` | visible only for URL/donation/help flows; missing sender is feature gap, not session blocker |
+| `$$` | handler is empty | packet exists but has no visible Unity effect in current client; do not prioritize until server/shop flow proves a need |
+| `PM` | JSON parse only, result unused | low visible value until module UI/state is mapped |
+| `BC` | parses `x:y:*` triples and spawns FX type `0` | gameplay feedback gap if bad-cells mechanics are implemented |
+| `BR` | toggles auto-respawn HUD indicator and text `[B] <payload>` | pair with `TAUR`; missing status makes auto-respawn invisible |
+| `SP` | updates/removes `StatePanel` lines: `name#text~...#color_code` | missing state panel blocks status/mission-like UI |
+| `SU` | toggles ban-hammer GameObject on `"1"` | moderation/admin UI gap only |
+| `@R` | currently only `stopAutoMove()` | server can omit until respawn-point visual contract is proven |
+| `GO` | parses `x:y`, calls `TutorialNavigation.SetNaviArrow` | tutorial/navigation feature gap |
+| `MM` | parses `url#imgx#imgy#progress#text`, updates mission panel | mission subsystem gap |
+| `MN` | parses `text#dx#dy#anchor#hide_reason`, shows tutorial notice | tutorial subsystem gap |
+| `MP` | parses `exp:max`, updates mission progress | mission subsystem gap |
+| `BH` | sets `ProgPanel.handMode = payload == "1"` | must stay coupled to `@P`; movement gates read `(!isProgrammator || handMode)` |
+| `HB Z` | batch shot: `[amount][color][x][y][amount*u16 bot_ids]` | docs/reference must not regress to old `[from][to][fx]` shape |
+
 ## Current Priorities
 
 1. Programmator packets: keep `Pope`/`PROG`/`pRST`/`#P`/`#p` state-machine as

@@ -47,6 +47,24 @@ cargo nextest run --workspace
 - Не feature-trim'ить зависимости вслепую: сначала измерить build time и размер,
   потом резать конкретные default features.
 
+## Target cache policy
+
+`target/` — это rebuildable cache, но не бездонная свалка. Нормальный контур:
+
+```bash
+scripts/target-cache.sh
+scripts/target-cache.sh --prune --dry-run
+scripts/target-cache.sh --prune
+```
+
+Soft budget по умолчанию: 8 GiB (`OPENMINES_TARGET_MAX_GIB=...`). `--prune`
+удаляет только мягкий мусор: incremental cache, rust-analyzer cache, test
+binaries и `.rcgu.o`. Он не удаляет `target/debug/deps/*.rlib`/`*.rmeta`, потому
+что это полезный warm cache для следующего `cargo check/run`.
+
+`--clean`/`cargo clean` — только ручной крайний случай: освобождает почти всё,
+но следующая сборка снова пойдёт с нуля.
+
 ## Dependency audit
 
 Текущий статус:

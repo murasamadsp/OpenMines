@@ -202,12 +202,9 @@ pub fn spawn_building_dirty_flush_loop(
     });
 }
 
-/// Supervisor game-tick'а: спавнит `run_game_tick` и РЕСПАВНИТ его при панике,
-/// чтобы паника в одном TY-хендлере / ECS-системе / side-effect не превращала
-/// сервер в «зомби» (accept-loop жив, игровая логика мертва навсегда). Backoff
-/// 200ms между рестартами — не спинить CPU при устойчивой панике. `EcsWorld`
-/// живёт в `GameState` (не пересоздаётся): после паники под `ecs.write()` guard
-/// снимается (`parking_lot` без poison), следующий тик берёт лок штатно.
+/// Supervisor game-tick'а. Паника внутри tick/schedule означает неизвестное
+/// состояние ECS, поэтому процесс должен падать целиком, а не продолжать игру
+/// после возможной mid-mutation.
 pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<()>) {
     let mut rx = state
         .commands_rx
@@ -217,7 +214,6 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
 
     let mut shutdown_rx = shutdown.subscribe();
     let tick_rate_ms = state.config.gameplay.schedules.game_loop_tick_rate_ms;
-    let panic_backoff_ms = state.config.gameplay.schedules.game_loop_panic_backoff_ms;
     let heartbeat = Arc::new(TickHeartbeat::new(Instant::now()));
     spawn_game_tick_watchdog(
         state.clone(),
@@ -230,11 +226,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
     std::thread::Builder::new()
         .name("openmines-game-tick".to_owned())
         .spawn(move || {
-            tracing::info!(
-                tick_rate_ms = tick_rate_ms,
-                panic_backoff_ms = panic_backoff_ms,
-                "ECS Game Thread started"
-            );
+            tracing::info!(tick_rate_ms = tick_rate_ms, "ECS Game Thread started");
 
             let mut tick_window = TickWindowProfile::new(Instant::now());
             let mut last_warn = Instant::now()
@@ -242,7 +234,6 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                 .unwrap_or_else(Instant::now);
 
             let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
-            let backoff_duration = std::time::Duration::from_millis(panic_backoff_ms);
 
             loop {
                 let start = Instant::now();
@@ -267,9 +258,9 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                     tracing::error!(
                         target: "tickprof",
                         panic = ?panic_err,
-                        "GAME TICK PANICKED — thread loop continues (ECS could be mid-mutation)"
+                        "GAME TICK PANICKED — aborting process because ECS state may be corrupt"
                     );
-                    std::thread::sleep(backoff_duration);
+                    std::process::exit(101);
                 }
 
                 let elapsed = start.elapsed();
@@ -806,9 +797,7 @@ fn run_game_tick_sync(
             if now.duration_since(*last_run) >= interval {
                 heartbeat.mark_schedule(TickStage::ScheduleRun, idx.try_into().unwrap_or(u64::MAX));
                 let schedule_t0 = Instant::now();
-                let run_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    gs.schedule.write().run(&mut ecs);
-                }));
+                gs.schedule.write().run(&mut ecs);
                 let elapsed = schedule_t0.elapsed();
                 schedule_runs.push((gs.name.clone(), elapsed));
                 if elapsed > schedule_warn_threshold {
@@ -818,14 +807,6 @@ fn run_game_tick_sync(
                         duration = ?elapsed,
                         threshold = ?schedule_warn_threshold,
                         "System schedule execution exceeded warning threshold"
-                    );
-                }
-                if let Err(panic_err) = run_res {
-                    tracing::error!(
-                        target: "scheduler",
-                        schedule = %gs.name,
-                        panic = ?panic_err,
-                        "PANIC occurred in system schedule execution"
                     );
                 }
                 *last_run = now;
