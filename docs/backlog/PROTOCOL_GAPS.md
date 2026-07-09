@@ -88,7 +88,7 @@
 | `#F`, `#S` | implemented | config/settings |
 | `MM` | live minimal hide on `Miso` + `openmines-protocol` helper | mission panel content missing |
 | `MN` | `openmines-protocol` packet helper only | tutorial/mission notice missing |
-| `MP` | `openmines-protocol` packet helper only | mission progress missing |
+| `MP` | `openmines-protocol` builder parity; no live sender found in Rust or C# reference | not an active wire gap by itself; mission subsystem still missing |
 | `mO`, `mU`, `mL`, `mN`, `mC` | implemented enough | chat UX still needs live testing |
 | `HB` tags `M`, `X`, `L`, `O`, `F`, `D`, `C`, `B`, `Z` | mostly implemented in protocol | tag `S`/`B` live usage should be audited before removing dead-code allows |
 
@@ -101,10 +101,10 @@
    fallback are covered by Rust tests in `crates/openmines-server/src/game/actors/programmator.rs`.
 2. Auto-respawn: `TAUR` + `BR` are a real missing pair, but C# `Taur` is empty.
    Implement only after gameplay contract is defined.
-3. Missions/tutorial: `Miss`/`Miso`/`THID` + `MM`/`MN`/`MP` are a whole missing
-   subsystem. Current `Miso -> MM hide` is only a safe placeholder, but `MM`
-   `MN`, and `MP` wire builders are now centralized in
-   `openmines-protocol`.
+3. Missions/tutorial: `Miss`/`Miso`/`THID` + `MM`/`MN`/`MP` are a missing
+   subsystem. Current `Miso -> MM hide` is only a safe placeholder. `MM`,
+   `MN`, and `MP` wire builders are centralized in `openmines-protocol`, so the
+   remaining gap is gameplay/state wiring, not raw packet encoding.
 4. Inventory hotkeys: `FINV` is decoded by C# packet layer but not handled by
    C# `Session`. Unity sends it from `ClientController.Update()` on numeric
    hotkeys only. Rust treats it as an explicit no-op with payload validation so
