@@ -488,6 +488,7 @@ struct TickWindowProfile {
     max_side: Duration,
     max_unprofiled: Duration,
     max_side_profile: SideProfile,
+    max_schedule_tail_profile: ScheduleTailProfile,
     max_actions: usize,
     max_top_schedule: Duration,
     max_top_schedule_name: String,
@@ -505,6 +506,7 @@ impl TickWindowProfile {
             max_side: Duration::ZERO,
             max_unprofiled: Duration::ZERO,
             max_side_profile: SideProfile::default(),
+            max_schedule_tail_profile: ScheduleTailProfile::default(),
             max_actions: 0,
             max_top_schedule: Duration::ZERO,
             max_top_schedule_name: "-".to_string(),
@@ -515,6 +517,7 @@ impl TickWindowProfile {
         &mut self,
         durations: TickDurations,
         side_profile: SideProfile,
+        schedule_tail_profile: ScheduleTailProfile,
         actions: usize,
         top_schedule: Option<(&str, Duration)>,
         tick_budget: Duration,
@@ -529,6 +532,8 @@ impl TickWindowProfile {
         self.max_side = self.max_side.max(durations.side);
         self.max_unprofiled = self.max_unprofiled.max(durations.unprofiled);
         self.max_side_profile.update_max(side_profile);
+        self.max_schedule_tail_profile
+            .update_max(schedule_tail_profile);
         self.max_actions = self.max_actions.max(actions);
         if let Some((name, elapsed)) = top_schedule
             && elapsed > self.max_top_schedule
@@ -551,6 +556,58 @@ struct TickDurations {
     schedule: Duration,
     side: Duration,
     unprofiled: Duration,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ScheduleTailProfile {
+    death_queue: Duration,
+    broadcast_queue: Duration,
+    programmator_queue: Duration,
+    box_queue: Duration,
+    cell_conversion_queue: Duration,
+    pack_resend_queue: Duration,
+    sim_profile: Duration,
+    drop_ecs_lock: Duration,
+}
+
+impl ScheduleTailProfile {
+    fn update_max(&mut self, other: Self) {
+        self.death_queue = self.death_queue.max(other.death_queue);
+        self.broadcast_queue = self.broadcast_queue.max(other.broadcast_queue);
+        self.programmator_queue = self.programmator_queue.max(other.programmator_queue);
+        self.box_queue = self.box_queue.max(other.box_queue);
+        self.cell_conversion_queue = self.cell_conversion_queue.max(other.cell_conversion_queue);
+        self.pack_resend_queue = self.pack_resend_queue.max(other.pack_resend_queue);
+        self.sim_profile = self.sim_profile.max(other.sim_profile);
+        self.drop_ecs_lock = self.drop_ecs_lock.max(other.drop_ecs_lock);
+    }
+
+    fn total(self) -> Duration {
+        self.death_queue
+            + self.broadcast_queue
+            + self.programmator_queue
+            + self.box_queue
+            + self.cell_conversion_queue
+            + self.pack_resend_queue
+            + self.sim_profile
+            + self.drop_ecs_lock
+    }
+
+    fn dominant(self) -> (&'static str, Duration) {
+        [
+            ("death_queue", self.death_queue),
+            ("broadcast_queue", self.broadcast_queue),
+            ("programmator_queue", self.programmator_queue),
+            ("box_queue", self.box_queue),
+            ("cell_conversion_queue", self.cell_conversion_queue),
+            ("pack_resend_queue", self.pack_resend_queue),
+            ("sim_profile", self.sim_profile),
+            ("drop_ecs_lock", self.drop_ecs_lock),
+        ]
+        .into_iter()
+        .max_by_key(|(_, elapsed)| *elapsed)
+        .unwrap_or(("unknown", Duration::ZERO))
+    }
 }
 
 fn dominant_tick_section(durations: TickDurations) -> &'static str {
@@ -726,6 +783,7 @@ fn run_game_tick_sync(
         box_ops,
         sched_lock_wait,
         sched_run,
+        schedule_tail_profile,
         schedule_runs,
         sim_profile,
     ) = {
@@ -775,21 +833,57 @@ fn run_game_tick_sync(
 
         let rn = run_t0.elapsed();
 
+        let mut tail_profile = ScheduleTailProfile::default();
         heartbeat.mark(TickStage::FlushQueues);
+        let tail_t0 = Instant::now();
         let p = crate::net::session::play::death::flush_player_death_queue_after_tick(
             state,
             &mut ecs,
             &building_entities,
         );
+        tail_profile.death_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
+        tail_profile.broadcast_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
+        tail_profile.programmator_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let bp = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
+        tail_profile.box_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let convs =
             std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
+        tail_profile.cell_conversion_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
+        tail_profile.pack_resend_queue = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         let sim_profile = collect_sim_profile(&mut ecs, state.online_count());
+        tail_profile.sim_profile = tail_t0.elapsed();
+
+        let tail_t0 = Instant::now();
         drop(ecs);
-        (p, bc, pa, convs, pr, bp, lw, rn, schedule_runs, sim_profile)
+        tail_profile.drop_ecs_lock = tail_t0.elapsed();
+        (
+            p,
+            bc,
+            pa,
+            convs,
+            pr,
+            bp,
+            lw,
+            rn,
+            tail_profile,
+            schedule_runs,
+            sim_profile,
+        )
     };
     let dt_schedule = sched_t0.elapsed();
     let sched_flush = dt_schedule
@@ -1054,6 +1148,7 @@ fn run_game_tick_sync(
     tick_window.record(
         durations,
         side_profile,
+        schedule_tail_profile,
         n_actions,
         top_schedule,
         tick_budget,
@@ -1063,6 +1158,8 @@ fn run_game_tick_sync(
         && last_warn.elapsed() >= std::time::Duration::from_millis(500)
     {
         *last_warn = Instant::now();
+        let (dominant_schedule_tail, dominant_schedule_tail_elapsed) =
+            schedule_tail_profile.dominant();
         tracing::warn!(
             target: "tickprof",
             sim_player_entities = sim_profile.player_entities,
@@ -1095,6 +1192,17 @@ fn run_game_tick_sync(
             sched_lock_wait = ?sched_lock_wait,
             sched_run = ?sched_run,
             sched_flush = ?sched_flush,
+            sched_tail_total = ?schedule_tail_profile.total(),
+            sched_tail_death_queue = ?schedule_tail_profile.death_queue,
+            sched_tail_broadcast_queue = ?schedule_tail_profile.broadcast_queue,
+            sched_tail_programmator_queue = ?schedule_tail_profile.programmator_queue,
+            sched_tail_box_queue = ?schedule_tail_profile.box_queue,
+            sched_tail_cell_conversion_queue = ?schedule_tail_profile.cell_conversion_queue,
+            sched_tail_pack_resend_queue = ?schedule_tail_profile.pack_resend_queue,
+            sched_tail_sim_profile = ?schedule_tail_profile.sim_profile,
+            sched_tail_drop_ecs_lock = ?schedule_tail_profile.drop_ecs_lock,
+            dominant_schedule_tail,
+            dominant_schedule_tail_elapsed = ?dominant_schedule_tail_elapsed,
             schedule_runs = ?schedule_runs,
             "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
              schedule={dt_schedule:?} side={dt_side:?} unprofiled={dt_unprofiled:?} \
@@ -1120,7 +1228,11 @@ fn run_game_tick_sync(
              max_unprofiled={:?} max_actions={} max_top_schedule={} max_top_schedule_elapsed={:?} max_side_broadcasts={:?} \
              max_side_pack_resends={:?} max_side_box_persist={:?} \
              max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
-             max_side_death={:?} max_side_bots_render={:?}",
+             max_side_death={:?} max_side_bots_render={:?} \
+             max_sched_tail_death_queue={:?} max_sched_tail_broadcast_queue={:?} \
+             max_sched_tail_programmator_queue={:?} max_sched_tail_box_queue={:?} \
+             max_sched_tail_cell_conversion_queue={:?} max_sched_tail_pack_resend_queue={:?} \
+             max_sched_tail_sim_profile={:?} max_sched_tail_drop_ecs_lock={:?}",
             tick_window.ticks,
             tick_window.over_budget,
             tick_window.max_total,
@@ -1138,6 +1250,14 @@ fn run_game_tick_sync(
             tick_window.max_side_profile.programmator_actions,
             tick_window.max_side_profile.death,
             tick_window.max_side_profile.bots_render,
+            tick_window.max_schedule_tail_profile.death_queue,
+            tick_window.max_schedule_tail_profile.broadcast_queue,
+            tick_window.max_schedule_tail_profile.programmator_queue,
+            tick_window.max_schedule_tail_profile.box_queue,
+            tick_window.max_schedule_tail_profile.cell_conversion_queue,
+            tick_window.max_schedule_tail_profile.pack_resend_queue,
+            tick_window.max_schedule_tail_profile.sim_profile,
+            tick_window.max_schedule_tail_profile.drop_ecs_lock,
         );
         tick_window.reset(Instant::now());
     }
