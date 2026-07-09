@@ -9,7 +9,7 @@
 Источники:
 
 - Unity client: `client/Assets/Scripts/Network/NetworkProtocol.cs`;
-- текущий Rust dispatcher: `server/src/net/session/dispatch/ty.rs`;
+- текущий Rust dispatcher: `crates/openmines-server/src/net/session/dispatch/ty.rs`;
 - C# reference: `references/server_reference/Server/Session.cs` и packet files;
 - протокол: `docs/PROTOCOL.md`.
 
@@ -98,7 +98,7 @@
    the highest-risk protocol area. GUI regressions here are user-visible.
    Runtime variable semantics are also protected: JS `lastVariables` order,
    two-variable commands with readonly younger values, and JS-style division
-   fallback are covered by Rust tests in `server/src/game/actors/programmator.rs`.
+   fallback are covered by Rust tests in `crates/openmines-server/src/game/actors/programmator.rs`.
 2. Auto-respawn: `TAUR` + `BR` are a real missing pair, but C# `Taur` is empty.
    Implement only after gameplay contract is defined.
 3. Missions/tutorial: `Miss`/`Miso`/`THID` + `MM`/`MN`/`MP` are a whole missing

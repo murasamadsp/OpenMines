@@ -81,9 +81,9 @@ client-only fix или product decision.
   `client/Assets/Scripts/UI/PopupManager.cs`.
 - Доказательство: серверный builder уже фиксирует старые проблемы, например
   `tabs:[{object}]` не парсится клиентом как `string[]`
-  (`server/net/session/ui/horb.rs`).
+  (`crates/openmines-server/src/net/session/ui/horb.rs`).
 - Что делать: запретить ручную сборку HORB JSON в новых/старых хендлерах. Всё
-  переводить на typed builder `server/net/session/ui/horb.rs`, добавить
+  переводить на typed builder `crates/openmines-server/src/net/session/ui/horb.rs`, добавить
   contract-тесты на чётность `buttons/tabs`, кратность `list/richList`, отсутствие
   объектных массивов.
 - Статус: builder уже покрывает `buttons`, `tabs`, `list`, `richList`, `canvas`;
@@ -95,7 +95,7 @@ client-only fix или product decision.
   typed `Horb`; market admin GUI и auction GUI переведены на typed `Horb`.
 - Static gate: `python3 tools/ui_layout_audit.py --matrix-only --horb-risk`.
   Текущий ожидаемый baseline: `manual_horb_json=1`, и это только централизованный
-  emit в `server/net/session/ui/horb.rs`. Любой рост этого счётчика означает
+  emit в `crates/openmines-server/src/net/session/ui/horb.rs`. Любой рост этого счётчика означает
   новый ручной HORB payload и требует ревью.
 
 ### UI-035. Dynamic HORB content может ломать layout даже при нормальном root window fit

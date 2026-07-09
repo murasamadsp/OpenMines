@@ -96,14 +96,14 @@ It is not equivalent to HB `F` fx=4 (`event:/world/bomb`) or HB `F` fx=3
   programmator debug/message action path.
 - `@B`: `basket(...)` is used by player init, dig pickup, boxes, GUI item flows,
   pack fill, and combat box pickup.
-- Death sound path: `server/src/net/session/play/death.rs::run_death_broadcasts`
+- Death sound path: `crates/openmines-server/src/net/session/play/death.rs::run_death_broadcasts`
   sends HB `F` fx=2.
-- Heal sound path: `server/src/net/session/ui/heal_inventory.rs::handle_heal`
+- Heal sound path: `crates/openmines-server/src/net/session/ui/heal_inventory.rs::handle_heal`
   sends HB `D` fx=5.
-- Hurt sound path: `server/src/net/session/play/death.rs::hurt_player_pure`,
-  `server/src/net/session/ui/heal_inventory.rs`, and
-  `server/src/game/mechanics/combat.rs` send HB `D` fx=6 for surviving hurt.
-- Dig/mining sound path: `server/src/net/session/play/dig_build.rs` sends HB `D`
+- Hurt sound path: `crates/openmines-server/src/net/session/play/death.rs::hurt_player_pure`,
+  `crates/openmines-server/src/net/session/ui/heal_inventory.rs`, and
+  `crates/openmines-server/src/game/mechanics/combat.rs` send HB `D` fx=6 for surviving hurt.
+- Dig/mining sound path: `crates/openmines-server/src/net/session/play/dig_build.rs` sends HB `D`
   fx=0 for dig and HB `D` fx=2 for crystal amount visual. Only HB `D` fx=0 maps
   to sound id 10 in the client.
 - Gun/C190 beam path: Rust uses HB `D` fx=7 like C#; this is visual-only in the

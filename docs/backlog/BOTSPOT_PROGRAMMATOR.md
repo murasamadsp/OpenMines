@@ -6,11 +6,11 @@
 
 ## Что уже есть (Rust)
 
-- `server/game/botspot.rs`: `BotSpotMarker`, `BotSpotData` (id=-owner_id,
+- `crates/openmines-server/src/game/actors/botspot.rs`: `BotSpotMarker`, `BotSpotData` (id=-owner_id,
   skin=3, tail=1, dir, spot_entity), `BotSpotBasket` (своя корзина + `cb`).
 - Spot building (`PackType::Spot`): placement/removal, HB-рендер бота
   (skin=3, tail=1, id=-owner_id), owner GUI, lifecycle spawn/despawn — есть.
-- Игроковый `programmator_system` (`server/game/programmator.rs:546`):
+- Игроковый `programmator_system` (`crates/openmines-server/src/game/actors/programmator.rs:546`):
   парсер (LZMA+base64, ~90 ActionType, If/Loop/GoTo/RunSub/Macros) и
   пошаговое исполнение — РАБОТАЕТ для игроков.
 

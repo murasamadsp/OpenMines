@@ -323,7 +323,7 @@ cargo fmt --all
 - **`db/`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
 - **`time.rs`** — утилиты для работы со временем.
 
-### Структура `server/src/` (Игровой сервер)
+### Структура `crates/openmines-server/src/` (Игровой сервер)
 
 - **`game/`** — игровая логика на Bevy ECS:
   - `mod.rs` — `GameState` (центральный Arc-объект), Bevy ECS-системы, очереди broadcast/programmator.
@@ -338,9 +338,14 @@ cargo fmt --all
     - `building_damage.rs` — система повреждения зданий IDamagable: hourly tick, Brokentimer, FX эффекты.
     - `combat.rs` — система боя, урона ганов, standing_cell_hazard_system.
     - `events.rs` — ExpContext (инкапсулирует ивентные множители опыта и дропа, единственный источник их применения).
-    - `skills.rs` — 58 типов навыков, их описание и уровни.
+  - `logic/` — чистая игровая логика без сетевого слоя:
+    - `skills.rs` — типы навыков, их описание и уровни.
+    - `crafting.rs` — рецепты крафта.
+    - `random.rs` — дробная часть как вероятность.
   - `structures/` — строения мира:
     - `buildings.rs` — ECS-компоненты зданий, `PackType` (15 типов строений) и `PackResendQueue`.
+  - `world/` — серверные игровые world-системы:
+    - `granular.rs` — физика сыпучки: `falltype=sand` (песок/слизь/магма) и валуны.
 - **`net/`** — TCP-сервер + HTTP-веб API:
   - `web.rs` — Axum HTTP-сервер для админ-панели (SPA на HTML/JS), статистика, API карты, управление активными событиями и рынком.
   - `session/` — жизненный цикл сетевых подключений:
@@ -361,12 +366,13 @@ cargo fmt --all
 
 ```rust
 GameState {
-    world: Arc<World>                         // mmap-слои мира
+    world: Arc<World>                         // .map-слои мира + journal/checkpoint
     db: Arc<Database>                         // SQLite
     config: Config
     active_players: DashMap<PlayerId, ActivePlayer>    // онлайн игроки
+    player_entities: DashMap<PlayerId, Entity>          // игроки в ECS
     chunk_players: DashMap<ChunkPos, Vec<PlayerId>>    // пространственный индекс
-    building_index: DashMap<(i32,i32), Entity>         // здания по координатам
+    building_index: DashMap<WorldPos, Entity>          // здания по координатам
     botspot_index: DashMap<PlayerId, Entity>           // боты по ID
     chunk_botspots: DashMap<ChunkPos, Vec<Entity>>     // боты по чанкам
     chunk_buildings: DashMap<ChunkPos, Vec<Entity>>    // здания по чанкам
@@ -375,12 +381,15 @@ GameState {
     ecs: RwLock<EcsWorld>                              // Bevy ECS
     schedules: Vec<GameSchedule>                       // ECS-системы
     auth_failures: DashMap<IpAddr, (u32, Instant)>     // rate limiting
-    incoming_actions: IncomingActionsQueue             // входящие действия игроков
-    life_queue: Mutex<Vec<LifeCmd>>                    // очередь подключения/отключения
+    commands_tx / commands_rx                          // command bus в game-thread
+    tokio_handle: tokio::runtime::Handle               // async-мост для DB задач
     player_tx: DashMap<PlayerId, UnboundedSender>      // каналы отправки клиентам
     box_index: Arc<DashMap<WorldPos, [i64; 6]>>        // боксы (клетка 90) в памяти
     box_persist_q: Arc<Mutex<Vec<BoxPersist>>>         // очередь сохранения боксов
     crystal_economy: Mutex<CrystalEconomy>             // динамическое ценообразование кристаллов
+    consumable_packs: DashMap<WorldPos, (u8, u8)>      // transient HB O overlays
+    db_pending_tasks: AtomicUsize                      // shutdown ждёт фоновые DB writes
+    rate_limiters: DashMap<PlayerId, PlayerLimiters>   // per-player GCRA
 }
 ```
 
@@ -390,7 +399,8 @@ GameState {
 - **ECS-системы не модифицируют мир напрямую** — используют `BroadcastQueue` и `ProgrammatorQueue` чтобы избежать deadlock.
 - **Все здания загружаются в ECS при старте** из SQLite.
 - **Dirty flag tracking** — периодические flush-циклы сохраняют помеченных игроков/здания в БД.
-- **mmap мир** — zero-copy доступ, изменения через dirty chunk marking.
+- **`.map` мир** — foreground/background/durability слои + journal/checkpoint;
+  изменения должны помечать dirty chunks.
 - **Целое состояние не хранить во float.** Заряд, кристаллы, деньги, уровни, счётчики,
   HP/ресурсы и аналогичные игровые величины хранятся целыми типами. Если формула
   даёт дробный результат, целая часть применяется напрямую, дробная часть — это

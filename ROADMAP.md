@@ -4,7 +4,7 @@
 > This roadmap is stale and tends to overstate implementation progress.
 > Refer to the "Implementation Status" ("Статус реализации") section in [AGENTS.md](file:///Users/murasama/Projects/games/OpenMines/AGENTS.md) as the single honest source of truth.
 
-Восстановление Mines 3. Клиент: Unity 2019.4.10f1. Сервер: Rust + SQLite + mmap, TCP-binary.
+Восстановление Mines 3. Клиент: Unity 2019.4.10f1. Сервер: Rust + SQLite + `.map` world files, TCP-binary.
 Все пункты верифицируются по C# референсу (`server_reference/`).
 
 ---
@@ -237,7 +237,7 @@ lock-freeze, юзер играет соло; отдельная заметка.
   - [x] `PI` шлётся при подключении и в ответ на `PO` (таймерного `PI` нет)
   - [x] Клиент шлёт `PO` `"response:current_time"`, сервер отвечает `PI` немедленно (референс делает 200ms delay, убран — пинг 50ms вместо 250ms)
   - [x] Клиентский таймаут: ~40.5s без `PI` ⇒ разрыв (сервер должен выдерживать этот контракт)
-- [x] World state 1:1: mmap слои `cells/road/durability`, чанки **32x32**, чтение чанка отдаёт 32*32 байт (как в HB `M`)
+- [x] World state 1:1: `.map` слои `cells/road/durability`, чанки **32x32**, чтение чанка отдаёт 32*32 байт (как в HB `M`)
 - [x] TY wrapper 1:1 (client→server): `[4B event][u32 time LE][u32 x LE][u32 y LE][sub_payload...]`
   - [x] `Xmov`: координаты берутся из wrapper `x/y`, `sub_payload` содержит `direction` (текстовое int)
   - [x] Серверная валидация движения: дистанция 1.2, coord validity, cell emptiness, gate blocking, prog guard, direction compute, pack auto-open — 1:1. Отклонение: server-side cooldown убран намеренно (клиент пейсит через SpeedPacket). `dir==-1` ветка в Move() — мёртвый код в C# DigHandler (передаёт свою позицию + реальный dir, не -1)
@@ -322,9 +322,9 @@ lock-freeze, юзер играет соло; отдельная заметка.
 
 ## 8. Физика мира
 
-- [x] Песок: падение вниз + diagonal slide + boulder fall system
+- [x] Сыпучка: падение вниз + diagonal slide + boulder fall system
 - [x] Бокс (90): SQLite upsert/get/delete + подбор при стоянии (combat.rs)
-- [x] Кислота: LivingActiveAcid + CorrosiveActiveAcid, 3s tick, стохастическая коррозия, AcidRock immunity — 1:1 с C#
+- [ ] Активная кислота: отдельной live-физики сейчас нет; кислота существует как тип клетки и проверка программатора. Если нужна активная коррозия, проектировать через общий world-physics/frontier, не через старый удалённый acid system.
 - [x] Alive-клетки: 7 типов (AliveCyan/Red/Viol/Black/White/Blue/Rainbow), 5s tick, HypnoRock modifier — 1:1 с C# `Physics.cs`
 - [x] Лава: fall_damage based — нет специальной физики нужно, 1:1
 - [x] Генератор мира: noise skeleton + BFS sectors + palettes 1:1. Не реализовано: spawn area buildings (Market/Resp/Up)

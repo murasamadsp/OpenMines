@@ -2,7 +2,7 @@
 
 Источник истины: **клиент** (`client/`) рисует все типы; **C# референс**
 (`server_reference/Inventory.cs`, `Buildings/`) — неполный (не оригинал);
-**Rust сервер** (`server/`) — что реально реализовано.
+**Rust сервер** (`crates/openmines-server/`) — что реально реализовано.
 
 Дата сверки: 2026-06-23.
 
@@ -10,7 +10,7 @@
 
 ## 1. ПРЕДМЕТЫ (инвентарь, Use → INUS)
 
-Диспетчер: `server/net/session/ui/heal_inventory.rs:163-180`.
+Диспетчер: `crates/openmines-server/src/net/session/ui/heal_inventory.rs:163-180`.
 Сверено с C# `Inventory.cs:20-175` — **индексы 1:1 совпадают**.
 
 ### ✅ Работает (1:1 C#)
