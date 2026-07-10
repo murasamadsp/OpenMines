@@ -4,8 +4,7 @@ use crate::game::buildings::{
     BuildingFlags, BuildingStorage, PackType, PackView, get_building_config,
 };
 use crate::game::player::{
-    PlayerConnection, PlayerFlags, PlayerInventory, PlayerMetadata, PlayerPosition, PlayerStats,
-    PlayerUI,
+    PlayerFlags, PlayerInventory, PlayerMetadata, PlayerPosition, PlayerStats, PlayerUI,
 };
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
@@ -14,7 +13,7 @@ use std::collections::HashMap;
 /// Шанс дропа предмета-размещения при сносе здания (C# `Building.Destroy`: 40%).
 const SHPAAK_DROP_PCT: u32 = 40;
 
-fn send_building_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_building_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -26,11 +25,7 @@ fn send_building_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
 
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
 /// Показывает список программ игрока из БД (кликабельный) или кнопку создания.
-pub async fn handle_programmator_pope_menu(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
     let programs = match state.db.list_programs(pid.into()).await {
         Ok(programs) => programs,
@@ -60,11 +55,7 @@ pub async fn handle_programmator_pope_menu(
 }
 
 /// TY `Blds` → `Player.OpenMyBuildings()` (список построек владельца).
-pub async fn handle_my_buildings_list(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_my_buildings_list(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let mine: Vec<crate::db::buildings::BuildingRow> = match state
         .db
         .load_buildings_by_owner(pid.into())
@@ -97,11 +88,7 @@ pub async fn handle_my_buildings_list(
 }
 
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
-pub fn handle_dpbx_crystal_box(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
 
     let Some(cry) =
@@ -121,11 +108,7 @@ pub fn handle_dpbx_crystal_box(
         .send(state, tx, pid, "open_box");
 }
 
-pub fn handle_buildings_menu(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use crate::net::session::ui::horb::{Button, Horb};
 
     Horb::new("ПОСТРОЙКИ")
@@ -145,7 +128,7 @@ pub fn handle_buildings_menu(
 
 pub async fn handle_place_building(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     type_code: &str,
 ) {
@@ -288,9 +271,179 @@ pub async fn handle_place_building(
     broadcast_building_placed(state, tx, pid, &view, true);
 }
 
+pub fn prepare_paid_building_placement(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    type_code: &str,
+) -> Option<crate::game::logic::contracts::PaidBuildingPlacement> {
+    let Some(pack_type) = PackType::from_str(type_code) else {
+        send_building_error(tx, "Некорректное здание");
+        return None;
+    };
+    let Some(cfg) = get_building_config(pack_type) else {
+        send_building_error(tx, "Конфиг здания не найден");
+        return None;
+    };
+    let cost = cfg.cost;
+
+    let p_data = state.query_player(pid, |ecs, entity| {
+        let pstats = ecs.get::<PlayerStats>(entity);
+        let pos = ecs.get::<PlayerPosition>(entity);
+        let flags = ecs.get::<PlayerFlags>(entity);
+        match (pstats, pos, flags) {
+            (Some(pstats), Some(pos), Some(_)) => {
+                Ok((pstats.clan_id.unwrap_or(0), pos.x, pos.y, pos.dir))
+            }
+            _ => Err(()),
+        }
+    });
+
+    let Some(Ok((player_clan, px, py, pdir))) = p_data else {
+        send_building_state_error(tx);
+        return None;
+    };
+
+    if pack_type == PackType::Gate && player_clan == 0 {
+        send_u_packet(tx, "OK", &ok_message("Ошибка", "Для ворот нужен клан").1);
+        return None;
+    }
+
+    let (dx, dy) = dir_offset(pdir);
+    let (bx, by) = (px + dx * 3, py + dy * 3);
+
+    if let Err(msg) = validate_building_area(state, bx, by, pack_type) {
+        send_building_error(tx, msg);
+        return None;
+    }
+
+    let extra = match building_extra_for_pack_type(pack_type) {
+        Ok(extra) => extra,
+        Err(e) => {
+            tracing::error!(?pack_type, error = ?e, "Missing building config for placement");
+            send_u_packet(tx, "OK", &ok_message("Ошибка", "Конфиг здания не найден").1);
+            return None;
+        }
+    };
+    let result = state.modify_player(pid, |ecs, entity| {
+        if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
+            send_building_state_error(tx);
+            return None;
+        }
+        let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+        if s.money < cost {
+            return None;
+        }
+        s.money -= cost;
+        let m = s.money;
+        let c = s.creds;
+        let owner_clan = s.clan_id.unwrap_or(0);
+        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+        flags.dirty = true;
+        send_u_packet(tx, "P$", &money(m, c).1);
+        Some(owner_clan)
+    });
+
+    let Some(result) = result else {
+        send_building_state_error(tx);
+        return None;
+    };
+
+    let Some(owner_clan) = result else {
+        send_u_packet(tx, "OK", &ok_message("Ошибка", "Недостаточно денег").1);
+        return None;
+    };
+
+    let initial_clan = if pack_type == PackType::Gate {
+        owner_clan
+    } else {
+        0
+    };
+    Some(crate::game::logic::contracts::PaidBuildingPlacement {
+        type_code: type_code.to_owned(),
+        pack_type,
+        x: bx,
+        y: by,
+        owner_id: pid,
+        owner_clan_id: owner_clan,
+        building_clan_id: initial_clan,
+        cost,
+        extra,
+    })
+}
+
+pub fn apply_paid_building_placed(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    placement: &crate::game::logic::contracts::PaidBuildingPlacement,
+    db_id: i32,
+) {
+    let spawn_spec = crate::game::BuildingSpawnSpec {
+        id: db_id,
+        pack_type: placement.pack_type,
+        x: placement.x,
+        y: placement.y,
+        owner_id: placement.owner_id,
+        clan_id: placement.building_clan_id,
+        extra: &placement.extra,
+    };
+    let entity = state.spawn_building_runtime(&spawn_spec);
+    if placement.pack_type == PackType::Spot {
+        state.spawn_botspot_runtime(
+            placement.owner_id,
+            placement.x,
+            placement.y,
+            placement.owner_clan_id,
+            entity,
+        );
+    }
+
+    let view = PackView {
+        id: db_id,
+        pack_type: placement.pack_type,
+        x: placement.x,
+        y: placement.y,
+        owner_id: placement.owner_id,
+        clan_id: placement.building_clan_id,
+        charge: placement.extra.charge,
+        max_charge: placement.extra.max_charge,
+        hp: placement.extra.hp,
+        max_hp: placement.extra.max_hp,
+    };
+    broadcast_building_placed(state, tx, placement.owner_id, &view, true);
+}
+
+pub fn refund_paid_building_placement(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    cost: i64,
+) {
+    let refunded = state
+        .modify_player(pid, |ecs, entity| {
+            if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                send_building_state_error(tx);
+                return None;
+            }
+            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+            s.money += cost;
+            let m = s.money;
+            let c = s.creds;
+            let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+            flags.dirty = true;
+            Some((m, c))
+        })
+        .flatten();
+    if let Some((m, c)) = refunded {
+        send_u_packet(tx, "P$", &money(m, c).1);
+    }
+    send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+}
+
 pub fn broadcast_building_placed(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     view: &PackView,
     close_gui: bool,
@@ -316,27 +469,43 @@ pub fn broadcast_building_placed(
 
 pub async fn handle_remove_building(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     bx: i32,
     by: i32,
 ) {
+    let Some(removal) = prepare_building_removal(state, tx, pid, bx, by) else {
+        return;
+    };
+
+    if !delete_destroyed_building_db(state, &removal.view).await {
+        send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+        return;
+    }
+    apply_removed_building(state, &removal);
+}
+
+pub fn prepare_building_removal(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) -> Option<crate::game::logic::contracts::BuildingRemoval> {
     let actor_pos = state.query_player_opt(pid, |ecs, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y))
     });
 
-    let Some(actor_pos) = actor_pos else {
-        return;
-    };
+    let actor_pos = actor_pos?;
     let Some(view) = state.get_pack_at(bx, by) else {
         send_building_error(tx, "Объект не найден");
-        return;
+        return None;
     };
 
     if !is_pack_owner_or_clan_member(state, pid, &view) {
         send_building_error(tx, "Нет прав");
-        return;
+        return None;
     }
 
     let cells = match view.pack_type.building_cells() {
@@ -344,7 +513,7 @@ pub async fn handle_remove_building(
         Err(e) => {
             tracing::error!(pack_type = ?view.pack_type, error = ?e, "Missing building config for remove");
             send_building_error(tx, "Конфиг здания не найден");
-            return;
+            return None;
         }
     };
     if !cells
@@ -352,18 +521,10 @@ pub async fn handle_remove_building(
         .any(|(dx, dy, _)| view.x + dx == actor_pos.0 && view.y + dy == actor_pos.1)
     {
         send_building_error(tx, "Вы не у объекта");
-        return;
+        return None;
     }
 
-    // Снос через C# `Destroy(p)`-семантику: `destroy_damagable_building` делает
-    // DB-delete, despawn (+ `BotSpot` для Spot), очистку клеток, broadcast и
-    // `close_pack_windows` (закрывает GUI у всех зрителей, включая сносящего),
-    // плюс 40%-дроп предмета-размещения в инвентарь сносящего и Box-дроп
-    // кристаллов (Storage) / charge (Teleport). Без C#-эталона для GUI-сноса —
-    // унифицировано с боевым разрушением по решению (иначе терялись кристаллы).
-    if !destroy_damagable_building(state, Some(pid), view.x, view.y).await {
-        send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-    }
+    Some(snapshot_building_removal(state, Some(pid), view))
 }
 
 pub fn building_extra_for_pack_type(pack_type: PackType) -> anyhow::Result<BuildingExtra> {
@@ -470,7 +631,7 @@ where
     let entity = state
         .building_entity_at(pack_x, pack_y)
         .ok_or_else(|| "Объект не найден".to_string())?;
-    let mut ecs = state.ecs.write();
+    let mut ecs = state.ecs_write_profiled("buildings.modify_pack_with_db");
     if ecs.get::<BuildingFlags>(entity).is_none() {
         return Err("Состояние здания недоступно".to_string());
     }
@@ -533,7 +694,7 @@ pub fn validate_pack_footprint(
     Ok(())
 }
 
-fn send_building_error(tx: &mpsc::UnboundedSender<Vec<u8>>, text: &str) {
+fn send_building_error(tx: &Outbox, text: &str) {
     send_u_packet(tx, "OK", &ok_message("Ошибка", text).1);
 }
 
@@ -546,10 +707,8 @@ fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
                 if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
                     if ui.current_window.as_deref() == Some(window_key.as_str()) {
                         ui.current_window = None;
-                        if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
-                            let g = gu_close();
-                            let _ = conn.tx.send(make_u_packet_bytes(g.0, &g.1));
-                        }
+                        let g = gu_close();
+                        state.send_to_player(pid, make_u_packet_bytes(g.0, &g.1));
                     }
                 }
                 Some(())
@@ -599,32 +758,63 @@ pub async fn destroy_damagable_building(
     let Some(view) = state.get_pack_at(bx, by) else {
         return false;
     };
+    let removal = snapshot_building_removal(state, trigger_pid, view);
+    if !delete_destroyed_building_db(state, &removal.view).await {
+        return false;
+    }
+    apply_removed_building(state, &removal);
+    true
+}
+
+fn snapshot_building_removal(
+    state: &Arc<GameState>,
+    trigger_pid: Option<PlayerId>,
+    view: PackView,
+) -> crate::game::logic::contracts::BuildingRemoval {
     // Захват crysinside до despawn (для Box-дропа Storage, C# `Storage.Destroy`).
-    let crysinside: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
+    let storage_crystals: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
         let ecs = state.ecs.read();
         state
-            .building_entity_at(bx, by)
+            .building_entity_at(view.x, view.y)
             .and_then(|entity| ecs.get::<BuildingStorage>(entity).map(|s| s.crystals))
     } else {
         None
     };
 
-    if !delete_destroyed_building(state, &view).await {
-        return false;
+    crate::game::logic::contracts::BuildingRemoval {
+        view,
+        trigger_pid,
+        storage_crystals,
     }
-    broadcast_pack_clear(state, &view);
-    close_pack_windows(state, &view);
+}
+
+pub fn apply_removed_building(
+    state: &Arc<GameState>,
+    removal: &crate::game::logic::contracts::BuildingRemoval,
+) {
+    let view = &removal.view;
+    state.remove_building_runtime(view);
+    if view.pack_type == PackType::Resp {
+        clear_online_resp_bindings(state, view.x, view.y);
+    }
+    broadcast_pack_clear(state, view);
+    close_pack_windows(state, view);
 
     // C# `<Building>.Destroy()`: дроп кристаллов в Box.
     // Teleport — White по charge (`[0,0,0,0,charge,0]`); Storage — crysinside.
     match view.pack_type {
         PackType::Teleport if view.charge > 0 => {
-            drop_destroy_box(state, bx, by, [0, 0, 0, 0, charge_to_crys(view.charge), 0]);
+            drop_destroy_box(
+                state,
+                view.x,
+                view.y,
+                [0, 0, 0, 0, charge_to_crys(view.charge), 0],
+            );
         }
         PackType::Storage => {
-            if let Some(crys) = crysinside {
+            if let Some(crys) = removal.storage_crystals {
                 if crys.iter().sum::<i64>() > 0 {
-                    drop_destroy_box(state, bx, by, crys);
+                    drop_destroy_box(state, view.x, view.y, crys);
                 }
             }
         }
@@ -633,17 +823,15 @@ pub async fn destroy_damagable_building(
 
     // C# `<Building>.Destroy()`: 40% шанс вернуть предмет-размещения в инвентарь сносящего
     // + HB bubble "ШПАААК ВЫПАЛ". Индекс = item-код здания (см. `shpaak_item_index`).
-    if let (Some(pid), Some(item_idx)) = (trigger_pid, shpaak_item_index(view.pack_type)) {
+    if let (Some(pid), Some(item_idx)) = (removal.trigger_pid, shpaak_item_index(view.pack_type)) {
         use rand::Rng as _;
         if rand::rng().random_range(1u32..=100) < SHPAAK_DROP_PCT {
-            let tx = state.query_player_opt(pid, |ecs, entity| {
-                ecs.get::<PlayerConnection>(entity).map(|c| c.tx.clone())
-            });
+            let tx = state.player_sender(pid);
             if let Some(tx) = tx {
                 let chat_sub = hb_chat(
                     0,
-                    u16::try_from(bx.rem_euclid(65536)).unwrap_or(0),
-                    u16::try_from(by.rem_euclid(65536)).unwrap_or(0),
+                    u16::try_from(view.x.rem_euclid(65536)).unwrap_or(0),
+                    u16::try_from(view.y.rem_euclid(65536)).unwrap_or(0),
                     "ШПАААК ВЫПАЛ",
                 );
                 let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
@@ -663,21 +851,16 @@ pub async fn destroy_damagable_building(
             }
         }
     }
-    true
 }
 
-async fn delete_destroyed_building(state: &Arc<GameState>, view: &PackView) -> bool {
+pub async fn delete_destroyed_building_db(state: &Arc<GameState>, view: &PackView) -> bool {
     if view.pack_type == PackType::Resp {
         match state
             .db
             .delete_resp_building_and_clear_bindings(view.id, view.x, view.y)
             .await
         {
-            Ok(_) => {
-                state.remove_building_runtime(view);
-                clear_online_resp_bindings(state, view.x, view.y);
-                true
-            }
+            Ok(_) => true,
             Err(e) => {
                 tracing::error!(
                     building_id = view.id,
@@ -689,7 +872,7 @@ async fn delete_destroyed_building(state: &Arc<GameState>, view: &PackView) -> b
                 false
             }
         }
-    } else if let Err(e) = state.delete_building_runtime(view).await {
+    } else if let Err(e) = state.db.delete_building(view.id).await {
         tracing::error!(
             building_id = view.id,
             x = view.x,
@@ -771,7 +954,7 @@ mod tests {
     use crate::game::buildings::{BuildingMetadata, BuildingOwnership, GridPosition};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct BuildingTestState {
         state: Arc<GameState>,
@@ -840,7 +1023,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = bytes::BytesMut::from(&frame[..]);
@@ -877,7 +1060,7 @@ mod tests {
     #[tokio::test]
     async fn place_building_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_building_test_state("place_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -943,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn destroying_resp_clears_matching_online_and_offline_resp_bindings() {
         let test = make_building_test_state("resp_destroy_clears_bindings").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

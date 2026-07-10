@@ -4,245 +4,423 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenMines Admin Panel</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap"
-        rel="stylesheet">
+    <title>OpenMines Admin</title>
     <style>
         :root {
-            --bg-base: #0a0c10;
-            --bg-surface: #121620;
-            --bg-element: #1a2030;
-            --primary: #5865f2;
-            --primary-hover: #4752c4;
-            --success: #23a55a;
-            --danger: #da373c;
-            --text-main: #f2f3f5;
-            --text-muted: #949ba4;
-            --border: #2f3542;
-            --glow: rgba(88, 101, 242, 0.15);
+            color-scheme: dark;
+            --bg: #101113;
+            --panel: #17191c;
+            --panel-2: #1d2024;
+            --line: #30343a;
+            --line-soft: #25292e;
+            --text: #eceff3;
+            --muted: #9ca3ad;
+            --soft: #c2c8d0;
+            --accent: #4da3ff;
+            --good: #2ea66f;
+            --warn: #d7a33b;
+            --bad: #d65f5f;
+            --green: #34b36d;
+            --blue: #4d8dff;
+            --red: #d85c5c;
+            --violet: #9b75db;
+            --white: #d9dde4;
+            --cyan: #40bfc8;
+            --shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
         }
 
         * {
             box-sizing: border-box;
-            margin: 0;
-            padding: 0;
         }
 
         body {
-            font-family: 'Outfit', sans-serif;
-            background-color: var(--bg-base);
-            color: var(--text-main);
+            margin: 0;
             min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow-x: hidden;
+            background: var(--bg);
+            color: var(--text);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 14px;
+            letter-spacing: 0;
         }
 
-        header {
-            background-color: var(--bg-surface);
-            border-bottom: 1px solid var(--border);
-            padding: 1.5rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-        }
-
-        header h1 {
-            font-family: 'Space Grotesk', sans-serif;
-            font-size: 1.8rem;
-            font-weight: 700;
-            background: linear-gradient(135deg, #a5b4fc, var(--primary));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            letter-spacing: -0.5px;
-        }
-
-        .auth-container {
-            display: flex;
-            align-items: center;
-            gap: 1rem;
-        }
-
+        button,
         input,
-        select,
+        select {
+            font: inherit;
+        }
+
         button {
-            font-family: inherit;
-            font-size: 0.95rem;
-            border-radius: 8px;
-            outline: none;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: var(--panel-2);
+            color: var(--text);
+            min-height: 34px;
+            padding: 0 12px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            border-color: #4a515b;
+            background: #24282d;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.55;
         }
 
         input,
         select {
-            background-color: var(--bg-element);
-            border: 1px solid var(--border);
-            color: var(--text-main);
-            padding: 0.6rem 1rem;
+            width: 100%;
+            min-height: 34px;
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            background: #111316;
+            color: var(--text);
+            padding: 7px 9px;
+            outline: none;
         }
 
         input:focus,
         select:focus {
-            border-color: var(--primary);
-            box-shadow: 0 0 0 3px var(--glow);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(77, 163, 255, 0.18);
         }
 
-        button {
-            cursor: pointer;
-            border: none;
-            font-weight: 600;
-            padding: 0.6rem 1.2rem;
-        }
-
-        .btn-primary {
-            background-color: var(--primary);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background-color: var(--primary-hover);
-        }
-
-        .btn-danger {
-            background-color: var(--danger);
-            color: white;
-        }
-
-        .btn-danger:hover {
-            opacity: 0.9;
-        }
-
-        .container {
-            flex: 1;
-            max-width: 1400px;
-            width: 100%;
-            margin: 0 auto;
-            padding: 2rem;
-            display: flex;
-            flex-direction: column;
-            gap: 2rem;
-        }
-
-        /* Tabs */
-        .tabs {
-            display: flex;
-            gap: 0.5rem;
-            background-color: var(--bg-surface);
-            padding: 0.4rem;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-            width: fit-content;
-        }
-
-        .tab-btn {
-            background: transparent;
-            color: var(--text-muted);
-            border-radius: 8px;
-            padding: 0.6rem 1.5rem;
-        }
-
-        .tab-btn.active {
-            background-color: var(--bg-element);
-            color: var(--text-main);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-        }
-
-        .tab-content {
-            display: none;
-            animation: fadeIn 0.3s ease;
-        }
-
-        .tab-content.active {
+        label {
             display: block;
+            margin-bottom: 6px;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 650;
+            text-transform: uppercase;
         }
 
-        @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        /* Cards/Grid */
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 1.5rem;
-        }
-
-        .card {
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            padding: 1.5rem;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            display: flex;
-            flex-direction: column;
-            gap: 1.2rem;
-        }
-
-        .card-title {
-            font-family: 'Space Grotesk', sans-serif;
-            font-size: 1.2rem;
-            font-weight: 700;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 0.6rem;
-            color: #a5b4fc;
-        }
-
-        /* Stats */
-        .stat-value {
-            font-size: 2.2rem;
-            font-weight: 800;
-            font-family: 'Space Grotesk', sans-serif;
-        }
-
-        /* Tables */
         table {
             width: 100%;
             border-collapse: collapse;
-            text-align: left;
         }
 
         th,
         td {
-            padding: 0.8rem 1rem;
-            border-bottom: 1px solid var(--border);
+            border-bottom: 1px solid var(--line-soft);
+            padding: 9px 10px;
+            text-align: left;
+            vertical-align: middle;
+            white-space: nowrap;
         }
 
         th {
-            color: var(--text-muted);
-            font-weight: 600;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            background: #15171a;
+            position: sticky;
+            top: 0;
+            z-index: 1;
         }
 
-        tr:hover td {
-            background-color: rgba(255, 255, 255, 0.02);
+        code {
+            color: var(--soft);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
 
-        /* Game Map Canvas */
-        .map-wrapper {
-            position: relative;
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            overflow: hidden;
-            height: 600px;
+        pre {
+            max-height: 560px;
+            overflow: auto;
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .shell {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 220px minmax(0, 1fr);
+        }
+
+        .sidebar {
+            border-right: 1px solid var(--line);
+            background: #131518;
+            padding: 16px;
             display: flex;
-            justify-content: center;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .brand {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--line-soft);
+        }
+
+        .brand strong {
+            font-size: 17px;
+        }
+
+        .brand span {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .nav {
+            display: grid;
+            gap: 6px;
+        }
+
+        .nav button {
+            justify-content: flex-start;
+            text-align: left;
+            background: transparent;
+            border-color: transparent;
+            color: var(--soft);
+            width: 100%;
+        }
+
+        .nav button.active {
+            background: var(--panel-2);
+            border-color: var(--line);
+            color: var(--text);
+        }
+
+        .content {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .topbar {
+            min-height: 64px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(23, 25, 28, 0.96);
+            display: grid;
+            grid-template-columns: minmax(220px, 1fr) minmax(380px, 640px);
+            gap: 16px;
+            align-items: center;
+            padding: 12px 18px;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .status-line {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 999px;
+            background: var(--warn);
+            flex: none;
+        }
+
+        .status-dot.ok {
+            background: var(--good);
+        }
+
+        .status-dot.bad {
+            background: var(--bad);
+        }
+
+        .status-text {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .auth {
+            display: grid;
+            grid-template-columns: minmax(180px, 1fr) auto auto auto;
+            gap: 8px;
             align-items: center;
         }
 
+        .toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            color: var(--muted);
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        .toggle input {
+            width: auto;
+            min-height: auto;
+        }
+
+        main {
+            padding: 18px;
+            display: grid;
+            gap: 16px;
+        }
+
+        .view {
+            display: none;
+            gap: 16px;
+        }
+
+        .view.active {
+            display: grid;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(160px, 1fr));
+            gap: 12px;
+        }
+
+        .two-col {
+            display: grid;
+            grid-template-columns: minmax(320px, 0.85fr) minmax(0, 1.65fr);
+            gap: 16px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            min-width: 0;
+        }
+
+        .panel-head {
+            min-height: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 11px 13px;
+            border-bottom: 1px solid var(--line-soft);
+        }
+
+        .panel-head h2 {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 750;
+        }
+
+        .panel-body {
+            padding: 13px;
+        }
+
+        .metric {
+            padding: 13px;
+        }
+
+        .metric span {
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .metric strong {
+            display: block;
+            margin-top: 6px;
+            font-size: 26px;
+            line-height: 1.1;
+        }
+
+        .table-wrap {
+            overflow: auto;
+            max-height: 560px;
+        }
+
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn-primary {
+            background: #1f5f9f;
+            border-color: #2b76bf;
+        }
+
+        .btn-primary:hover {
+            background: #2670b9;
+        }
+
+        .btn-danger {
+            background: #5d2426;
+            border-color: #8c3438;
+        }
+
+        .btn-danger:hover {
+            background: #743034;
+        }
+
+        .btn-ghost {
+            background: transparent;
+        }
+
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .form-grid .full {
+            grid-column: 1 / -1;
+        }
+
+        .swatch {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+        }
+
+        .swatch::before {
+            content: "";
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            background: var(--swatch);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .empty {
+            color: var(--muted);
+            padding: 18px;
+            text-align: center;
+        }
+
+        .map-shell {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 260px;
+            gap: 16px;
+        }
+
+        .map-frame {
+            height: calc(100vh - 132px);
+            min-height: 520px;
+            background: #0b0d10;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            overflow: hidden;
+            position: relative;
+        }
+
         #map-canvas {
-            background-color: #0b0d19;
+            width: 100%;
+            height: 100%;
+            display: block;
             cursor: grab;
         }
 
@@ -250,270 +428,417 @@
             cursor: grabbing;
         }
 
-        /* Forms */
-        .form-group {
+        .map-hud {
+            position: absolute;
+            left: 10px;
+            bottom: 10px;
             display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
+            gap: 8px;
         }
 
-        .form-row {
-            display: flex;
-            gap: 1rem;
-        }
-
-        .form-row .form-group {
-            flex: 1;
-        }
-
-        label {
-            font-size: 0.85rem;
-            color: var(--text-muted);
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        /* Market */
-        .market-inputs {
+        .legend {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 1rem;
+            gap: 9px;
         }
 
-        .crystal-badge {
-            display: inline-block;
-            padding: 0.2rem 0.6rem;
+        .legend-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--soft);
+        }
+
+        .toast {
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            display: grid;
+            gap: 8px;
+            z-index: 50;
+            width: min(420px, calc(100vw - 32px));
+        }
+
+        .toast-item {
+            border: 1px solid var(--line);
+            border-left: 4px solid var(--accent);
+            border-radius: 8px;
+            background: #17191c;
+            box-shadow: var(--shadow);
+            padding: 10px 12px;
+        }
+
+        .toast-item.bad {
+            border-left-color: var(--bad);
+        }
+
+        .toast-item.ok {
+            border-left-color: var(--good);
+        }
+
+        .inline-note {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .command-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .command {
+            border: 1px solid var(--line-soft);
             border-radius: 6px;
-            font-weight: 700;
-            font-size: 0.8rem;
-            text-transform: uppercase;
+            padding: 10px;
+            display: grid;
+            gap: 6px;
         }
 
-        .cry-0 {
-            background-color: #23a55a;
-            color: white;
+        .command-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
         }
 
-        /* Green */
-        .cry-1 {
-            background-color: #5865f2;
-            color: white;
+        @media (max-width: 980px) {
+            .shell {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                position: sticky;
+                top: 0;
+                z-index: 20;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .nav {
+                grid-template-columns: repeat(5, minmax(0, 1fr));
+            }
+
+            .topbar,
+            .auth,
+            .two-col,
+            .map-shell {
+                grid-template-columns: 1fr;
+            }
+
+            .grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
         }
 
-        /* Blue */
-        .cry-2 {
-            background-color: #da373c;
-            color: white;
-        }
+        @media (max-width: 620px) {
+            main {
+                padding: 12px;
+            }
 
-        /* Red */
-        .cry-3 {
-            background-color: #9b59b6;
-            color: white;
-        }
+            .grid,
+            .form-grid,
+            .nav {
+                grid-template-columns: 1fr;
+            }
 
-        /* Violet */
-        .cry-4 {
-            background-color: #f1c40f;
-            color: black;
+            .map-frame {
+                height: 460px;
+                min-height: 360px;
+            }
         }
-
-        /* Yellow/Gold/White */
-        .cry-5 {
-            background-color: #00d2d3;
-            color: white;
-        }
-
-        /* Cyan */
     </style>
 </head>
 
 <body>
-    <header>
-        <h1>OpenMines Admin Console</h1>
-        <div class="auth-container">
-            <input type="password" id="auth-token" placeholder="Enter Admin Token" value="admin">
-            <button class="btn-primary" id="btn-login">Login</button>
-        </div>
-    </header>
-
-    <div class="container">
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('stats')">Statistics</button>
-            <button class="tab-btn" onclick="switchTab('map')">Game Map</button>
-            <button class="tab-btn" onclick="switchTab('events')">Events</button>
-            <button class="tab-btn" onclick="switchTab('market')">Market</button>
-        </div>
-
-        <!-- STATISTICS TAB -->
-        <div id="tab-stats" class="tab-content active">
-            <div class="grid">
-                <div class="card">
-                    <div class="card-title">Online Players</div>
-                    <div class="stat-value" id="stat-online">0</div>
-                </div>
-                <div class="card">
-                    <div class="card-title">Active Events</div>
-                    <div class="stat-value" id="stat-events-count">0</div>
-                </div>
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <strong>OpenMines</strong>
+                <span>Admin console</span>
             </div>
+            <nav class="nav" aria-label="Admin sections">
+                <button class="active" data-view-button="overview">Overview</button>
+                <button data-view-button="players">Players</button>
+                <button data-view-button="map">Map</button>
+                <button data-view-button="events">Events</button>
+                <button data-view-button="market">Market</button>
+                <button data-view-button="commands">Commands</button>
+            </nav>
+        </aside>
 
-            <div class="card" style="margin-top: 1.5rem;">
-                <div class="card-title">Active Players List</div>
-                <div style="overflow-x: auto;">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Name</th>
-                                <th>Position</th>
-                                <th>Health</th>
-                                <th>Money</th>
-                                <th>Role</th>
-                                <th>Crystals (G/B/R/V/W/C)</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="players-table-body">
-                            <!-- Populated dynamically -->
-                        </tbody>
-                    </table>
+        <div class="content">
+            <header class="topbar">
+                <div class="status-line">
+                    <span id="status-dot" class="status-dot"></span>
+                    <span id="status-text" class="status-text">No data loaded</span>
                 </div>
-            </div>
-        </div>
-
-        <!-- GAME MAP TAB -->
-        <div id="tab-map" class="tab-content">
-            <div class="map-wrapper">
-                <canvas id="map-canvas" width="1000" height="580"></canvas>
-            </div>
-        </div>
-
-        <!-- EVENTS TAB -->
-        <div id="tab-events" class="tab-content">
-            <div class="grid" style="grid-template-columns: 1fr 2fr;">
-                <!-- Event Creator -->
-                <div class="card">
-                    <div class="card-title">Manage Event</div>
-                    <form id="event-form" onsubmit="saveEvent(event)">
-                        <div class="form-group">
-                            <label>Event ID</label>
-                            <input type="text" id="event-id" required placeholder="e.g. double_xp">
-                        </div>
-                        <div class="form-group" style="margin-top: 1rem;">
-                            <label>Title</label>
-                            <input type="text" id="event-title" required placeholder="Double XP Weekend">
-                        </div>
-                        <div class="form-row" style="margin-top: 1rem;">
-                            <div class="form-group">
-                                <label>Starts At (Unix Epoch)</label>
-                                <input type="number" id="event-start" required>
-                            </div>
-                            <div class="form-group">
-                                <label>Ends At (Unix Epoch)</label>
-                                <input type="number" id="event-end" required>
-                            </div>
-                        </div>
-                        <div class="form-row" style="margin-top: 1rem;">
-                            <div class="form-group">
-                                <label>XP Multiplier</label>
-                                <input type="number" step="0.1" id="event-xp-mult" required value="2.0">
-                            </div>
-                            <div class="form-group">
-                                <label>Drop Multiplier</label>
-                                <input type="number" step="0.1" id="event-drop-mult" required value="1.0">
-                            </div>
-                        </div>
-                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Save
-                            Event</button>
-                    </form>
+                <div class="auth">
+                    <input type="password" id="auth-token" autocomplete="current-password" placeholder="Admin token">
+                    <button id="btn-login" class="btn-primary">Auth</button>
+                    <button id="btn-refresh">Refresh</button>
+                    <label class="toggle"><input type="checkbox" id="auto-refresh" checked> Auto</label>
                 </div>
+            </header>
 
-                <!-- Events List -->
-                <div class="card">
-                    <div class="card-title">Active / Scheduled Events</div>
-                    <div style="overflow-x: auto;">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th>Title</th>
-                                    <th>Start</th>
-                                    <th>End</th>
-                                    <th>XP Mult</th>
-                                    <th>Drop Mult</th>
-                                    <th>Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody id="events-table-body">
-                                <!-- Populated dynamically -->
-                            </tbody>
-                        </table>
+            <main>
+                <section id="view-overview" class="view active">
+                    <div class="grid">
+                        <div class="panel metric">
+                            <span>Online</span>
+                            <strong id="metric-online">0</strong>
+                        </div>
+                        <div class="panel metric">
+                            <span>Events</span>
+                            <strong id="metric-events">0</strong>
+                        </div>
+                        <div class="panel metric">
+                            <span>Buildings</span>
+                            <strong id="metric-buildings">-</strong>
+                        </div>
+                        <div class="panel metric">
+                            <span>World</span>
+                            <strong id="metric-world">-</strong>
+                        </div>
                     </div>
-                </div>
-            </div>
-        </div>
+                    <div class="two-col">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Market Snapshot</h2>
+                            </div>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Crystal</th>
+                                            <th>Mod</th>
+                                            <th>Sell</th>
+                                            <th>Buy</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="overview-market"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Active Players</h2>
+                                <span id="players-count" class="inline-note">0 rows</span>
+                            </div>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Name</th>
+                                            <th>Pos</th>
+                                            <th>HP</th>
+                                            <th>Money</th>
+                                            <th>Role</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="overview-players"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+                </section>
 
-        <!-- MARKET TAB -->
-        <div id="tab-market" class="tab-content">
-            <div class="grid">
-                <!-- Market Pricing Modifiers -->
-                <div class="card">
-                    <div class="card-title">Crystal Price Modifiers (cost_mod)</div>
-                    <form id="market-form" onsubmit="saveMarket(event)">
-                        <div class="market-inputs">
-                            <div class="form-group">
-                                <label><span class="crystal-badge cry-0">Green</span> Mod</label>
-                                <input type="number" id="mod-0" required value="10">
-                            </div>
-                            <div class="form-group">
-                                <label><span class="crystal-badge cry-1">Blue</span> Mod</label>
-                                <input type="number" id="mod-1" required value="10">
-                            </div>
-                            <div class="form-group">
-                                <label><span class="crystal-badge cry-2">Red</span> Mod</label>
-                                <input type="number" id="mod-2" required value="15">
-                            </div>
-                            <div class="form-group" style="margin-top: 1rem;">
-                                <label><span class="crystal-badge cry-3">Violet</span> Mod</label>
-                                <input type="number" id="mod-3" required value="10">
-                            </div>
-                            <div class="form-group" style="margin-top: 1rem;">
-                                <label><span class="crystal-badge cry-4">White</span> Mod</label>
-                                <input type="number" id="mod-4" required value="15">
-                            </div>
-                            <div class="form-group" style="margin-top: 1rem;">
-                                <label><span class="crystal-badge cry-5">Cyan</span> Mod</label>
-                                <input type="number" id="mod-5" required value="15">
+                <section id="view-players" class="view">
+                    <section class="panel">
+                        <div class="panel-head">
+                            <h2>Players</h2>
+                            <div class="actions">
+                                <input id="player-filter" type="search" placeholder="Filter by id/name">
                             </div>
                         </div>
-                        <button type="submit" class="btn-primary" style="margin-top: 1.5rem; width: 100%;">Update
-                            Modifiers</button>
-                    </form>
-                </div>
+                        <div class="table-wrap">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Name</th>
+                                        <th>Position</th>
+                                        <th>Health</th>
+                                        <th>Money</th>
+                                        <th>Creds</th>
+                                        <th>Crystals</th>
+                                        <th>Role</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="players-table"></tbody>
+                            </table>
+                        </div>
+                    </section>
+                </section>
 
-                <!-- Current Market Rates -->
-                <div class="card">
-                    <div class="card-title">Current Rates Summary</div>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Crystal</th>
-                                <th>Modifier</th>
-                                <th>Sell Price</th>
-                                <th>Buy Price</th>
-                            </tr>
-                        </thead>
-                        <tbody id="market-rates-body">
-                            <!-- Dynamic rates -->
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+                <section id="view-map" class="view">
+                    <div class="map-shell">
+                        <div class="map-frame">
+                            <canvas id="map-canvas"></canvas>
+                            <div class="map-hud">
+                                <button id="map-zoom-in">+</button>
+                                <button id="map-zoom-out">-</button>
+                                <button id="map-reset">Reset</button>
+                            </div>
+                        </div>
+                        <aside class="panel">
+                            <div class="panel-head">
+                                <h2>Map</h2>
+                            </div>
+                            <div class="panel-body legend">
+                                <div class="legend-row"><span class="swatch" style="--swatch: var(--good)">Players</span><strong id="map-player-count">0</strong></div>
+                                <div class="legend-row"><span class="swatch" style="--swatch: var(--accent)">Buildings</span><strong id="map-building-count">0</strong></div>
+                                <div class="legend-row"><span>Zoom</span><strong id="map-zoom">1.00x</strong></div>
+                                <div class="legend-row"><span>World</span><strong id="map-world">-</strong></div>
+                                <div class="inline-note">Drag to pan. Mouse wheel changes zoom.</div>
+                            </div>
+                        </aside>
+                    </div>
+                </section>
+
+                <section id="view-events" class="view">
+                    <div class="two-col">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Event Editor</h2>
+                            </div>
+                            <form id="event-form" class="panel-body form-grid">
+                                <div class="full">
+                                    <label for="event-id">ID</label>
+                                    <input id="event-id" required placeholder="double_xp">
+                                </div>
+                                <div class="full">
+                                    <label for="event-title">Title</label>
+                                    <input id="event-title" required placeholder="Double XP">
+                                </div>
+                                <div>
+                                    <label for="event-start">Starts at, Unix</label>
+                                    <input id="event-start" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="event-end">Ends at, Unix</label>
+                                    <input id="event-end" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="event-xp-mult">XP multiplier</label>
+                                    <input id="event-xp-mult" type="number" step="0.1" required value="2.0">
+                                </div>
+                                <div>
+                                    <label for="event-drop-mult">Drop multiplier</label>
+                                    <input id="event-drop-mult" type="number" step="0.1" required value="1.0">
+                                </div>
+                                <div class="full actions">
+                                    <button class="btn-primary" type="submit">Save event</button>
+                                    <button id="event-fill-week" class="btn-ghost" type="button">Next 7 days</button>
+                                </div>
+                            </form>
+                        </section>
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Events</h2>
+                            </div>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>ID</th>
+                                            <th>Title</th>
+                                            <th>Start</th>
+                                            <th>End</th>
+                                            <th>XP</th>
+                                            <th>Drop</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="events-table"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="view-market" class="view">
+                    <div class="two-col">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Cost Modifiers</h2>
+                            </div>
+                            <form id="market-form" class="panel-body form-grid">
+                                <div>
+                                    <label for="mod-0"><span class="swatch" style="--swatch: var(--green)">Green</span></label>
+                                    <input id="mod-0" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="mod-1"><span class="swatch" style="--swatch: var(--blue)">Blue</span></label>
+                                    <input id="mod-1" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="mod-2"><span class="swatch" style="--swatch: var(--red)">Red</span></label>
+                                    <input id="mod-2" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="mod-3"><span class="swatch" style="--swatch: var(--violet)">Violet</span></label>
+                                    <input id="mod-3" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="mod-4"><span class="swatch" style="--swatch: var(--white)">White</span></label>
+                                    <input id="mod-4" type="number" required>
+                                </div>
+                                <div>
+                                    <label for="mod-5"><span class="swatch" style="--swatch: var(--cyan)">Cyan</span></label>
+                                    <input id="mod-5" type="number" required>
+                                </div>
+                                <div class="full actions">
+                                    <button class="btn-primary" type="submit">Update market</button>
+                                    <span class="inline-note">Form is not overwritten while focused.</span>
+                                </div>
+                            </form>
+                        </section>
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Rates</h2>
+                            </div>
+                            <div class="table-wrap">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Crystal</th>
+                                            <th>Modifier</th>
+                                            <th>Sell</th>
+                                            <th>Buy</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="market-table"></tbody>
+                                </table>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="view-commands" class="view">
+                    <div class="two-col">
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Admin Commands</h2>
+                            </div>
+                            <div id="commands-list" class="panel-body command-list"></div>
+                        </section>
+                        <section class="panel">
+                            <div class="panel-head">
+                                <h2>Metrics</h2>
+                                <button id="btn-load-metrics">Load</button>
+                            </div>
+                            <div class="panel-body">
+                                <pre id="metrics-output" class="muted">Prometheus text is loaded on demand.</pre>
+                            </div>
+                        </section>
+                    </div>
+                </section>
+            </main>
         </div>
     </div>
 
+    <div id="toast" class="toast" aria-live="polite"></div>
     <script src="app.js"></script>
 </body>
 

@@ -138,6 +138,21 @@ pub struct Layer {
     data_type: LayerType,
     /// Маска "грязных" чанков для оптимизации синхронизации и сохранений.
     dirty_mask: Vec<bool>,
+    /// Только реально изменённые chunk indexes. Нужен для O(dirty), а не
+    /// O(world area), flush и no-dirty fast path.
+    dirty_indices: Vec<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LayerFlushStats {
+    pub dirty_chunks: usize,
+    pub ranges: usize,
+    pub bytes: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WorldFlushStats {
+    pub durability: LayerFlushStats,
 }
 
 impl Layer {
@@ -173,6 +188,7 @@ impl Layer {
             chunks_h,
             data_type,
             dirty_mask: vec![false; dirty_count],
+            dirty_indices: Vec::new(),
         })
     }
 
@@ -193,28 +209,71 @@ impl Layer {
         let cx = x / CHUNK_SIZE;
         let cy = y / CHUNK_SIZE;
         let idx = (cy + self.chunks_h * cx) as usize;
-        if let Some(v) = self.dirty_mask.get_mut(idx) {
+        if let Some(v) = self.dirty_mask.get_mut(idx)
+            && !*v
+        {
             *v = true;
+            self.dirty_indices.push(idx);
         }
     }
 
-    /// Под write-локом слоя: только msync (быстро, µs) + сброс dirty.
+    fn mark_all_dirty(&mut self) {
+        self.dirty_mask.fill(true);
+        self.dirty_indices.clear();
+        self.dirty_indices.extend(0..self.dirty_mask.len());
+    }
+
+    /// Под write-локом слоя: `msync` только contiguous dirty chunk ranges.
     /// Дорогой full-file `.bak` копируется ВНЕ лока (см. `World::flush`),
     /// иначе `fs::copy` ~ГБ держит write-лок секунды и фризит весь сервер.
-    pub fn msync_and_clear(&mut self) -> Result<()> {
+    pub fn msync_dirty_and_clear(&mut self) -> Result<LayerFlushStats> {
+        if self.dirty_indices.is_empty() {
+            return Ok(LayerFlushStats::default());
+        }
+
+        self.dirty_indices.sort_unstable();
+        let chunk_bytes = (CHUNK_SIZE * CHUNK_SIZE) as usize * self.data_type.size();
+        let mut ranges = Vec::new();
+        let mut start = self.dirty_indices[0];
+        let mut end = start + 1;
+        for &idx in self.dirty_indices.iter().skip(1) {
+            if idx == end {
+                end += 1;
+            } else {
+                ranges.push((start, end));
+                start = idx;
+                end = idx + 1;
+            }
+        }
+        ranges.push((start, end));
+
         let m0 = std::time::Instant::now();
-        self.mmap.flush()?;
+        for &(range_start, range_end) in &ranges {
+            let offset = range_start * chunk_bytes;
+            let len = (range_end - range_start) * chunk_bytes;
+            self.mmap.flush_range(offset, len)?;
+        }
         let el = m0.elapsed();
+        let stats = LayerFlushStats {
+            dirty_chunks: self.dirty_indices.len(),
+            ranges: ranges.len(),
+            bytes: self.dirty_indices.len().saturating_mul(chunk_bytes),
+        };
         if el > std::time::Duration::from_millis(50) {
             tracing::warn!(
                 target: "tickprof",
-                "LAYER msync {:?} = {:?} (UNDER write lock)",
-                self.path.file_name().unwrap_or_default(),
-                el
+                path = ?self.path.file_name().unwrap_or_default(),
+                dirty_chunks = stats.dirty_chunks,
+                ranges = stats.ranges,
+                bytes = stats.bytes,
+                elapsed = ?el,
+                "LAYER dirty-range msync slow (UNDER write lock)"
             );
         }
-        self.dirty_mask.fill(false);
-        Ok(())
+        for idx in self.dirty_indices.drain(..) {
+            self.dirty_mask[idx] = false;
+        }
+        Ok(stats)
     }
 
     /// Путь файла слоя (для бэкапа вне лока).
@@ -234,6 +293,13 @@ pub trait WorldProvider: Send + Sync {
     fn valid_coord(&self, x: i32, y: i32) -> bool;
     fn get_cell(&self, x: i32, y: i32) -> u8;
     fn get_cell_typed(&self, x: i32, y: i32) -> CellType;
+    fn snapshot_cells_rect(
+        &self,
+        min_x: i32,
+        min_y: i32,
+        width: usize,
+        height: usize,
+    ) -> Vec<Option<CellType>>;
     fn get_solid_cell(&self, x: i32, y: i32) -> u8;
     fn get_road_cell(&self, x: i32, y: i32) -> u8;
     fn set_cell(&self, x: i32, y: i32, cell: u8);
@@ -245,7 +311,7 @@ pub trait WorldProvider: Send + Sync {
     fn destroy(&self, x: i32, y: i32);
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool;
     fn read_chunk_cells(&self, chunk_x: u32, chunk_y: u32) -> Vec<u8>;
-    fn flush(&self) -> anyhow::Result<()>;
+    fn flush(&self) -> anyhow::Result<WorldFlushStats>;
     fn is_empty(&self, x: i32, y: i32) -> bool;
 }
 
@@ -328,6 +394,55 @@ impl WorldProvider for World {
 
     fn get_cell_typed(&self, x: i32, y: i32) -> CellType {
         CellType(self.get_cell(x, y))
+    }
+
+    fn snapshot_cells_rect(
+        &self,
+        min_x: i32,
+        min_y: i32,
+        width: usize,
+        height: usize,
+    ) -> Vec<Option<CellType>> {
+        let cells = self.cells.read();
+        let road = self.road.read();
+        let mut out = Vec::with_capacity(width.saturating_mul(height));
+        for row in 0..height {
+            let Some(y) = i32::try_from(row)
+                .ok()
+                .and_then(|row| min_y.checked_add(row))
+            else {
+                out.extend(std::iter::repeat_n(None, width));
+                continue;
+            };
+            for col in 0..width {
+                let Some(x) = i32::try_from(col)
+                    .ok()
+                    .and_then(|col| min_x.checked_add(col))
+                else {
+                    out.push(None);
+                    continue;
+                };
+                if !self.valid_coord(x, y) {
+                    out.push(None);
+                    continue;
+                }
+                let foreground = cells.get_cell(x, y);
+                let cell = if foreground != 0 {
+                    foreground
+                } else {
+                    let road_cell = road.get_cell(x, y);
+                    if road_cell == 0 {
+                        EMPTY_CELL
+                    } else {
+                        road_cell
+                    }
+                };
+                out.push(Some(CellType(cell)));
+            }
+        }
+        drop(road);
+        drop(cells);
+        out
     }
 
     fn get_solid_cell(&self, x: i32, y: i32) -> u8 {
@@ -576,7 +691,7 @@ impl WorldProvider for World {
         res
     }
 
-    fn flush(&self) -> Result<()> {
+    fn flush(&self) -> Result<WorldFlushStats> {
         let mut journal = self.journal.lock();
         let do_backup = {
             let n = self
@@ -615,14 +730,12 @@ impl WorldProvider for World {
         // Durability: msync mmap-слоя под локом, бэкап вне лока.
         // Клонируем PathBuf только при do_backup (раз в 30 мин) — нельзя держать
         // ссылку &Path из Layer вне write-guard'а.
-        let dpath_for_backup: Option<PathBuf> = {
+        let (dpath_for_backup, durability_stats): (Option<PathBuf>, LayerFlushStats) = {
             let mut l = self.durability.write();
-            l.msync_and_clear()?;
-            if do_backup {
-                Some(l.path().to_owned())
-            } else {
-                None
-            }
+            let backup_path = do_backup.then(|| l.path().to_owned());
+            let stats = l.msync_dirty_and_clear()?;
+            drop(l);
+            (backup_path, stats)
         };
         if let Some(dpath) = dpath_for_backup
             && dpath.exists()
@@ -634,7 +747,9 @@ impl WorldProvider for World {
         }
         journal.checkpoint()?;
         drop(journal);
-        Ok(())
+        Ok(WorldFlushStats {
+            durability: durability_stats,
+        })
     }
 
     fn is_empty(&self, x: i32, y: i32) -> bool {
@@ -741,7 +856,9 @@ impl World {
     /// Дать генератору mmap durability-слоя (u8-вид f32) под write-локом.
     pub(crate) fn with_durability_mmap<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
         let mut l = self.durability.write();
-        f(&mut l.mmap[..])
+        let result = f(&mut l.mmap[..]);
+        l.mark_all_dirty();
+        result
     }
 
     /// Залить сгенерированные клетки в `.map` за один write-лок. Плоский
@@ -812,6 +929,90 @@ mod tests {
     use super::*;
 
     #[test]
+    fn durability_flush_coalesces_only_dirty_chunk_ranges() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "durability_ranges_{}_{}.map",
+            std::process::id(),
+            nonce
+        ));
+        let mut layer = Layer::open(path.clone(), 4, 4, LayerType::F32).unwrap();
+
+        layer.mark_dirty(0, 0);
+        layer.mark_dirty(0, 32);
+        layer.mark_dirty(64, 0);
+        layer.mark_dirty(64, 0);
+        let stats = layer.msync_dirty_and_clear().unwrap();
+
+        assert_eq!(stats.dirty_chunks, 3);
+        assert_eq!(stats.ranges, 2);
+        assert_eq!(stats.bytes, 3 * 32 * 32 * 4);
+        assert_eq!(
+            layer.msync_dirty_and_clear().unwrap(),
+            LayerFlushStats::default()
+        );
+
+        drop(layer);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    #[ignore = "release-only storage performance evidence"]
+    fn durability_flush_large_world_profile() {
+        const SAMPLES: usize = 100;
+        const DIRTY_CHUNKS: u32 = 256;
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "durability_profile_{}_{}.map",
+            std::process::id(),
+            nonce
+        ));
+        let mut layer = Layer::open(path.clone(), 32, 563, LayerType::F32).unwrap();
+
+        let mut no_dirty = Vec::with_capacity(SAMPLES);
+        for _ in 0..SAMPLES {
+            let started = std::time::Instant::now();
+            assert_eq!(
+                layer.msync_dirty_and_clear().unwrap(),
+                LayerFlushStats::default()
+            );
+            no_dirty.push(started.elapsed());
+        }
+
+        let mut dirty = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            for chunk_y in 0..DIRTY_CHUNKS {
+                let y = chunk_y * CHUNK_SIZE;
+                let offset = layer.cell_offset(0, y);
+                layer.mmap[offset] = u8::try_from(sample % 2).unwrap();
+                layer.mark_dirty(0, y);
+            }
+            let started = std::time::Instant::now();
+            let stats = layer.msync_dirty_and_clear().unwrap();
+            dirty.push(started.elapsed());
+            assert_eq!(stats.dirty_chunks, DIRTY_CHUNKS as usize);
+            assert_eq!(stats.ranges, 1);
+        }
+
+        no_dirty.sort_unstable();
+        dirty.sort_unstable();
+        eprintln!(
+            "32x563 durability flush: no-dirty p50={:?} p95={:?} p99={:?}; 256-dirty p50={:?} p95={:?} p99={:?}",
+            no_dirty[49], no_dirty[94], no_dirty[98], dirty[49], dirty[94], dirty[98]
+        );
+
+        drop(layer);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn test_world_cell_facade() {
         let temp_dir = std::env::temp_dir();
         let cell_defs = CellDefs::load(
@@ -872,6 +1073,44 @@ mod tests {
         assert_eq!(
             world.read_chunk_cells(0, 0)[10 + 10 * CHUNK_SIZE as usize],
             cell_type::ROAD
+        );
+
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_world.journal")));
+    }
+
+    #[test]
+    fn snapshot_cells_rect_matches_visible_layer_semantics() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!("test_world_snapshot_{}", std::process::id());
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
+        let world = World::new(&name, 1, 1, cell_defs, &temp_dir).unwrap();
+
+        world.set_cell_typed(0, 0, CellType(cell_type::EMPTY));
+        world.set_cell_typed(1, 1, CellType(cell_type::ROAD));
+        world.set_cell_typed(2, 1, CellType(cell_type::GREEN));
+        world.set_cell_typed(3, 0, CellType(cell_type::EMPTY));
+
+        let snapshot = world.snapshot_cells_rect(0, 0, 4, 3);
+        assert_eq!(snapshot.len(), 12);
+        assert_eq!(snapshot[1 + 4], Some(CellType(cell_type::ROAD)));
+        assert_eq!(snapshot[2 + 4], Some(CellType(cell_type::GREEN)));
+        assert_eq!(snapshot[3], Some(CellType(cell_type::EMPTY)));
+
+        let oob_snapshot = world.snapshot_cells_rect(-1, -1, 2, 2);
+        assert_eq!(
+            oob_snapshot,
+            vec![None, None, None, Some(CellType(cell_type::EMPTY))]
         );
 
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));

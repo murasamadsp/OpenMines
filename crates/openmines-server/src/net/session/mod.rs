@@ -20,10 +20,10 @@
 )]
 
 mod constants;
-pub mod dispatch;
 pub mod outbound;
 mod prelude;
 pub mod rate_limit;
+mod ty_command;
 pub mod util;
 pub mod wire;
 
@@ -31,7 +31,8 @@ mod auth;
 mod connection;
 mod handshake;
 mod heartbeat;
-mod outbox;
+pub mod hub;
+pub mod outbox;
 pub mod play;
 pub mod player;
 pub mod social;

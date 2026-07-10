@@ -59,7 +59,7 @@ async fn load_clan_name(state: &Arc<GameState>, clan_id: i32) -> Result<String> 
     Ok(clan.name)
 }
 
-fn send_chat_storage_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_chat_storage_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -67,7 +67,7 @@ fn send_chat_storage_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-fn send_chat_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_chat_state_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("ЧАТ", "Состояние чата недоступно.").1);
 }
 
@@ -124,12 +124,7 @@ pub async fn chat_access(
 
 /// Войти/переключить канал (`Choo`/`Cpri`): валидирует доступ, ставит
 /// `current_chat`, шлёт ТОЛЬКО `mO`+`mU`
-pub async fn send_enter_channel(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    tag: &str,
-) {
+pub async fn send_enter_channel(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, tag: &str) {
     let (name, history) = match chat_access(state, pid, tag).await {
         Ok(Some(access)) => access,
         Ok(None) => {
@@ -161,11 +156,7 @@ pub async fn send_enter_channel(
 }
 
 /// Список каналов (`Cmen`): `mL` + `mN`
-pub async fn send_channel_list(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn send_channel_list(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let (my_id, clan_id) = match state.query_player_opt(pid, |w, e| {
         let Some(m) = w.get::<crate::game::player::PlayerMetadata>(e) else {
             tracing::error!(player_id = %pid, component = "PlayerMetadata", "Player component missing for chat menu");

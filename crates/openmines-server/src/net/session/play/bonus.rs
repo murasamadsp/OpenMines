@@ -5,143 +5,15 @@
 //! пользователя кнопка превращена в ежедневный бонус: клик → начисление раз в
 //! кулдаун. Параметры лежат в `gameplay.bonus`.
 
-use crate::game::player::{PlayerFlags, PlayerStats};
-use crate::net::session::prelude::*;
-use crate::net::session::social::commands::send_ok;
-use crate::tasks::auction::now_unix;
-
-/// Доступен ли бонус: прошло ≥ кулдауна с последнего клейма (0 = ни разу → да).
-#[must_use]
-pub fn bonus_available(last_bonus_at: i64, cooldown_secs: i64) -> bool {
-    now_unix() - last_bonus_at >= cooldown_secs
-}
-
-/// Исход попытки клейма бонуса.
-enum ClaimOutcome {
-    /// Начислено; новые `money`/`creds` для пакета `P$`.
-    Claimed { money: i64, creds: i64 },
-    /// Кулдаун ещё не вышел; осталось секунд.
-    NotReady { remaining: i64 },
-}
-
-fn send_bonus_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("Бонус", "Состояние бонуса недоступно.").1,
-    );
-}
-
-/// Обработка `GDon` (клик по кнопке БОНУСЫ). Sub-payload (`METHOD`) игнорируется.
-pub fn handle_bonus_claim(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
-    let now = now_unix();
-    let bonus = state.config.gameplay.bonus;
-    // Атомарно под ECS-локом: проверка кулдауна + начисление в одном замыкании,
-    // чтобы спам `GDon` не дал двойной клейм. Начисляем в ECS (онлайн-игрок),
-    // не прямым DB-write — иначе разойдётся с кэшем и flush затрёт.
-    let outcome = state.modify_player(pid, |ecs, entity| {
-        let Some(player_stats) = ecs.get::<PlayerStats>(entity) else {
-            tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for bonus claim");
-            send_bonus_state_error(tx);
-            return None;
-        };
-        if ecs.get::<PlayerFlags>(entity).is_none() {
-            tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for bonus claim");
-            send_bonus_state_error(tx);
-            return None;
-        }
-        let last = player_stats.last_bonus_at;
-        if now - last < bonus.cooldown_secs {
-            return Some(ClaimOutcome::NotReady {
-                remaining: bonus.cooldown_secs - (now - last),
-            });
-        }
-        let (money, creds) = {
-            let Some(mut pstats) = ecs.get_mut::<PlayerStats>(entity) else {
-                tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing while applying bonus claim");
-                send_bonus_state_error(tx);
-                return None;
-            };
-            pstats.money += bonus.reward_money;
-            pstats.last_bonus_at = now;
-            (pstats.money, pstats.creds)
-        };
-        let Some(mut f) = ecs.get_mut::<PlayerFlags>(entity) else {
-            tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying bonus claim");
-            send_bonus_state_error(tx);
-            return None;
-        };
-        f.dirty = true;
-        Some(ClaimOutcome::Claimed { money, creds })
-    });
-
-    match outcome.flatten() {
-        Some(ClaimOutcome::Claimed {
-            money: new_money,
-            creds,
-        }) => {
-            send_u_packet(tx, "P$", &money(new_money, creds).1);
-            send_u_packet(tx, "DR", b"0");
-            let hours = bonus.cooldown_secs / 3600;
-            send_ok(
-                tx,
-                "Бонус",
-                &format!(
-                    "Вы получили {}$!\nВозвращайтесь через {hours} часов.",
-                    bonus.reward_money
-                ),
-            );
-
-            // Срочное сохранение в БД (write-through) для гарантированной сохранности при аварийном падении
-            let row = state
-                .modify_player(pid, |ecs, entity| {
-                    crate::game::player::extract_player_row(ecs, entity)
-                })
-                .flatten();
-            if let Some(r) = row {
-                let db = state.db.clone();
-                let state_c = state.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = db.save_player(&r).await {
-                        tracing::error!(player_id = %pid, error = ?e, "Failed to write-through save player after daily bonus");
-                    } else {
-                        state_c.modify_player(pid, |ecs, entity| {
-                            if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity)
-                            {
-                                flags.dirty = false;
-                            }
-                        });
-                    }
-                });
-            }
-        }
-        Some(ClaimOutcome::NotReady { remaining }) => {
-            let hours = remaining / 3600;
-            let mins = (remaining % 3600) / 60;
-            send_ok(
-                tx,
-                "Бонус",
-                &format!("Бонус ещё не готов.\nПриходите через {hours}ч {mins}м."),
-            );
-        }
-        None => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct BonusTestState {
-        state: Arc<GameState>,
+        state: Arc<crate::game::GameState>,
         player: crate::db::PlayerRow,
         db_path: std::path::PathBuf,
         world_name: String,
@@ -214,7 +86,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -226,13 +98,20 @@ mod tests {
         events
     }
 
-    fn player_money(state: &Arc<GameState>, pid: PlayerId) -> i64 {
+    fn player_money(state: &Arc<crate::game::GameState>, pid: crate::game::PlayerId) -> i64 {
         state
             .query_player_opt(pid, |ecs, entity| {
-                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                let player_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
                 Some(player_stats.money)
             })
             .unwrap()
+    }
+
+    fn claim_bonus(state: &Arc<crate::game::GameState>, pid: crate::game::PlayerId) {
+        crate::game::logic::commands::apply_player_command(
+            state,
+            crate::game::PlayerCommand::ClaimBonus { player_id: pid },
+        );
     }
 
     #[tokio::test]
@@ -246,14 +125,14 @@ mod tests {
             },
         )
         .await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let pid = PlayerId(test.player.id);
+        let pid = crate::game::PlayerId(test.player.id);
         let before_money = player_money(&test.state, pid);
 
-        handle_bonus_claim(&test.state, &tx, pid);
+        claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, _)| event == "P$"));
@@ -262,21 +141,48 @@ mod tests {
         test.cleanup();
     }
 
-    #[tokio::test]
-    async fn bonus_missing_stats_is_explicit_error_not_silent_noop() {
-        let test = make_bonus_test_state("missing_stats").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+    #[test]
+    fn bonus_claim_from_non_tokio_context_uses_stored_runtime_handle() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let test = rt.block_on(make_bonus_test_state_with_bonus(
+            "non_tokio_context",
+            crate::config::BonusConfig {
+                cooldown_secs: 3_600,
+                reward_money: 7_777,
+            },
+        ));
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let pid = PlayerId(test.player.id);
+        let pid = crate::game::PlayerId(test.player.id);
+        claim_bonus(&test.state, pid);
+
+        let events = drain_events(&mut rx);
+        assert!(events.iter().any(|(event, _)| event == "P$"));
+
+        rt.block_on(async {
+            tokio::task::yield_now().await;
+        });
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn bonus_missing_stats_is_explicit_error_not_silent_noop() {
+        let test = make_bonus_test_state("missing_stats").await;
+        let (tx, mut rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+
+        let pid = crate::game::PlayerId(test.player.id);
         let entity = test.state.get_player_entity(pid).unwrap();
         {
             let mut ecs = test.state.ecs.write();
-            ecs.entity_mut(entity).remove::<PlayerStats>();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerStats>();
         }
 
-        handle_bonus_claim(&test.state, &tx, pid);
+        claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -290,19 +196,20 @@ mod tests {
     #[tokio::test]
     async fn bonus_missing_flags_is_explicit_error_without_reward_mutation() {
         let test = make_bonus_test_state("missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        let pid = PlayerId(test.player.id);
+        let pid = crate::game::PlayerId(test.player.id);
         let before_money = player_money(&test.state, pid);
         let entity = test.state.get_player_entity(pid).unwrap();
         {
             let mut ecs = test.state.ecs.write();
-            ecs.entity_mut(entity).remove::<PlayerFlags>();
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerFlags>();
         }
 
-        handle_bonus_claim(&test.state, &tx, pid);
+        claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);

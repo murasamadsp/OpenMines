@@ -102,34 +102,21 @@ fn auc_page(title: impl Into<String>) -> Horb {
         .fold(Horb::new(title), Horb::tab)
 }
 
-fn send_auc(
-    page: &Horb,
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    bx: i32,
-    by: i32,
-) {
+fn send_auc(page: &Horb, state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, bx: i32, by: i32) {
     page.send(state, tx, pid, auc_window_tag(bx, by));
 }
 
-fn send_auc_error(tx: &mpsc::UnboundedSender<Vec<u8>>, message: &str) {
+fn send_auc_error(tx: &Outbox, message: &str) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", message).1);
 }
 
-fn send_auc_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_auc_state_error(tx: &Outbox) {
     send_auc_error(tx, "Данные игрока недоступны.");
 }
 
 /// `MarketSystem.GlobalFirstPage`/`Items` — item-грид (51 тип, кроме 49=Money)
 /// с числом ордеров и мин. ценой. Клик → `choose:{i}`.
-pub async fn open_auc_grid(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    bx: i32,
-    by: i32,
-) {
+pub async fn open_auc_grid(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, bx: i32, by: i32) {
     let counts = match state.db.order_counts_by_item().await {
         Ok(counts) => counts,
         Err(e) => {
@@ -168,12 +155,7 @@ pub async fn open_auc_grid(
 }
 
 /// `MarketSystem.OpenItemAuc` — список ордеров по типу + «Создать Ордер».
-pub async fn open_item_auc(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    item: i32,
-) {
+pub async fn open_item_auc(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, item: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -204,12 +186,7 @@ pub async fn open_item_auc(
 }
 
 /// `MarketSystem.OpenOrder` — деталь ордера: карточка + ставка.
-pub async fn open_order(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    order_id: i32,
-) {
+pub async fn open_order(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, order_id: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -281,12 +258,7 @@ pub async fn open_order(
 }
 
 /// `MarketSystem.OpenOrderCreation` — ввод стартовой цены.
-pub fn open_order_creation(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    item: i32,
-) {
+pub fn open_order_creation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, item: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -303,7 +275,7 @@ pub fn open_order_creation(
 /// `MarketSystem.OrderCreationNum` — ввод количества (цена уже выбрана).
 pub fn open_order_creation_num(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     item: i32,
     cost: i64,
@@ -327,7 +299,7 @@ pub fn open_order_creation_num(
 /// `MarketSystem.CreateOrder` — списать предметы, создать ордер, подтвердить.
 pub async fn create_order(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     item: i32,
     num: i32,
@@ -422,12 +394,7 @@ pub async fn create_order(
 }
 
 /// Кнопка «minimalbet» — ставка ровно минимальной суммой (1:1 C#).
-pub async fn place_minimal_bet(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    order_id: i32,
-) {
+pub async fn place_minimal_bet(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, order_id: i32) {
     let o = match state.db.get_order(order_id).await {
         Ok(Some(order)) => order,
         Ok(None) => {
@@ -519,7 +486,7 @@ async fn rollback_auction_bet(
 /// чтения — только один из конкурирующих запросов пройдёт CAS.
 pub async fn place_bet(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     order_id: i32,
     amount: i64,
@@ -633,7 +600,7 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct AuctionTestState {
         state: Arc<GameState>,
@@ -701,7 +668,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -750,7 +717,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_missing_inventory_is_explicit_error_not_window_close_noop() {
         let test = make_auction_test_state("missing_inventory").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -775,7 +742,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_missing_flags_is_explicit_error_without_item_deduction() {
         let test = make_auction_test_state("missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -803,7 +770,7 @@ mod tests {
     #[tokio::test]
     async fn place_bet_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_auction_test_state("bet_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

@@ -5,7 +5,7 @@ use crate::net::session::ui::horb::{Button, Horb};
 
 // ─── Clans ─────────────────────────────────────────────────────────────
 
-fn send_clan_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_clan_state_error(tx: &Outbox) {
     send_clan_ok(tx, "КЛАН", "Состояние игрока недоступно.");
 }
 
@@ -21,11 +21,7 @@ fn online_player_state_ready(state: &Arc<GameState>, pid: PlayerId) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_online_player_state_ready(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) -> bool {
+fn ensure_online_player_state_ready(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> bool {
     if online_player_state_ready(state, pid) {
         true
     } else {
@@ -36,7 +32,7 @@ fn ensure_online_player_state_ready(
 
 async fn load_clan_members_or_error(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     clan_id: i32,
     context: &str,
@@ -59,11 +55,7 @@ fn clan_rank_for(members: &[(i32, String, i32)], pid: PlayerId) -> crate::db::Cl
         .unwrap_or(crate::db::ClanRank::None)
 }
 
-pub async fn handle_clan_menu(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = player_clan_id(state, pid);
     if let Some(cid) = clan_id {
         handle_clan_info_view(state, tx, pid, cid).await;
@@ -112,7 +104,7 @@ pub async fn handle_clan_menu(
 
 pub async fn handle_clan_info_view(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -177,12 +169,7 @@ pub async fn handle_clan_info_view(
     win.close_button().send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_preview(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    clan_id: i32,
-) {
+pub async fn handle_clan_preview(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, clan_id: i32) {
     let clan = match state.db.get_clan(clan_id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
@@ -229,7 +216,7 @@ pub async fn handle_clan_preview(
 
 pub async fn handle_clan_create(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     name: &str,
     tag: &str,
@@ -321,11 +308,7 @@ pub async fn handle_clan_create(
     }
 }
 
-pub async fn handle_clan_leave(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -368,9 +351,8 @@ pub async fn handle_clan_leave(
                             s.clan_rank = 0;
                             let mut flags = ecs.get_mut::<crate::game::PlayerFlags>(entity)?;
                             flags.dirty = true;
-                            let conn = ecs.get::<crate::game::PlayerConnection>(entity)?;
                             let ch = clan_hide();
-                            let _ = conn.tx.send(make_u_packet_bytes(ch.0, &ch.1));
+                            state.send_to_player(target_pid, make_u_packet_bytes(ch.0, &ch.1));
                         }
                         Some(())
                     });
@@ -456,7 +438,7 @@ pub async fn handle_clan_leave(
 
 pub async fn handle_clan_join_request(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -490,11 +472,7 @@ pub async fn handle_clan_join_request(
     }
 }
 
-pub async fn handle_clan_members_view(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_members_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -535,11 +513,7 @@ pub async fn handle_clan_members_view(
         .send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_invite_list(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_invite_list(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -597,7 +571,7 @@ pub async fn handle_clan_invite_list(
 
 pub async fn handle_clan_invite_send(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -620,14 +594,10 @@ pub async fn handle_clan_invite_send(
     match state.db.add_clan_invite(clan_id, target_pid).await {
         Ok(()) => {
             send_clan_ok(tx, "Клан", "Приглашение отправлено");
-            state.query_player(target_pid.into(), |ecs, entity| {
-                if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let _ = conn.tx.send(make_u_packet_bytes(
-                        "OK",
-                        &ok_message("Клан", "Вас пригласили в клан!").1,
-                    ));
-                }
-            });
+            state.send_to_player(
+                target_pid.into(),
+                make_u_packet_bytes("OK", &ok_message("Клан", "Вас пригласили в клан!").1),
+            );
         }
         Err(e) => {
             tracing::error!(clan_id, target_id = target_pid, error = ?e, "Failed to add clan invite");
@@ -636,11 +606,7 @@ pub async fn handle_clan_invite_send(
     }
 }
 
-pub async fn handle_clan_invites_view(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let invites = match state.db.get_player_invites(pid.into()).await {
         Ok(invites) => invites,
         Err(e) => {
@@ -670,7 +636,7 @@ pub async fn handle_clan_invites_view(
 
 pub async fn handle_clan_invite_accept(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -733,7 +699,7 @@ pub async fn handle_clan_invite_accept(
 
 pub async fn handle_clan_invite_decline(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -743,7 +709,7 @@ pub async fn handle_clan_invite_decline(
 
 pub async fn handle_clan_promote(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -782,11 +748,7 @@ pub async fn handle_clan_promote(
     }
 }
 
-pub async fn handle_clan_requests_view(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+pub async fn handle_clan_requests_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -829,7 +791,7 @@ pub async fn handle_clan_requests_view(
 
 pub async fn handle_clan_accept(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -860,10 +822,8 @@ pub async fn handle_clan_accept(
                 s.clan_rank = crate::db::ClanRank::Member as i32;
                 let mut flags = ecs.get_mut::<crate::game::PlayerFlags>(entity)?;
                 flags.dirty = true;
-                if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-                    let cs = clan_show(clan_id);
-                    let _ = conn.tx.send(make_u_packet_bytes(cs.0, &cs.1));
-                }
+                let cs = clan_show(clan_id);
+                state.send_to_player(target_pid.into(), make_u_packet_bytes(cs.0, &cs.1));
                 Some(())
             });
             handle_clan_requests_view(state, tx, pid).await;
@@ -877,7 +837,7 @@ pub async fn handle_clan_accept(
 
 pub async fn handle_clan_decline(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -904,12 +864,7 @@ pub async fn handle_clan_decline(
     handle_clan_requests_view(state, tx, pid).await;
 }
 
-pub async fn handle_clan_kick(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    target_pid: i32,
-) {
+pub async fn handle_clan_kick(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, target_pid: i32) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -955,10 +910,8 @@ pub async fn handle_clan_kick(
         s.clan_rank = crate::db::ClanRank::None as i32;
         let mut flags = ecs.get_mut::<crate::game::PlayerFlags>(entity)?;
         flags.dirty = true;
-        if let Some(conn) = ecs.get::<crate::game::PlayerConnection>(entity) {
-            let ch = clan_hide();
-            let _ = conn.tx.send(make_u_packet_bytes(ch.0, &ch.1));
-        }
+        let ch = clan_hide();
+        state.send_to_player(target_pid.into(), make_u_packet_bytes(ch.0, &ch.1));
         Some(())
     });
     send_clan_ok(tx, "Клан", "Игрок исключён из клана");
@@ -967,7 +920,7 @@ pub async fn handle_clan_kick(
 
 pub async fn handle_clan_kick_by_name(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     target_name: &str,
 ) {
@@ -1000,11 +953,11 @@ async fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> b
     }
 }
 
-fn send_clan_no_rights(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_clan_no_rights(tx: &Outbox) {
     send_clan_ok(tx, "Ошибка", "Нет прав");
 }
 
-fn send_clan_ok(tx: &mpsc::UnboundedSender<Vec<u8>>, title: &str, text: &str) {
+fn send_clan_ok(tx: &Outbox, title: &str, text: &str) {
     send_u_packet(tx, "OK", &ok_message(title, text).1);
 }
 
@@ -1015,7 +968,7 @@ mod tests {
     use crate::game::{PlayerFlags, PlayerStats};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct ClanTestState {
         state: Arc<GameState>,
@@ -1074,7 +1027,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = bytes::BytesMut::from(&frame[..]);
@@ -1089,7 +1042,7 @@ mod tests {
     #[tokio::test]
     async fn clan_create_missing_flags_is_explicit_error_without_db_mutation() {
         let test = make_clan_test_state("create_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1134,7 +1087,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1196,7 +1149,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &player, 1);
         drain_events(&mut rx);
 
@@ -1254,7 +1207,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &owner, 1);
         drain_events(&mut rx);
 

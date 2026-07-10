@@ -5,6 +5,7 @@ use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition,
     PlayerSkillsComp as PlayerSkillsCom, PlayerStats,
 };
+use crate::game::programmator::ProgrammatorState;
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
     BoxIndexResource, BoxPersistQueue, BroadcastEffect, BroadcastQueue, CombatConfigResource,
@@ -33,6 +34,21 @@ struct HazardProfile {
     box_time: Duration,
     destroy_time: Duration,
 }
+
+type HazardQuery<'world, 'state> = Query<
+    'world,
+    'state,
+    (
+        &'static PlayerMetadata,
+        &'static PlayerPosition,
+        &'static mut PlayerStats,
+        Option<&'static PlayerConnection>,
+        Option<&'static ProgrammatorState>,
+        &'static mut PlayerFlags,
+        &'static mut PlayerSkillsCom,
+        &'static mut PlayerCooldowns,
+    ),
+>;
 
 impl HazardProfile {
     fn start() -> Self {
@@ -90,6 +106,13 @@ fn reset_c190_if_due(cooldowns: &mut PlayerCooldowns) {
     }
 }
 
+fn send_direct(bcast_q: &mut BroadcastQueue, conn: &PlayerConnection, data: Vec<u8>) {
+    bcast_q.0.push(BroadcastEffect::Direct {
+        session_id: conn.session_id,
+        data,
+    });
+}
+
 /// `Player.Update`: стоя на непустой клетке — `Hurt(fall_damage)`; далее ящик 90 / `is_destructible` (как `Player.cs` при `!isEmpty`).
 #[allow(clippy::needless_pass_by_value)]
 pub fn standing_cell_hazard_system(
@@ -99,21 +122,16 @@ pub fn standing_cell_hazard_system(
     box_persist: Res<BoxPersistQueue>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    mut q: Query<(
-        &PlayerMetadata,
-        &PlayerPosition,
-        &mut PlayerStats,
-        &PlayerConnection,
-        &mut PlayerFlags,
-        &mut PlayerSkillsCom,
-        &mut PlayerCooldowns,
-    )>,
+    mut q: HazardQuery<'_, '_>,
 ) {
     let mut profile = HazardProfile::start();
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
 
-    for (p_meta, pos, mut stats, conn, mut flags, mut skills, mut cooldowns) in &mut q {
+    for (p_meta, pos, mut stats, conn, prog, mut flags, mut skills, mut cooldowns) in &mut q {
+        if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
+            continue;
+        }
         profile.players_scanned += 1;
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
         reset_c190_if_due(&mut cooldowns);
@@ -138,7 +156,13 @@ pub fn standing_cell_hazard_system(
                 let sk = crate::protocol::packets::skills_packet(
                     &crate::game::skills::skill_progress_payload(&skills.states),
                 );
-                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                if let Some(conn) = conn {
+                    send_direct(
+                        &mut bcast_q,
+                        conn,
+                        crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1),
+                    );
+                }
             }
 
             if stats.health > fd {
@@ -148,10 +172,16 @@ pub fn standing_cell_hazard_system(
                 death_q.0.push(p_meta.id);
             }
             flags.dirty = true;
-            conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
-                "@L",
-                &crate::protocol::packets::health(stats.health, stats.max_health).1,
-            ));
+            if let Some(conn) = conn {
+                send_direct(
+                    &mut bcast_q,
+                    conn,
+                    crate::net::session::wire::make_u_packet_bytes(
+                        "@L",
+                        &crate::protocol::packets::health(stats.health, stats.max_health).1,
+                    ),
+                );
+            }
             // C# ref: Player.Hurt → SendDFToBots(6, 0, 0, id, 0) when not lethal
             if stats.health > 0 {
                 bcast_q
@@ -175,10 +205,16 @@ pub fn standing_cell_hazard_system(
                     stats.crystals[i] = stats.crystals[i].saturating_add(c);
                 }
                 flags.dirty = true;
-                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
-                    "@B",
-                    &crate::protocol::packets::basket(&stats.crystals, 1).1,
-                ));
+                if let Some(conn) = conn {
+                    send_direct(
+                        &mut bcast_q,
+                        conn,
+                        crate::net::session::wire::make_u_packet_bytes(
+                            "@B",
+                            &crate::protocol::packets::basket(&stats.crystals, 1).1,
+                        ),
+                    );
+                }
             }
             let _ = world.damage_cell(px, py, 1.0);
             bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
@@ -191,9 +227,10 @@ pub fn standing_cell_hazard_system(
             profile.destroy_time += destroy_t0.elapsed();
         }
     }
-    profile.log_if_slow(Duration::from_millis(
-        schedule_cfg.0.schedule_warn_threshold_ms,
-    ));
+    profile.log_if_slow(
+        Duration::from_millis(schedule_cfg.0.schedule_warn_threshold_ms)
+            .min(Duration::from_millis(schedule_cfg.0.game_loop_tick_rate_ms)),
+    );
 }
 
 /// Таймер залпа пушек. C# зовёт `gun.Update()` каждые 0.5с (`World.Update`
@@ -327,9 +364,11 @@ pub fn gun_firing_system(
                 let sk_pkt = crate::protocol::packets::skills_packet(
                     &crate::game::skills::skill_progress_payload(&p_sk.states),
                 );
-                conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
-                    sk_pkt.0, &sk_pkt.1,
-                ));
+                send_direct(
+                    &mut bcast_q,
+                    conn,
+                    crate::net::session::wire::make_u_packet_bytes(sk_pkt.0, &sk_pkt.1),
+                );
             }
             // C# Gun.Update order: damage first, then deduct charge
             let dmg = gun_damage_after_skills(combat.gun_damage, &p_sk.states);
@@ -346,10 +385,14 @@ pub fn gun_firing_system(
                     death_q.0.push(p_meta.id);
                 }
             }
-            conn.send_or_log(crate::net::session::wire::make_u_packet_bytes(
-                "@L",
-                &crate::protocol::packets::health(stats.health, stats.max_health).1,
-            ));
+            send_direct(
+                &mut bcast_q,
+                conn,
+                crate::net::session::wire::make_u_packet_bytes(
+                    "@L",
+                    &crate::protocol::packets::health(stats.health, stats.max_health).1,
+                ),
+            );
 
             // Charge cost: дробная часть не хранится в BuildingStats, а применяется
             // как шанс списать ещё 1 единицу.
@@ -444,7 +487,9 @@ mod tests {
                 assert_eq!(data, expected_data);
                 assert_eq!(exclude, None);
             }
-            BroadcastEffect::CellUpdate(_) => panic!("expected nearby hurt FX broadcast"),
+            BroadcastEffect::CellUpdate(_) | BroadcastEffect::Direct { .. } => {
+                panic!("expected nearby hurt FX broadcast");
+            }
         }
     }
 

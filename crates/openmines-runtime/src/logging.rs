@@ -11,6 +11,7 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 /// Держит поток записи в файл; не бросать до выхода процесса.
 pub struct LoggingGuard {
+    _console_worker: tracing_appender::non_blocking::WorkerGuard,
     _file_worker: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
@@ -101,14 +102,19 @@ where
         .map_err(|_| anyhow::anyhow!("tracing already initialized"))
 }
 
-fn init_stderr_only(filter: EnvFilter, console: LogFormat, timer: SystemTime) -> Result<()> {
+fn init_stderr_only(
+    filter: EnvFilter,
+    console: LogFormat,
+    stderr: NonBlockingWriter,
+    timer: SystemTime,
+) -> Result<()> {
     let ansi = std::io::stderr().is_terminal();
     match console {
         LogFormat::Pretty => try_init_registry(
             Registry::default().with(filter).with(
                 fmt::layer()
                     .pretty()
-                    .with_writer(std::io::stderr)
+                    .with_writer(stderr)
                     .with_ansi(ansi)
                     .with_timer(timer),
             ),
@@ -116,7 +122,7 @@ fn init_stderr_only(filter: EnvFilter, console: LogFormat, timer: SystemTime) ->
         LogFormat::Compact => try_init_registry(
             Registry::default().with(filter).with(
                 fmt::layer()
-                    .with_writer(std::io::stderr)
+                    .with_writer(stderr)
                     .with_ansi(false)
                     .with_timer(timer),
             ),
@@ -125,7 +131,7 @@ fn init_stderr_only(filter: EnvFilter, console: LogFormat, timer: SystemTime) ->
             Registry::default().with(filter).with(
                 fmt::layer()
                     .json()
-                    .with_writer(std::io::stderr)
+                    .with_writer(stderr)
                     .with_ansi(false)
                     .with_timer(timer),
             ),
@@ -138,6 +144,7 @@ fn init_stderr_and_file(
     filter: EnvFilter,
     console: LogFormat,
     file_fmt: LogFormat,
+    stderr: NonBlockingWriter,
     nb: NonBlockingWriter,
     timer: SystemTime,
 ) -> Result<()> {
@@ -149,7 +156,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .pretty()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(console_ansi)
                         .with_timer(timer),
                 )
@@ -167,7 +174,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .pretty()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(console_ansi)
                         .with_timer(timer),
                 )
@@ -184,7 +191,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .pretty()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(console_ansi)
                         .with_timer(timer),
                 )
@@ -201,7 +208,7 @@ fn init_stderr_and_file(
                 .with(filter)
                 .with(
                     fmt::layer()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -218,7 +225,7 @@ fn init_stderr_and_file(
                 .with(filter)
                 .with(
                     fmt::layer()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -234,7 +241,7 @@ fn init_stderr_and_file(
                 .with(filter)
                 .with(
                     fmt::layer()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -252,7 +259,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .json()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -270,7 +277,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .json()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -287,7 +294,7 @@ fn init_stderr_and_file(
                 .with(
                     fmt::layer()
                         .json()
-                        .with_writer(std::io::stderr)
+                        .with_writer(stderr)
                         .with_ansi(false)
                         .with_timer(timer),
                 )
@@ -313,20 +320,22 @@ pub fn init(cfg: &LoggingConfig) -> Result<LoggingGuard> {
         false,
     )?;
     let timer = SystemTime;
+    let (stderr, stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
     let mut file_worker = None;
 
     if let Some(ref fc) = cfg.file {
         let appender = daily_rolling_appender(fc)?;
         let (non_blocking, guard) = tracing_appender::non_blocking(appender);
         file_worker = Some(guard);
-        init_stderr_and_file(filter, cfg.format, fc.format, non_blocking, timer)?;
+        init_stderr_and_file(filter, cfg.format, fc.format, stderr, non_blocking, timer)?;
     } else {
-        init_stderr_only(filter, cfg.format, timer)?;
+        init_stderr_only(filter, cfg.format, stderr, timer)?;
     }
 
     install_panic_hook(abort_on_panic);
 
     Ok(LoggingGuard {
+        _console_worker: stderr_guard,
         _file_worker: file_worker,
     })
 }

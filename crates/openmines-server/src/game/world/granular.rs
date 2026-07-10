@@ -1,14 +1,23 @@
-use crate::game::player::PlayerPosition;
-use crate::game::{BroadcastEffect, BroadcastQueue, ScheduleConfigResource, WorldResource};
+use crate::game::player::{PlayerConnection, PlayerPosition};
+use crate::game::programmator::ProgrammatorState;
+use crate::game::{
+    BroadcastEffect, BroadcastQueue, GranularWakeQueue, ScheduleConfigResource, WorldResource,
+};
 use crate::world::WorldProvider;
 use crate::world::cells::{CellDefs, cell_type};
 use bevy_ecs::prelude::*;
-use rand::Rng;
+use rayon::prelude::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const GRANULAR_SCAN_RADIUS: i32 = 16;
+const GRANULAR_CHUNK_SIZE: i32 = 32;
 const GRANULAR_CACHE_X_PAD: i32 = 1;
 const GRANULAR_CACHE_Y_LOOKAHEAD: i32 = 3;
+const GRANULAR_REGION_RESEED_EVERY: Duration = Duration::from_secs(5);
+const GRANULAR_CANDIDATE_BUDGET: usize = 1_024;
+const GRANULAR_PARALLEL_CANDIDATE_MIN: usize = 256;
+const GRANULAR_PARALLEL_BATCH_MIN: usize = 64;
 
 /// Проходима ли клетка для падающего блока. База — `is_empty` (≡ JS
 /// `!BlockStats[id].solid`): песок течёт сквозь фон/обычную дорогу(35)/ворота(30).
@@ -23,15 +32,6 @@ fn is_passable(world: &crate::world::World, x: i32, y: i32) -> bool {
     }
     let cell = world.get_cell_typed(x, y);
     world.is_empty(x, y)
-        && !matches!(
-            cell.0,
-            ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
-        )
-}
-
-fn cell_is_passable(cell_defs: &CellDefs, cell: crate::world::CellType) -> bool {
-    use crate::world::cells::cell_type as ct;
-    cell_defs.get_typed(cell).cell_is_empty()
         && !matches!(
             cell.0,
             ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
@@ -58,12 +58,7 @@ impl GranularScanCache {
         let max_y = player_y + GRANULAR_SCAN_RADIUS + GRANULAR_CACHE_Y_LOOKAHEAD;
         let width = usize::try_from(max_x - min_x + 1).expect("granular cache width is positive");
         let height = usize::try_from(max_y - min_y + 1).expect("granular cache height is positive");
-        let mut cells = Vec::with_capacity(width * height);
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                cells.push(world.valid_coord(x, y).then(|| world.get_cell_typed(x, y)));
-            }
-        }
+        let cells = world.snapshot_cells_rect(min_x, min_y, width, height);
         Self {
             min_x,
             min_y,
@@ -84,153 +79,605 @@ impl GranularScanCache {
         self.cells[ry * self.width + rx]
     }
 
-    fn is_passable(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
-        self.get(x, y)
-            .is_some_and(|cell| cell_is_passable(cell_defs, cell))
-    }
-
-    fn is_granular(&self, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
-        self.get(x, y)
-            .is_some_and(|cell| cell_is_granular(cell_defs, cell))
+    fn for_candidates(world: &crate::world::World, candidates: &[(i32, i32)]) -> Self {
+        let (first_x, first_y) = candidates[0];
+        let mut min_x = first_x - GRANULAR_CACHE_X_PAD;
+        let mut max_x = first_x + GRANULAR_CACHE_X_PAD;
+        let mut min_y = first_y;
+        let mut max_y = first_y + GRANULAR_CACHE_Y_LOOKAHEAD;
+        for &(x, y) in candidates.iter().skip(1) {
+            min_x = min_x.min(x - GRANULAR_CACHE_X_PAD);
+            max_x = max_x.max(x + GRANULAR_CACHE_X_PAD);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y + GRANULAR_CACHE_Y_LOOKAHEAD);
+        }
+        let width =
+            usize::try_from(max_x - min_x + 1).expect("granular candidate cache width is positive");
+        let height = usize::try_from(max_y - min_y + 1)
+            .expect("granular candidate cache height is positive");
+        let cells = world.snapshot_cells_rect(min_x, min_y, width, height);
+        Self {
+            min_x,
+            min_y,
+            width,
+            height,
+            cells,
+        }
     }
 }
 
-/// JS `GeoPhisics.DownFree`: 1 = падать прямо вниз, 0 = диагональный соскок,
-/// 2 = ждать/заблокировано (хода нет).
+fn is_passable_cached(cache: &GranularScanCache, cell_defs: &CellDefs, x: i32, y: i32) -> bool {
+    use crate::world::cells::cell_type as ct;
+    let Some(cell) = cache.get(x, y) else {
+        return false;
+    };
+    cell_defs.get_typed(cell).cell_is_empty()
+        && !matches!(
+            cell.0,
+            ct::NOTHING | ct::GOLDEN_ROAD | ct::BUILDING_DOOR | ct::POLYMER_ROAD
+        )
+}
+
 fn down_free_cached(cache: &GranularScanCache, cell_defs: &CellDefs, x: i32, y: i32) -> u8 {
-    if cache.is_passable(cell_defs, x, y + 1) {
-        if cache.is_granular(cell_defs, x, y + 2) {
-            if !cache.is_passable(cell_defs, x, y + 3) {
+    if is_passable_cached(cache, cell_defs, x, y + 1) {
+        if cache
+            .get(x, y + 2)
+            .is_some_and(|cell| cell_is_granular(cell_defs, cell))
+        {
+            if !is_passable_cached(cache, cell_defs, x, y + 3) {
                 return 1;
             }
             return 2;
         }
         return 1;
     }
-    if cache.is_granular(cell_defs, x, y + 1) {
+    if cache
+        .get(x, y + 1)
+        .is_some_and(|cell| cell_is_granular(cell_defs, cell))
+    {
         return 0;
     }
     2
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub fn granular_physics_system(
-    world_res: Res<WorldResource>,
-    schedule_cfg: Res<ScheduleConfigResource>,
-    mut bcast_q: ResMut<BroadcastQueue>,
-    query: Query<&PlayerPosition>,
-) {
-    let started_at = Instant::now();
-    let world = &world_res.0;
-    let cell_defs = world.cell_defs();
-    let mut rng = rand::rng();
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct GranularChunkKey {
+    x: i32,
+    y: i32,
+}
 
-    // (src_x, src_y, dest_x, dest_y, cell)
-    let mut tasks: Vec<(i32, i32, i32, i32, crate::world::CellType)> = Vec::new();
-    let mut players_scanned = 0usize;
-    let mut cells_scanned = 0usize;
-    let mut falling_cells = 0usize;
-
-    let scan_t0 = Instant::now();
-    for pos in &query {
-        players_scanned += 1;
-        let (player_x, player_y) = (pos.x, pos.y);
-        let cache = GranularScanCache::new(world, player_x, player_y);
-
-        // Scan 33x33 area around player
-        for dy in (-GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS).rev() {
-            for dx in -GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS {
-                cells_scanned += 1;
-                let sx = player_x + dx;
-                let sy = player_y + dy;
-
-                let Some(cell) = cache.get(sx, sy) else {
-                    continue;
-                };
-                // Два класса сыпучки: обычная (`falltype=sand`, включая слизь)
-                // и валуны (`boulder`) с более строгой диагональю.
-                let is_s = cell_defs.get_typed(cell).is_sand();
-                let is_b = cell.is_boulder();
-
-                if !is_s && !is_b {
-                    continue;
-                }
-                falling_cells += 1;
-
-                // JS `FallingCycle`: ветвление по `DownFree`.
-                // df==1 — прямо вниз; df==0 — диагональ; df==2 — стоим.
-                let df = down_free_cached(&cache, &cell_defs, sx, sy);
-                if df == 1 {
-                    tasks.push((sx, sy, sx, sy + 1, cell));
-                    continue;
-                }
-                if df != 0 {
-                    continue;
-                }
-
-                // df==0: диагональный соскок. Сторона-первоочередь — по монетке
-                // (JS `RandInt(0,1)`). Песку нужна свободная только клетка (x±1,y+1);
-                // валуну — ещё и боковая (x±1,y), чтобы не «просочиться» в щель.
-                let (first_x, second_x) = if rng.random_bool(0.5) {
-                    (sx + 1, sx - 1)
-                } else {
-                    (sx - 1, sx + 1)
-                };
-                let can_slide = |tx: i32| {
-                    cache.is_passable(&cell_defs, tx, sy + 1)
-                        && (is_s || cache.is_passable(&cell_defs, tx, sy))
-                };
-                if can_slide(first_x) {
-                    tasks.push((sx, sy, first_x, sy + 1, cell));
-                } else if can_slide(second_x) {
-                    tasks.push((sx, sy, second_x, sy + 1, cell));
-                }
-            }
+impl GranularChunkKey {
+    const fn for_cell(x: i32, y: i32) -> Self {
+        Self {
+            x: x.div_euclid(GRANULAR_CHUNK_SIZE),
+            y: y.div_euclid(GRANULAR_CHUNK_SIZE),
         }
     }
-    let scan_time = scan_t0.elapsed();
+}
 
-    // Apply moves
-    let dedup_t0 = Instant::now();
-    tasks.sort_unstable();
-    tasks.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-    let dedup_time = dedup_t0.elapsed();
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GranularIntent {
+    src_x: i32,
+    src_y: i32,
+    dest_x: i32,
+    dest_y: i32,
+    cell: crate::world::CellType,
+}
 
-    let apply_t0 = Instant::now();
+impl GranularIntent {
+    const fn stable_key(self) -> (i32, i32, i32, i32, u8) {
+        (
+            self.src_x,
+            self.src_y,
+            self.dest_x,
+            self.dest_y,
+            self.cell.0,
+        )
+    }
+
+    const fn source_chunk(self) -> GranularChunkKey {
+        GranularChunkKey::for_cell(self.src_x, self.src_y)
+    }
+
+    const fn crosses_chunk_boundary(self) -> bool {
+        self.source_chunk().x != GranularChunkKey::for_cell(self.dest_x, self.dest_y).x
+            || self.source_chunk().y != GranularChunkKey::for_cell(self.dest_x, self.dest_y).y
+    }
+}
+
+struct GranularCandidateBatch {
+    owner: GranularChunkKey,
+    candidates: Vec<(i32, i32)>,
+    snapshot: GranularScanCache,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GranularAnalyzeProfile {
+    skipped_oob: usize,
+    skipped_non_granular: usize,
+    blocked: usize,
+    falling_cells: usize,
+}
+
+impl GranularAnalyzeProfile {
+    const fn merge(&mut self, other: Self) {
+        self.skipped_oob += other.skipped_oob;
+        self.skipped_non_granular += other.skipped_non_granular;
+        self.blocked += other.blocked;
+        self.falling_cells += other.falling_cells;
+    }
+}
+
+struct GranularAnalyzeResult {
+    intent: Option<GranularIntent>,
+    profile: GranularAnalyzeProfile,
+}
+
+struct GranularAnalyzeSummary {
+    intents: Vec<GranularIntent>,
+    profile: GranularAnalyzeProfile,
+    batches: usize,
+}
+
+struct GranularApplyResult {
+    applied: usize,
+    granular_activated: usize,
+    effects: Vec<BroadcastEffect>,
+}
+
+const fn granular_slide_order(x: i32, y: i32) -> (i32, i32) {
+    if (x ^ y) & 1 == 0 {
+        (x + 1, x - 1)
+    } else {
+        (x - 1, x + 1)
+    }
+}
+
+fn analyze_granular_candidate(
+    world: &crate::world::World,
+    cell_defs: &CellDefs,
+    snapshot: &GranularScanCache,
+    sx: i32,
+    sy: i32,
+) -> GranularAnalyzeResult {
+    let mut profile = GranularAnalyzeProfile::default();
+    if !world.valid_coord(sx, sy) {
+        profile.skipped_oob += 1;
+        return GranularAnalyzeResult {
+            intent: None,
+            profile,
+        };
+    }
+    let cell = snapshot
+        .get(sx, sy)
+        .expect("valid granular candidate must exist in its chunk snapshot");
+    let is_s = cell_defs.get_typed(cell).is_sand();
+    let is_b = cell.is_boulder();
+    if !is_s && !is_b {
+        profile.skipped_non_granular += 1;
+        return GranularAnalyzeResult {
+            intent: None,
+            profile,
+        };
+    }
+    profile.falling_cells += 1;
+
+    let df = down_free_cached(snapshot, cell_defs, sx, sy);
+    if df == 1 {
+        return GranularAnalyzeResult {
+            intent: Some(GranularIntent {
+                src_x: sx,
+                src_y: sy,
+                dest_x: sx,
+                dest_y: sy + 1,
+                cell,
+            }),
+            profile,
+        };
+    }
+    if df != 0 {
+        profile.blocked += 1;
+        return GranularAnalyzeResult {
+            intent: None,
+            profile,
+        };
+    }
+
+    let (first_x, second_x) = granular_slide_order(sx, sy);
+    let can_slide = |tx: i32| {
+        is_passable_cached(snapshot, cell_defs, tx, sy + 1)
+            && (is_s || is_passable_cached(snapshot, cell_defs, tx, sy))
+    };
+    let dest_x = if can_slide(first_x) {
+        Some(first_x)
+    } else if can_slide(second_x) {
+        Some(second_x)
+    } else {
+        None
+    };
+    let Some(dest_x) = dest_x else {
+        profile.blocked += 1;
+        return GranularAnalyzeResult {
+            intent: None,
+            profile,
+        };
+    };
+    GranularAnalyzeResult {
+        intent: Some(GranularIntent {
+            src_x: sx,
+            src_y: sy,
+            dest_x,
+            dest_y: sy + 1,
+            cell,
+        }),
+        profile,
+    }
+}
+
+fn build_granular_candidate_batches(
+    world: &crate::world::World,
+    candidates: Vec<(i32, i32)>,
+) -> Vec<GranularCandidateBatch> {
+    let mut grouped = BTreeMap::<GranularChunkKey, Vec<(i32, i32)>>::new();
+    for candidate @ (x, y) in candidates {
+        grouped
+            .entry(GranularChunkKey::for_cell(x, y))
+            .or_default()
+            .push(candidate);
+    }
+    grouped
+        .into_iter()
+        .map(|(owner, candidates)| {
+            let snapshot = GranularScanCache::for_candidates(world, &candidates);
+            GranularCandidateBatch {
+                owner,
+                candidates,
+                snapshot,
+            }
+        })
+        .collect()
+}
+
+fn analyze_granular_batch(
+    world: &crate::world::World,
+    cell_defs: &CellDefs,
+    batch: &GranularCandidateBatch,
+    parallel: bool,
+) -> GranularAnalyzeSummary {
+    let analyze = |&(sx, sy): &(i32, i32)| {
+        analyze_granular_candidate(world, cell_defs, &batch.snapshot, sx, sy)
+    };
+    let analyzed: Vec<_> = if parallel && batch.candidates.len() >= GRANULAR_PARALLEL_BATCH_MIN {
+        batch.candidates.par_iter().map(analyze).collect()
+    } else {
+        batch.candidates.iter().map(analyze).collect()
+    };
+    let mut profile = GranularAnalyzeProfile::default();
+    let mut intents = Vec::new();
+    for result in analyzed {
+        profile.merge(result.profile);
+        if let Some(intent) = result.intent {
+            debug_assert_eq!(intent.source_chunk(), batch.owner);
+            intents.push(intent);
+        }
+    }
+    GranularAnalyzeSummary {
+        intents,
+        profile,
+        batches: 1,
+    }
+}
+
+fn analyze_granular_candidates(
+    world: &crate::world::World,
+    cell_defs: &CellDefs,
+    candidates: Vec<(i32, i32)>,
+    parallel: bool,
+) -> GranularAnalyzeSummary {
+    let batches = build_granular_candidate_batches(world, candidates);
+    let analyzed: Vec<_> = if parallel && batches.len() > 1 {
+        batches
+            .par_iter()
+            .map(|batch| analyze_granular_batch(world, cell_defs, batch, true))
+            .collect()
+    } else {
+        batches
+            .iter()
+            .map(|batch| analyze_granular_batch(world, cell_defs, batch, parallel))
+            .collect()
+    };
+    let mut summary = GranularAnalyzeSummary {
+        intents: Vec::new(),
+        profile: GranularAnalyzeProfile::default(),
+        batches: analyzed.len(),
+    };
+    for batch in analyzed {
+        summary.profile.merge(batch.profile);
+        summary.intents.extend(batch.intents);
+    }
+    summary
+}
+
+fn canonicalize_granular_intents(intents: &mut Vec<GranularIntent>) {
+    intents.sort_unstable_by_key(|intent| intent.stable_key());
+    intents.dedup_by(|a, b| a.src_x == b.src_x && a.src_y == b.src_y);
+}
+
+fn apply_granular_intents(
+    world: &crate::world::World,
+    cell_defs: &CellDefs,
+    physics_state: &mut GranularPhysicsState,
+    intents: Vec<GranularIntent>,
+) -> GranularApplyResult {
     let mut applied = 0usize;
-    for (sx, sy, dest_x, dest_y, cell) in tasks {
-        if is_passable(world, dest_x, dest_y) {
+    let mut granular_activated = 0usize;
+    let mut effects = Vec::with_capacity(intents.len().saturating_mul(2));
+    for intent in intents {
+        if is_passable(world, intent.dest_x, intent.dest_y) {
             applied += 1;
             // 1:1 C# `World.MoveCell` (Physics): durability ПЕРЕНОСИТСЯ. `set_cell`
             // сбрасывает её на дефолт типа → без переноса недокопанный валун «лечится»
             // до полной при падении. Читаем durability ДО очистки источника.
-            let dur = world.get_durability(sx, sy);
-            world.set_cell_typed(sx, sy, crate::world::CellType(cell_type::EMPTY));
+            let dur = world.get_durability(intent.src_x, intent.src_y);
+            world.set_cell_typed(
+                intent.src_x,
+                intent.src_y,
+                crate::world::CellType(cell_type::EMPTY),
+            );
             world.write_world_cell(
-                dest_x,
-                dest_y,
+                intent.dest_x,
+                intent.dest_y,
                 crate::world::WorldCell {
-                    cell_type: cell,
+                    cell_type: intent.cell,
                     durability: dur,
                 },
             );
 
-            bcast_q.0.push(BroadcastEffect::CellUpdate((sx, sy).into()));
-            bcast_q
-                .0
-                .push(BroadcastEffect::CellUpdate((dest_x, dest_y).into()));
+            effects.push(BroadcastEffect::CellUpdate(
+                (intent.src_x, intent.src_y).into(),
+            ));
+            effects.push(BroadcastEffect::CellUpdate(
+                (intent.dest_x, intent.dest_y).into(),
+            ));
+            granular_activated += physics_state.activate_granular_neighborhood(
+                world,
+                cell_defs,
+                intent.src_x,
+                intent.src_y,
+            );
+            granular_activated += physics_state.activate_granular_neighborhood(
+                world,
+                cell_defs,
+                intent.dest_x,
+                intent.dest_y,
+            );
+        } else {
+            granular_activated += physics_state.activate_granular_neighborhood(
+                world,
+                cell_defs,
+                intent.src_x,
+                intent.src_y,
+            );
         }
     }
+    GranularApplyResult {
+        applied,
+        granular_activated,
+        effects,
+    }
+}
+
+#[derive(Default)]
+struct GranularPhysicsState {
+    active_cells: HashSet<(i32, i32)>,
+    region_seeded_at: HashMap<(i32, i32), Instant>,
+}
+
+impl GranularPhysicsState {
+    const fn active_region_key(x: i32, y: i32) -> (i32, i32) {
+        (x.div_euclid(32), y.div_euclid(32))
+    }
+
+    fn seed_active_region(
+        &mut self,
+        world: &crate::world::World,
+        cell_defs: &CellDefs,
+        player_x: i32,
+        player_y: i32,
+        now: Instant,
+    ) -> (usize, bool) {
+        let key = Self::active_region_key(player_x, player_y);
+        if self
+            .region_seeded_at
+            .get(&key)
+            .is_some_and(|seeded_at| now.duration_since(*seeded_at) < GRANULAR_REGION_RESEED_EVERY)
+        {
+            return (0, false);
+        }
+        self.region_seeded_at.insert(key, now);
+        let cache = GranularScanCache::new(world, player_x, player_y);
+        let mut scanned = 0usize;
+        for dy in (-GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS).rev() {
+            for dx in -GRANULAR_SCAN_RADIUS..=GRANULAR_SCAN_RADIUS {
+                scanned += 1;
+                let sx = player_x + dx;
+                let sy = player_y + dy;
+                let Some(cell) = cache.get(sx, sy) else {
+                    continue;
+                };
+                if cell_is_granular(cell_defs, cell) {
+                    self.active_cells.insert((sx, sy));
+                }
+            }
+        }
+        (scanned, true)
+    }
+
+    fn activate_granular_neighborhood(
+        &mut self,
+        world: &crate::world::World,
+        cell_defs: &CellDefs,
+        x: i32,
+        y: i32,
+    ) -> usize {
+        let mut activated = 0usize;
+        for dy in -2..=1 {
+            for dx in -1..=1 {
+                let ax = x + dx;
+                let ay = y + dy;
+                if !world.valid_coord(ax, ay) {
+                    continue;
+                }
+                let cell = world.get_cell_typed(ax, ay);
+                if cell_is_granular(cell_defs, cell) {
+                    activated += usize::from(self.active_cells.insert((ax, ay)));
+                }
+            }
+        }
+        activated
+    }
+
+    fn take_candidates(&mut self, limit: usize) -> (Vec<(i32, i32)>, usize) {
+        let mut candidates: Vec<_> = self.active_cells.drain().collect();
+        candidates.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if candidates.len() <= limit {
+            return (candidates, 0);
+        }
+        let deferred = candidates.split_off(limit);
+        let deferred_len = deferred.len();
+        self.active_cells.extend(deferred);
+        (candidates, deferred_len)
+    }
+}
+
+fn activate_woken_granular_cells(
+    wake_q: &GranularWakeQueue,
+    physics_state: &mut GranularPhysicsState,
+    world: &crate::world::World,
+    cell_defs: &CellDefs,
+) -> (usize, usize, usize) {
+    let mut wake_points: Vec<_> = {
+        let mut q = wake_q.0.lock();
+        std::mem::take(&mut *q).into_iter().collect()
+    };
+    let received = wake_points.len();
+    wake_points.sort_unstable_by_key(|pos| {
+        let (x, y): (i32, i32) = (*pos).into();
+        (y, x)
+    });
+    wake_points.dedup();
+    let unique = wake_points.len();
+    let activated = wake_points
+        .into_iter()
+        .map(|pos| {
+            let (x, y): (i32, i32) = pos.into();
+            physics_state.activate_granular_neighborhood(world, cell_defs, x, y)
+        })
+        .sum();
+    (received, unique, activated)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn granular_physics_system(
+    world_res: Res<WorldResource>,
+    schedule_cfg: Res<ScheduleConfigResource>,
+    wake_q: Res<GranularWakeQueue>,
+    mut bcast_q: ResMut<BroadcastQueue>,
+    query: Query<(
+        &PlayerPosition,
+        Option<&PlayerConnection>,
+        Option<&ProgrammatorState>,
+    )>,
+    mut physics_state: Local<GranularPhysicsState>,
+) {
+    let started_at = Instant::now();
+    let world = &world_res.0;
+    let cell_defs = world.cell_defs();
+    let mut players_scanned = 0usize;
+    let mut cells_scanned = 0usize;
+    let mut regions_seeded = 0usize;
+
+    let scan_t0 = Instant::now();
+    let (wake_points_len, wake_points_unique, wake_granular_activated) =
+        activate_woken_granular_cells(&wake_q, &mut physics_state, world, &cell_defs);
+    let now = Instant::now();
+    for (pos, conn, prog) in &query {
+        if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
+            continue;
+        }
+        players_scanned += 1;
+        let (player_x, player_y) = (pos.x, pos.y);
+        let (scanned, seeded) =
+            physics_state.seed_active_region(world, &cell_defs, player_x, player_y, now);
+        cells_scanned += scanned;
+        regions_seeded += usize::from(seeded);
+    }
+
+    if players_scanned == 0 {
+        physics_state.active_cells.clear();
+        physics_state.region_seeded_at.clear();
+    }
+
+    let frontier_before = physics_state.active_cells.len();
+    let (candidates, candidates_deferred) =
+        physics_state.take_candidates(GRANULAR_CANDIDATE_BUDGET);
+    let candidates_processed = candidates.len();
+    let parallel_analysis = candidates.len() >= GRANULAR_PARALLEL_CANDIDATE_MIN;
+    let GranularAnalyzeSummary {
+        mut intents,
+        profile: analyze_profile,
+        batches: candidate_batches,
+    } = analyze_granular_candidates(world, &cell_defs, candidates, parallel_analysis);
+    let falling_cells = analyze_profile.falling_cells;
+    let candidates_skipped_oob = analyze_profile.skipped_oob;
+    let candidates_skipped_non_granular = analyze_profile.skipped_non_granular;
+    let candidates_blocked = analyze_profile.blocked;
+    let frontier_after_scan = physics_state.active_cells.len();
+    let scan_time = scan_t0.elapsed();
+
+    // Stable order preserves the legacy sequential conflict winner regardless of Rayon order.
+    let dedup_t0 = Instant::now();
+    canonicalize_granular_intents(&mut intents);
+    let cross_chunk_intents = intents
+        .iter()
+        .filter(|intent| intent.crosses_chunk_boundary())
+        .count();
+    let dedup_time = dedup_t0.elapsed();
+
+    let apply_t0 = Instant::now();
+    let apply_result = apply_granular_intents(world, &cell_defs, &mut physics_state, intents);
+    let applied = apply_result.applied;
+    let apply_granular_activated = apply_result.granular_activated;
+    bcast_q.0.extend(apply_result.effects);
+    let frontier_after_apply = physics_state.active_cells.len();
     let apply_time = apply_t0.elapsed();
     let total = started_at.elapsed();
-    let threshold = Duration::from_millis(schedule_cfg.0.schedule_warn_threshold_ms);
+    let threshold = Duration::from_millis(schedule_cfg.0.schedule_warn_threshold_ms)
+        .min(Duration::from_millis(schedule_cfg.0.game_loop_tick_rate_ms));
     if total > threshold {
         tracing::warn!(
             target: "tickprof",
             players_scanned,
             cells_scanned,
+            regions_seeded,
+            wake_points = wake_points_len,
+            wake_points_unique,
+            wake_granular_activated,
+            frontier_before,
+            frontier_after_scan,
+            frontier_after_apply,
+            candidates_processed,
+            candidates_deferred,
+            candidate_batches,
+            candidate_budget = GRANULAR_CANDIDATE_BUDGET,
+            parallel_analysis,
+            cross_chunk_intents,
+            candidates_skipped_oob,
+            candidates_skipped_non_granular,
+            candidates_blocked,
             falling_cells,
             applied,
+            apply_granular_activated,
             scan_time = ?scan_time,
             dedup_time = ?dedup_time,
             apply_time = ?apply_time,
@@ -241,17 +688,182 @@ pub fn granular_physics_system(
     }
 }
 
+pub fn add_granular_physics_system(schedule: &mut Schedule) {
+    schedule.add_systems(granular_physics_system);
+}
+
 #[cfg(test)]
 mod physics_repro {
     //! Изолированный прогон cell-мутирующих систем (granular/alive) без сети:
     //! реальный `World`, игрок-entity, форс таймеров → проверяем (1) двигает ли
     //! физика клетки вообще, (2) не плодит ли НЕВАЛИДНЫЕ байты (порча карты).
-    use crate::game::player::PlayerPosition;
-    use crate::game::{BroadcastQueue, WorldResource, alive};
+    use crate::game::player::{PlayerConnection, PlayerPosition};
+    use crate::game::{BroadcastEffect, BroadcastQueue, WorldResource, alive};
     use crate::world::cells::{CellDefs, cell_type};
     use crate::world::{World, WorldProvider};
     use bevy_ecs::prelude::*;
+    use std::collections::HashSet;
     use std::sync::Arc;
+
+    fn spawn_connected_test_player(w: &mut bevy_ecs::world::World, x: i32, y: i32) {
+        w.spawn((
+            PlayerPosition { x, y, dir: 0 },
+            PlayerConnection {
+                session_id: crate::game::SessionId::new(1),
+            },
+        ));
+    }
+
+    #[test]
+    fn granular_chunked_parallel_analysis_matches_sequential_digest() {
+        const SAND: u8 = 100;
+        let dir = std::env::temp_dir().join(format!("phys_parallel_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let cd = CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
+        let world = Arc::new(World::new("phys_parallel", 4, 4, cd, &dir).unwrap());
+        for y in 48..76 {
+            for x in 16..112 {
+                world.set_cell(x, y, cell_type::EMPTY);
+            }
+        }
+        world.set_cell(31, 54, SAND);
+        world.set_cell(54, 54, SAND);
+        world.set_cell(58, 54, SAND);
+        world.set_cell(62, 54, SAND);
+        world.set_cell(58, 55, SAND);
+        world.set_cell(62, 55, 107);
+        world.set_cell(96, 54, SAND);
+        world.set_cell(54, 31, SAND);
+        world.set_cell(54, 32, cell_type::EMPTY);
+
+        let candidates = vec![
+            (96, 54),
+            (54, 54),
+            (54, 31),
+            (31, 54),
+            (58, 54),
+            (62, 54),
+            (10_000, 10_000),
+            (50, 50),
+        ];
+        let cell_defs = world.cell_defs();
+        let mut sequential =
+            super::analyze_granular_candidates(&world, &cell_defs, candidates.clone(), false);
+        let mut parallel = super::analyze_granular_candidates(&world, &cell_defs, candidates, true);
+        super::canonicalize_granular_intents(&mut sequential.intents);
+        super::canonicalize_granular_intents(&mut parallel.intents);
+
+        assert_eq!(sequential.intents, parallel.intents);
+        assert_eq!(sequential.profile, parallel.profile);
+        assert_eq!(sequential.batches, parallel.batches);
+        assert_eq!(sequential.batches, 5);
+        assert!(
+            sequential
+                .intents
+                .iter()
+                .any(|intent| intent.crosses_chunk_boundary())
+        );
+    }
+
+    #[test]
+    fn granular_intent_conflicts_have_stable_legacy_order() {
+        let mut intents = vec![
+            super::GranularIntent {
+                src_x: 33,
+                src_y: 31,
+                dest_x: 32,
+                dest_y: 32,
+                cell: crate::world::CellType(100),
+            },
+            super::GranularIntent {
+                src_x: 31,
+                src_y: 31,
+                dest_x: 32,
+                dest_y: 32,
+                cell: crate::world::CellType(100),
+            },
+        ];
+
+        super::canonicalize_granular_intents(&mut intents);
+
+        assert_eq!(intents[0].src_x, 31);
+        assert_eq!(intents[1].src_x, 33);
+        assert!(intents.iter().all(|intent| intent.crosses_chunk_boundary()));
+    }
+
+    #[test]
+    fn granular_apply_returns_effects_without_broadcast_side_effects() {
+        const SAND: u8 = 100;
+        let dir = std::env::temp_dir().join(format!("phys_apply_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        let cd = CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
+        let world = Arc::new(World::new("phys_apply", 4, 4, cd, &dir).unwrap());
+        let cell_defs = world.cell_defs();
+        world.set_cell(64, 64, SAND);
+        world.set_cell(64, 65, cell_type::EMPTY);
+        world.flush().unwrap();
+
+        let mut physics_state = super::GranularPhysicsState::default();
+        let result = super::apply_granular_intents(
+            &world,
+            &cell_defs,
+            &mut physics_state,
+            vec![super::GranularIntent {
+                src_x: 64,
+                src_y: 64,
+                dest_x: 64,
+                dest_y: 65,
+                cell: crate::world::CellType(SAND),
+            }],
+        );
+
+        assert_eq!(result.applied, 1);
+        assert_eq!(world.get_cell(64, 64), cell_type::EMPTY);
+        assert_eq!(world.get_cell(64, 65), SAND);
+        assert_eq!(result.effects.len(), 2);
+        let positions: Vec<_> = result
+            .effects
+            .into_iter()
+            .filter_map(|effect| match effect {
+                BroadcastEffect::CellUpdate(pos) => Some(<(i32, i32)>::from(pos)),
+                BroadcastEffect::Nearby { .. } | BroadcastEffect::Direct { .. } => None,
+            })
+            .collect();
+        assert_eq!(positions, vec![(64, 64), (64, 65)]);
+        assert!(result.granular_activated > 0);
+        assert!(physics_state.active_cells.contains(&(64, 65)));
+
+        let journal_path = dir.join("phys_apply_world.journal");
+        assert!(
+            std::fs::metadata(&journal_path).unwrap().len() > 0,
+            "granular apply must append durable world mutations"
+        );
+        world.flush().unwrap();
+        assert_eq!(std::fs::metadata(&journal_path).unwrap().len(), 0);
+        drop(cell_defs);
+        drop(world);
+
+        let reopened = World::new(
+            "phys_apply",
+            4,
+            4,
+            CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap(),
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(reopened.get_cell(64, 64), cell_type::EMPTY);
+        assert_eq!(reopened.get_cell(64, 65), SAND);
+    }
 
     #[test]
     fn physics_runs_and_makes_no_garbage() {
@@ -280,15 +892,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
+        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
+            parking_lot::Mutex::new(HashSet::new()),
+        )));
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
-        w.spawn(PlayerPosition {
-            x: 64,
-            y: 65,
-            dir: 0,
-        });
+        spawn_connected_test_player(&mut w, 64, 65);
 
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
@@ -400,11 +1011,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
+        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
+            parking_lot::Mutex::new(HashSet::new()),
+        )));
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
-        w.spawn(PlayerPosition { x, y: 60, dir: 0 });
+        spawn_connected_test_player(&mut w, x, 60);
 
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
@@ -462,11 +1076,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
+        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
+            parking_lot::Mutex::new(HashSet::new()),
+        )));
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
-        w.spawn(PlayerPosition { x, y: 56, dir: 0 });
+        spawn_connected_test_player(&mut w, x, 56);
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
         for _ in 0..30 {

@@ -1,4 +1,12 @@
+pub mod bonus;
+pub mod boxes;
+pub mod commands;
 pub mod contracts;
 pub mod crafting;
+pub mod crystals;
+pub mod geology;
+pub mod healing;
+pub mod inventory;
 pub mod random;
+pub mod settings;
 pub mod skills;

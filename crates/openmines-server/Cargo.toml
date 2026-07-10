@@ -25,6 +25,8 @@ sha2 = { workspace = true }
 rand = { workspace = true }
 dashmap = { workspace = true }
 crossbeam-utils = { workspace = true }
+cpu-time = { workspace = true }
+rayon = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
@@ -40,3 +42,4 @@ mime_guess = { workspace = true }
 num-traits = { workspace = true }
 sqlx = { workspace = true }
 governor = { workspace = true }
+libc = { workspace = true }

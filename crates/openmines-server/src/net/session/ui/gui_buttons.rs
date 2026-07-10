@@ -41,22 +41,6 @@ fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &
     Some(fields)
 }
 
-fn parse_settings_pairs(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
-    let mut fields = std::collections::HashMap::new();
-    let trimmed = data.strip_suffix('#').unwrap_or(data);
-    if trimmed.is_empty() {
-        return None;
-    }
-    for pair in trimmed.split('#') {
-        let (key, value) = pair.split_once(':')?;
-        if key.is_empty() || value.is_empty() {
-            return None;
-        }
-        fields.insert(key, value);
-    }
-    Some(fields)
-}
-
 fn parse_rich_bool(value: &str) -> Option<bool> {
     match value {
         "1" | "true" => Some(true),
@@ -65,12 +49,7 @@ fn parse_rich_bool(value: &str) -> Option<bool> {
     }
 }
 
-pub async fn handle_gui_button(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    button: &str,
-) {
+pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) {
     // ref `Session.GUI`: `"exit"` or `"exit:0"` => CloseWindow()
     if button == "exit" || button == "exit:0" || button == "close" {
         state.modify_player(pid, |ecs, entity| {
@@ -101,10 +80,7 @@ pub async fn handle_gui_button(
         return;
     }
 
-    if let Some(rest) = button.strip_prefix("clan_view:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id).await;
-        }
+    if handle_clan_button(state, tx, pid, button).await {
         return;
     }
 
@@ -114,26 +90,9 @@ pub async fn handle_gui_button(
         }
         "createprog" => open_create_prog_dialog(state, tx, pid),
         "prog" => {
-            crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid)
-                .await;
-        }
-        "clan_menu" | "clan_back" => {
-            crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
+            handle_programmer_button(state, tx, pid, button).await;
         }
         "clan_create_view" => handle_clan_create_view(state, tx, pid),
-        "clan_requests" => {
-            crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid).await;
-        }
-        "clan_members" => {
-            crate::net::session::social::clans::handle_clan_members_view(state, tx, pid).await;
-        }
-        "clan_invite_list" => {
-            crate::net::session::social::clans::handle_clan_invite_list(state, tx, pid).await;
-        }
-        "clan_invites_view" => {
-            crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid).await;
-        }
-        "clan_leave" => crate::net::session::social::clans::handle_clan_leave(state, tx, pid).await,
         // Market tab switching (C# tabs have action strings)
         "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys").await,
         "buycrys" => handle_market_tab_switch(state, tx, pid, "buycrys").await,
@@ -167,11 +126,157 @@ pub async fn handle_gui_button(
     }
 }
 
-fn handle_clan_create_view(
+pub fn handle_gui_button_sync_fast_path(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
-) {
+    button: &str,
+) -> bool {
+    if button == "exit" || button == "exit:0" || button == "close" {
+        state.modify_player(pid, |ecs, entity| {
+            if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+                ui.current_window = None;
+            }
+            if let Some(mut inv) = ecs.get_mut::<PlayerInventory>(entity) {
+                inv.selected = -1;
+            }
+            Some(())
+        });
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
+        return true;
+    }
+
+    let has_window = state
+        .query_player_opt(pid, |ecs, entity| {
+            ecs.get::<PlayerUI>(entity)
+                .map(|ui| ui.current_window.is_some())
+        })
+        .unwrap_or(false);
+    if !has_window {
+        let g = gu_close();
+        send_u_packet(tx, g.0, &g.1);
+        return true;
+    }
+
+    if let Some(rest) = button.strip_prefix("pack_op:") {
+        return handle_pack_operation_sync_fast_path(state, tx, pid, rest);
+    }
+    if let Some(rest) = button.strip_prefix("transfer:") {
+        handle_storage_transfer(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("craft_recipe:") {
+        handle_craft_recipe_view(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("craft_start:") {
+        handle_craft_start(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("craft_claim:") {
+        handle_craft_claim(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("tp:") {
+        handle_teleport_action(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("resp_bind:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2
+            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
+        {
+            crate::net::session::play::packs::handle_resp_bind(state, tx, pid, x, y);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("resp_fill:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3
+            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
+        {
+            crate::net::session::play::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("gun_fill:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3
+            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
+        {
+            crate::net::session::play::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("resp_profit:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2
+            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
+        {
+            crate::net::session::play::packs::handle_resp_profit(state, tx, pid, x, y);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("resp_save:") {
+        crate::net::session::play::packs::handle_resp_save(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("pack_save:") {
+        handle_pack_save(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("sell:") {
+        handle_market_sell(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("buy:") {
+        handle_market_buy(state, tx, pid, rest);
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("save:") {
+        handle_settings_save(state, tx, pid, rest);
+        return true;
+    }
+
+    match button {
+        "open_buildings" => {
+            crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
+            true
+        }
+        "createprog" => {
+            open_create_prog_dialog(state, tx, pid);
+            true
+        }
+        "clan_create_view" | "clancreate" | "clan_create" => {
+            handle_clan_create_view(state, tx, pid);
+            true
+        }
+        "clan_create_input" => {
+            crate::net::session::social::commands::send_ok(
+                tx,
+                "КЛАНЫ",
+                "Введите /clan create НАЗВАНИЕ ТЕГ в чате",
+            );
+            true
+        }
+        "sellall" => {
+            handle_market_sellall(state, tx, pid);
+            true
+        }
+        "getprofit" => {
+            handle_market_getprofit(state, tx, pid);
+            true
+        }
+        "sellcrys" | "buycrys" => {
+            handle_market_tab_switch_sync(state, tx, pid, button);
+            true
+        }
+        _ => super::up_building::handle_up_button(state, tx, pid, button),
+    }
+}
+
+fn handle_clan_create_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use super::horb::{Button, Horb};
     // exit добавится builder-гарантией последним → Escape закроет окно.
     Horb::new("СОЗДАНИЕ КЛАНА")
@@ -182,7 +287,7 @@ fn handle_clan_create_view(
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).
-fn close_player_window(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     state.modify_player(pid, |ecs, e| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(e) {
             ui.current_window = None;
@@ -193,45 +298,8 @@ fn close_player_window(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8
     send_u_packet(tx, g.0, &g.1);
 }
 
-async fn handle_complex_button(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    button: &str,
-) {
-    if let Some(rest) = button.strip_prefix("clan_request:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_join_request(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_accept:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_accept(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_invite_send:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_invite_send(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_invite_accept:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_promote:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_promote(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_kick_id:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_kick(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_decline:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_decline(state, tx, pid, id).await;
-        }
-    } else if let Some(rest) = button.strip_prefix("clan_invite_decline:") {
-        if let Ok(id) = rest.parse::<i32>() {
-            crate::net::session::social::clans::handle_clan_invite_decline(state, tx, pid, id)
-                .await;
-        }
+async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) {
+    if handle_clan_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
         crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
@@ -286,85 +354,7 @@ async fn handle_complex_button(
         handle_market_buy(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("save:") {
         handle_settings_save(state, tx, pid, rest);
-    } else if let Some(rest) = button.strip_prefix("choose:") {
-        // Клик item-грида аукциона (клиент хардкодит InvButton="choose").
-        match rest.parse::<i32>() {
-            Ok(item) => super::auction_gui::open_item_auc(state, tx, pid, item).await,
-            Err(e) => {
-                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction choose action");
-                send_market_action_error(tx);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("openorder:") {
-        match rest.parse::<i32>() {
-            Ok(id) => super::auction_gui::open_order(state, tx, pid, id).await,
-            Err(e) => {
-                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction openorder action");
-                send_market_action_error(tx);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("auccreate:") {
-        match rest.parse::<i32>() {
-            Ok(item) => super::auction_gui::open_order_creation(state, tx, pid, item),
-            Err(e) => {
-                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction create action");
-                send_market_action_error(tx);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("aucsetcost:") {
-        // aucsetcost:{item}:{cost}; невалидный cost → закрыть окно (1:1 C#).
-        let parts: Vec<&str> = rest.splitn(2, ':').collect();
-        if let [item, cost] = parts.as_slice() {
-            match (item.parse::<i32>(), cost.parse::<i64>()) {
-                (Ok(item), Ok(cost)) => {
-                    super::auction_gui::open_order_creation_num(state, tx, pid, item, cost);
-                }
-                _ => close_player_window(state, tx, pid),
-            }
-        } else {
-            tracing::warn!(player_id = %pid, action = button, "Invalid auction setcost action");
-            send_market_action_error(tx);
-        }
-    } else if let Some(rest) = button.strip_prefix("aucsetnum:") {
-        // aucsetnum:{item}:{cost}:{num}; невалидный num → закрыть окно (1:1 C#).
-        let parts: Vec<&str> = rest.split(':').collect();
-        if let [item, cost, num] = parts.as_slice() {
-            match (item.parse::<i32>(), cost.parse::<i64>(), num.parse::<i32>()) {
-                (Ok(item), Ok(cost), Ok(num)) => {
-                    super::auction_gui::create_order(state, tx, pid, item, num, cost).await;
-                }
-                _ => close_player_window(state, tx, pid),
-            }
-        } else {
-            tracing::warn!(player_id = %pid, action = button, "Invalid auction setnum action");
-            send_market_action_error(tx);
-        }
-    } else if let Some(rest) = button.strip_prefix("aucminbet:") {
-        match rest.parse::<i32>() {
-            Ok(id) => super::auction_gui::place_minimal_bet(state, tx, pid, id).await,
-            Err(e) => {
-                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction minbet action");
-                send_market_action_error(tx);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("aucbet:") {
-        // aucbet:{id}:{amount}; невалидная сумма → просто переоткрыть ордер (1:1 C#).
-        let parts: Vec<&str> = rest.splitn(2, ':').collect();
-        if let [id, amount] = parts.as_slice() {
-            match (id.parse::<i32>(), amount.parse::<i64>()) {
-                (Ok(id), Ok(amount)) => {
-                    super::auction_gui::place_bet(state, tx, pid, id, amount).await;
-                }
-                (Ok(id), Err(_)) => super::auction_gui::open_order(state, tx, pid, id).await,
-                (Err(e), _) => {
-                    tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction bet action");
-                    send_market_action_error(tx);
-                }
-            }
-        } else {
-            tracing::warn!(player_id = %pid, action = button, "Invalid auction bet action");
-            send_market_action_error(tx);
-        }
+    } else if handle_auction_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("openprog:") {
         if let Ok(id) = rest.parse::<i32>() {
             handle_open_prog(state, tx, pid, id).await;
@@ -385,12 +375,250 @@ async fn handle_complex_button(
     }
 }
 
-async fn handle_pack_operation(
+pub fn is_clan_button(button: &str) -> bool {
+    matches!(
+        button,
+        "clan_menu"
+            | "clan_back"
+            | "clan_requests"
+            | "clan_members"
+            | "clan_invite_list"
+            | "clan_invites_view"
+            | "clan_leave"
+    ) || button.starts_with("clan_view:")
+        || button.starts_with("pack_op:open:")
+        || button.starts_with("clan_request:")
+        || button.starts_with("clan_accept:")
+        || button.starts_with("clan_invite_send:")
+        || button.starts_with("clan_invite_accept:")
+        || button.starts_with("clan_promote:")
+        || button.starts_with("clan_kick_id:")
+        || button.starts_with("clan_decline:")
+        || button.starts_with("clan_invite_decline:")
+}
+
+pub fn is_programmer_button(button: &str) -> bool {
+    button == "prog"
+}
+
+pub async fn handle_programmer_button(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
-    op: &str,
-) {
+    button: &str,
+) -> bool {
+    if button != "prog" {
+        return false;
+    }
+    crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid).await;
+    true
+}
+
+pub async fn handle_clan_button(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    button: &str,
+) -> bool {
+    match button {
+        _ if button.starts_with("pack_op:open:") => {
+            if let Some(rest) = button.strip_prefix("pack_op:") {
+                handle_pack_operation(state, tx, pid, rest).await;
+            }
+            true
+        }
+        "clan_menu" | "clan_back" => {
+            crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
+            true
+        }
+        "clan_requests" => {
+            crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid).await;
+            true
+        }
+        "clan_members" => {
+            crate::net::session::social::clans::handle_clan_members_view(state, tx, pid).await;
+            true
+        }
+        "clan_invite_list" => {
+            crate::net::session::social::clans::handle_clan_invite_list(state, tx, pid).await;
+            true
+        }
+        "clan_invites_view" => {
+            crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid).await;
+            true
+        }
+        "clan_leave" => {
+            crate::net::session::social::clans::handle_clan_leave(state, tx, pid).await;
+            true
+        }
+        _ => handle_clan_button_with_id(state, tx, pid, button).await,
+    }
+}
+
+async fn handle_clan_button_with_id(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    button: &str,
+) -> bool {
+    let Some((prefix, raw_id)) = button.split_once(':') else {
+        return false;
+    };
+    let Ok(id) = raw_id.parse::<i32>() else {
+        return is_clan_button(button);
+    };
+    match prefix {
+        "clan_view" => {
+            crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id).await;
+        }
+        "clan_request" => {
+            crate::net::session::social::clans::handle_clan_join_request(state, tx, pid, id).await;
+        }
+        "clan_accept" => {
+            crate::net::session::social::clans::handle_clan_accept(state, tx, pid, id).await;
+        }
+        "clan_invite_send" => {
+            crate::net::session::social::clans::handle_clan_invite_send(state, tx, pid, id).await;
+        }
+        "clan_invite_accept" => {
+            crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id).await;
+        }
+        "clan_promote" => {
+            crate::net::session::social::clans::handle_clan_promote(state, tx, pid, id).await;
+        }
+        "clan_kick_id" => {
+            crate::net::session::social::clans::handle_clan_kick(state, tx, pid, id).await;
+        }
+        "clan_decline" => {
+            crate::net::session::social::clans::handle_clan_decline(state, tx, pid, id).await;
+        }
+        "clan_invite_decline" => {
+            crate::net::session::social::clans::handle_clan_invite_decline(state, tx, pid, id)
+                .await;
+        }
+        _ => return false,
+    }
+    true
+}
+
+pub fn is_auction_button(button: &str) -> bool {
+    button == "auc"
+        || button.starts_with("choose:")
+        || button.starts_with("openorder:")
+        || button.starts_with("auccreate:")
+        || button.starts_with("aucsetcost:")
+        || button.starts_with("aucsetnum:")
+        || button.starts_with("aucminbet:")
+        || button.starts_with("aucbet:")
+}
+
+pub async fn handle_auction_button(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    button: &str,
+) -> bool {
+    if button == "auc" {
+        handle_market_tab_switch(state, tx, pid, "auc").await;
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("choose:") {
+        // Клик item-грида аукциона (клиент хардкодит InvButton="choose").
+        match rest.parse::<i32>() {
+            Ok(item) => super::auction_gui::open_item_auc(state, tx, pid, item).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction choose action");
+                send_market_action_error(tx);
+            }
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("openorder:") {
+        match rest.parse::<i32>() {
+            Ok(id) => super::auction_gui::open_order(state, tx, pid, id).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction openorder action");
+                send_market_action_error(tx);
+            }
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("auccreate:") {
+        match rest.parse::<i32>() {
+            Ok(item) => super::auction_gui::open_order_creation(state, tx, pid, item),
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction create action");
+                send_market_action_error(tx);
+            }
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("aucsetcost:") {
+        // aucsetcost:{item}:{cost}; невалидный cost → закрыть окно (1:1 C#).
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if let [item, cost] = parts.as_slice() {
+            match (item.parse::<i32>(), cost.parse::<i64>()) {
+                (Ok(item), Ok(cost)) => {
+                    super::auction_gui::open_order_creation_num(state, tx, pid, item, cost);
+                }
+                _ => close_player_window(state, tx, pid),
+            }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction setcost action");
+            send_market_action_error(tx);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("aucsetnum:") {
+        // aucsetnum:{item}:{cost}:{num}; невалидный num → закрыть окно (1:1 C#).
+        let parts: Vec<&str> = rest.split(':').collect();
+        if let [item, cost, num] = parts.as_slice() {
+            match (item.parse::<i32>(), cost.parse::<i64>(), num.parse::<i32>()) {
+                (Ok(item), Ok(cost), Ok(num)) => {
+                    super::auction_gui::create_order(state, tx, pid, item, num, cost).await;
+                }
+                _ => close_player_window(state, tx, pid),
+            }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction setnum action");
+            send_market_action_error(tx);
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("aucminbet:") {
+        match rest.parse::<i32>() {
+            Ok(id) => super::auction_gui::place_minimal_bet(state, tx, pid, id).await,
+            Err(e) => {
+                tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction minbet action");
+                send_market_action_error(tx);
+            }
+        }
+        return true;
+    }
+    if let Some(rest) = button.strip_prefix("aucbet:") {
+        // aucbet:{id}:{amount}; невалидная сумма → просто переоткрыть ордер (1:1 C#).
+        let parts: Vec<&str> = rest.splitn(2, ':').collect();
+        if let [id, amount] = parts.as_slice() {
+            match (id.parse::<i32>(), amount.parse::<i64>()) {
+                (Ok(id), Ok(amount)) => {
+                    super::auction_gui::place_bet(state, tx, pid, id, amount).await;
+                }
+                (Ok(id), Err(_)) => super::auction_gui::open_order(state, tx, pid, id).await,
+                (Err(e), _) => {
+                    tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction bet action");
+                    send_market_action_error(tx);
+                }
+            }
+        } else {
+            tracing::warn!(player_id = %pid, action = button, "Invalid auction bet action");
+            send_market_action_error(tx);
+        }
+        return true;
+    }
+    false
+}
+
+async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, op: &str) {
     let parts: Vec<&str> = op.split(':').collect();
     if parts.len() < 3 {
         send_pack_action_error(tx);
@@ -456,12 +684,72 @@ async fn handle_pack_operation(
     }
 }
 
-pub fn open_pack_gui(
+fn handle_pack_operation_sync_fast_path(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
-    view: &PackView,
-) {
+    op: &str,
+) -> bool {
+    let parts: Vec<&str> = op.split(':').collect();
+    if parts.len() < 3 {
+        send_pack_action_error(tx);
+        return true;
+    }
+    let cmd = parts[0];
+    if cmd == "remove" {
+        return false;
+    }
+    let (x, y) = match (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
+        (Ok(x), Ok(y)) => (x, y),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::warn!(player_id = %pid, action = op, error = ?e, "Invalid pack operation coordinates");
+            send_pack_action_error(tx);
+            return true;
+        }
+    };
+
+    let Some(view) = state.get_pack_at(x, y) else {
+        return true;
+    };
+    if cmd == "open" && view.pack_type == PackType::Clans {
+        return false;
+    }
+
+    let p_info = state.query_player_opt(pid, |ecs, entity| {
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let pstats = ecs.get::<PlayerStats>(entity)?;
+        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
+    });
+
+    let Some((px, py, p_clan)) = p_info else {
+        return true;
+    };
+
+    if view.pack_type == PackType::Market && cmd == "open" {
+        let Ok(cells) = view.pack_type.building_cells() else {
+            tracing::error!(pack_type = ?view.pack_type, "Missing building config for pack GUI");
+            return true;
+        };
+        if !cells
+            .iter()
+            .any(|(dx, dy, _)| view.x + dx == px && view.y + dy == py)
+        {
+            return true;
+        }
+    } else if validate_pack_access(&view, (px, py), p_clan, pid).is_err() {
+        return true;
+    }
+
+    match cmd {
+        "open" => open_pack_gui(state, tx, pid, &view),
+        "take_money" => handle_pack_take_money(state, tx, pid, &view),
+        "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
+        _ => {}
+    }
+    true
+}
+
+pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     // C# ref: Gate.GUIWin() returns null — no window opens
     if view.pack_type == PackType::Gate {
         close_player_window(state, tx, pid);
@@ -540,7 +828,7 @@ pub fn open_pack_gui(
 /// прибыль. Открывается по `ADMN` на окне `pack:{x}:{y}`. Сохранение — `pack_save`.
 pub fn open_pack_admin_gui(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -593,12 +881,7 @@ pub fn open_pack_admin_gui(
 
 /// `pack_save:{key:value#…}` из админ-панели (`%R%`). Ставит cost/clan,
 /// перерисовывает панель. Зеркало `handle_resp_save`, но для окна `pack:`.
-pub fn handle_pack_save(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    richlist_data: &str,
-) {
+pub fn handle_pack_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, richlist_data: &str) {
     let coords = state.query_player_opt(pid, |ecs, entity| {
         let ui = ecs.get::<PlayerUI>(entity)?;
         let rest = ui.current_window.as_deref()?.strip_prefix("pack:")?;
@@ -683,12 +966,7 @@ pub fn handle_pack_save(
     open_pack_admin_gui(state, tx, pid, pack_x, pack_y);
 }
 
-fn handle_pack_take_money(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn handle_pack_take_money(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
         send_pack_state_error(tx);
         return;
@@ -735,12 +1013,7 @@ fn handle_pack_take_money(
     }
 }
 
-fn handle_pack_take_crystals(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn handle_pack_take_crystals(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
         send_pack_state_error(tx);
         return;
@@ -807,12 +1080,7 @@ fn pack_withdraw_state_ready(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i
 }
 
 /// Open Storage-specific GUI with crystal sliders (1:1 with C# `Storage.MainPage`).
-fn open_storage_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn open_storage_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     // Fetch storage crystals from ECS
     let storage_crys = state.query_building_opt(view.x, view.y, |ecs, entity| {
         let s = ecs.get::<BuildingStorage>(entity)?;
@@ -864,12 +1132,7 @@ fn open_storage_gui(
 /// Handle `transfer:v0:v1:v2:v3:v4:v5` button from Storage GUI sliders.
 /// `sliders[i]` = desired amount to keep IN the storage.
 /// C# ref: `Storage.StockTransfer`.
-fn handle_storage_transfer(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    slider_data: &str,
-) {
+fn handle_storage_transfer(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
     };
@@ -982,12 +1245,7 @@ fn now_ts() -> i64 {
 
 /// Open Crafter GUI: if craft in progress show progress, else show recipe list.
 /// C# ref: `Crafter.GUIWin` -> `StaticSystem.FilledPage` / `GlobalFirstPage`.
-fn open_crafter_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn open_crafter_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     if view.owner_id != pid {
         return;
     }
@@ -1015,13 +1273,7 @@ fn open_crafter_gui(
     });
 }
 
-fn show_crafter_progress(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    view: &PackView,
-    recipe_id: i32,
-    num: i32,
-    end_ts: i64,
-) {
+fn show_crafter_progress(tx: &Outbox, view: &PackView, recipe_id: i32, num: i32, end_ts: i64) {
     let now = now_ts();
     let recipe = crafting::recipe_by_id(recipe_id);
     let recipe_name = recipe.map_or("?", |r| r.title);
@@ -1064,7 +1316,7 @@ fn show_crafter_progress(
     win.close_button().send_raw(tx);
 }
 
-fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
+fn show_crafter_recipes(tx: &Outbox, view: &PackView) {
     let recipes = crafting::recipes();
     let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
 
@@ -1110,12 +1362,7 @@ fn show_crafter_recipes(tx: &mpsc::UnboundedSender<Vec<u8>>, view: &PackView) {
 /// Show recipe details + Start button.
 /// Called from `craft_recipe:{id}:{x}:{y}` but `handle_complex_button` parses
 /// only the prefix `craft_recipe:` and passes the rest as a string.
-fn handle_craft_recipe_view(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _pid: PlayerId,
-    args: &str,
-) {
+fn handle_craft_recipe_view(state: &Arc<GameState>, tx: &Outbox, _pid: PlayerId, args: &str) {
     let _ = state;
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 3 {
@@ -1168,12 +1415,7 @@ fn handle_craft_recipe_view(
 
 /// Start crafting: deduct resources, set timer.
 /// Button format: `craft_start:{recipe_id}:{num}:{x}:{y}`
-fn handle_craft_start(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    args: &str,
-) {
+fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 4 {
         send_crafter_action_error(tx);
@@ -1343,17 +1585,16 @@ fn handle_craft_start(
         return;
     }
 
+    if let Some(entity) = state.building_entity_at(bx, by) {
+        state.schedule_crafting_completion(entity, end_ts);
+    }
+
     broadcast_pack_update(state, &view);
     show_crafter_progress(tx, &view, recipe_id, num, end_ts);
 }
 
 /// Claim finished craft. Button format: `craft_claim:{x}:{y}`
-fn handle_craft_claim(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    args: &str,
-) {
+fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 2 {
         send_crafter_action_error(tx);
@@ -1405,7 +1646,7 @@ fn handle_craft_claim(
     };
 
     let claimed = {
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("gui.craft_claim");
         if ecs.get::<PlayerInventory>(player_entity).is_none()
             || ecs.get::<PlayerFlags>(player_entity).is_none()
             || ecs.get::<BuildingCrafting>(building_entity).is_none()
@@ -1462,12 +1703,7 @@ fn handle_craft_claim(
 }
 
 /// Build the Teleport GUI showing list of nearby teleports (1:1 with C# `Teleport.GUIWin`).
-fn open_teleport_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn open_teleport_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     let nearby_tps: Vec<(i32, i32)> = {
         let building_entities = state.building_entities_snapshot();
         let ecs = state.ecs.read();
@@ -1568,12 +1804,7 @@ fn open_teleport_gui(
 }
 
 /// Handle `tp:{x}:{y}` button — teleport player to destination TP.
-fn handle_teleport_action(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    coords: &str,
-) {
+fn handle_teleport_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, coords: &str) {
     let parts: Vec<&str> = coords.split(':').collect();
     if parts.len() != 2 {
         return;
@@ -1669,12 +1900,7 @@ fn handle_teleport_action(
 /// 1:1 with C# `Spot.GUIWin`:
 /// - Non-owner: returns null (no window opens).
 /// - Owner: returns `new Window() { Tabs = [] }` (empty window with programmator controls).
-fn open_spot_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+fn open_spot_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     // C# ref: `if (p.id != ownerid) return null;`
     if view.owner_id != pid {
         close_player_window(state, tx, pid);
@@ -1698,7 +1924,7 @@ fn open_spot_gui(
 /// `active_tab` is one of: "sellcrys", "buycrys", "auc".
 fn open_market_gui(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     view: &PackView,
     active_tab: &str,
@@ -1834,12 +2060,7 @@ pub fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i
 }
 
 /// Handle Market tab switching.
-async fn handle_market_tab_switch(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    tab: &str,
-) {
+async fn handle_market_tab_switch(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, tab: &str) {
     let Some((bx, by, _old_tab)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -1852,18 +2073,26 @@ async fn handle_market_tab_switch(
     if tab == "auc" {
         crate::net::session::ui::auction_gui::open_auc_grid(state, tx, pid, bx, by).await;
     } else {
-        open_market_gui(state, tx, pid, &view, tab);
+        handle_market_tab_switch_sync(state, tx, pid, tab);
     }
+}
+
+fn handle_market_tab_switch_sync(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, tab: &str) {
+    let Some((bx, by, _old_tab)) = resolve_market_window(state, pid) else {
+        return;
+    };
+    let Some(view) = state.get_pack_at(bx, by) else {
+        return;
+    };
+    if view.pack_type != PackType::Market {
+        return;
+    }
+    open_market_gui(state, tx, pid, &view, tab);
 }
 
 /// Handle "sell:%M%" — sell crystals from sliders.
 /// C# ref: `MarketSystem.Sell(sliders, p, m)`.
-fn handle_market_sell(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    slider_data: &str,
-) {
+fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
     };
@@ -1883,11 +2112,7 @@ fn handle_market_sell(
 
 /// Handle "sellall" — sell all player's crystals.
 /// C# ref: `MarketSystem.Sell(p.crys.cry, p, m)`.
-fn handle_market_sellall(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -1918,7 +2143,7 @@ fn handle_market_sellall(
 ///   market.moneyinside += (long)(money * 0.1)
 fn do_market_sell(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     sliders: &[i64],
     bx: i32,
@@ -1936,7 +2161,7 @@ fn do_market_sell(
     };
 
     let sell_result = 'sell: {
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("gui.market_sell");
         if ecs.get::<PlayerStats>(player_entity).is_none()
             || ecs.get::<PlayerFlags>(player_entity).is_none()
             || ecs.get::<BuildingStorage>(building_entity).is_none()
@@ -2006,12 +2231,7 @@ fn do_market_sell(
 
 /// Handle "buy:%M%" — buy crystals with money.
 /// C# ref: `MarketSystem.Buy(sliders, p, m)`.
-fn handle_market_buy(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    slider_data: &str,
-) {
+fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
     };
@@ -2079,11 +2299,7 @@ fn handle_market_buy(
 /// Handle "getprofit" — owner withdraws accumulated market profit.
 /// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
 /// then re-open the admin `RichList` page.
-fn handle_market_getprofit(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -2159,7 +2375,7 @@ fn handle_market_getprofit(
 /// Shows HP and profit withdrawal button. Called from ADMN gear icon.
 pub fn open_market_admin_gui(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -2207,221 +2423,117 @@ pub fn open_market_admin_gui(
 
 /// Handle `save:{RichList data}` from Settings GUI.
 /// C# ref: `Settings.Save(p, list)` → updates settings dict → `SendSettings` + `SendSettingsGUI`.
-fn handle_settings_save(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    data: &str,
-) {
-    // Unity RichList macro %R% substitutes to "key:value#key:value#".
-    let Some(pairs) = parse_settings_pairs(data) else {
-        tracing::warn!(player_id = %pid, payload = data, "Malformed settings payload");
-        send_u_packet(
-            tx,
-            "OK",
-            &ok_message("НАСТРОЙКИ", "Некорректный формат настроек.").1,
-        );
-        return;
-    };
-
-    let parse_i32 = |key: &str| -> Result<Option<i32>, std::num::ParseIntError> {
-        pairs.get(key).map(|v| v.parse::<i32>()).transpose()
-    };
-    let parse_bool = |key: &str| -> Result<Option<bool>, String> {
-        pairs
-            .get(key)
-            .map(|v| match *v {
-                "0" => Ok(false),
-                "1" => Ok(true),
-                other => Err(format!("invalid bool value for {key}: {other}")),
-            })
-            .transpose()
-    };
-
-    let isca = match parse_i32("isca") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = ?e, "Invalid isca setting");
+fn handle_settings_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
+    match crate::game::logic::settings::save_settings(state, pid, data) {
+        Ok(sett_wire) => {
+            send_u_packet(tx, "#S", &sett_wire);
+            open_settings_gui(state, tx, pid);
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::MalformedPayload) => {
+            tracing::warn!(player_id = %pid, payload = data, "Malformed settings payload");
+            send_u_packet(
+                tx,
+                "OK",
+                &ok_message("НАСТРОЙКИ", "Некорректный формат настроек.").1,
+            );
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("isca")) => {
+            tracing::warn!(player_id = %pid, "Invalid isca setting");
             send_u_packet(
                 tx,
                 "OK",
                 &ok_message("НАСТРОЙКИ", "Некорректный масштаб интерфейса.").1,
             );
-            return;
         }
-    };
-    let tsca = match parse_i32("tsca") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = ?e, "Invalid tsca setting");
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("tsca")) => {
+            tracing::warn!(player_id = %pid, "Invalid tsca setting");
             send_u_packet(
                 tx,
                 "OK",
                 &ok_message("НАСТРОЙКИ", "Некорректный масштаб территории.").1,
             );
-            return;
         }
-    };
-    let mous = match parse_bool("mous") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = %e, "Invalid mous setting");
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger(key)) => {
+            tracing::warn!(player_id = %pid, key, "Invalid integer setting");
             send_u_packet(
                 tx,
                 "OK",
                 &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
             );
-            return;
         }
-    };
-    let pot = match parse_bool("pot") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = %e, "Invalid pot setting");
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidBool(key)) => {
+            tracing::warn!(player_id = %pid, key, "Invalid bool setting");
             send_u_packet(
                 tx,
                 "OK",
                 &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
             );
-            return;
         }
-    };
-    let frc = match parse_bool("frc") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = %e, "Invalid frc setting");
+        Err(crate::game::logic::settings::SettingsSaveError::MissingState) => {
+            tracing::error!(player_id = %pid, "Player settings state missing for save");
             send_u_packet(
                 tx,
                 "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
+                &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
             );
-            return;
         }
-    };
-    let ctrl = match parse_bool("ctrl") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = %e, "Invalid ctrl setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
-            );
-            return;
-        }
-    };
-    let mof = match parse_bool("mof") {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(player_id = %pid, error = %e, "Invalid mof setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
-            );
-            return;
-        }
-    };
-
-    let saved = state
-        .modify_player(pid, |ecs, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerSettings>(entity)
-                .is_none()
-                || ecs.get::<PlayerFlags>(entity).is_none()
-            {
-                return None;
-            }
-            let mut s = ecs
-                .get_mut::<crate::game::player::PlayerSettings>(entity)
-                .expect("PlayerSettings checked before settings save");
-            if let Some(v) = isca {
-                s.isca = v;
-            }
-            if let Some(v) = tsca {
-                s.tsca = v;
-            }
-            if let Some(v) = mous {
-                s.mous = v;
-            }
-            if let Some(v) = pot {
-                s.pot = v;
-            }
-            if let Some(v) = frc {
-                s.frc = v;
-            }
-            if let Some(v) = ctrl {
-                s.ctrl = v;
-            }
-            if let Some(v) = mof {
-                s.mof = v;
-            }
-            ecs.get_mut::<PlayerFlags>(entity)
-                .expect("PlayerFlags checked before settings save")
-                .dirty = true;
-            Some(())
-        })
-        .flatten()
-        .is_some();
-    if !saved {
-        tracing::error!(player_id = %pid, "Player settings state missing for save");
-        send_u_packet(
-            tx,
-            "OK",
-            &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
-        );
-        return;
     }
-
-    // C# ref: SendSettings → send #S with updated values, then re-show GUI
-    // For now we send #S with the values and re-open the settings GUI
-    let Some(sett_wire) = build_settings_wire(state, pid) else {
-        tracing::error!(player_id = %pid, "Player settings component missing after save");
-        send_u_packet(
-            tx,
-            "OK",
-            &ok_message("НАСТРОЙКИ", "Настройки игрока недоступны.").1,
-        );
-        return;
-    };
-    send_u_packet(tx, "#S", &sett_wire);
-    crate::net::session::social::misc::handle_sett_ty(state, tx, pid, &[]);
 }
 
-/// Build #S packet payload from player's current settings.
-/// Wire format: `#key#value#key#value...` — 1:1 с `SettingsPacket.Encode()` в C# референсе.
-fn build_settings_wire(state: &Arc<GameState>, pid: PlayerId) -> Option<Vec<u8>> {
-    let s = state.query_player_opt(pid, |ecs, entity| {
-        ecs.get::<crate::game::player::PlayerSettings>(entity)
-            .copied()
-    })?;
-    let pairs: &[(&str, String)] = &[
-        ("cc", s.cc.to_string()),
-        ("snd", if s.snd { "1" } else { "0" }.to_string()),
-        ("mus", if s.mus { "1" } else { "0" }.to_string()),
-        ("isca", s.isca.to_string()),
-        ("tsca", s.tsca.to_string()),
-        ("mous", if s.mous { "1" } else { "0" }.to_string()),
-        ("pot", if s.pot { "1" } else { "0" }.to_string()),
-        ("frc", if s.frc { "1" } else { "0" }.to_string()),
-        ("ctrl", if s.ctrl { "1" } else { "0" }.to_string()),
-        ("mof", if s.mof { "1" } else { "0" }.to_string()),
-    ];
-    let inner = pairs
-        .iter()
-        .map(|(k, v)| format!("{k}#{v}"))
-        .collect::<Vec<_>>()
-        .join("#");
-    Some(format!("#{inner}").into_bytes())
+/// TY `Sett` → `Settings.SendSettingsGUI` в `server_reference` — 1:1 с C# `RichList`.
+pub fn open_settings_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+    use crate::net::session::ui::horb::{Button, Horb, RichRow, Tab};
+
+    let Some(view) = crate::game::logic::settings::settings_view(state, pid) else {
+        return;
+    };
+    let s = view.settings;
+
+    let scale_values = "0:мелко#1:КРУПНО#";
+    let mut win = Horb::new("Настройки")
+        .tab(Tab::active("Настройки"))
+        .rich_row(RichRow::dropdown(
+            "Масштаб интерфейса",
+            scale_values,
+            "isca",
+            i64::from(s.isca),
+        ))
+        .rich_row(RichRow::dropdown(
+            "Масштаб территории",
+            scale_values,
+            "tsca",
+            i64::from(s.tsca),
+        ))
+        .rich_row(RichRow::toggle(
+            "Включить управление мышкой",
+            "mous",
+            s.mous,
+        ))
+        .rich_row(RichRow::toggle("Упрощённый режим графики", "pot", s.pot))
+        .rich_row(RichRow::toggle(
+            "Принудительно обновлять породы (увеличит потр. CPU)",
+            "frc",
+            s.frc,
+        ))
+        .rich_row(RichRow::toggle(
+            "CTRL переключает скорость робота (вместо удерживания)",
+            "ctrl",
+            s.ctrl,
+        ))
+        .rich_row(RichRow::toggle("Отключить ближайшие звуки", "mof", s.mof))
+        .button(Button::new("Сохранить", "save:%R%"));
+
+    if !view.has_clan {
+        win = win.button(Button::new("Создать клан", "clancreate"));
+    }
+
+    win.button(Button::new("Выйти", "exit"))
+        .send(state, tx, pid, "settings");
 }
 
 // ─── Программатор ────────────────────────────────────────────────────────────
 
-fn open_create_prog_dialog(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use crate::net::session::ui::horb::{Button, Horb};
 
     Horb::new("НОВАЯ ПРОГРАММА")
@@ -2432,11 +2544,11 @@ fn open_create_prog_dialog(
         .send(state, tx, pid, "createprog");
 }
 
-fn send_market_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_market_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", "Некорректное действие.").1);
 }
 
-fn send_market_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_market_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -2444,11 +2556,11 @@ fn send_market_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-fn send_pack_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_pack_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("ЗДАНИЕ", "Некорректное действие.").1);
 }
 
-fn send_pack_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_pack_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -2456,11 +2568,11 @@ fn send_pack_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-fn send_crafter_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_crafter_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("КРАФТЕР", "Некорректное действие.").1);
 }
 
-fn send_crafter_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_crafter_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -2468,8 +2580,12 @@ fn send_crafter_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-fn send_programmator_error(tx: &mpsc::UnboundedSender<Vec<u8>>, message: &str) {
+fn send_programmator_error(tx: &Outbox, message: &str) {
     send_u_packet(tx, "OK", &ok_message("ПРОГРАММАТОР", message).1);
+}
+
+pub fn send_programmator_action_error(tx: &Outbox, message: &str) {
+    send_programmator_error(tx, message);
 }
 
 fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
@@ -2481,12 +2597,51 @@ fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
-async fn handle_open_prog(
+pub fn apply_program_editor_open(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     prog_id: i32,
+    name: &str,
+    source: &str,
 ) {
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ps) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
+            ps.selected_id = Some(prog_id);
+            ps.selected_data = Some(source.to_owned());
+        }
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = None;
+        }
+        Some(())
+    });
+    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
+    send_u_packet(
+        tx,
+        "#P",
+        &crate::protocol::packets::open_programmator(prog_id, name, source).1,
+    );
+    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
+}
+
+pub fn apply_program_editor_rename(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    prog_id: i32,
+    name: &str,
+    source: &str,
+) {
+    clear_programmator_window(state, pid);
+    send_u_packet(
+        tx,
+        "#p",
+        &crate::protocol::packets::open_programmator(prog_id, name, source).1,
+    );
+    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
+}
+
+async fn handle_open_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, prog_id: i32) {
     let p = match state.db.get_program(prog_id).await {
         Ok(Some(program)) => program,
         Ok(None) => {
@@ -2534,12 +2689,7 @@ async fn handle_open_prog(
     );
 }
 
-async fn handle_create_prog(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    name: &str,
-) {
+async fn handle_create_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, name: &str) {
     let name = name.trim();
     if name.is_empty() {
         return;
@@ -2584,7 +2734,7 @@ async fn handle_create_prog(
 
 async fn handle_rename_prog(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     prog_id: i32,
     name: &str,
@@ -2716,7 +2866,7 @@ mod tests {
         let test = runtime.block_on(make_craft_test_state("clans_sync_open", 10, 10));
         drop(runtime);
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         let view = crate::game::buildings::PackView {
             id: 1,
             pack_type: PackType::Clans,
@@ -2743,7 +2893,7 @@ mod tests {
     async fn clans_pack_operation_open_sends_clan_menu() {
         let test = make_craft_test_state("clans_pack_open", 20, 10).await;
         let pid = PlayerId(test.player.id);
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2773,27 +2923,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_settings_pairs_accepts_unity_richlist_payload() {
-        let parsed = parse_settings_pairs("isca:1#mous:0#").unwrap();
-        assert_eq!(parsed.get("isca"), Some(&"1"));
-        assert_eq!(parsed.get("mous"), Some(&"0"));
-    }
-
-    #[test]
-    fn parse_settings_pairs_rejects_missing_or_empty_fields() {
-        assert!(parse_settings_pairs("").is_none());
-        assert!(parse_settings_pairs("isca").is_none());
-        assert!(parse_settings_pairs("isca:").is_none());
-        assert!(parse_settings_pairs(":1").is_none());
-        assert!(parse_settings_pairs("isca:1##mous:0").is_none());
-    }
-
-    #[test]
-    fn parse_settings_pairs_rejects_legacy_equals_comma_payload() {
-        assert!(parse_settings_pairs("isca=1,mous=0").is_none());
-    }
-
-    #[test]
     fn parse_rich_bool_accepts_only_explicit_bool_values() {
         assert_eq!(parse_rich_bool("1"), Some(true));
         assert_eq!(parse_rich_bool("true"), Some(true));
@@ -2805,7 +2934,7 @@ mod tests {
     #[tokio::test]
     async fn programmator_open_button_clears_server_window_state() {
         let test = make_craft_test_state("prog_open_window_state", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2834,7 +2963,7 @@ mod tests {
     #[tokio::test]
     async fn programmator_create_button_clears_server_window_state() {
         let test = make_craft_test_state("prog_create_window_state", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2857,7 +2986,7 @@ mod tests {
     #[tokio::test]
     async fn programmator_rename_confirms_with_update_packet_and_closes_horb() {
         let test = make_craft_test_state("prog_rename_window_state", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2890,7 +3019,7 @@ mod tests {
     #[tokio::test]
     async fn settings_save_missing_player_flags_is_explicit_error_without_settings_mutation() {
         let test = make_craft_test_state("settings_missing_player_flags", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2934,7 +3063,7 @@ mod tests {
     #[tokio::test]
     async fn craft_start_rejects_remote_player_without_deducting_resources() {
         let test = make_craft_test_state("remote", 5, 5).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2957,7 +3086,7 @@ mod tests {
     #[tokio::test]
     async fn craft_start_rejects_missing_crafting_component_without_deducting_resources() {
         let test = make_craft_test_state("missing_component", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -2983,7 +3112,7 @@ mod tests {
     #[tokio::test]
     async fn craft_start_missing_player_flags_is_explicit_error_without_deducting_resources() {
         let test = make_craft_test_state("missing_player_flags", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3011,7 +3140,7 @@ mod tests {
     #[tokio::test]
     async fn craft_start_on_crafter_origin_deducts_and_starts_recipe() {
         let test = make_craft_test_state("local", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3031,7 +3160,7 @@ mod tests {
     #[tokio::test]
     async fn craft_claim_clears_crafter_before_second_claim_can_duplicate_reward() {
         let test = make_craft_test_state("claim_once", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3059,7 +3188,7 @@ mod tests {
     #[tokio::test]
     async fn craft_claim_missing_building_flags_is_explicit_error_without_reward_or_clear() {
         let test = make_craft_test_state("claim_missing_flags", 10, 10).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3095,7 +3224,7 @@ mod tests {
     async fn market_sell_missing_building_flags_is_explicit_error_without_money_or_crystal_mutation()
      {
         let test = make_market_test_state("sell_missing_building_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3138,7 +3267,7 @@ mod tests {
     #[tokio::test]
     async fn market_buy_missing_player_flags_is_explicit_error_without_money_or_crystal_mutation() {
         let test = make_market_test_state("buy_missing_player_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3176,7 +3305,7 @@ mod tests {
     #[tokio::test]
     async fn market_getprofit_missing_building_flags_is_explicit_error_without_profit_mutation() {
         let test = make_market_test_state("getprofit_missing_building_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3213,7 +3342,7 @@ mod tests {
     #[tokio::test]
     async fn pack_take_money_missing_player_flags_is_explicit_error_without_storage_mutation() {
         let test = make_market_test_state("pack_take_money_missing_player_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3249,7 +3378,7 @@ mod tests {
     #[tokio::test]
     async fn pack_take_crystals_missing_player_flags_is_explicit_error_without_storage_mutation() {
         let test = make_market_test_state("pack_take_crystals_missing_player_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3288,7 +3417,7 @@ mod tests {
     #[tokio::test]
     async fn storage_transfer_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_storage_test_state("storage_transfer_missing_player_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3328,7 +3457,7 @@ mod tests {
     #[tokio::test]
     async fn teleport_gui_uses_list_rows_for_many_destinations_not_horb_buttons() {
         let test = make_teleport_test_state("tp_many_destinations", 8).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -3628,7 +3757,7 @@ mod tests {
             .unwrap()
     }
 
-    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);

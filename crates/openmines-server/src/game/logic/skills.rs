@@ -570,6 +570,41 @@ pub fn add_skill_exp(skills: &mut SkillSlots, code: &str, amount: f32) -> bool {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub enum SkillExpMutation {
+    Packet(Option<(&'static str, Vec<u8>)>),
+    MissingState(&'static str),
+    MissingEntity,
+}
+
+pub fn add_player_skill_exp(
+    state: &std::sync::Arc<crate::game::GameState>,
+    pid: crate::game::PlayerId,
+    ctx: crate::game::ExpContext,
+    code: &str,
+    amount: f32,
+    mark_dirty_on_packet: bool,
+) -> SkillExpMutation {
+    state
+        .modify_player(pid, |ecs, entity| {
+            let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
+            else {
+                return Some(SkillExpMutation::MissingState("PlayerSkillsComp"));
+            };
+            let packet = ctx.add_skill_exp(&mut skills.states, code, amount);
+            if packet.is_some() && mark_dirty_on_packet {
+                let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                else {
+                    return Some(SkillExpMutation::MissingState("PlayerFlags"));
+                };
+                flags.dirty = true;
+            }
+            Some(SkillExpMutation::Packet(packet))
+        })
+        .flatten()
+        .unwrap_or(SkillExpMutation::MissingEntity)
+}
+
 /// Convert skills into outbound packets payload (`(skill_code, percent)`), preserving legacy rounding.
 #[must_use]
 pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {

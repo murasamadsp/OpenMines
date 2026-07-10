@@ -7,6 +7,7 @@ use crate::net::session::outbox::flush_outbox;
 use crate::net::session::player::init::on_disconnect;
 use crate::net::session::prelude::*;
 use crate::net::session::state::HeartbeatGate;
+use crate::net::session::ty_command::enqueue_ty_command;
 use crate::net::session::wire;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,14 +30,16 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     if let Err(err) = stream.set_nodelay(true) {
         tracing::warn!(error = %err, "set_nodelay failed");
     }
-    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (kick_tx, mut kick_rx) = tokio::sync::oneshot::channel::<()>();
-    let mut kick_tx_opt = Some(kick_tx);
+    let open_session = state.sessions.open();
+    let session_id = open_session.id;
+    let tx = open_session.outbox;
+    let mut rx = open_session.receiver;
+    let mut overflow_rx = open_session.overflow;
+    let mut kick_rx = open_session.kick;
     let client_ip = addr.ip();
     let mut auth_state = AuthState::PreAuth;
     let mut heartbeat_gate = HeartbeatGate::WaitingForAuthResponse;
     // Токен этого сеанса — guard от reconnect-гонки в lifecycle-очереди.
-    let session_token = state.next_session_token();
     let mut buf = BytesMut::with_capacity(4096);
     let mut heartbeat_state = SessionHeartbeat::new(Instant::now());
     // Серверно-пейсированный PI (фикс PI-шторма ~17/с): сервер сам шлёт
@@ -82,6 +85,12 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                 tracing::info!(player_id = ?auth_state.player_id(), "Player kicked via admin console");
                 break;
             }
+            changed = overflow_rx.changed() => {
+                if changed.is_ok() && *overflow_rx.borrow() {
+                    tracing::warn!(session_id = session_id.get(), "Session outbox overflow; disconnecting slow client");
+                }
+                break;
+            }
             _ = heartbeat.tick() => {
                 if !heartbeat_gate.is_enabled() {
                     continue;
@@ -119,109 +128,99 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                     }
                     match Packet::try_decode(&mut buf) {
                         Ok(Some(packet)) => {
-                    let ev = packet.event_str();
-                    crate::metrics::PACKETS_IN_TOTAL.with_label_values(&[ev]).inc();
-                    // PO (Pong) обрабатывается в любом состоянии — как в референсе Session.Ping()
-                    if ev == "PO" {
-                        if let Some(pong) = PongClient::decode(&packet.payload) {
-                            // PO НЕ триггерит ответный PI (иначе tight-loop
-                            // PO↔PI на RTT = шторм ~17/с). Тут только:
-                            // liveness, измерение РЕАЛЬНОГО RTT (now −
-                            // момент отправки того PI) для показа, и время
-                            // клиента для num2 след. PI. PI шлёт heartbeat.
-                            heartbeat_state.record_pong(&pong, Instant::now());
-                        }
-                        continue;
-                    }
-
-                    match auth_state {
-                        AuthState::PreAuth => {
-                            if ev == "AU" {
-                                if let Some(au) = AuClientPacket::decode(&packet.payload) {
-                                    let now = Instant::now();
-                                    let mut new_auth = auth_state.clone();
-                                    let res = handle_auth(&state, &tx, &au, &sid, session_token, &mut new_auth).await?;
-                                    if let Some(id) = res {
-                                        tracing::Span::current().record("player_id", id.0);
-                                        auth_state = new_auth;
-                                        heartbeat_gate.mark_auth_response_queued();
-                                        if let Some(kt) = kick_tx_opt.take() {
-                                            state.register_kick_channel(id, kt);
-                                        }
-                                        tracing::info!(player_id = %id, "Player authenticated");
-                                    } else {
-                                        // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
-                                        auth_state = new_auth;
-                                        heartbeat_gate.mark_auth_response_queued();
-                                        tracing::warn!("Auth failed");
-                                        let wait = state.record_auth_failure_by_addr(&client_ip, now);
-                                        if wait.is_some() { break; }
-                                    }
+                            let ev = packet.event_str();
+                            crate::metrics::PACKETS_IN_TOTAL.with_label_values(&[ev]).inc();
+                            // PO (Pong) обрабатывается в любом состоянии — как в референсе Session.Ping()
+                            if ev == "PO" {
+                                if let Some(pong) = PongClient::decode(&packet.payload) {
+                                    // PO НЕ триггерит ответный PI (иначе tight-loop
+                                    // PO↔PI на RTT = шторм ~17/с). Тут только:
+                                    // liveness, измерение РЕАЛЬНОГО RTT (now −
+                                    // момент отправки того PI) для показа, и время
+                                    // клиента для num2 след. PI. PI шлёт heartbeat.
+                                    heartbeat_state.record_pong(&pong, Instant::now());
                                 }
+                                continue;
                             }
-                        }
-                        AuthState::GuiAuth(ref mut step) => {
-                            // C# ref: Session.GUI routes to auth.CallAction(button) when auth is active.
-                            if ev == "TY" {
-                                if let Some(ty) = TyPacket::decode(&packet.payload) {
-                                    if ty.event_str() == "GUI_" {
-                                        if let Some(button) = decode_gui_button(&ty.sub_payload) {
-                                            let res = handle_gui_auth_flow(&state, &tx, button.as_ref(), session_token, step).await?;
-                                            if let Some(id) = res {
-                                                tracing::Span::current().record("player_id", id.0);
-                                                auth_state = AuthState::Authenticated { player_id: id };
-                                                heartbeat_gate.mark_auth_response_queued();
-                                                if let Some(kt) = kick_tx_opt.take() {
-                                                    state.register_kick_channel(id, kt);
-                                                }
-                                                tracing::info!(player_id = %id, "Player registered/logged via GUI");
+
+                            match auth_state {
+                                AuthState::PreAuth => {
+                                    if ev == "AU"
+                                        && let Some(au) = AuClientPacket::decode(&packet.payload)
+                                    {
+                                        let now = Instant::now();
+                                        let mut new_auth = auth_state.clone();
+                                        let res = handle_auth(
+                                            &state,
+                                            &tx,
+                                            &au,
+                                            &sid,
+                                            session_id,
+                                            &mut new_auth,
+                                        )
+                                        .await?;
+                                        if let Some(id) = res {
+                                            tracing::Span::current().record("player_id", id.0);
+                                            auth_state = new_auth;
+                                            heartbeat_gate.mark_auth_response_queued();
+                                            tracing::info!(player_id = %id, "Player authenticated");
+                                        } else {
+                                            // Transition to GuiAuth so subsequent GUI_ TY packets are routed.
+                                            auth_state = new_auth;
+                                            heartbeat_gate.mark_auth_response_queued();
+                                            tracing::warn!("Auth failed");
+                                            let wait =
+                                                state.record_auth_failure_by_addr(&client_ip, now);
+                                            if wait.is_some() {
+                                                break;
                                             }
                                         }
                                     }
                                 }
-                            }
-                        }
-                        AuthState::Authenticated { player_id: id } => {
-                                if ev == "TY" {
-                                    if let Some(ty) = TyPacket::decode(&packet.payload) {
-                                        let event = ty.event_str();
-                                        if is_tick_action(event) {
-                                            tracing::debug!(
-                                                event = event,
-                                                time = ty.client_timestamp(),
-                                                "<<< [TY] enqueued"
-                                            );
-                                            let _ = state.commands_tx.send(crate::game::PlayerCommand::Ty {
-                                                player_id: id,
-                                                tx: tx.clone(),
-                                                packet: ty,
-                                            });
-                                        } else {
-                                            let event_owned = event.to_string();
-                                            tracing::debug!(
-                                                event = %event_owned,
-                                                time = ty.client_timestamp(),
-                                                "<<< [TY] spawned async"
-                                            );
-                                            let state_c = state.clone();
-                                            let tx_c = tx.clone();
-                                            tokio::spawn(async move {
-                                                if let Err(e) = crate::net::session::dispatch::dispatch_ty_packet(
-                                                    &state_c, &tx_c, id, &ty
-                                                ).await {
-                                                    tracing::error!(
-                                                        player_id = %id,
-                                                        event = %event_owned,
-                                                        error = ?e,
-                                                        "Failed to dispatch async TY packet"
-                                                    );
-                                                }
-                                            });
+                                AuthState::GuiAuth(ref mut step) => {
+                                    // C# ref: Session.GUI routes to auth.CallAction(button) when auth is active.
+                                    if ev == "TY"
+                                        && let Some(ty) = TyPacket::decode(&packet.payload)
+                                        && ty.event_str() == "GUI_"
+                                        && let Some(button) = decode_gui_button(&ty.sub_payload)
+                                    {
+                                        let res = handle_gui_auth_flow(
+                                            &state,
+                                            &tx,
+                                            button.as_ref(),
+                                            session_id,
+                                            step,
+                                        )
+                                        .await?;
+                                        if let Some(id) = res {
+                                            tracing::Span::current().record("player_id", id.0);
+                                            auth_state = AuthState::Authenticated { player_id: id };
+                                            heartbeat_gate.mark_auth_response_queued();
+                                            tracing::info!(player_id = %id, "Player registered/logged via GUI");
                                         }
                                     }
                                 }
-                        }
-                    }
+                                AuthState::Authenticated { player_id: id } => {
+                                    let received_at = Instant::now();
+                                    if ev == "TY"
+                                        && let Some(ty) = TyPacket::decode(&packet.payload)
+                                    {
+                                        let event = ty.event_str();
+                                        tracing::debug!(
+                                            event = event,
+                                            time = ty.client_timestamp(),
+                                            "<<< [TY] enqueued"
+                                        );
+                                        enqueue_ty_command(
+                                            &state,
+                                            session_id,
+                                            id,
+                                            &ty,
+                                            received_at,
+                                        );
+                                    }
+                                }
+                            }
                         }
                         Ok(None) => {
                             // Недостаточно данных для полного пакета — ждём следующий read.
@@ -262,15 +261,8 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = auth_state.player_id() {
-        state.unregister_kick_channel(id);
-        on_disconnect(&state, id, session_token);
+        on_disconnect(&state, id, session_id);
     }
+    state.sessions.close(session_id);
     Ok(())
-}
-
-fn is_tick_action(event: &str) -> bool {
-    matches!(
-        event,
-        "Xmov" | "Xdig" | "Xbld" | "Xgeo" | "Xhea" | "INVN" | "INCL" | "TADG" | "RESP" | "PROG"
-    )
 }

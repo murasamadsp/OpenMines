@@ -13,19 +13,11 @@ async fn load_owned_program_name(
         .map(|p| p.name))
 }
 
-fn send_programmator_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_programmator_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
         &ok_message("ПРОГРАММАТОР", "Состояние программатора недоступно.").1,
-    );
-}
-
-fn send_settings_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
     );
 }
 
@@ -38,221 +30,16 @@ fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
-fn send_programmator_start_position(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    server_pos: (i32, i32),
-    running: bool,
-) {
+fn send_programmator_start_position(tx: &Outbox, server_pos: (i32, i32), running: bool) {
     if running {
         send_u_packet(tx, "@T", &tp(server_pos.0, server_pos.1).1);
-    }
-}
-
-enum AutoDigMutation {
-    Changed(bool),
-    Unchanged,
-    MissingState(&'static str),
-}
-
-enum AggressionMutation {
-    Changed(bool),
-    Unchanged,
-    MissingState(&'static str),
-}
-
-pub fn handle_auto_dig_toggle(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
-    let new_val = state
-        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerSettings>(entity)
-                .is_none()
-            {
-                return Some(AutoDigMutation::MissingState("PlayerSettings"));
-            }
-            if ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-            {
-                return Some(AutoDigMutation::MissingState("PlayerFlags"));
-            }
-            let mut settings = ecs
-                .get_mut::<crate::game::player::PlayerSettings>(entity)
-                .expect("PlayerSettings checked before auto-dig toggle");
-            settings.auto_dig = !settings.auto_dig;
-            let val = settings.auto_dig;
-            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                .expect("PlayerFlags checked before auto-dig toggle")
-                .dirty = true;
-            Some(AutoDigMutation::Changed(val))
-        })
-        .flatten();
-
-    match new_val {
-        Some(AutoDigMutation::Changed(val)) => send_u_packet(tx, "BD", &auto_digg(val).1),
-        Some(AutoDigMutation::Unchanged) => {}
-        Some(AutoDigMutation::MissingState(component)) => {
-            tracing::error!(player_id = %pid, component, "Player component missing for auto-dig toggle");
-            send_settings_state_error(tx);
-        }
-        None => {
-            tracing::error!(player_id = %pid, "Player entity missing for auto-dig toggle");
-            send_settings_state_error(tx);
-        }
-    }
-}
-
-/// Set auto-dig to a specific value (used by programmator `EnableAutoDig`/`DisableAutoDig`).
-pub fn handle_auto_dig_set(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    enabled: bool,
-) {
-    let changed = state
-        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerSettings>(entity)
-                .is_none()
-            {
-                return Some(AutoDigMutation::MissingState("PlayerSettings"));
-            }
-            if ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-            {
-                return Some(AutoDigMutation::MissingState("PlayerFlags"));
-            }
-            let mut settings = ecs
-                .get_mut::<crate::game::player::PlayerSettings>(entity)
-                .expect("PlayerSettings checked before auto-dig set");
-            if settings.auto_dig != enabled {
-                settings.auto_dig = enabled;
-                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                    .expect("PlayerFlags checked before auto-dig set")
-                    .dirty = true;
-                Some(AutoDigMutation::Changed(enabled))
-            } else {
-                Some(AutoDigMutation::Unchanged)
-            }
-        })
-        .flatten();
-
-    match changed {
-        Some(AutoDigMutation::Changed(val)) => send_u_packet(tx, "BD", &auto_digg(val).1),
-        Some(AutoDigMutation::Unchanged) => {}
-        Some(AutoDigMutation::MissingState(component)) => {
-            tracing::error!(player_id = %pid, component, "Player component missing for auto-dig set");
-            send_settings_state_error(tx);
-        }
-        None => {
-            tracing::error!(player_id = %pid, "Player entity missing for auto-dig set");
-            send_settings_state_error(tx);
-        }
-    }
-}
-
-pub fn handle_aggression_toggle(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
-    let changed = state
-        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerSettings>(entity)
-                .is_none()
-            {
-                return Some(AggressionMutation::MissingState("PlayerSettings"));
-            }
-            if ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-            {
-                return Some(AggressionMutation::MissingState("PlayerFlags"));
-            }
-            let mut settings = ecs
-                .get_mut::<crate::game::player::PlayerSettings>(entity)
-                .expect("PlayerSettings checked before aggression toggle");
-            settings.aggression = !settings.aggression;
-            let val = settings.aggression;
-            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                .expect("PlayerFlags checked before aggression toggle")
-                .dirty = true;
-            Some(AggressionMutation::Changed(val))
-        })
-        .flatten();
-
-    match changed {
-        Some(AggressionMutation::Changed(val)) => send_u_packet(tx, "BA", &aggression(val).1),
-        Some(AggressionMutation::Unchanged) => {}
-        Some(AggressionMutation::MissingState(component)) => {
-            tracing::error!(player_id = %pid, component, "Player component missing for aggression toggle");
-            send_settings_state_error(tx);
-        }
-        None => {
-            tracing::error!(player_id = %pid, "Player entity missing for aggression toggle");
-            send_settings_state_error(tx);
-        }
-    }
-}
-
-pub fn handle_aggression_set(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    enabled: bool,
-) {
-    let changed = state
-        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerSettings>(entity)
-                .is_none()
-            {
-                return Some(AggressionMutation::MissingState("PlayerSettings"));
-            }
-            if ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-            {
-                return Some(AggressionMutation::MissingState("PlayerFlags"));
-            }
-            let mut settings = ecs
-                .get_mut::<crate::game::player::PlayerSettings>(entity)
-                .expect("PlayerSettings checked before aggression set");
-            if settings.aggression != enabled {
-                settings.aggression = enabled;
-                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                    .expect("PlayerFlags checked before aggression set")
-                    .dirty = true;
-                Some(AggressionMutation::Changed(enabled))
-            } else {
-                Some(AggressionMutation::Unchanged)
-            }
-        })
-        .flatten();
-
-    match changed {
-        Some(AggressionMutation::Changed(val)) => send_u_packet(tx, "BA", &aggression(val).1),
-        Some(AggressionMutation::Unchanged) => {}
-        Some(AggressionMutation::MissingState(component)) => {
-            tracing::error!(player_id = %pid, component, "Player component missing for aggression set");
-            send_settings_state_error(tx);
-        }
-        None => {
-            tracing::error!(player_id = %pid, "Player entity missing for aggression set");
-            send_settings_state_error(tx);
-        }
     }
 }
 
 /// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в `server_reference`.
 pub async fn handle_prog_ty(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     event: &str,
     payload: &[u8],
@@ -316,66 +103,7 @@ pub async fn handle_prog_ty(
                         return;
                     }
                 };
-                let run_state = state
-                    .modify_player(pid, |ecs, entity| {
-                        let server_pos = ecs
-                            .get::<crate::game::player::PlayerPosition>(entity)
-                            .map(|pos| (pos.x, pos.y))?;
-                        // На запуске окно программатора закрывается (ниже шлём `Gu`).
-                        // ОБЯЗАТЕЛЬНО синхронизируем серверный `current_window=None`:
-                        // иначе после стопа гард `window_open` в `handle_move` режет
-                        // ручной ход и шлёт `@T` назад («сервер кидает назад»).
-                        // Pope-меню/окно ставило `current_window`, а сырой `Gu`
-                        // (send_u_packet) его не сбрасывал.
-                        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
-                            ui.current_window = None;
-                        }
-                        let mut ps =
-                            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
-                        ps.selected_id = Some(prog_id);
-                        ps.selected_data = Some(source.clone());
-                        ps.run_program(&source);
-                        Some((ps.running, server_pos))
-                    })
-                    .flatten();
-
-                let Some((running, server_pos)) = run_state else {
-                    tracing::error!(player_id = %pid, program_id = prog_id, "Programmator state missing for PROG");
-                    send_u_packet(tx, "@P", &programmator_status(false).1);
-                    send_programmator_state_error(tx);
-                    return;
-                };
-
-                tracing::info!(
-                    player_id = %pid,
-                    program_id = prog_id,
-                    len = source.len(),
-                    running,
-                    "PROGDIAG PROG program run status"
-                );
-
-                send_u_packet(tx, "Gu", &gu_close().1);
-                send_programmator_start_position(tx, server_pos, running);
-                if running {
-                    // Unity @P=1 activates the whole ProgrammatorWindow. #p must
-                    // be last: UpdateProgramm hydrates selected state and ends by
-                    // hiding that window again.
-                    send_u_packet(tx, "@P", &programmator_status(true).1);
-                    send_u_packet(tx, "BH", &hand_mode(false).1);
-                    send_u_packet(tx, "#p", &open_programmator(prog_id, &prog_name, &source).1);
-                } else {
-                    send_u_packet(tx, "@P", &programmator_status(false).1);
-                    send_u_packet(tx, "BH", &hand_mode(false).1);
-                    send_u_packet(
-                        tx,
-                        "OK",
-                        &ok_message(
-                            "ПРОГРАММАТОР",
-                            "Программа сохранена, но не запущена: проверьте команды и метки.",
-                        )
-                        .1,
-                    );
-                }
+                apply_saved_program_to_tick_state(state, tx, pid, prog_id, &prog_name, &source);
             } else {
                 tracing::warn!(
                     player_id = %pid,
@@ -391,37 +119,7 @@ pub async fn handle_prog_ty(
             }
         }
         "pRST" => {
-            // Unity uses stopped `pRST` as a pre-open/reset signal from
-            // `OnProgButton()`. It must not open `#P`: doing so reopens the
-            // editor over gameplay when the user is only toggling program mode.
-            // Only a real running->stopped transition sends visible wire.
-            let result = state
-                .modify_player(pid, |ecs, entity| {
-                    let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
-                    let was_running = ps.running;
-                    if was_running {
-                        ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
-                            .stop_program();
-                    }
-                    if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
-                        ui.current_window = None;
-                    }
-                    Some(was_running)
-                })
-                .flatten();
-            let Some(was_running) = result else {
-                tracing::error!(player_id = %pid, "Programmator state missing for pRST");
-                send_u_packet(tx, "@P", &programmator_status(false).1);
-                send_programmator_state_error(tx);
-                return;
-            };
-            if was_running {
-                // RunProgramm() закрывает окно перед остановкой.
-                clear_programmator_window(state, pid);
-                send_u_packet(tx, "Gu", &gu_close().1);
-                send_u_packet(tx, "@P", &programmator_status(false).1);
-                send_u_packet(tx, "BH", &hand_mode(false).1);
-            }
+            handle_prog_reset_ty(state, tx, pid);
         }
         "PDEL" => {
             if let Ok(id_str) = std::str::from_utf8(payload) {
@@ -451,23 +149,7 @@ pub async fn handle_prog_ty(
                             return;
                         }
                     }
-                    let cleared_selected = state
-                        .modify_player(pid, |ecs, entity| {
-                            let mut cleared = false;
-                            if let Some(mut ps) =
-                                ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
-                            {
-                                if ps.selected_id == Some(prog_id) {
-                                    ps.running = false;
-                                    ps.selected_id = None;
-                                    ps.selected_data = None;
-                                    cleared = true;
-                                }
-                            }
-                            Some(cleared)
-                        })
-                        .flatten()
-                        .unwrap_or(false);
+                    let cleared_selected = clear_deleted_program_runtime(state, pid, prog_id);
                     if cleared_selected
                         && let Err(e) = state.db.set_selected_program(pid.into(), None).await
                     {
@@ -550,99 +232,168 @@ pub async fn handle_prog_ty(
                 .await;
         }
         "PREN" => {
-            // C# ref Session.cs:150 `StaticGUI.Rename(player, pren.Id)` — открывает
-            // диалог переименования с полем ввода. pren.Id — ID программы из payload.
-            let prog_id = std::str::from_utf8(payload)
-                .ok()
-                .and_then(|s| s.trim().parse::<i32>().ok());
-            if let Some(id) = prog_id {
-                use crate::net::session::ui::horb::{Button, Horb};
-
-                Horb::new("ПЕРЕИМЕНОВАТЬ")
-                    .text("Введите новое название программы")
-                    .input("Название программы...", true)
-                    .button(Button::new("OK", format!("rename:{id}:%I%")))
-                    .close_button()
-                    .send(state, tx, pid, format!("pren:{id}"));
-            } else {
-                let running = state
-                    .query_player(pid, |ecs, entity| {
-                        ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                            .is_some_and(|ps| ps.running)
-                    })
-                    .unwrap_or(false);
-                send_u_packet(tx, "@P", &programmator_status(running).1);
-            }
+            handle_prog_rename_prompt_ty(state, tx, pid, payload);
         }
         _ => {}
     }
 }
 
-/// TY `Sett` → `Settings.SendSettingsGUI` в `server_reference` — 1:1 с C# `RichList`.
-pub fn handle_sett_ty(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    _payload: &[u8],
-) {
-    use crate::net::session::ui::horb::{Button, Horb, RichRow, Tab};
-
-    let settings = state.query_player_opt(pid, |ecs, entity| {
-        ecs.get::<crate::game::player::PlayerSettings>(entity)
-            .copied()
-    });
-    let Some(s) = settings else { return };
-
-    let has_clan = state
-        .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<crate::game::player::PlayerStats>(entity)
-                .map(|st| st.clan_id.unwrap_or(0) != 0)
+pub fn clear_deleted_program_runtime(state: &Arc<GameState>, pid: PlayerId, prog_id: i32) -> bool {
+    state
+        .modify_player(pid, |ecs, entity| {
+            let cleared = if let Some(mut ps) =
+                ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                && ps.selected_id == Some(prog_id)
+            {
+                ps.running = false;
+                ps.selected_id = None;
+                ps.selected_data = None;
+                true
+            } else {
+                false
+            };
+            Some(cleared)
         })
-        .unwrap_or(false);
-
-    let scale_values = "0:мелко#1:КРУПНО#";
-    let mut win = Horb::new("Настройки")
-        .tab(Tab::active("Настройки"))
-        .rich_row(RichRow::dropdown(
-            "Масштаб интерфейса",
-            scale_values,
-            "isca",
-            i64::from(s.isca),
-        ))
-        .rich_row(RichRow::dropdown(
-            "Масштаб территории",
-            scale_values,
-            "tsca",
-            i64::from(s.tsca),
-        ))
-        .rich_row(RichRow::toggle(
-            "Включить управление мышкой",
-            "mous",
-            s.mous,
-        ))
-        .rich_row(RichRow::toggle("Упрощённый режим графики", "pot", s.pot))
-        .rich_row(RichRow::toggle(
-            "Принудительно обновлять породы (увеличит потр. CPU)",
-            "frc",
-            s.frc,
-        ))
-        .rich_row(RichRow::toggle(
-            "CTRL переключает скорость робота (вместо удерживания)",
-            "ctrl",
-            s.ctrl,
-        ))
-        .rich_row(RichRow::toggle("Отключить ближайшие звуки", "mof", s.mof))
-        .button(Button::new("Сохранить", "save:%R%"));
-
-    if !has_clan {
-        win = win.button(Button::new("Создать клан", "clancreate"));
-    }
-
-    win.button(Button::new("Выйти", "exit"))
-        .send(state, tx, pid, "settings");
+        .flatten()
+        .unwrap_or(false)
 }
 
-pub async fn handle_whoi(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, ids: &[i32]) {
+pub fn apply_saved_program_to_tick_state(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    prog_id: i32,
+    prog_name: &str,
+    source: &str,
+) {
+    let source_owned = source.to_owned();
+    let run_state = state
+        .modify_player(pid, |ecs, entity| {
+            let server_pos = ecs
+                .get::<crate::game::player::PlayerPosition>(entity)
+                .map(|pos| (pos.x, pos.y))?;
+            // На запуске окно программатора закрывается (ниже шлём `Gu`).
+            // ОБЯЗАТЕЛЬНО синхронизируем серверный `current_window=None`:
+            // иначе после стопа гард `window_open` в `handle_move` режет
+            // ручной ход и шлёт `@T` назад («сервер кидает назад»).
+            // Pope-меню/окно ставило `current_window`, а сырой `Gu`
+            // (send_u_packet) его не сбрасывал.
+            if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                ui.current_window = None;
+            }
+            let mut ps = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            ps.selected_id = Some(prog_id);
+            ps.selected_data = Some(source_owned.clone());
+            ps.run_program(&source_owned);
+            Some((ps.running, server_pos))
+        })
+        .flatten();
+
+    let Some((running, server_pos)) = run_state else {
+        tracing::error!(player_id = %pid, program_id = prog_id, "Programmator state missing for PROG");
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+        send_programmator_state_error(tx);
+        return;
+    };
+
+    tracing::info!(
+        player_id = %pid,
+        program_id = prog_id,
+        len = source.len(),
+        running,
+        "PROGDIAG PROG program run status"
+    );
+
+    send_u_packet(tx, "Gu", &gu_close().1);
+    send_programmator_start_position(tx, server_pos, running);
+    if running {
+        // Unity @P=1 activates the whole ProgrammatorWindow. #p must
+        // be last: UpdateProgramm hydrates selected state and ends by
+        // hiding that window again.
+        send_u_packet(tx, "@P", &programmator_status(true).1);
+        send_u_packet(tx, "BH", &hand_mode(false).1);
+        send_u_packet(tx, "#p", &open_programmator(prog_id, prog_name, source).1);
+    } else {
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+        send_u_packet(tx, "BH", &hand_mode(false).1);
+        send_u_packet(
+            tx,
+            "OK",
+            &ok_message(
+                "ПРОГРАММАТОР",
+                "Программа сохранена, но не запущена: проверьте команды и метки.",
+            )
+            .1,
+        );
+    }
+}
+
+pub fn handle_prog_reset_ty(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+    // Unity uses stopped `pRST` as a pre-open/reset signal from
+    // `OnProgButton()`. It must not open `#P`: doing so reopens the
+    // editor over gameplay when the user is only toggling program mode.
+    // Only a real running->stopped transition sends visible wire.
+    let result = state
+        .modify_player(pid, |ecs, entity| {
+            let ps = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+            let was_running = ps.running;
+            if was_running {
+                ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?
+                    .stop_program();
+            }
+            if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                ui.current_window = None;
+            }
+            Some(was_running)
+        })
+        .flatten();
+    let Some(was_running) = result else {
+        tracing::error!(player_id = %pid, "Programmator state missing for pRST");
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+        send_programmator_state_error(tx);
+        return;
+    };
+    if was_running {
+        // RunProgramm() закрывает окно перед остановкой.
+        clear_programmator_window(state, pid);
+        send_u_packet(tx, "Gu", &gu_close().1);
+        send_u_packet(tx, "@P", &programmator_status(false).1);
+        send_u_packet(tx, "BH", &hand_mode(false).1);
+    }
+}
+
+pub fn handle_prog_rename_prompt_ty(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    payload: &[u8],
+) {
+    // C# ref Session.cs:150 `StaticGUI.Rename(player, pren.Id)` — открывает
+    // диалог переименования с полем ввода. pren.Id — ID программы из payload.
+    let prog_id = std::str::from_utf8(payload)
+        .ok()
+        .and_then(|s| s.trim().parse::<i32>().ok());
+    if let Some(id) = prog_id {
+        use crate::net::session::ui::horb::{Button, Horb};
+
+        Horb::new("ПЕРЕИМЕНОВАТЬ")
+            .text("Введите новое название программы")
+            .input("Название программы...", true)
+            .button(Button::new("OK", format!("rename:{id}:%I%")))
+            .close_button()
+            .send(state, tx, pid, format!("pren:{id}"));
+    } else {
+        let running = state
+            .query_player(pid, |ecs, entity| {
+                ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .is_some_and(|ps| ps.running)
+            })
+            .unwrap_or(false);
+        send_u_packet(tx, "@P", &programmator_status(running).1);
+    }
+}
+
+pub async fn handle_whoi(state: &Arc<GameState>, tx: &Outbox, ids: &[i32]) {
     let mut parts = Vec::new();
     for &id in ids {
         let mut name_opt =
@@ -678,7 +429,7 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct TestState {
         state: Arc<GameState>,
@@ -745,7 +496,7 @@ mod tests {
         payload
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -760,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn prog_valid_payload_saves_updates_and_reports_failed_run() {
         let test = make_test_state("prog_state_machine").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -813,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn prog_running_start_syncs_authoritative_position_before_status() {
         let test = make_test_state("prog_start_position_sync").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -854,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn prog_rejects_missing_positive_program_id_without_creating_default_program() {
         let test = make_test_state("prog_missing_positive_id").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -884,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn prog_zero_id_opens_program_list_even_when_server_has_stale_selected_program() {
         let test = make_test_state("prog_zero_id_opens_list").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -933,7 +684,7 @@ mod tests {
     #[tokio::test]
     async fn auto_dig_toggle_missing_flags_is_explicit_error_without_settings_mutation() {
         let test = make_test_state("auto_dig_toggle_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -948,7 +699,10 @@ mod tests {
                 .remove::<crate::game::player::PlayerFlags>();
         }
 
-        handle_auto_dig_toggle(&test.state, &tx, pid);
+        crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::ToggleAutoDig { player_id: pid },
+        );
 
         let auto_dig = test
             .state
@@ -973,7 +727,7 @@ mod tests {
     #[tokio::test]
     async fn auto_dig_set_missing_flags_is_explicit_error_without_settings_mutation() {
         let test = make_test_state("auto_dig_set_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -988,7 +742,7 @@ mod tests {
                 .remove::<crate::game::player::PlayerFlags>();
         }
 
-        handle_auto_dig_set(&test.state, &tx, pid, true);
+        crate::game::logic::commands::apply_programmator_auto_dig_set(&test.state, &tx, pid, true);
 
         let auto_dig = test
             .state
@@ -1013,12 +767,15 @@ mod tests {
     #[tokio::test]
     async fn aggression_toggle_updates_state_and_sends_ba() {
         let test = make_test_state("aggression_toggle").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
-        handle_aggression_toggle(&test.state, &tx, pid);
+        crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::ToggleAggression { player_id: pid },
+        );
 
         let (aggression, dirty) = test
             .state
@@ -1040,12 +797,17 @@ mod tests {
     #[tokio::test]
     async fn aggression_set_unchanged_is_silent() {
         let test = make_test_state("aggression_set_unchanged").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
-        handle_aggression_set(&test.state, &tx, pid, false);
+        crate::game::logic::commands::apply_programmator_aggression_set(
+            &test.state,
+            &tx,
+            pid,
+            false,
+        );
 
         assert!(drain_events(&mut rx).is_empty());
 
@@ -1055,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn prst_from_open_program_list_does_not_reopen_selected_stopped_program() {
         let test = make_test_state("prst_state_machine").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1099,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn prst_preopen_signal_for_hydrated_editor_sends_no_packets() {
         let test = make_test_state("prst_preopen_no_packets").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1134,7 +896,7 @@ mod tests {
     #[tokio::test]
     async fn prst_stops_running_program_and_clears_hand_mode_wire_state() {
         let test = make_test_state("prst_stop_clears_hand_mode").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1167,7 +929,7 @@ mod tests {
     #[tokio::test]
     async fn prog_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
         let test = make_test_state("prog_missing_component").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1201,7 +963,7 @@ mod tests {
     #[tokio::test]
     async fn prst_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
         let test = make_test_state("prst_missing_component").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1228,7 +990,7 @@ mod tests {
     #[tokio::test]
     async fn pcop_copies_owned_program_and_refreshes_list() {
         let test = make_test_state("pcop_state_machine").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1276,7 +1038,7 @@ mod tests {
             .create_player("foreign", "p", "h2")
             .await
             .unwrap();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1320,7 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn pdel_deletes_owned_selected_program_without_wire_response() {
         let test = make_test_state("pdel_state_machine").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1371,7 +1133,7 @@ mod tests {
             .create_player("foreign-pdel", "p", "h2")
             .await
             .unwrap();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1432,7 +1194,7 @@ mod tests {
     #[tokio::test]
     async fn pren_opens_typed_rename_dialog() {
         let test = make_test_state("pren_state_machine").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

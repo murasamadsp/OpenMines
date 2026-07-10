@@ -189,7 +189,9 @@ pub fn add_player_money(
 
             if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
                 let packet = crate::protocol::packets::money(money, creds);
-                let _ = conn.tx.send(make_u_packet_bytes(packet.0, &packet.1));
+                if let Some(tx) = state.sessions.outbox_for_session(conn.session_id) {
+                    let _ = tx.send(make_u_packet_bytes(packet.0, &packet.1));
+                }
             }
 
             Ok(())
@@ -220,7 +222,9 @@ pub fn heal_player(state: &Arc<GameState>, target_pid: PlayerId) -> AdminCommand
 
             if let Some(conn) = ecs.get::<PlayerConnection>(entity) {
                 let packet = crate::protocol::packets::health(health, max_health);
-                let _ = conn.tx.send(make_u_packet_bytes(packet.0, &packet.1));
+                if let Some(tx) = state.sessions.outbox_for_session(conn.session_id) {
+                    let _ = tx.send(make_u_packet_bytes(packet.0, &packet.1));
+                }
             }
 
             Ok(())

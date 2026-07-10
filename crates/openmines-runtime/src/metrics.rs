@@ -1,6 +1,6 @@
 use prometheus::{
-    Encoder, Histogram, HistogramOpts, IntCounter, IntCounterVec, IntGauge, Opts, Registry,
-    TextEncoder,
+    Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts,
+    Registry, TextEncoder,
 };
 use std::sync::LazyLock;
 
@@ -82,6 +82,36 @@ pub static WORLD_FLUSH_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
     h
 });
 
+pub static WORLD_FLUSH_DURABILITY_CHUNKS_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let c = IntCounter::with_opts(Opts::new(
+        "openmines_world_flush_durability_chunks_total",
+        "Total dirty durability chunks flushed",
+    ))
+    .expect("metric");
+    REGISTRY.register(Box::new(c.clone())).expect("register");
+    c
+});
+
+pub static WORLD_FLUSH_DURABILITY_RANGES_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let c = IntCounter::with_opts(Opts::new(
+        "openmines_world_flush_durability_ranges_total",
+        "Total contiguous durability ranges flushed",
+    ))
+    .expect("metric");
+    REGISTRY.register(Box::new(c.clone())).expect("register");
+    c
+});
+
+pub static WORLD_FLUSH_DURABILITY_BYTES_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let c = IntCounter::with_opts(Opts::new(
+        "openmines_world_flush_durability_bytes_total",
+        "Total durability bytes covered by dirty-range flushes",
+    ))
+    .expect("metric");
+    REGISTRY.register(Box::new(c.clone())).expect("register");
+    c
+});
+
 pub static PLAYER_SAVE_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     let c = IntCounter::with_opts(Opts::new(
         "openmines_player_save_total",
@@ -90,6 +120,229 @@ pub static PLAYER_SAVE_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     .expect("metric");
     REGISTRY.register(Box::new(c.clone())).expect("register");
     c
+});
+
+const COMMAND_LATENCY_BUCKETS: &[f64] = &[
+    0.000_1, 0.000_25, 0.000_5, 0.001, 0.0025, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+    5.0,
+];
+
+fn command_histogram(name: &str, help: &str) -> HistogramVec {
+    let opts = HistogramOpts::new(name, help).buckets(COMMAND_LATENCY_BUCKETS.to_vec());
+    let histogram = HistogramVec::new(opts, &["kind"]).expect("metric");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("register");
+    histogram
+}
+
+pub static COMMAND_RECEIVE_TO_ENQUEUE_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    command_histogram(
+        "openmines_command_receive_to_enqueue_duration_seconds",
+        "Time from decoded inbound command receipt to simulation queue enqueue",
+    )
+});
+
+pub static COMMAND_QUEUE_RESIDENCE_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    command_histogram(
+        "openmines_command_queue_residence_duration_seconds",
+        "Time commands spend waiting in the simulation input queue",
+    )
+});
+
+pub static COMMAND_RECEIVE_TO_APPLY_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    command_histogram(
+        "openmines_command_receive_to_apply_duration_seconds",
+        "Time from decoded inbound command receipt to simulation apply start",
+    )
+});
+
+pub static COMMAND_APPLY_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    command_histogram(
+        "openmines_command_apply_duration_seconds",
+        "Simulation command apply duration",
+    )
+});
+
+pub static COMMANDS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "openmines_commands_total",
+            "Commands by stable kind and processing result",
+        ),
+        &["kind", "result"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static COMMAND_QUEUE_DEPTH: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_command_queue_depth",
+        "Current simulation input command queue depth",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static COMMAND_QUEUE_HIGH_WATER: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_command_queue_high_water",
+        "Highest observed simulation input command queue depth since process start",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static PRESENTATION_QUEUE_DEPTH: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_presentation_queue_depth",
+        "Current bounded presentation event queue depth",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static PRESENTATION_EVENTS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "openmines_presentation_events_total",
+            "Presentation events by stable kind and processing result",
+        ),
+        &["kind", "result"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static COMMAND_SEQUENCE: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_command_last_applied_sequence",
+        "Sequence of the last command applied by the simulation",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static SIMULATION_TICK: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_simulation_tick",
+        "Current monotonic simulation tick",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+const TICK_CADENCE_BUCKETS: &[f64] = &[
+    0.000_1, 0.000_25, 0.000_5, 0.001, 0.0025, 0.005, 0.01, 0.0125, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0,
+];
+
+fn tick_histogram(name: &str, help: &str) -> Histogram {
+    let histogram =
+        Histogram::with_opts(HistogramOpts::new(name, help).buckets(TICK_CADENCE_BUCKETS.to_vec()))
+            .expect("metric");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("register");
+    histogram
+}
+
+pub static TICK_START_INTERVAL_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
+    tick_histogram(
+        "openmines_tick_start_interval_seconds",
+        "Wall-clock interval between consecutive simulation tick starts",
+    )
+});
+
+pub static TICK_WAKE_LATENESS_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
+    tick_histogram(
+        "openmines_tick_wake_lateness_seconds",
+        "Simulation tick start lateness after the requested sleep deadline",
+    )
+});
+
+pub static BOTS_RENDER_OBSERVERS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "openmines_bots_render_observers_total",
+            "Bots-render observers by batch result",
+        ),
+        &["result"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static BOTS_RENDER_BYTES_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let counter = IntCounter::with_opts(Opts::new(
+        "openmines_bots_render_bytes_total",
+        "Total encoded bots-render wire bytes enqueued",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static BOTS_RENDER_SNAPSHOT_CHUNKS: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_bots_render_snapshot_chunks",
+        "Unique chunks in the latest bots-render batch snapshot",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static CRAFTING_DUE_BATCH_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
+    let counter = IntCounter::with_opts(Opts::new(
+        "openmines_crafting_due_batch_total",
+        "Total due crafting entries selected for targeted apply",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static CRAFTING_DUE_DEPTH: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_crafting_due_depth",
+        "Current crafting deadline heap depth after due selection",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
 });
 
 pub fn gather_text() -> Vec<u8> {

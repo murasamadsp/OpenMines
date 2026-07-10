@@ -1,12 +1,41 @@
 //! Кодирование исходящих пакетов и отладочные превью — отдельно от игровой логики сессии.
 
 use crate::metrics;
+use crate::net::session::outbox::Outbox;
 use crate::protocol::{b_packet, u_packet};
 use bytes::BytesMut;
-use tokio::sync::mpsc;
+use std::cell::RefCell;
 
 pub const OUTGOING_PACKET_PREVIEW: usize = 256;
 pub const INCOMING_PACKET_PREVIEW: usize = 160;
+
+pub trait PacketSink {
+    fn send_packet(&self, packet: Vec<u8>) -> bool;
+}
+
+impl PacketSink for Outbox {
+    fn send_packet(&self, packet: Vec<u8>) -> bool {
+        self.send(packet).is_ok()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PacketBatch {
+    packets: RefCell<Vec<Vec<u8>>>,
+}
+
+impl PacketBatch {
+    pub fn into_packets(self) -> Vec<Vec<u8>> {
+        self.packets.into_inner()
+    }
+}
+
+impl PacketSink for PacketBatch {
+    fn send_packet(&self, packet: Vec<u8>) -> bool {
+        self.packets.borrow_mut().push(packet);
+        true
+    }
+}
 
 pub fn make_u_packet_bytes(event: &str, payload: &[u8]) -> Vec<u8> {
     let p = u_packet(event, payload);
@@ -15,33 +44,31 @@ pub fn make_u_packet_bytes(event: &str, payload: &[u8]) -> Vec<u8> {
     buf.to_vec()
 }
 
-pub fn send_u_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: &[u8]) {
+pub fn send_u_packet(tx: &dyn PacketSink, event: &str, payload: &[u8]) {
     trace_outgoing_packet("U", event, payload);
     metrics::PACKETS_OUT_TOTAL.with_label_values(&[event]).inc();
-    let p = u_packet(event, payload);
-    let mut buf = BytesMut::with_capacity(p.wire_len());
-    p.encode(&mut buf).expect("U packet wire length overflow");
-    if let Err(err) = tx.send(buf.to_vec()) {
-        tracing::debug!(event, error = ?err, "Failed to enqueue U packet");
+    if !tx.send_packet(make_u_packet_bytes(event, payload)) {
+        tracing::debug!(event, "Failed to enqueue U packet");
     }
 }
 
-pub fn send_b_packet(tx: &mpsc::UnboundedSender<Vec<u8>>, event: &str, payload: &[u8]) {
-    trace_outgoing_packet("B", event, payload);
-    metrics::PACKETS_OUT_TOTAL.with_label_values(&[event]).inc();
+pub fn make_b_packet_bytes(event: &str, payload: &[u8]) -> Vec<u8> {
     let p = b_packet(event, payload);
     let mut buf = BytesMut::with_capacity(p.wire_len());
     p.encode(&mut buf).expect("B packet wire length overflow");
-    if let Err(err) = tx.send(buf.to_vec()) {
-        tracing::debug!(event, error = ?err, "Failed to enqueue B packet");
+    buf.to_vec()
+}
+
+pub fn send_b_packet(tx: &dyn PacketSink, event: &str, payload: &[u8]) {
+    trace_outgoing_packet("B", event, payload);
+    metrics::PACKETS_OUT_TOTAL.with_label_values(&[event]).inc();
+    if !tx.send_packet(make_b_packet_bytes(event, payload)) {
+        tracing::debug!(event, "Failed to enqueue B packet");
     }
 }
 
 pub fn encode_hb_bundle(payload: &[u8]) -> Vec<u8> {
-    let p = b_packet("HB", payload);
-    let mut buf = BytesMut::with_capacity(p.wire_len());
-    p.encode(&mut buf).expect("HB packet wire length overflow");
-    buf.to_vec()
+    make_b_packet_bytes("HB", payload)
 }
 
 fn trace_outgoing_packet(data_type: &str, event: &str, payload: &[u8]) {

@@ -1,164 +1,11 @@
-//! Геология (Xgeo) — pickup/place блоков.
-use crate::game::broadcast_cell_update;
-use crate::game::player::{
-    PlayerCooldowns, PlayerGeoStack, PlayerPosition, PlayerSkillsComp, PlayerStats,
-};
-use crate::game::programmator::ProgrammatorState;
-use crate::game::skills::SkillType;
-use crate::net::session::prelude::*;
-use rand::Rng;
-
-fn send_geo_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("ГЕОЛОГИЯ", "Состояние игрока недоступно.").1,
-    );
-}
-
-/// `Session.GeoHandler` → `TryAct(player.Geo, 200)` → `PEntity.Geo` + `SendGeo` (`pSenders.cs`).
-pub fn handle_geo(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    programmatic: bool,
-) {
-    let cell_defs = state.world.cell_defs();
-    let result = state
-        .modify_player(pid, |ecs, entity| {
-            let Some(program_state) = ecs.get::<ProgrammatorState>(entity) else {
-                tracing::error!(player_id = %pid, component = "ProgrammatorState", "Player component missing for geo");
-                send_geo_state_error(tx);
-                return None;
-            };
-            if !programmatic && !program_state.is_manual_control_allowed() {
-                return None;
-            }
-            {
-                let Some(cd) = ecs.get::<PlayerCooldowns>(entity) else {
-                    tracing::error!(player_id = %pid, component = "PlayerCooldowns", "Player component missing for geo");
-                    send_geo_state_error(tx);
-                    return None;
-                };
-                if !programmatic
-                    && cd.last_geo.elapsed()
-                        < Duration::from_millis(state.config.gameplay.cooldowns.geo_ms)
-                {
-                    return None;
-                }
-            }
-
-            // НАМЕРЕННАЯ ДЕВИАЦИЯ от C# по ПРЯМОМУ ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ:
-            // геология работает ТОЛЬКО при УСТАНОВЛЕННОМ в слот скилле Geology.
-            // В эталоне (`PEntity.Geo`) гейта нет — гео доступно без скилла; юзер
-            // явно указал требовать установленный скилл. `find(code)` = в слоте
-            // (НЕ `get_player_skill_effect`, который для неустановленного даёт
-            // эффект уровня 0 и может быть >0).
-            let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
-                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for geo");
-                send_geo_state_error(tx);
-                return None;
-            };
-            skills.states.find(SkillType::Geology.code())?;
-
-            let (px, py, dir) = {
-                let Some(pos) = ecs.get::<PlayerPosition>(entity) else {
-                    tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for geo");
-                    send_geo_state_error(tx);
-                    return None;
-                };
-                (pos.x, pos.y, pos.dir)
-            };
-            let Some(player_stats) = ecs.get::<PlayerStats>(entity) else {
-                tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for geo");
-                send_geo_state_error(tx);
-                return None;
-            };
-            let cid = player_stats.clan_id.unwrap_or(0);
-            if ecs.get::<PlayerGeoStack>(entity).is_none() {
-                tracing::error!(player_id = %pid, component = "PlayerGeoStack", "Player component missing for geo");
-                send_geo_state_error(tx);
-                return None;
-            }
-            let (dx, dy) = dir_offset(dir);
-            let (tgt_x, tgt_y) = (px + dx, py + dy);
-
-            let mut broadcast: Vec<(i32, i32)> = Vec::new();
-
-            if state.world.valid_coord(tgt_x, tgt_y)
-                && state.access_gun_full_in_ecs(ecs, tgt_x, tgt_y, cid).0
-            {
-                let cell = state.world.get_cell_typed(tgt_x, tgt_y);
-                let cell_props = cell_defs.get_typed(cell);
-                let pickable = cell_props.nature.is_pickable && !cell_props.cell_is_empty();
-                let place_here = cell_props.cell_is_empty()
-                    && cell_props.can_place_over()
-                    && state.find_pack_covering_in_ecs(ecs, tgt_x, tgt_y).is_none();
-
-                if pickable {
-                    {
-                        let mut stack = ecs.get_mut::<PlayerGeoStack>(entity)?;
-                        stack.0.push(cell.0);
-                    }
-                    state.world.destroy(tgt_x, tgt_y);
-                    broadcast.push((tgt_x, tgt_y));
-                } else if place_here {
-                    if let Some(cplaceable) = ecs.get_mut::<PlayerGeoStack>(entity)?.0.pop() {
-                        let place_cell = crate::world::CellType(cplaceable);
-                        let d = if place_cell.is_crystal() {
-                            0.0
-                        } else {
-                            let mut rng = rand::rng();
-                            if rng.random_range(1..=100) > 99 {
-                                0.0
-                            } else {
-                                cell_defs.get_typed(place_cell).durability
-                            }
-                        };
-                        state.world.write_world_cell(
-                            tgt_x,
-                            tgt_y,
-                            crate::world::WorldCell {
-                                cell_type: place_cell,
-                                durability: d,
-                            },
-                        );
-                        broadcast.push((tgt_x, tgt_y));
-                    }
-                }
-            }
-
-            let geo_name = ecs
-                .get::<PlayerGeoStack>(entity)
-                .and_then(|s| s.0.last())
-                .map(|&c| cell_defs.get(c).name.clone())
-                .unwrap_or_default();
-
-            {
-                let mut cd = ecs.get_mut::<PlayerCooldowns>(entity)?;
-                cd.last_geo = Instant::now();
-            }
-
-            Some((geo_name, broadcast))
-        })
-        .flatten();
-
-    let Some((geo_name, broadcast)) = result else {
-        return;
-    };
-    for (x, y) in broadcast {
-        broadcast_cell_update(state, x, y);
-    }
-    send_u_packet(tx, "GE", &geo(&geo_name).1);
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::game::programmator::ProgrammatorState;
+    use crate::game::{GameState, PlayerId};
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct TestState {
         state: Arc<GameState>,
@@ -216,7 +63,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -228,10 +75,20 @@ mod tests {
         events
     }
 
+    fn apply_geo_command(state: &Arc<GameState>, pid: PlayerId) {
+        crate::game::logic::commands::apply_player_command(
+            state,
+            crate::game::PlayerCommand::Geology {
+                player_id: pid,
+                programmatic: false,
+            },
+        );
+    }
+
     #[tokio::test]
     async fn geo_missing_programmator_state_is_explicit_error_not_not_running_fallback() {
         let test = make_test_state("geo_missing_programmator").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -242,7 +99,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<ProgrammatorState>();
         }
 
-        handle_geo(&test.state, &tx, pid, false);
+        apply_geo_command(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -256,11 +113,11 @@ mod tests {
     #[tokio::test]
     async fn geo_without_installed_skill_stays_quiet_noop() {
         let test = make_test_state("geo_no_skill_quiet").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
-        handle_geo(&test.state, &tx, PlayerId(test.player.id), false);
+        apply_geo_command(&test.state, PlayerId(test.player.id));
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());

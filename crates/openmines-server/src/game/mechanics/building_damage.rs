@@ -7,6 +7,15 @@ use crate::game::buildings::{
 use crate::game::{BroadcastEffect, BroadcastQueue, PackResendQueue};
 use bevy_ecs::prelude::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CraftingDue {
+    pub entity: Entity,
+    pub end_ts: i64,
+}
+
+#[derive(Resource, Default)]
+pub struct CraftingDueBatch(pub Vec<CraftingDue>);
+
 /// Hourly `IDamagable.Damage(2)` tick + `NeedEffect`.
 /// C# `World.cs:472-486`: each pack that is `IDamagable` → `Damage(2)`; if `NeedEffect` → `SendBrokenEffect`.
 #[allow(clippy::needless_pass_by_value)]
@@ -62,14 +71,18 @@ pub fn crafter_completion_resend_system(
         &mut BuildingCrafting,
         &mut BuildingFlags,
     )>,
+    mut due_batch: ResMut<CraftingDueBatch>,
     mut pack_resend_q: ResMut<PackResendQueue>,
 ) {
     let now = crate::time::now_unix();
-    for (meta, bpos, mut craft, mut flags) in &mut query {
+    for due in std::mem::take(&mut due_batch.0) {
+        let Ok((meta, bpos, mut craft, mut flags)) = query.get_mut(due.entity) else {
+            continue;
+        };
         if meta.pack_type != PackType::Craft
             || craft.ready
             || craft.recipe_id.is_none()
-            || craft.end_ts <= 0
+            || craft.end_ts != due.end_ts
             || now < craft.end_ts
         {
             continue;
@@ -100,7 +113,7 @@ fn send_broken_effect_to_queue(bcast_q: &mut BroadcastQueue, x: i32, y: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::crafter_completion_resend_system;
+    use super::{CraftingDue, CraftingDueBatch, crafter_completion_resend_system};
     use crate::game::PackResendQueue;
     use crate::game::buildings::{
         BuildingCrafting, BuildingFlags, BuildingMetadata, GridPosition, PackType,
@@ -111,6 +124,8 @@ mod tests {
     fn crafter_completion_resend_marks_ready_and_queues_pack_once() {
         let mut world = World::new();
         world.insert_resource(PackResendQueue::default());
+        world.insert_resource(CraftingDueBatch::default());
+        let end_ts = crate::time::now_unix() - 1;
         let entity = world
             .spawn((
                 BuildingMetadata {
@@ -121,12 +136,16 @@ mod tests {
                 BuildingCrafting {
                     recipe_id: Some(0),
                     num: 1,
-                    end_ts: crate::time::now_unix() - 1,
+                    end_ts,
                     ready: false,
                 },
                 BuildingFlags { dirty: false },
             ))
             .id();
+        world
+            .resource_mut::<CraftingDueBatch>()
+            .0
+            .push(CraftingDue { entity, end_ts });
 
         let mut schedule = Schedule::default();
         schedule.add_systems(crafter_completion_resend_system);
@@ -148,20 +167,28 @@ mod tests {
     fn crafter_completion_resend_ignores_unfinished_craft() {
         let mut world = World::new();
         world.insert_resource(PackResendQueue::default());
-        world.spawn((
-            BuildingMetadata {
-                id: 1,
-                pack_type: PackType::Craft,
-            },
-            GridPosition { x: 10, y: 20 },
-            BuildingCrafting {
-                recipe_id: Some(0),
-                num: 1,
-                end_ts: crate::time::now_unix() + 60,
-                ready: false,
-            },
-            BuildingFlags { dirty: false },
-        ));
+        world.insert_resource(CraftingDueBatch::default());
+        let end_ts = crate::time::now_unix() + 60;
+        let entity = world
+            .spawn((
+                BuildingMetadata {
+                    id: 1,
+                    pack_type: PackType::Craft,
+                },
+                GridPosition { x: 10, y: 20 },
+                BuildingCrafting {
+                    recipe_id: Some(0),
+                    num: 1,
+                    end_ts,
+                    ready: false,
+                },
+                BuildingFlags { dirty: false },
+            ))
+            .id();
+        world
+            .resource_mut::<CraftingDueBatch>()
+            .0
+            .push(CraftingDue { entity, end_ts });
 
         let mut schedule = Schedule::default();
         schedule.add_systems(crafter_completion_resend_system);

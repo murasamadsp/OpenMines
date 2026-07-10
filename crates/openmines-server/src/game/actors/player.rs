@@ -3,7 +3,6 @@ use bevy_ecs::prelude::Component;
 pub use openmines_core::PlayerId;
 use std::collections::HashMap;
 use std::time::Instant;
-use tokio::sync::mpsc;
 
 #[derive(Component)]
 pub struct PlayerPosition {
@@ -132,15 +131,7 @@ pub struct PlayerFlags {
 
 #[derive(Component)]
 pub struct PlayerConnection {
-    pub tx: mpsc::UnboundedSender<Vec<u8>>,
-}
-
-impl PlayerConnection {
-    pub fn send_or_log(&self, data: Vec<u8>) {
-        if let Err(err) = self.tx.send(data) {
-            tracing::debug!("Player connection channel closed during send: {:?}", err);
-        }
-    }
+    pub session_id: crate::game::SessionId,
 }
 
 pub struct ActivePlayer {
@@ -148,12 +139,7 @@ pub struct ActivePlayer {
     /// Токен сеанса — идентифицирует конкретное подключение. Guard от
     /// reconnect-гонки: отложенный `Disconnect` старого сеанса сносит entity
     /// только если токен в `active_players` всё ещё его (иначе уже переподключился).
-    pub session_token: u64,
-    /// Время последнего периодического `BotsRender` (1:1 C# `lBotsUpdate`).
-    /// Каждые 4с в game-tick игроку заново шлются `X` всех видимых ботов —
-    /// иначе клиентский `RobotsGarbageCollector` (6с без пинга) удаляет
-    /// простаивающих ботов (мигают при ходьбе, исчезают в покое).
-    pub last_bots_render: std::time::Instant,
+    pub session_id: crate::game::SessionId,
 }
 
 impl PlayerPosition {

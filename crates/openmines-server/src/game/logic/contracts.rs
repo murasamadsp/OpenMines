@@ -3,15 +3,89 @@
 //! and the asynchronous database persistence writer task.
 
 use bytes::Bytes;
-use openmines_protocol::Packet;
-use openmines_storage::buildings::BuildingRow;
-use openmines_storage::chats::ChatRow;
-use openmines_storage::clans::ClanRow;
-use openmines_storage::orders::OrderRow;
+use openmines_storage::buildings::BuildingExtra;
 use openmines_storage::players::PlayerRow;
-use openmines_storage::programs::ProgramRow;
+use std::time::Instant;
 
 use crate::game::actors::player::PlayerId;
+use crate::game::structures::buildings::{PackType, PackView};
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SessionId(u64);
+
+impl SessionId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for SessionId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct CommandSeq(u64);
+
+impl CommandSeq {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SimTick(u64);
+
+impl SimTick {
+    pub const fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct InventoryBuildingPlacement {
+    pub selected_item: i32,
+    pub type_code: String,
+    pub pack_type: PackType,
+    pub x: i32,
+    pub y: i32,
+    pub owner_id: PlayerId,
+    pub clan_id: i32,
+    pub extra: BuildingExtra,
+}
+
+#[derive(Debug, Clone)]
+pub struct PaidBuildingPlacement {
+    pub type_code: String,
+    pub pack_type: PackType,
+    pub x: i32,
+    pub y: i32,
+    pub owner_id: PlayerId,
+    pub owner_clan_id: i32,
+    pub building_clan_id: i32,
+    pub cost: i64,
+    pub extra: BuildingExtra,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingRemoval {
+    pub view: PackView,
+    pub trigger_pid: Option<PlayerId>,
+    pub storage_crystals: Option<[i64; 6]>,
+}
 
 /// All incoming action commands from client sessions to the game tick loop.
 #[allow(dead_code)]
@@ -20,26 +94,17 @@ pub enum PlayerCommand {
     /// Initial connection handshake and registration.
     Connect {
         row: Box<openmines_storage::players::PlayerRow>,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-        token: u64,
+        session_id: SessionId,
     },
     /// Clean disconnect of the player session.
-    Disconnect { player_id: PlayerId, token: u64 },
-    /// Incoming game packet of type TY.
-    Ty {
+    Disconnect {
         player_id: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-        packet: crate::protocol::packets::TyPacket,
-    },
-    /// Pong response returning client time.
-    Pong {
-        player_id: PlayerId,
-        response: String,
-        time: String,
+        session_id: SessionId,
     },
     /// Player movement request.
     Move {
         player_id: PlayerId,
+        session_id: SessionId,
         time: u32,
         x: i32,
         y: i32,
@@ -122,42 +187,155 @@ pub enum PlayerCommand {
         event: String,
         payload: Bytes,
     },
+    /// Apply a successfully persisted programmer source to ECS and emit start wire.
+    ApplySavedProgram {
+        player_id: PlayerId,
+        session_id: SessionId,
+        program_id: i32,
+        program_name: String,
+        source: String,
+    },
+    /// Clear deleted programmer runtime state after DB ownership/delete succeeded.
+    ApplyDeletedProgram {
+        player_id: PlayerId,
+        program_id: i32,
+    },
+    /// Commit an inventory building placement after DB insert succeeded.
+    ApplyInventoryBuildingPlaced {
+        session_id: SessionId,
+        placement: InventoryBuildingPlacement,
+        db_id: i32,
+    },
+    /// Commit a paid GUI building placement after DB insert succeeded.
+    ApplyPaidBuildingPlaced {
+        session_id: SessionId,
+        placement: PaidBuildingPlacement,
+        db_id: i32,
+    },
+    /// Refund money for a paid GUI building placement after DB insert failed.
+    RefundPaidBuildingPlacement {
+        session_id: SessionId,
+        player_id: PlayerId,
+        cost: i64,
+    },
+    /// Commit a building removal after DB delete succeeded.
+    ApplyRemovedBuilding { removal: BuildingRemoval },
+    /// Apply a GUI program open/create after DB ownership/selection succeeded.
+    ApplyProgramEditorOpen {
+        session_id: SessionId,
+        player_id: PlayerId,
+        program_id: i32,
+        program_name: String,
+        source: String,
+    },
+    /// Apply a GUI program rename after DB rename succeeded.
+    ApplyProgramEditorRename {
+        session_id: SessionId,
+        player_id: PlayerId,
+        program_id: i32,
+        program_name: String,
+        source: String,
+    },
+    /// Known TY event that does not mutate gameplay state.
+    KnownNoopTy {
+        player_id: PlayerId,
+        event: String,
+        payload: Bytes,
+    },
 }
 
-/// All outbound events generated by the game engine loop sent to players or broadcasted.
-#[allow(dead_code)]
+impl PlayerCommand {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Connect { .. } => "connect",
+            Self::Disconnect { .. } => "disconnect",
+            Self::Move { .. } => "move",
+            Self::Dig { .. } => "dig",
+            Self::Build { .. } => "build",
+            Self::Geology { .. } => "geology",
+            Self::Heal { .. } => "heal",
+            Self::GuiButton { .. } => "gui_button",
+            Self::LocalChat { .. } => "local_chat",
+            Self::ChannelChat { .. } => "channel_chat",
+            Self::ChatResync { .. } => "chat_resync",
+            Self::ChatMenu { .. } => "chat_menu",
+            Self::ChatChoose { .. } => "chat_choose",
+            Self::ChatSettings { .. } => "chat_settings",
+            Self::ChatPrivate { .. } => "chat_private",
+            Self::Whois { .. } => "whois",
+            Self::ToggleAutoDig { .. } => "toggle_auto_dig",
+            Self::ToggleAggression { .. } => "toggle_aggression",
+            Self::InventoryChoose { .. } => "inventory_choose",
+            Self::InventoryUse { .. } => "inventory_use",
+            Self::InventoryToggle { .. } => "inventory_toggle",
+            Self::OpenBox { .. } => "open_box",
+            Self::ClaimBonus { .. } => "claim_bonus",
+            Self::SettingsSave { .. } => "settings_save",
+            Self::AdminAction { .. } => "admin_action",
+            Self::Respawn { .. } => "respawn",
+            Self::OpenProgrammer { .. } => "open_programmer",
+            Self::RequestMyBuildings { .. } => "request_my_buildings",
+            Self::OpenClan { .. } => "open_clan",
+            Self::ProgramAction { .. } => "program_action",
+            Self::ApplySavedProgram { .. } => "apply_saved_program",
+            Self::ApplyDeletedProgram { .. } => "apply_deleted_program",
+            Self::ApplyInventoryBuildingPlaced { .. } => "apply_inventory_building_placed",
+            Self::ApplyPaidBuildingPlaced { .. } => "apply_paid_building_placed",
+            Self::RefundPaidBuildingPlacement { .. } => "refund_paid_building_placement",
+            Self::ApplyRemovedBuilding { .. } => "apply_removed_building",
+            Self::ApplyProgramEditorOpen { .. } => "apply_program_editor_open",
+            Self::ApplyProgramEditorRename { .. } => "apply_program_editor_rename",
+            Self::KnownNoopTy { .. } => "known_noop_ty",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QueuedPlayerCommand {
+    pub sequence: CommandSeq,
+    pub received_at: Instant,
+    pub enqueued_at: Instant,
+    pub command: PlayerCommand,
+}
+
+#[derive(Debug, Default)]
+pub struct CommandEffects {
+    pub events: Vec<GameEvent>,
+    pub saves: Vec<SaveCommand>,
+}
+
+impl CommandEffects {
+    pub fn append(&mut self, mut other: Self) {
+        self.events.append(&mut other.events);
+        self.saves.append(&mut other.saves);
+    }
+}
+
+/// Outbound work produced by authoritative command application.
 #[derive(Debug, Clone)]
 pub enum GameEvent {
-    /// Send a packet privately to a single connected player session.
-    SendPrivate { player_id: PlayerId, packet: Packet },
-    /// Broadcast a packet to all active player sessions.
-    Broadcast { packet: Packet },
-    /// Force-disconnect a player session due to gameplay reasons (e.g. kicked, banned).
-    Disconnect { player_id: PlayerId, reason: String },
+    SessionBatch {
+        session_id: SessionId,
+        player_id: PlayerId,
+        packets: Vec<Vec<u8>>,
+    },
+    Fanout {
+        recipients: Vec<SessionId>,
+        data: Vec<u8>,
+    },
+}
+
+impl GameEvent {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::SessionBatch { .. } => "session_batch",
+            Self::Fanout { .. } => "fanout",
+        }
+    }
 }
 
 /// All database write transactions sent from the game thread to the persistence worker.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum SaveCommand {
-    /// Save or update player statistics, inventory, positions, and skills.
     SavePlayer { row: Box<PlayerRow> },
-    /// Create or update a map building structure.
-    SaveBuilding { row: Box<BuildingRow> },
-    /// Delete a map building structure.
-    DeleteBuilding { id: i32 },
-    /// Create or update clan parameters.
-    SaveClan { row: ClanRow },
-    /// Delete a clan from the game database.
-    DeleteClan { id: i32 },
-    /// Save a newly sent chat message to persistent history.
-    SaveChatMessage { row: ChatRow },
-    /// Create or update a programmer script program.
-    SaveProgram { row: ProgramRow },
-    /// Delete a programmer script program.
-    DeleteProgram { id: i32 },
-    /// Create or update a market order.
-    SaveOrder { row: OrderRow },
-    /// Delete a completed or cancelled market order.
-    DeleteOrder { id: i32 },
 }

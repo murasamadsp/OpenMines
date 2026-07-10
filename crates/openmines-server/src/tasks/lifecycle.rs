@@ -1,7 +1,7 @@
 //! Фоновые задачи: сброс мира, периодическое сохранение игроков, сохранение при остановке.
 //! Отделено от `run()` в `mod.rs`, чтобы тот отвечал только за accept TCP (SRP).
 
-use crate::game::GameState;
+use crate::game::{GameState, ScheduleActivity};
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::Entity;
 use crossbeam_utils::CachePadded;
@@ -9,6 +9,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
+
+struct PendingSaveGuard {
+    state: Arc<GameState>,
+}
+
+impl Drop for PendingSaveGuard {
+    fn drop(&mut self) {
+        self.state
+            .db_pending_tasks
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// Периодический flush mmap-слоёв мира.
 pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
@@ -27,12 +39,19 @@ pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Re
             let t0 = std::time::Instant::now();
             tracing::debug!(target: "tickprof", "WORLD FLUSH start");
             let state_c = state.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Err(e) = state_c.world.flush() {
-                    tracing::error!(error = ?e, "World flush error");
+            match tokio::task::spawn_blocking(move || state_c.world.flush()).await {
+                Ok(Ok(flush_stats)) => {
+                    crate::metrics::WORLD_FLUSH_DURABILITY_CHUNKS_TOTAL.inc_by(
+                        u64::try_from(flush_stats.durability.dirty_chunks).unwrap_or(u64::MAX),
+                    );
+                    crate::metrics::WORLD_FLUSH_DURABILITY_RANGES_TOTAL
+                        .inc_by(u64::try_from(flush_stats.durability.ranges).unwrap_or(u64::MAX));
+                    crate::metrics::WORLD_FLUSH_DURABILITY_BYTES_TOTAL
+                        .inc_by(u64::try_from(flush_stats.durability.bytes).unwrap_or(u64::MAX));
                 }
-            })
-            .await;
+                Ok(Err(e)) => tracing::error!(error = ?e, "World flush error"),
+                Err(e) => tracing::error!(error = ?e, "World flush task failed"),
+            }
             tracing::debug!(target: "tickprof", elapsed = ?t0.elapsed(), "WORLD FLUSH end");
             crate::metrics::WORLD_FLUSH_TOTAL.inc();
             crate::metrics::WORLD_FLUSH_SECONDS.observe(t0.elapsed().as_secs_f64());
@@ -205,6 +224,12 @@ pub fn spawn_building_dirty_flush_loop(
 /// Supervisor game-tick'а. Паника внутри tick/schedule означает неизвестное
 /// состояние ECS, поэтому процесс должен падать целиком, а не продолжать игру
 /// после возможной mid-mutation.
+struct TickServices {
+    heartbeat: Arc<TickHeartbeat>,
+    tick_log_tx: std::sync::mpsc::SyncSender<TickLogEvent>,
+    presentation: crate::net::presentation::PresentationRuntime,
+}
+
 pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<()>) {
     let mut rx = state
         .commands_rx
@@ -223,6 +248,15 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
     );
     spawn_parking_lot_deadlock_detector(shutdown.subscribe());
 
+    let (tick_log_tx, tick_log_rx) = std::sync::mpsc::sync_channel(1024);
+    spawn_tick_log_worker(tick_log_rx);
+    let presentation = crate::net::presentation::PresentationRuntime::start(state.clone());
+    let services = TickServices {
+        heartbeat,
+        tick_log_tx,
+        presentation,
+    };
+
     std::thread::Builder::new()
         .name("openmines-game-tick".to_owned())
         .spawn(move || {
@@ -232,11 +266,24 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
             let mut last_warn = Instant::now()
                 .checked_sub(std::time::Duration::from_secs(1))
                 .unwrap_or_else(Instant::now);
+            let mut schedule_clock = ScheduleClock::new(state.schedules.len(), Instant::now());
+            let mut sim_tick = crate::game::SimTick::default();
 
             let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
+            let mut previous_tick_started_at = Instant::now();
+            let mut next_tick_at = previous_tick_started_at;
 
             loop {
                 let start = Instant::now();
+                crate::metrics::TICK_START_INTERVAL_SECONDS
+                    .observe(start.duration_since(previous_tick_started_at).as_secs_f64());
+                crate::metrics::TICK_WAKE_LATENESS_SECONDS
+                    .observe(start.saturating_duration_since(next_tick_at).as_secs_f64());
+                previous_tick_started_at = start;
+                next_tick_at = start + tick_duration;
+                sim_tick = sim_tick.next();
+                crate::metrics::SIMULATION_TICK
+                    .set(i64::try_from(sim_tick.get()).unwrap_or(i64::MAX));
 
                 if shutdown_rx.try_recv().is_ok() {
                     tracing::info!("ECS Game Thread shutting down");
@@ -248,23 +295,37 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                     run_game_tick_sync(
                         &state_clone,
                         &mut rx,
-                        &heartbeat,
                         &mut tick_window,
                         &mut last_warn,
-                    );
+                        &mut schedule_clock,
+                        &services,
+                    )
                 }));
 
-                if let Err(panic_err) = run_res {
-                    tracing::error!(
-                        target: "tickprof",
-                        panic = ?panic_err,
-                        "GAME TICK PANICKED — aborting process because ECS state may be corrupt"
-                    );
-                    std::process::exit(101);
-                }
+                let inner_tick_elapsed = match run_res {
+                    Ok(elapsed) => elapsed,
+                    Err(panic_err) => {
+                        tracing::error!(
+                            target: "tickprof",
+                            panic = ?panic_err,
+                            "GAME TICK PANICKED — aborting process because ECS state may be corrupt"
+                        );
+                        std::process::exit(101);
+                    }
+                };
 
                 let elapsed = start.elapsed();
-                if let Some(remaining) = tick_duration.checked_sub(elapsed) {
+                let outer_overhead = elapsed.saturating_sub(inner_tick_elapsed);
+                if outer_overhead > std::time::Duration::from_millis(50) {
+                    tracing::warn!(
+                        target: "tickprof",
+                        total_wall = ?elapsed,
+                        inner_tick = ?inner_tick_elapsed,
+                        outer_overhead = ?outer_overhead,
+                        "SLOW game tick outer overhead"
+                    );
+                }
+                if let Some(remaining) = next_tick_at.checked_duration_since(Instant::now()) {
                     std::thread::sleep(remaining);
                 }
             }
@@ -468,6 +529,21 @@ impl SideProfile {
         self.death = self.death.max(other.death);
         self.bots_render = self.bots_render.max(other.bots_render);
     }
+
+    fn dominant(self) -> (&'static str, Duration) {
+        [
+            ("broadcasts", self.broadcasts),
+            ("pack_resends", self.pack_resends),
+            ("box_persist", self.box_persist),
+            ("cell_conversions", self.cell_conversions),
+            ("programmator_actions", self.programmator_actions),
+            ("death", self.death),
+            ("bots_render", self.bots_render),
+        ]
+        .into_iter()
+        .max_by_key(|(_, elapsed)| *elapsed)
+        .unwrap_or(("unknown", Duration::ZERO))
+    }
 }
 
 struct TickWindowProfile {
@@ -479,6 +555,7 @@ struct TickWindowProfile {
     max_schedule: Duration,
     max_side: Duration,
     max_unprofiled: Duration,
+    max_unprofiled_profile: TickUnprofiledProfile,
     max_side_profile: SideProfile,
     max_schedule_tail_profile: ScheduleTailProfile,
     max_actions: usize,
@@ -497,6 +574,7 @@ impl TickWindowProfile {
             max_schedule: Duration::ZERO,
             max_side: Duration::ZERO,
             max_unprofiled: Duration::ZERO,
+            max_unprofiled_profile: TickUnprofiledProfile::default(),
             max_side_profile: SideProfile::default(),
             max_schedule_tail_profile: ScheduleTailProfile::default(),
             max_actions: 0,
@@ -523,6 +601,8 @@ impl TickWindowProfile {
         self.max_schedule = self.max_schedule.max(durations.schedule);
         self.max_side = self.max_side.max(durations.side);
         self.max_unprofiled = self.max_unprofiled.max(durations.unprofiled);
+        self.max_unprofiled_profile
+            .update_max(durations.unprofiled_profile);
         self.max_side_profile.update_max(side_profile);
         self.max_schedule_tail_profile
             .update_max(schedule_tail_profile);
@@ -548,6 +628,566 @@ struct TickDurations {
     schedule: Duration,
     side: Duration,
     unprofiled: Duration,
+    unprofiled_profile: TickUnprofiledProfile,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TickUnprofiledProfile {
+    setup: Duration,
+    dispatch_to_schedule: Duration,
+    schedule_to_side: Duration,
+    side_accounting_gap: Duration,
+    remainder: Duration,
+}
+
+impl TickUnprofiledProfile {
+    fn update_max(&mut self, other: Self) {
+        self.setup = self.setup.max(other.setup);
+        self.dispatch_to_schedule = self.dispatch_to_schedule.max(other.dispatch_to_schedule);
+        self.schedule_to_side = self.schedule_to_side.max(other.schedule_to_side);
+        self.side_accounting_gap = self.side_accounting_gap.max(other.side_accounting_gap);
+        self.remainder = self.remainder.max(other.remainder);
+    }
+
+    const fn total(self) -> Duration {
+        self.setup
+            .saturating_add(self.dispatch_to_schedule)
+            .saturating_add(self.schedule_to_side)
+            .saturating_add(self.side_accounting_gap)
+            .saturating_add(self.remainder)
+    }
+
+    fn dominant(self) -> (&'static str, Duration) {
+        [
+            ("setup", self.setup),
+            ("dispatch_to_schedule", self.dispatch_to_schedule),
+            ("schedule_to_side", self.schedule_to_side),
+            ("side_accounting_gap", self.side_accounting_gap),
+            ("remainder", self.remainder),
+        ]
+        .into_iter()
+        .max_by_key(|(_, elapsed)| *elapsed)
+        .unwrap_or(("unknown", Duration::ZERO))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ScheduleRunProfile {
+    name: String,
+    lock_wait: Duration,
+    run: Duration,
+}
+
+impl ScheduleRunProfile {
+    fn total(&self) -> Duration {
+        self.lock_wait + self.run
+    }
+}
+
+type PendingDeathEffect = (
+    crate::game::PlayerId,
+    i32,
+    i32,
+    i32,
+    crate::net::session::play::death::DeathBroadcasts,
+);
+
+type BoxPersistOp = (crate::game::WorldPos, Option<[i64; 6]>);
+
+struct ScheduleTickResult {
+    pending_deaths: Vec<PendingDeathEffect>,
+    broadcasts: Vec<crate::game::BroadcastEffect>,
+    programmator_actions: Vec<crate::game::ProgrammatorAction>,
+    cell_conversions: Vec<crate::game::PendingConversion>,
+    pack_resends: Vec<(i32, i32)>,
+    box_ops: Vec<BoxPersistOp>,
+    sched_select: Duration,
+    sched_lock_wait: Duration,
+    sched_run: Duration,
+    schedule_tail_profile: ScheduleTailProfile,
+    schedule_runs: Vec<ScheduleRunProfile>,
+    sim_profile: SimProfile,
+}
+
+struct ScheduleTailOutput {
+    pending_deaths: Vec<PendingDeathEffect>,
+    broadcasts: Vec<crate::game::BroadcastEffect>,
+    programmator_actions: Vec<crate::game::ProgrammatorAction>,
+    cell_conversions: Vec<crate::game::PendingConversion>,
+    pack_resends: Vec<(i32, i32)>,
+    box_ops: Vec<BoxPersistOp>,
+    profile: ScheduleTailProfile,
+    sim_profile: SimProfile,
+}
+
+impl ScheduleTickResult {
+    fn idle(
+        sched_select: Duration,
+        player_entity_count: usize,
+        online_count: usize,
+        schedule_runs: Vec<ScheduleRunProfile>,
+    ) -> Self {
+        Self {
+            pending_deaths: Vec::new(),
+            broadcasts: Vec::new(),
+            programmator_actions: Vec::new(),
+            cell_conversions: Vec::new(),
+            pack_resends: Vec::new(),
+            box_ops: Vec::new(),
+            sched_select,
+            sched_lock_wait: Duration::ZERO,
+            sched_run: Duration::ZERO,
+            schedule_tail_profile: ScheduleTailProfile::default(),
+            schedule_runs,
+            sim_profile: empty_sim_profile(player_entity_count, online_count),
+        }
+    }
+}
+
+struct TickLogEvent {
+    full: bool,
+    total: Duration,
+    thread_cpu: Duration,
+    off_cpu: Duration,
+    dispatch: Duration,
+    schedule: Duration,
+    side: Duration,
+    unprofiled: Duration,
+    actions: usize,
+    deferred_commands: usize,
+    tick_budget: Duration,
+    schedule_warn_threshold: Duration,
+    dominant_section: &'static str,
+    top_command_name: &'static str,
+    top_command_elapsed: Duration,
+    top_schedule_name: String,
+    top_schedule_elapsed: Duration,
+    sched_select: Duration,
+    sched_lock_wait: Duration,
+    sched_run: Duration,
+    sched_flush: Duration,
+    side_profile: SideProfile,
+    schedule_tail_profile: ScheduleTailProfile,
+    unprofiled_profile: TickUnprofiledProfile,
+    sim_profile: SimProfile,
+    queue_profile: QueueProfile,
+    programmator_action_profile: ProgrammatorActionProfile,
+    schedule_runs: Vec<ScheduleRunProfile>,
+}
+
+struct ScheduleClock {
+    last_runs: Vec<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct ScheduleWorkload {
+    online_count: usize,
+    player_entity_count: usize,
+    crafting_due: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ScheduleCandidate {
+    activity: ScheduleActivity,
+    interval: Duration,
+}
+
+impl ScheduleClock {
+    fn new(len: usize, now: Instant) -> Self {
+        Self {
+            last_runs: vec![now; len],
+        }
+    }
+
+    fn sync_len(&mut self, len: usize, now: Instant) {
+        self.last_runs.resize(len, now);
+    }
+
+    fn last_run_mut(&mut self, idx: usize, now: Instant) -> &mut Instant {
+        if idx >= self.last_runs.len() {
+            self.last_runs.resize(idx + 1, now);
+        }
+        &mut self.last_runs[idx]
+    }
+
+    fn select_due<F>(
+        &mut self,
+        total_len: usize,
+        now: Instant,
+        workload: ScheduleWorkload,
+        mut candidate_at: F,
+    ) -> Vec<usize>
+    where
+        F: FnMut(usize) -> Option<ScheduleCandidate>,
+    {
+        self.sync_len(total_len, now);
+        let mut due_schedules = Vec::new();
+        for idx in 0..total_len {
+            let Some(schedule) = candidate_at(idx) else {
+                continue;
+            };
+            let last_run = self.last_run_mut(idx, now);
+            if now.duration_since(*last_run) < schedule.interval {
+                continue;
+            }
+            if schedule_due_but_idle(schedule.activity, workload) {
+                *last_run = now;
+                continue;
+            }
+            due_schedules.push(idx);
+        }
+        due_schedules
+    }
+}
+
+const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWorkload) -> bool {
+    match activity {
+        ScheduleActivity::Always => false,
+        ScheduleActivity::OnlinePlayers => workload.online_count == 0,
+        ScheduleActivity::PlayerEntities => workload.player_entity_count == 0,
+        ScheduleActivity::DueCrafting => !workload.crafting_due,
+    }
+}
+
+fn drain_schedule_tail(
+    state: &Arc<GameState>,
+    heartbeat: &TickHeartbeat,
+    ecs: &mut bevy_ecs::prelude::World,
+    player_entity_count: usize,
+    online_count: usize,
+) -> ScheduleTailOutput {
+    let mut profile = ScheduleTailProfile::default();
+    heartbeat.mark(TickStage::FlushQueues);
+    let started = Instant::now();
+    let pending_deaths =
+        crate::net::session::play::death::flush_player_death_queue_after_tick(state, ecs);
+    profile.death_queue = started.elapsed();
+
+    let started = Instant::now();
+    let broadcasts = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
+    profile.broadcast_queue = started.elapsed();
+
+    let started = Instant::now();
+    let programmator_actions =
+        std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
+    profile.programmator_queue = started.elapsed();
+
+    let started = Instant::now();
+    let box_ops = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
+    profile.box_queue = started.elapsed();
+
+    let started = Instant::now();
+    let cell_conversions =
+        std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
+    profile.cell_conversion_queue = started.elapsed();
+
+    let started = Instant::now();
+    let pack_resends = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
+    profile.pack_resend_queue = started.elapsed();
+
+    let started = Instant::now();
+    let sim_profile = empty_sim_profile(player_entity_count, online_count);
+    profile.sim_profile = started.elapsed();
+
+    ScheduleTailOutput {
+        pending_deaths,
+        broadcasts,
+        programmator_actions,
+        cell_conversions,
+        pack_resends,
+        box_ops,
+        profile,
+        sim_profile,
+    }
+}
+
+fn warn_slow_schedule(name: &str, lock_wait: Duration, run: Duration, threshold: Duration) {
+    let total = lock_wait + run;
+    if total <= threshold {
+        return;
+    }
+    tracing::warn!(
+        target: "scheduler",
+        schedule = name,
+        duration = ?total,
+        ?lock_wait,
+        ?run,
+        ?threshold,
+        "System schedule execution exceeded warning threshold"
+    );
+}
+
+fn record_schedule_run(
+    runs: &mut Vec<ScheduleRunProfile>,
+    name: &str,
+    lock_wait: Duration,
+    run: Duration,
+    threshold: Duration,
+) -> Duration {
+    runs.push(ScheduleRunProfile {
+        name: name.to_owned(),
+        lock_wait,
+        run,
+    });
+    warn_slow_schedule(name, lock_wait, run, threshold);
+    lock_wait + run
+}
+
+fn run_schedule_phase(
+    state: &Arc<GameState>,
+    heartbeat: &TickHeartbeat,
+    schedule_clock: &mut ScheduleClock,
+    online_count: usize,
+    player_entity_count: usize,
+    schedule_warn_threshold: Duration,
+) -> ScheduleTickResult {
+    let mut schedule_runs: Vec<ScheduleRunProfile> = Vec::new();
+    let now = Instant::now();
+    let now_ts = crate::time::now_unix();
+
+    let select_t0 = Instant::now();
+    let due_schedules = schedule_clock.select_due(
+        state.schedules.len(),
+        now,
+        ScheduleWorkload {
+            online_count,
+            player_entity_count,
+            crafting_due: state.has_due_crafting(now_ts),
+        },
+        |idx| {
+            let gs = state.schedules.get(idx)?;
+            let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
+            (interval_ms != 0).then(|| ScheduleCandidate {
+                activity: gs.activity,
+                interval: Duration::from_millis(interval_ms),
+            })
+        },
+    );
+    let sched_select = select_t0.elapsed();
+
+    if due_schedules.is_empty() {
+        return ScheduleTickResult::idle(
+            sched_select,
+            player_entity_count,
+            online_count,
+            schedule_runs,
+        );
+    }
+
+    heartbeat.mark(TickStage::EcsLockWait);
+    let lock_t0 = Instant::now();
+    let mut ecs = state.ecs_write_profiled("tick.schedule");
+    let lw = lock_t0.elapsed();
+    let mut schedule_run_total = Duration::ZERO;
+
+    for idx in due_schedules {
+        let Some(gs) = state.schedules.get(idx) else {
+            continue;
+        };
+        heartbeat.mark_schedule(TickStage::ScheduleRun, idx.try_into().unwrap_or(u64::MAX));
+        let crafting_due_remaining = if gs.activity == ScheduleActivity::DueCrafting {
+            let (due, due_remaining, depth) = state.take_due_crafting(now_ts);
+            crate::metrics::CRAFTING_DUE_BATCH_TOTAL
+                .inc_by(u64::try_from(due.len()).unwrap_or(u64::MAX));
+            crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+            ecs.resource_mut::<crate::game::building_damage::CraftingDueBatch>()
+                .0 = due;
+            due_remaining
+        } else {
+            false
+        };
+        let (schedule_lock_wait, schedule_run) = {
+            let schedule_lock_t0 = Instant::now();
+            let mut schedule = gs.schedule.write();
+            let schedule_lock_wait = schedule_lock_t0.elapsed();
+            let schedule_run_t0 = Instant::now();
+            schedule.run(&mut ecs);
+            let schedule_run = schedule_run_t0.elapsed();
+            drop(schedule);
+            (schedule_lock_wait, schedule_run)
+        };
+        let total = record_schedule_run(
+            &mut schedule_runs,
+            &gs.name,
+            schedule_lock_wait,
+            schedule_run,
+            schedule_warn_threshold,
+        );
+        schedule_run_total += total;
+        if !crafting_due_remaining {
+            *schedule_clock.last_run_mut(idx, now) = now;
+        }
+    }
+
+    let tail = drain_schedule_tail(
+        state,
+        heartbeat,
+        &mut ecs,
+        player_entity_count,
+        online_count,
+    );
+
+    let tail_t0 = Instant::now();
+    drop(ecs);
+    let mut tail_profile = tail.profile;
+    tail_profile.drop_ecs_lock = tail_t0.elapsed();
+    ScheduleTickResult {
+        pending_deaths: tail.pending_deaths,
+        broadcasts: tail.broadcasts,
+        programmator_actions: tail.programmator_actions,
+        cell_conversions: tail.cell_conversions,
+        pack_resends: tail.pack_resends,
+        box_ops: tail.box_ops,
+        sched_select,
+        sched_lock_wait: lw,
+        sched_run: schedule_run_total,
+        schedule_tail_profile: tail_profile,
+        schedule_runs,
+        sim_profile: tail.sim_profile,
+    }
+}
+
+fn spawn_tick_log_worker(rx: std::sync::mpsc::Receiver<TickLogEvent>) {
+    std::thread::Builder::new()
+        .name("openmines-tickprof-log".to_owned())
+        .spawn(move || {
+            while let Ok(event) = rx.recv() {
+                log_tick_event(&event);
+            }
+        })
+        .expect("spawn tickprof log worker");
+}
+
+#[allow(clippy::too_many_lines)]
+fn log_tick_event(event: &TickLogEvent) {
+    let (dominant_schedule_tail, dominant_schedule_tail_elapsed) =
+        event.schedule_tail_profile.dominant();
+    let (dominant_side, dominant_side_elapsed) = event.side_profile.dominant();
+    let (dominant_unprofiled, dominant_unprofiled_elapsed) = event.unprofiled_profile.dominant();
+    let execution_class = if event.thread_cpu > event.tick_budget {
+        "cpu_bound"
+    } else if event.off_cpu > event.thread_cpu {
+        "preempted"
+    } else {
+        "mixed"
+    };
+    if !event.full {
+        tracing::warn!(
+            target: "tickprof",
+            tick_budget = ?event.tick_budget,
+            total = ?event.total,
+            thread_cpu = ?event.thread_cpu,
+            off_cpu = ?event.off_cpu,
+            execution_class,
+            dispatch = ?event.dispatch,
+            schedule = ?event.schedule,
+            side = ?event.side,
+            unprofiled = ?event.unprofiled,
+            dominant_section = event.dominant_section,
+            top_command = event.top_command_name,
+            top_command_elapsed = ?event.top_command_elapsed,
+            top_schedule = event.top_schedule_name,
+            top_schedule_elapsed = ?event.top_schedule_elapsed,
+            deferred_commands = event.deferred_commands,
+            sim_player_entities = event.sim_profile.player_entities,
+            sim_online_players = event.sim_profile.online_players,
+            sim_running_programmators = event.sim_profile.running_programmators,
+            sched_select = ?event.sched_select,
+            sched_lock_wait = ?event.sched_lock_wait,
+            sched_run = ?event.sched_run,
+            sched_flush = ?event.sched_flush,
+            dominant_side,
+            dominant_side_elapsed = ?dominant_side_elapsed,
+            dominant_schedule_tail,
+            dominant_schedule_tail_elapsed = ?dominant_schedule_tail_elapsed,
+            dominant_unprofiled,
+            dominant_unprofiled_elapsed = ?dominant_unprofiled_elapsed,
+            schedule_runs = ?event.schedule_runs,
+            "OVER-BUDGET tick compact"
+        );
+        return;
+    }
+
+    tracing::warn!(
+        target: "tickprof",
+        sim_player_entities = event.sim_profile.player_entities,
+        sim_online_players = event.sim_profile.online_players,
+        sim_offline_player_entities = event.sim_profile.offline_player_entities,
+        sim_running_programmators = event.sim_profile.running_programmators,
+        sim_online_running_programmators = event.sim_profile.online_running_programmators,
+        sim_offline_running_programmators = event.sim_profile.offline_running_programmators,
+        queue_broadcasts = event.queue_profile.broadcasts,
+        queue_pack_resends = event.queue_profile.pack_resends,
+        queue_box_ops = event.queue_profile.box_ops,
+        queue_cell_conversions_in = event.queue_profile.cell_conversions_in,
+        queue_cell_conversions_remaining = event.queue_profile.cell_conversions_remaining,
+        queue_cell_conversions_applied = event.queue_profile.cell_conversions_applied,
+        queue_programmator_actions = event.queue_profile.programmator_actions,
+        queue_deaths = event.queue_profile.deaths,
+        deferred_commands = event.deferred_commands,
+        prog_moves = event.programmator_action_profile.moves,
+        prog_digs = event.programmator_action_profile.digs,
+        prog_builds = event.programmator_action_profile.builds,
+        prog_geo = event.programmator_action_profile.geo,
+        prog_heal = event.programmator_action_profile.heal,
+        prog_set_auto_dig = event.programmator_action_profile.set_auto_dig,
+        prog_set_aggression = event.programmator_action_profile.set_aggression,
+        prog_set_hand_mode = event.programmator_action_profile.set_hand_mode,
+        prog_fill_gun = event.programmator_action_profile.fill_gun,
+        prog_set_status = event.programmator_action_profile.set_status,
+        tick_budget = ?event.tick_budget,
+        thread_cpu = ?event.thread_cpu,
+        off_cpu = ?event.off_cpu,
+        execution_class,
+        schedule_warn_threshold = ?event.schedule_warn_threshold,
+        dominant_section = event.dominant_section,
+        top_command = event.top_command_name,
+        top_command_elapsed = ?event.top_command_elapsed,
+        top_schedule = event.top_schedule_name,
+        top_schedule_elapsed = ?event.top_schedule_elapsed,
+        sched_select = ?event.sched_select,
+        sched_lock_wait = ?event.sched_lock_wait,
+        sched_run = ?event.sched_run,
+        sched_flush = ?event.sched_flush,
+        dominant_side,
+        dominant_side_elapsed = ?dominant_side_elapsed,
+        sched_tail_total = ?event.schedule_tail_profile.total(),
+        sched_tail_death_queue = ?event.schedule_tail_profile.death_queue,
+        sched_tail_broadcast_queue = ?event.schedule_tail_profile.broadcast_queue,
+        sched_tail_programmator_queue = ?event.schedule_tail_profile.programmator_queue,
+        sched_tail_box_queue = ?event.schedule_tail_profile.box_queue,
+        sched_tail_cell_conversion_queue = ?event.schedule_tail_profile.cell_conversion_queue,
+        sched_tail_pack_resend_queue = ?event.schedule_tail_profile.pack_resend_queue,
+        sched_tail_sim_profile = ?event.schedule_tail_profile.sim_profile,
+        sched_tail_drop_ecs_lock = ?event.schedule_tail_profile.drop_ecs_lock,
+        dominant_schedule_tail,
+        dominant_schedule_tail_elapsed = ?dominant_schedule_tail_elapsed,
+        unprofiled_setup = ?event.unprofiled_profile.setup,
+        unprofiled_dispatch_to_schedule = ?event.unprofiled_profile.dispatch_to_schedule,
+        unprofiled_schedule_to_side = ?event.unprofiled_profile.schedule_to_side,
+        unprofiled_side_accounting_gap = ?event.unprofiled_profile.side_accounting_gap,
+        unprofiled_remainder = ?event.unprofiled_profile.remainder,
+        dominant_unprofiled,
+        dominant_unprofiled_elapsed = ?dominant_unprofiled_elapsed,
+        schedule_runs = ?event.schedule_runs,
+        "OVER-BUDGET tick: total={:?} dispatch={:?} schedule={:?} side={:?} unprofiled={:?} \
+         actions={} side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
+         side_cell_conversions={:?} side_programmator_actions={:?} side_death={:?} \
+         side_bots_render={:?}",
+        event.total,
+        event.dispatch,
+        event.schedule,
+        event.side,
+        event.unprofiled,
+        event.actions,
+        event.side_profile.broadcasts,
+        event.side_profile.pack_resends,
+        event.side_profile.box_persist,
+        event.side_profile.cell_conversions,
+        event.side_profile.programmator_actions,
+        event.side_profile.death,
+        event.side_profile.bots_render,
+    );
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -614,11 +1254,11 @@ fn dominant_tick_section(durations: TickDurations) -> &'static str {
     .map_or("unknown", |(name, _)| name)
 }
 
-fn top_schedule_run(schedule_runs: &[(String, Duration)]) -> Option<(&str, Duration)> {
+fn top_schedule_run(schedule_runs: &[ScheduleRunProfile]) -> Option<(&str, Duration)> {
     schedule_runs
         .iter()
-        .max_by_key(|(_, elapsed)| *elapsed)
-        .map(|(name, elapsed)| (name.as_str(), *elapsed))
+        .max_by_key(|profile| profile.total())
+        .map(|profile| (profile.name.as_str(), profile.total()))
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -670,210 +1310,132 @@ impl ProgrammatorActionProfile {
             crate::game::ProgrammatorAction::SetHandMode { .. } => self.set_hand_mode += 1,
             crate::game::ProgrammatorAction::FillGun { .. } => self.fill_gun += 1,
             crate::game::ProgrammatorAction::SetProgrammatorStatus { .. } => self.set_status += 1,
+            crate::game::ProgrammatorAction::Send { .. } => {}
         }
     }
 }
 
-fn collect_sim_profile(ecs: &mut bevy_ecs::world::World, online_players: usize) -> SimProfile {
-    let player_entities = ecs
-        .query::<&crate::game::player::PlayerPosition>()
-        .iter(ecs)
-        .count();
-    let (running_programmators, online_running_programmators) = ecs
-        .query::<(
-            Option<&crate::game::player::PlayerConnection>,
-            &crate::game::programmator::ProgrammatorState,
-        )>()
-        .iter(ecs)
-        .fold(
-            (0usize, 0usize),
-            |(running, online_running), (conn, prog)| {
-                if !prog.running {
-                    return (running, online_running);
-                }
-                (running + 1, online_running + usize::from(conn.is_some()))
-            },
-        );
-
+const fn empty_sim_profile(player_entities: usize, online_players: usize) -> SimProfile {
     SimProfile {
         player_entities,
         online_players,
         offline_player_entities: player_entities.saturating_sub(online_players),
-        running_programmators,
-        online_running_programmators,
-        offline_running_programmators: running_programmators
-            .saturating_sub(online_running_programmators),
+        running_programmators: 0,
+        online_running_programmators: 0,
+        offline_running_programmators: 0,
     }
 }
 
 #[allow(clippy::too_many_lines)]
 fn run_game_tick_sync(
     state: &Arc<GameState>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::PlayerCommand>,
-    heartbeat: &TickHeartbeat,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
     tick_window: &mut TickWindowProfile,
     last_warn: &mut Instant,
-) {
+    schedule_clock: &mut ScheduleClock,
+    services: &TickServices,
+) -> Duration {
+    let thread_cpu_started = cpu_time::ThreadTime::now();
     let tick_budget =
         std::time::Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
     let schedule_warn_threshold = std::time::Duration::from_millis(
         state.config.gameplay.schedules.schedule_warn_threshold_ms,
     );
     let tick_t0 = Instant::now();
-    heartbeat.begin_tick();
+    let setup_t0 = Instant::now();
+    services.heartbeat.begin_tick();
+    let unprofiled_setup = setup_t0.elapsed();
 
     // 1. Сначала обрабатываем все входящие команды от игроков
     let mut n_actions = 0;
+    let mut deferred_commands = 0;
+    let mut top_command_name = "-";
+    let mut top_command_elapsed = Duration::ZERO;
+    let mut command_effects = crate::game::CommandEffects::default();
     let d0 = Instant::now();
-    heartbeat.mark(TickStage::Dispatch);
-    while let Ok(cmd) = rx.try_recv() {
+    services.heartbeat.mark(TickStage::Dispatch);
+    while let Ok(queued) = rx.try_recv() {
+        state.record_command_dequeued();
         n_actions += 1;
-        match cmd {
-            crate::game::PlayerCommand::Connect { row, tx, token } => {
-                crate::net::session::player::init::connect_in_tick(state, &tx, &row, token);
-            }
-            crate::game::PlayerCommand::Disconnect { player_id, token } => {
-                crate::net::session::player::init::disconnect_in_tick(state, player_id, token);
-            }
-            crate::game::PlayerCommand::Ty {
-                player_id,
-                tx,
-                packet,
-            } => {
-                let state_clone = state.clone();
-                let tx_clone = tx;
-                state.tokio_handle.spawn(async move {
-                    if let Err(e) = crate::net::session::dispatch::dispatch_ty_packet(
-                        &state_clone,
-                        &tx_clone,
-                        player_id,
-                        &packet,
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            player_id = %player_id,
-                            error = ?e,
-                            "Failed to dispatch TY packet command"
-                        );
-                    }
-                });
-            }
-            _ => {}
+        let apply_started_at = Instant::now();
+        let sequence = queued.sequence;
+        let cmd = queued.command;
+        let cmd_name = cmd.name();
+        crate::metrics::COMMAND_QUEUE_RESIDENCE_SECONDS
+            .with_label_values(&[cmd_name])
+            .observe(
+                apply_started_at
+                    .saturating_duration_since(queued.enqueued_at)
+                    .as_secs_f64(),
+            );
+        crate::metrics::COMMAND_RECEIVE_TO_APPLY_SECONDS
+            .with_label_values(&[cmd_name])
+            .observe(
+                apply_started_at
+                    .saturating_duration_since(queued.received_at)
+                    .as_secs_f64(),
+            );
+        command_effects.append(crate::game::logic::commands::apply_player_command(
+            state, cmd,
+        ));
+        let cmd_elapsed = apply_started_at.elapsed();
+        crate::metrics::COMMAND_APPLY_SECONDS
+            .with_label_values(&[cmd_name])
+            .observe(cmd_elapsed.as_secs_f64());
+        crate::metrics::COMMANDS_TOTAL
+            .with_label_values(&[cmd_name, "applied"])
+            .inc();
+        crate::metrics::COMMAND_SEQUENCE.set(i64::try_from(sequence.get()).unwrap_or(i64::MAX));
+        if cmd_elapsed > top_command_elapsed {
+            top_command_name = cmd_name;
+            top_command_elapsed = cmd_elapsed;
+        }
+        if d0.elapsed() >= tick_budget && !rx.is_empty() {
+            deferred_commands = rx.len();
+            break;
         }
     }
     let dt_dispatch = d0.elapsed();
 
     // 2. ECS + очереди side-effects.
     let sched_t0 = Instant::now();
-    let (
-        pending,
+    let unprofiled_dispatch_to_schedule = sched_t0
+        .saturating_duration_since(d0)
+        .saturating_sub(dt_dispatch);
+    let online_count = state.online_count();
+    let player_entity_count = state.player_entity_count();
+    let ScheduleTickResult {
+        pending_deaths: pending,
         broadcasts,
-        prog_actions,
+        programmator_actions: prog_actions,
         cell_conversions,
         pack_resends,
         box_ops,
+        sched_select,
         sched_lock_wait,
         sched_run,
         schedule_tail_profile,
         schedule_runs,
         sim_profile,
-    ) = {
-        let building_entities = state.building_entities_snapshot();
-        heartbeat.mark(TickStage::EcsLockWait);
-        let mut ecs = state.ecs_write_profiled("tick.schedule");
-        let lw = sched_t0.elapsed();
-        let run_t0 = Instant::now();
-        let mut schedule_runs: Vec<(String, std::time::Duration)> = Vec::new();
-
-        let now = Instant::now();
-        for (idx, gs) in state.schedules.iter().enumerate() {
-            let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
-            if interval_ms == 0 {
-                continue;
-            }
-            let interval = std::time::Duration::from_millis(interval_ms);
-            let mut last_run = gs.last_run.lock();
-            if now.duration_since(*last_run) >= interval {
-                heartbeat.mark_schedule(TickStage::ScheduleRun, idx.try_into().unwrap_or(u64::MAX));
-                let schedule_t0 = Instant::now();
-                gs.schedule.write().run(&mut ecs);
-                let elapsed = schedule_t0.elapsed();
-                schedule_runs.push((gs.name.clone(), elapsed));
-                if elapsed > schedule_warn_threshold {
-                    tracing::warn!(
-                        target: "scheduler",
-                        schedule = %gs.name,
-                        duration = ?elapsed,
-                        threshold = ?schedule_warn_threshold,
-                        "System schedule execution exceeded warning threshold"
-                    );
-                }
-                *last_run = now;
-            }
-        }
-
-        let rn = run_t0.elapsed();
-
-        let mut tail_profile = ScheduleTailProfile::default();
-        heartbeat.mark(TickStage::FlushQueues);
-        let tail_t0 = Instant::now();
-        let p = crate::net::session::play::death::flush_player_death_queue_after_tick(
-            state,
-            &mut ecs,
-            &building_entities,
-        );
-        tail_profile.death_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let bc = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
-        tail_profile.broadcast_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let pa = std::mem::take(&mut ecs.resource_mut::<crate::game::ProgrammatorQueue>().0);
-        tail_profile.programmator_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let bp = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
-        tail_profile.box_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let convs =
-            std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
-        tail_profile.cell_conversion_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let pr = std::mem::take(&mut ecs.resource_mut::<crate::game::PackResendQueue>().0);
-        tail_profile.pack_resend_queue = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        let sim_profile = collect_sim_profile(&mut ecs, state.online_count());
-        tail_profile.sim_profile = tail_t0.elapsed();
-
-        let tail_t0 = Instant::now();
-        drop(ecs);
-        tail_profile.drop_ecs_lock = tail_t0.elapsed();
-        (
-            p,
-            bc,
-            pa,
-            convs,
-            pr,
-            bp,
-            lw,
-            rn,
-            tail_profile,
-            schedule_runs,
-            sim_profile,
-        )
-    };
+    } = run_schedule_phase(
+        state,
+        &services.heartbeat,
+        schedule_clock,
+        online_count,
+        player_entity_count,
+        schedule_warn_threshold,
+    );
     let dt_schedule = sched_t0.elapsed();
+    let side_t0 = Instant::now();
+    let unprofiled_schedule_to_side = side_t0
+        .saturating_duration_since(sched_t0)
+        .saturating_sub(dt_schedule);
     let sched_flush = dt_schedule
+        .saturating_sub(sched_select)
         .saturating_sub(sched_lock_wait)
         .saturating_sub(sched_run);
 
     // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
-    let side_t0 = Instant::now();
     let mut side_profile = SideProfile::default();
     let mut programmator_action_profile = ProgrammatorActionProfile::default();
     for action in &prog_actions {
@@ -888,11 +1450,124 @@ fn run_game_tick_sync(
         deaths: pending.len(),
         ..QueueProfile::default()
     };
+    let due_bots_render = if online_count > 0 {
+        state.take_due_bots_render(
+            Instant::now(),
+            crate::game::GameState::BOTS_RENDER_OBSERVER_BUDGET,
+        )
+    } else {
+        Vec::new()
+    };
+
+    let side_has_work = !broadcasts.is_empty()
+        || !command_effects.events.is_empty()
+        || !command_effects.saves.is_empty()
+        || !pack_resends.is_empty()
+        || !box_ops.is_empty()
+        || !cell_conversions.is_empty()
+        || !prog_actions.is_empty()
+        || !pending.is_empty()
+        || !due_bots_render.is_empty();
+
+    if !side_has_work {
+        services.heartbeat.mark(TickStage::Summary);
+        let side_end = Instant::now();
+        let dt_side = side_end.saturating_duration_since(side_t0);
+        let dt_total = tick_t0.elapsed();
+        let thread_cpu = thread_cpu_started.elapsed();
+        let off_cpu = dt_total.saturating_sub(thread_cpu);
+        let unprofiled_side_accounting_gap =
+            dt_side.saturating_sub(side_end.saturating_duration_since(side_t0));
+        let dt_unprofiled = dt_total
+            .saturating_sub(dt_dispatch)
+            .saturating_sub(dt_schedule)
+            .saturating_sub(dt_side);
+        let mut unprofiled_profile = TickUnprofiledProfile {
+            setup: unprofiled_setup,
+            dispatch_to_schedule: unprofiled_dispatch_to_schedule,
+            schedule_to_side: unprofiled_schedule_to_side,
+            side_accounting_gap: unprofiled_side_accounting_gap,
+            remainder: Duration::ZERO,
+        };
+        unprofiled_profile.remainder = dt_unprofiled.saturating_sub(unprofiled_profile.total());
+        let durations = TickDurations {
+            total: dt_total,
+            dispatch: dt_dispatch,
+            schedule: dt_schedule,
+            side: dt_side,
+            unprofiled: dt_unprofiled,
+            unprofiled_profile,
+        };
+        let top_schedule = top_schedule_run(&schedule_runs);
+        let dominant_section = dominant_tick_section(durations);
+        tick_window.record(
+            durations,
+            side_profile,
+            schedule_tail_profile,
+            n_actions,
+            top_schedule,
+            tick_budget,
+        );
+
+        if dt_total > tick_budget && last_warn.elapsed() >= std::time::Duration::from_millis(500) {
+            *last_warn = Instant::now();
+            let top_schedule_name = top_schedule.map_or("-", |(name, _)| name).to_owned();
+            let top_schedule_elapsed = top_schedule.map_or(Duration::ZERO, |(_, elapsed)| elapsed);
+            let event = TickLogEvent {
+                full: dt_total > schedule_warn_threshold,
+                total: dt_total,
+                thread_cpu,
+                off_cpu,
+                dispatch: dt_dispatch,
+                schedule: dt_schedule,
+                side: dt_side,
+                unprofiled: dt_unprofiled,
+                actions: n_actions,
+                deferred_commands,
+                tick_budget,
+                schedule_warn_threshold,
+                dominant_section,
+                top_command_name,
+                top_command_elapsed,
+                top_schedule_name,
+                top_schedule_elapsed,
+                sched_select,
+                sched_lock_wait,
+                sched_run,
+                sched_flush,
+                side_profile,
+                schedule_tail_profile,
+                unprofiled_profile,
+                sim_profile,
+                queue_profile,
+                programmator_action_profile,
+                schedule_runs,
+            };
+            let _ = services.tick_log_tx.try_send(event);
+        }
+
+        return dt_total;
+    }
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideBroadcasts);
+    services.heartbeat.mark(TickStage::SideBroadcasts);
+    for event in command_effects.events {
+        services.presentation.publish(event);
+    }
+    for save in command_effects.saves {
+        dispatch_save_command(state, save);
+    }
+    side_profile.broadcasts = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    services.heartbeat.mark(TickStage::SideBroadcasts);
     for effect in broadcasts {
         match effect {
+            crate::game::BroadcastEffect::Direct { session_id, data } => {
+                if let Some(tx) = state.sessions.outbox_for_session(session_id) {
+                    let _ = tx.send(data);
+                }
+            }
             crate::game::BroadcastEffect::CellUpdate(pos) => {
                 let (x, y): (i32, i32) = pos.into();
                 crate::game::broadcast_cell_update(state, x, y);
@@ -907,10 +1582,10 @@ fn run_game_tick_sync(
             }
         }
     }
-    side_profile.broadcasts = section_t0.elapsed();
+    side_profile.broadcasts += section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SidePackResends);
+    services.heartbeat.mark(TickStage::SidePackResends);
     for (px, py) in pack_resends {
         if let Some(view) = state.get_pack_at(px, py) {
             crate::net::session::social::buildings::broadcast_pack_update(state, &view);
@@ -919,7 +1594,7 @@ fn run_game_tick_sync(
     side_profile.pack_resends = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideBoxPersist);
+    services.heartbeat.mark(TickStage::SideBoxPersist);
     if !box_ops.is_empty() {
         struct DbTaskGuard {
             state: Arc<GameState>,
@@ -954,7 +1629,7 @@ fn run_game_tick_sync(
     side_profile.box_persist = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideCellConversions);
+    services.heartbeat.mark(TickStage::SideCellConversions);
     let mut remaining_conversions: Vec<crate::game::PendingConversion> = Vec::new();
     let mut converted_owners: Vec<crate::game::player::PlayerId> = Vec::new();
     for mut conv in cell_conversions {
@@ -981,19 +1656,26 @@ fn run_game_tick_sync(
         }
     }
     queue_profile.cell_conversions_remaining = remaining_conversions.len();
-    let ctx = crate::game::ExpContext::from_state(state);
     let mut buildwar_pkts: Vec<(crate::game::player::PlayerId, (&'static str, Vec<u8>))> =
         Vec::new();
-    {
-        heartbeat.mark(TickStage::SideCellConversionsEcsLockWait);
+    if !remaining_conversions.is_empty() || !converted_owners.is_empty() {
+        let ctx = if converted_owners.is_empty() {
+            None
+        } else {
+            Some(crate::game::ExpContext::from_state(state))
+        };
+        services
+            .heartbeat
+            .mark(TickStage::SideCellConversionsEcsLockWait);
         let mut ecs = state.ecs_write_profiled("tick.side_cell_conversions");
-        heartbeat.mark(TickStage::SideCellConversions);
+        services.heartbeat.mark(TickStage::SideCellConversions);
         ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining_conversions;
         for owner in converted_owners {
             let Some(entity) = state.get_player_entity(owner) else {
                 continue;
             };
             if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
+                && let Some(ctx) = ctx
                 && let Some(sk) = ctx.add_skill_exp(
                     &mut skills.states,
                     crate::game::skills::SkillType::BuildWar.code(),
@@ -1014,66 +1696,104 @@ fn run_game_tick_sync(
     side_profile.cell_conversions = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideProgrammatorActions);
+    services.heartbeat.mark(TickStage::SideProgrammatorActions);
     for action in prog_actions {
         match action {
-            crate::game::ProgrammatorAction::Move { pid, tx, x, y, dir } => {
-                let (tx, _rx) = programmator_action_tx(tx);
+            crate::game::ProgrammatorAction::Move {
+                pid,
+                session_id,
+                x,
+                y,
+                dir,
+            } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
                 crate::net::session::play::movement::handle_move(
                     state, &tx, pid, 0, x, y, dir, true,
                 );
             }
-            crate::game::ProgrammatorAction::Dig { pid, tx, dir } => {
-                let (tx, _rx) = programmator_action_tx(tx);
+            crate::game::ProgrammatorAction::Dig {
+                pid,
+                session_id,
+                dir,
+            } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
                 crate::net::session::play::dig_build::handle_dig(state, &tx, pid, dir, true);
             }
             crate::game::ProgrammatorAction::Build {
                 pid,
-                tx,
+                session_id,
                 dir,
                 block_type,
             } => {
-                let (tx, _rx) = programmator_action_tx(tx);
+                let (tx, _rx) = programmator_action_tx(state, session_id);
                 let bld = crate::protocol::packets::XbldClient {
                     direction: dir,
                     block_type: &block_type,
                 };
                 crate::net::session::play::dig_build::handle_build(state, &tx, pid, &bld, true);
             }
-            crate::game::ProgrammatorAction::Geo { pid, tx } => {
-                let (tx, _rx) = programmator_action_tx(tx);
-                crate::net::session::play::geo::handle_geo(state, &tx, pid, true);
+            crate::game::ProgrammatorAction::Geo { pid, session_id } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
+                crate::game::logic::commands::apply_programmator_geology(state, &tx, pid);
             }
-            crate::game::ProgrammatorAction::Heal { pid, tx } => {
-                let (tx, _rx) = programmator_action_tx(tx);
-                crate::net::session::ui::heal_inventory::handle_heal(state, &tx, pid, true);
+            crate::game::ProgrammatorAction::Heal { pid, session_id } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
+                crate::game::logic::commands::apply_programmator_heal(state, &tx, pid);
             }
-            crate::game::ProgrammatorAction::SetAutoDig { pid, tx, enabled } => {
-                let (tx, _rx) = programmator_action_tx(tx);
-                crate::net::session::social::misc::handle_auto_dig_set(state, &tx, pid, enabled);
+            crate::game::ProgrammatorAction::SetAutoDig {
+                pid,
+                session_id,
+                enabled,
+            } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
+                crate::game::logic::commands::apply_programmator_auto_dig_set(
+                    state, &tx, pid, enabled,
+                );
             }
-            crate::game::ProgrammatorAction::SetAggression { pid, tx, enabled } => {
-                let (tx, _rx) = programmator_action_tx(tx);
-                crate::net::session::social::misc::handle_aggression_set(state, &tx, pid, enabled);
+            crate::game::ProgrammatorAction::SetAggression {
+                pid,
+                session_id,
+                enabled,
+            } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
+                crate::game::logic::commands::apply_programmator_aggression_set(
+                    state, &tx, pid, enabled,
+                );
             }
-            crate::game::ProgrammatorAction::SetHandMode { tx, enabled } => {
-                if let Some(tx) = tx {
+            crate::game::ProgrammatorAction::SetHandMode {
+                session_id,
+                enabled,
+            } => {
+                if let Some(tx) = session_id.and_then(|id| state.sessions.outbox_for_session(id)) {
                     let packet = crate::protocol::packets::hand_mode(enabled);
                     let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
                         packet.0, &packet.1,
                     ));
                 }
             }
-            crate::game::ProgrammatorAction::FillGun { pid, tx, x, y } => {
-                let (tx, _rx) = programmator_action_tx(tx);
+            crate::game::ProgrammatorAction::FillGun {
+                pid,
+                session_id,
+                x,
+                y,
+            } => {
+                let (tx, _rx) = programmator_action_tx(state, session_id);
                 crate::net::session::play::packs::handle_gun_fill_prog(state, &tx, pid, x, y);
             }
-            crate::game::ProgrammatorAction::SetProgrammatorStatus { tx, running } => {
-                if let Some(tx) = tx {
+            crate::game::ProgrammatorAction::SetProgrammatorStatus {
+                session_id,
+                running,
+            } => {
+                if let Some(tx) = session_id.and_then(|id| state.sessions.outbox_for_session(id)) {
                     let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
                         "@P",
                         &crate::protocol::packets::programmator_status(running).1,
                     ));
+                }
+            }
+            crate::game::ProgrammatorAction::Send { session_id, data } => {
+                if let Some(tx) = state.sessions.outbox_for_session(session_id) {
+                    let _ = tx.send(data);
                 }
             }
         }
@@ -1081,13 +1801,10 @@ fn run_game_tick_sync(
     side_profile.programmator_actions = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideDeath);
+    services.heartbeat.mark(TickStage::SideDeath);
     for (pid, rx, ry, mh, bcast) in pending {
         crate::net::session::play::death::run_death_broadcasts(state, &bcast, pid);
-        let tx = state.query_player_opt(pid, |ecs, entity| {
-            ecs.get::<crate::game::player::PlayerConnection>(entity)
-                .map(|c| c.tx.clone())
-        });
+        let tx = state.player_sender(pid);
         if let Some(tx) = tx {
             crate::net::session::play::death::send_respawn_after_death(
                 &tx, pid, rx, ry, mh, &bcast,
@@ -1098,32 +1815,65 @@ fn run_game_tick_sync(
     side_profile.death = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    heartbeat.mark(TickStage::SideBotsRender);
-    {
-        let now_render = Instant::now();
-        let due = state.take_due_bots_render(now_render, std::time::Duration::from_secs(4));
-        for pid in due {
-            if let Some(tx) = state.player_sender(pid) {
-                crate::net::session::play::chunks::bots_render(state, &tx, pid);
-            }
-        }
+    services.heartbeat.mark(TickStage::SideBotsRender);
+    let bots_render_result = crate::net::session::play::chunks::bots_render_batch(
+        state,
+        due_bots_render,
+        crate::game::GameState::BOTS_RENDER_BYTE_BUDGET,
+    );
+    crate::metrics::BOTS_RENDER_OBSERVERS_TOTAL
+        .with_label_values(&["completed"])
+        .inc_by(u64::try_from(bots_render_result.completed.len()).unwrap_or(u64::MAX));
+    crate::metrics::BOTS_RENDER_OBSERVERS_TOTAL
+        .with_label_values(&["sent"])
+        .inc_by(u64::try_from(bots_render_result.observers_sent).unwrap_or(u64::MAX));
+    crate::metrics::BOTS_RENDER_OBSERVERS_TOTAL
+        .with_label_values(&["deferred"])
+        .inc_by(u64::try_from(bots_render_result.deferred.len()).unwrap_or(u64::MAX));
+    crate::metrics::BOTS_RENDER_BYTES_TOTAL
+        .inc_by(u64::try_from(bots_render_result.bytes_enqueued).unwrap_or(u64::MAX));
+    crate::metrics::BOTS_RENDER_SNAPSHOT_CHUNKS
+        .set(i64::try_from(bots_render_result.snapshot_chunks).unwrap_or(i64::MAX));
+    let bots_render_now = Instant::now();
+    for due in bots_render_result.completed {
+        state.reschedule_bots_render(
+            due,
+            bots_render_now + crate::game::GameState::BOTS_RENDER_INTERVAL,
+        );
+    }
+    for due in bots_render_result.deferred {
+        state.reschedule_bots_render(due, bots_render_now + tick_budget);
     }
     side_profile.bots_render = section_t0.elapsed();
 
     // ── Stage 0: агрегация и throttled-вывод (target=tickprof) ──
-    heartbeat.mark(TickStage::Summary);
+    let side_end = Instant::now();
+    services.heartbeat.mark(TickStage::Summary);
     let dt_side = side_t0.elapsed();
     let dt_total = tick_t0.elapsed();
+    let thread_cpu = thread_cpu_started.elapsed();
+    let off_cpu = dt_total.saturating_sub(thread_cpu);
+    let unprofiled_side_accounting_gap =
+        dt_side.saturating_sub(side_end.saturating_duration_since(side_t0));
     let dt_unprofiled = dt_total
         .saturating_sub(dt_dispatch)
         .saturating_sub(dt_schedule)
         .saturating_sub(dt_side);
+    let mut unprofiled_profile = TickUnprofiledProfile {
+        setup: unprofiled_setup,
+        dispatch_to_schedule: unprofiled_dispatch_to_schedule,
+        schedule_to_side: unprofiled_schedule_to_side,
+        side_accounting_gap: unprofiled_side_accounting_gap,
+        remainder: Duration::ZERO,
+    };
+    unprofiled_profile.remainder = dt_unprofiled.saturating_sub(unprofiled_profile.total());
     let durations = TickDurations {
         total: dt_total,
         dispatch: dt_dispatch,
         schedule: dt_schedule,
         side: dt_side,
         unprofiled: dt_unprofiled,
+        unprofiled_profile,
     };
     let top_schedule = top_schedule_run(&schedule_runs);
     let dominant_section = dominant_tick_section(durations);
@@ -1136,69 +1886,41 @@ fn run_game_tick_sync(
         tick_budget,
     );
 
-    if dt_total > schedule_warn_threshold
-        && last_warn.elapsed() >= std::time::Duration::from_millis(500)
-    {
+    if dt_total > tick_budget && last_warn.elapsed() >= std::time::Duration::from_millis(500) {
         *last_warn = Instant::now();
-        let (dominant_schedule_tail, dominant_schedule_tail_elapsed) =
-            schedule_tail_profile.dominant();
-        tracing::warn!(
-            target: "tickprof",
-            sim_player_entities = sim_profile.player_entities,
-            sim_online_players = sim_profile.online_players,
-            sim_offline_player_entities = sim_profile.offline_player_entities,
-            sim_running_programmators = sim_profile.running_programmators,
-            sim_online_running_programmators = sim_profile.online_running_programmators,
-            sim_offline_running_programmators = sim_profile.offline_running_programmators,
-            queue_broadcasts = queue_profile.broadcasts,
-            queue_pack_resends = queue_profile.pack_resends,
-            queue_box_ops = queue_profile.box_ops,
-            queue_cell_conversions_in = queue_profile.cell_conversions_in,
-            queue_cell_conversions_remaining = queue_profile.cell_conversions_remaining,
-            queue_cell_conversions_applied = queue_profile.cell_conversions_applied,
-            queue_programmator_actions = queue_profile.programmator_actions,
-            queue_deaths = queue_profile.deaths,
-            prog_moves = programmator_action_profile.moves,
-            prog_digs = programmator_action_profile.digs,
-            prog_builds = programmator_action_profile.builds,
-            prog_geo = programmator_action_profile.geo,
-            prog_heal = programmator_action_profile.heal,
-            prog_set_auto_dig = programmator_action_profile.set_auto_dig,
-            prog_set_aggression = programmator_action_profile.set_aggression,
-            prog_set_hand_mode = programmator_action_profile.set_hand_mode,
-            prog_fill_gun = programmator_action_profile.fill_gun,
-            prog_set_status = programmator_action_profile.set_status,
+        let top_schedule_name = top_schedule.map_or("-", |(name, _)| name).to_owned();
+        let top_schedule_elapsed = top_schedule.map_or(Duration::ZERO, |(_, elapsed)| elapsed);
+        let event = TickLogEvent {
+            full: dt_total > schedule_warn_threshold,
+            total: dt_total,
+            thread_cpu,
+            off_cpu,
+            dispatch: dt_dispatch,
+            schedule: dt_schedule,
+            side: dt_side,
+            unprofiled: dt_unprofiled,
+            actions: n_actions,
+            deferred_commands,
+            tick_budget,
+            schedule_warn_threshold,
             dominant_section,
-            top_schedule = top_schedule.map_or("-", |(name, _)| name),
-            top_schedule_elapsed = ?top_schedule.map_or(Duration::ZERO, |(_, elapsed)| elapsed),
-            sched_lock_wait = ?sched_lock_wait,
-            sched_run = ?sched_run,
-            sched_flush = ?sched_flush,
-            sched_tail_total = ?schedule_tail_profile.total(),
-            sched_tail_death_queue = ?schedule_tail_profile.death_queue,
-            sched_tail_broadcast_queue = ?schedule_tail_profile.broadcast_queue,
-            sched_tail_programmator_queue = ?schedule_tail_profile.programmator_queue,
-            sched_tail_box_queue = ?schedule_tail_profile.box_queue,
-            sched_tail_cell_conversion_queue = ?schedule_tail_profile.cell_conversion_queue,
-            sched_tail_pack_resend_queue = ?schedule_tail_profile.pack_resend_queue,
-            sched_tail_sim_profile = ?schedule_tail_profile.sim_profile,
-            sched_tail_drop_ecs_lock = ?schedule_tail_profile.drop_ecs_lock,
-            dominant_schedule_tail,
-            dominant_schedule_tail_elapsed = ?dominant_schedule_tail_elapsed,
-            schedule_runs = ?schedule_runs,
-            "OVER-BUDGET tick: total={dt_total:?} dispatch={dt_dispatch:?} \
-             schedule={dt_schedule:?} side={dt_side:?} unprofiled={dt_unprofiled:?} \
-             actions={n_actions} side_broadcasts={:?} side_pack_resends={:?} \
-             side_box_persist={:?} side_cell_conversions={:?} \
-             side_programmator_actions={:?} side_death={:?} side_bots_render={:?}",
-            side_profile.broadcasts,
-            side_profile.pack_resends,
-            side_profile.box_persist,
-            side_profile.cell_conversions,
-            side_profile.programmator_actions,
-            side_profile.death,
-            side_profile.bots_render,
-        );
+            top_command_name,
+            top_command_elapsed,
+            top_schedule_name,
+            top_schedule_elapsed,
+            sched_select,
+            sched_lock_wait,
+            sched_run,
+            sched_flush,
+            side_profile,
+            schedule_tail_profile,
+            unprofiled_profile,
+            sim_profile,
+            queue_profile,
+            programmator_action_profile,
+            schedule_runs,
+        };
+        let _ = services.tick_log_tx.try_send(event);
     }
 
     if tick_window.start.elapsed() >= std::time::Duration::from_secs(5) {
@@ -1214,7 +1936,10 @@ fn run_game_tick_sync(
              max_sched_tail_death_queue={:?} max_sched_tail_broadcast_queue={:?} \
              max_sched_tail_programmator_queue={:?} max_sched_tail_box_queue={:?} \
              max_sched_tail_cell_conversion_queue={:?} max_sched_tail_pack_resend_queue={:?} \
-             max_sched_tail_sim_profile={:?} max_sched_tail_drop_ecs_lock={:?}",
+             max_sched_tail_sim_profile={:?} max_sched_tail_drop_ecs_lock={:?} \
+             max_unprofiled_setup={:?} max_unprofiled_dispatch_to_schedule={:?} \
+             max_unprofiled_schedule_to_side={:?} max_unprofiled_side_accounting_gap={:?} \
+             max_unprofiled_remainder={:?}",
             tick_window.ticks,
             tick_window.over_budget,
             tick_window.max_total,
@@ -1240,25 +1965,74 @@ fn run_game_tick_sync(
             tick_window.max_schedule_tail_profile.pack_resend_queue,
             tick_window.max_schedule_tail_profile.sim_profile,
             tick_window.max_schedule_tail_profile.drop_ecs_lock,
+            tick_window.max_unprofiled_profile.setup,
+            tick_window.max_unprofiled_profile.dispatch_to_schedule,
+            tick_window.max_unprofiled_profile.schedule_to_side,
+            tick_window.max_unprofiled_profile.side_accounting_gap,
+            tick_window.max_unprofiled_profile.remainder,
         );
         tick_window.reset(Instant::now());
     }
-    heartbeat.mark(TickStage::Idle);
+    services.heartbeat.mark(TickStage::Idle);
+    dt_total
 }
 
 fn programmator_action_tx(
-    tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    state: &Arc<GameState>,
+    session_id: Option<crate::game::SessionId>,
 ) -> (
-    tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>>,
+    crate::net::session::outbox::Outbox,
+    Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
 ) {
-    tx.map_or_else(
-        || {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            (tx, Some(rx))
-        },
-        |tx| (tx, None),
-    )
+    session_id
+        .and_then(|id| state.sessions.outbox_for_session(id))
+        .map_or_else(
+            || {
+                let (tx, rx) = crate::net::session::outbox::channel();
+                (tx, Some(rx))
+            },
+            |tx| (tx, None),
+        )
+}
+
+fn dispatch_save_command(state: &Arc<GameState>, command: crate::game::SaveCommand) {
+    let crate::game::SaveCommand::SavePlayer { row } = command;
+
+    let db = state.db.clone();
+    let state_clone = state.clone();
+    state
+        .db_pending_tasks
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    state.tokio_handle.spawn(async move {
+        let _guard = PendingSaveGuard { state: state_clone };
+        let mut attempts = 0;
+        let mut backoff = Duration::from_millis(100);
+        loop {
+            match db.save_player(&row).await {
+                Ok(()) => break,
+                Err(error) => {
+                    attempts += 1;
+                    if attempts >= 3 {
+                        tracing::error!(
+                            player_id = row.id,
+                            error = ?error,
+                            "Failed to save player after 3 attempts"
+                        );
+                        break;
+                    }
+                    tracing::warn!(
+                        player_id = row.id,
+                        error = ?error,
+                        attempt = attempts,
+                        ?backoff,
+                        "Failed to save player; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1267,6 +2041,189 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use tokio::sync::mpsc;
+
+    fn candidate(
+        _name: &'static str,
+        activity: ScheduleActivity,
+        interval_ms: u64,
+    ) -> ScheduleCandidate {
+        ScheduleCandidate {
+            activity,
+            interval: Duration::from_millis(interval_ms),
+        }
+    }
+
+    #[test]
+    fn schedule_clock_skips_idle_world_without_catchup() {
+        let base = Instant::now();
+        let mut clock = ScheduleClock::new(2, base);
+        let schedules = [
+            candidate("hazards", ScheduleActivity::OnlinePlayers, 10),
+            candidate("physics", ScheduleActivity::PlayerEntities, 10),
+        ];
+
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(11),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert!(due.is_empty());
+
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(12),
+            ScheduleWorkload {
+                online_count: 1,
+                player_entity_count: 1,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert!(
+            due.is_empty(),
+            "idle skip must reset last_run instead of catching up immediately"
+        );
+
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(21),
+            ScheduleWorkload {
+                online_count: 1,
+                player_entity_count: 1,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![0, 1]);
+    }
+
+    #[test]
+    fn schedule_activity_defines_idle_behavior_without_name_matching() {
+        let base = Instant::now();
+        let schedules = [
+            candidate("renamed_online_work", ScheduleActivity::OnlinePlayers, 10),
+            candidate("renamed_entity_work", ScheduleActivity::PlayerEntities, 10),
+            candidate("renamed_durable_work", ScheduleActivity::Always, 10),
+            candidate("renamed_crafting_work", ScheduleActivity::DueCrafting, 10),
+        ];
+
+        let mut clock = ScheduleClock::new(schedules.len(), base);
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(11),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 1,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![1, 2]);
+
+        let mut clock = ScheduleClock::new(schedules.len(), base);
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(11),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![2]);
+
+        let mut clock = ScheduleClock::new(schedules.len(), base);
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(11),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: true,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![2, 3]);
+    }
+
+    #[test]
+    fn schedule_clock_preserves_disabled_schedule_slots() {
+        let base = Instant::now();
+        let mut clock = ScheduleClock::new(3, base);
+        let schedules = [
+            Some(candidate("hazards", ScheduleActivity::OnlinePlayers, 10)),
+            None,
+            Some(candidate(
+                "building_crafting",
+                ScheduleActivity::DueCrafting,
+                10,
+            )),
+        ];
+
+        let due = clock.select_due(
+            schedules.len(),
+            base + Duration::from_millis(11),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: true,
+            },
+            |idx| schedules.get(idx).copied().flatten(),
+        );
+        assert_eq!(due, vec![2]);
+        assert_eq!(clock.last_runs.len(), schedules.len());
+    }
+
+    #[test]
+    fn schedule_clock_runs_from_completion_time_not_original_deadline() {
+        let base = Instant::now();
+        let mut clock = ScheduleClock::new(1, base);
+        let schedules = [candidate("building_crafting", ScheduleActivity::Always, 10)];
+        let first_due_at = base + Duration::from_millis(25);
+
+        let due = clock.select_due(
+            schedules.len(),
+            first_due_at,
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![0]);
+        *clock.last_run_mut(0, first_due_at) = first_due_at;
+
+        let due = clock.select_due(
+            schedules.len(),
+            first_due_at + Duration::from_millis(9),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert!(due.is_empty());
+
+        let due = clock.select_due(
+            schedules.len(),
+            first_due_at + Duration::from_millis(10),
+            ScheduleWorkload {
+                online_count: 0,
+                player_entity_count: 0,
+                crafting_due: false,
+            },
+            |idx| schedules.get(idx).copied(),
+        );
+        assert_eq!(due, vec![0]);
+    }
 
     #[test]
     fn side_profile_update_max_keeps_per_section_maximums() {
@@ -1339,8 +2296,8 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = crate::net::session::outbox::channel();
+        let (tx2, mut rx2) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&state, &tx1, &p1, 1);
         crate::net::session::player::init::connect_in_tick(&state, &tx2, &p2, 2);
         drain_queued_packets(&mut rx1);
@@ -1360,11 +2317,11 @@ mod tests {
         let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
     }
 
-    fn drain_queued_packets(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) {
+    fn drain_queued_packets(rx: &mut mpsc::Receiver<Vec<u8>>) {
         while rx.try_recv().is_ok() {}
     }
 
-    fn assert_online_packet(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>, expected_payload: &[u8]) {
+    fn assert_online_packet(rx: &mut mpsc::Receiver<Vec<u8>>, expected_payload: &[u8]) {
         let frame = rx.try_recv().expect("ON frame");
         let mut buf = BytesMut::from(&frame[..]);
         let packet = crate::protocol::Packet::try_decode(&mut buf)

@@ -477,13 +477,13 @@ impl Horb {
     }
 
     /// Сериализовать в GU-payload (`"horb:{json}"`) и отправить.
-    fn emit(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    fn emit(&self, tx: &Outbox) {
         send_u_packet(tx, "GU", format!("horb:{}", self.to_json()).as_bytes());
     }
 
     /// Отправить HORB без `PlayerUI.current_window`.
     /// Нужно для pre-auth окон, где игрок ещё не выбран.
-    pub fn send_raw(&self, tx: &mpsc::UnboundedSender<Vec<u8>>) {
+    pub fn send_raw(&self, tx: &Outbox) {
         self.emit(tx);
     }
 
@@ -492,7 +492,7 @@ impl Horb {
     pub fn send(
         &self,
         state: &Arc<GameState>,
-        tx: &mpsc::UnboundedSender<Vec<u8>>,
+        tx: &Outbox,
         pid: PlayerId,
         window_tag: impl Into<String>,
     ) {

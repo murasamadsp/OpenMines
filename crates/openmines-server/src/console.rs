@@ -3,9 +3,10 @@ use crate::game::GameState;
 use crate::game::player::{PlayerId, PlayerMetadata, PlayerStats};
 use crate::net::session::wire::make_u_packet_bytes;
 use crate::world::WorldProvider;
+use std::io::{self, BufRead as _};
 use std::sync::Arc;
-use tokio::io::{self, AsyncBufReadExt, BufReader};
-use tokio::sync::broadcast;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{broadcast, mpsc};
 
 // ─── Arg-parsing helpers ─────────────────────────────────────────────────────
 
@@ -21,13 +22,83 @@ fn parse_flag<T: std::str::FromStr>(args: &[&str], long: &str, short: &str) -> O
 
 // ─── REPL ────────────────────────────────────────────────────────────────────
 
+const CONSOLE_INPUT_CAPACITY: usize = 16;
+
+struct StdinReaderStop(Arc<AtomicBool>);
+
+impl Drop for StdinReaderStop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+#[cfg(unix)]
+fn stdin_ready() -> io::Result<bool> {
+    use std::os::fd::AsRawFd as _;
+
+    let mut descriptor = libc::pollfd {
+        fd: io::stdin().as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: `descriptor` points to one initialized pollfd for the duration of the call.
+    let result = unsafe { libc::poll(&raw mut descriptor, 1, 100) };
+    if result < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(result > 0)
+}
+
+#[cfg(not(unix))]
+fn stdin_ready() -> io::Result<bool> {
+    Ok(true)
+}
+
+fn spawn_stdin_reader() -> io::Result<(mpsc::Receiver<io::Result<String>>, StdinReaderStop)> {
+    let (tx, rx) = mpsc::channel(CONSOLE_INPUT_CAPACITY);
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    std::thread::Builder::new()
+        .name("admin-console-stdin".to_owned())
+        .spawn(move || {
+            let stdin = io::stdin();
+            while !thread_stop.load(Ordering::Acquire) {
+                match stdin_ready() {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        let _ = tx.blocking_send(Err(error));
+                        break;
+                    }
+                }
+                let mut line = String::new();
+                let result = stdin.lock().read_line(&mut line).map(|_| line);
+                let eof = matches!(&result, Ok(line) if line.is_empty());
+                let failed = result.is_err();
+                if tx.blocking_send(result).is_err() || eof || failed {
+                    break;
+                }
+            }
+        })?;
+    Ok((rx, StdinReaderStop(stop)))
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>) -> io::Result<()> {
-    let mut reader = BufReader::new(io::stdin()).lines();
+    let (mut lines, _stdin_reader_stop) = spawn_stdin_reader()?;
+    let mut shutdown_rx = shutdown_tx.subscribe();
 
     println!(">>> Interactive admin console ready. Type 'help' or '?' for commands.");
 
-    while let Some(line) = reader.next_line().await? {
+    loop {
+        let line = tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            line = lines.recv() => line,
+        };
+        let Some(line) = line else {
+            break;
+        };
+        let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -132,12 +203,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 let pkt = make_u_packet_bytes(event, &pkt_body);
                 let mut count = 0;
                 for pid in state.active_player_ids() {
-                    state.query_player(pid, |ecs, entity| {
-                        if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity)
-                        {
-                            let _ = conn.tx.send(pkt.clone());
-                        }
-                    });
+                    state.send_to_player(pid, pkt.clone());
                     count += 1;
                 }
                 println!("Announced to {count} players.");
@@ -159,10 +225,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
                         f.dirty = true;
                     }
-                    let conn_tx = ecs
-                        .get::<crate::game::player::PlayerConnection>(entity)
-                        .map(|c| c.tx.clone());
-                    if let Some(tx) = conn_tx {
+                    if let Some(tx) = state.player_sender(pid) {
                         let mut inv =
                             ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
                         crate::net::session::outbound::inventory_sync::send_inventory(
@@ -227,12 +290,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     if let Some(mut f) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
                         f.dirty = true;
                     }
-                    if let Some(conn) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
+                    if let Some(tx) = state.player_sender(pid) {
                         let pkt = crate::protocol::packets::tp(x, y);
-                        let _ = conn.tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
-                        crate::net::session::play::chunks::check_chunk_changed(
-                            &state, &conn.tx, pid,
-                        );
+                        let _ = tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
+                        crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
                     }
                     Some(())
                 });
@@ -269,10 +330,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Usage: kill -p <ID>");
                     continue;
                 };
-                let conn_tx = state.query_player_opt(pid, |ecs, entity| {
-                    ecs.get::<crate::game::player::PlayerConnection>(entity)
-                        .map(|c| c.tx.clone())
-                });
+                let conn_tx = state.player_sender(pid);
                 if let Some(tx) = conn_tx {
                     crate::net::session::play::death::handle_death(&state, &tx, pid);
                     tracing::info!(target: "console", player_id = %pid, "Killed player");
@@ -414,7 +472,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
                 match state.world.flush() {
-                    Ok(()) => {
+                    Ok(_) => {
                         tracing::info!(target: "console", saved_count = saved, "Manual save complete");
                         println!("Saved {saved} players and flushed world.");
                     }

@@ -17,7 +17,7 @@ const fn add_crystals_like_reference(current: i64, amount: i64) -> i64 {
     }
 }
 
-fn send_build_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_build_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -61,12 +61,6 @@ enum DigPlayerRead {
     MissingState(&'static str),
 }
 
-enum BoxPickupResult {
-    Picked([i64; 6]),
-    Empty,
-    MissingState(&'static str),
-}
-
 enum DigMutationRead {
     Ready,
     MissingState(&'static str),
@@ -98,7 +92,7 @@ impl CrystalMineYield {
 
 pub fn handle_dig(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     dir: i32,
     programmatic: bool,
@@ -192,29 +186,15 @@ pub fn handle_dig(
                 };
                 cd_mut.last_dig = std::time::Instant::now();
             }
-            {
-                // C# `Move(own, dir)` при distance 0 начисляет Movement exp + @S
-                // (Player.cs:441-452) — было пропущено, Movement не качался от копания.
-                let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
-                else {
-                    return Some(DigPlayerRead::MissingState("PlayerSkillsComp"));
-                };
-                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "M", 1.0) {
-                    send_u_packet(tx, sk.0, &sk.1);
-                    ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                        .expect("PlayerFlags checked before dig movement exp")
-                        .dirty = true;
-                }
-            }
             Some(DigPlayerRead::Ready(data))
         })
         .flatten();
-    let Some(player_data) = player_data else {
+    let Some(player_read) = player_data else {
         tracing::error!(player_id = %pid, "Player entity missing for dig");
         send_build_state_error(tx);
         return;
     };
-    let player_data = match player_data {
+    let player_data = match player_read {
         DigPlayerRead::Ready(player_data) => player_data,
         DigPlayerRead::Blocked => return,
         DigPlayerRead::MissingState(component) => {
@@ -223,6 +203,24 @@ pub fn handle_dig(
             return;
         }
     };
+    // C# `Move(own, dir)` при distance 0 начисляет Movement exp + @S
+    // (Player.cs:441-452) — было пропущено, Movement не качался от копания.
+    match crate::game::skills::add_player_skill_exp(state, pid, ctx, "M", 1.0, true) {
+        crate::game::skills::SkillExpMutation::Packet(Some(sk)) => {
+            send_u_packet(tx, sk.0, &sk.1);
+        }
+        crate::game::skills::SkillExpMutation::Packet(None) => {}
+        crate::game::skills::SkillExpMutation::MissingState(component) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for dig");
+            send_build_state_error(tx);
+            return;
+        }
+        crate::game::skills::SkillExpMutation::MissingEntity => {
+            tracing::error!(player_id = %pid, "Player entity missing for dig");
+            send_build_state_error(tx);
+            return;
+        }
+    }
     let DigPlayerData {
         x: px,
         y: py,
@@ -272,47 +270,13 @@ pub fn handle_dig(
     // Fix 2: BOX (90) special case — pick up crystals and destroy.
     // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
     if cell.0 == cell_type::BOX {
-        let pickup = state
-            .modify_player(pid, |ecs, entity| {
-                if ecs
-                    .get::<crate::game::player::PlayerStats>(entity)
-                    .is_none()
-                {
-                    return Some(BoxPickupResult::MissingState("PlayerStats"));
-                }
-                if ecs
-                    .get::<crate::game::player::PlayerFlags>(entity)
-                    .is_none()
-                {
-                    return Some(BoxPickupResult::MissingState("PlayerFlags"));
-                }
-                let Some(bc) = state.remove_box_cell(tgt_x, tgt_y) else {
-                    return Some(BoxPickupResult::Empty);
-                };
-                let mut p_stats = ecs
-                    .get_mut::<crate::game::player::PlayerStats>(entity)
-                    .expect("PlayerStats checked before box pickup");
-                for i in 0..6 {
-                    p_stats.crystals[i] = p_stats.crystals[i].saturating_add(bc[i]);
-                }
-                let c_data = p_stats.crystals;
-                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                    .expect("PlayerFlags checked before box pickup")
-                    .dirty = true;
-                send_u_packet(tx, "@B", &basket(&c_data, 1).1);
-                Some(BoxPickupResult::Picked(bc))
-            })
-            .flatten();
-        let Some(pickup) = pickup else {
-            tracing::error!(player_id = %pid, "Player entity missing for box pickup");
-            send_build_state_error(tx);
-            return;
-        };
+        let pickup = crate::game::logic::boxes::pickup_box(state, pid, tgt_x, tgt_y);
         match pickup {
-            BoxPickupResult::Picked(bc) => {
+            crate::game::logic::boxes::BoxPickupResult::Picked { picked, crystals } => {
+                send_u_packet(tx, "@B", &basket(&crystals, 1).1);
                 // C# `Player.GetBox` → `HBChatPacket(0, x, y, "+ " + AllCrys)` — бабл
                 // с суммой кристаллов над боксом, ТОЛЬКО своему соединению (bot_id=0).
-                let total: i64 = bc.iter().sum();
+                let total: i64 = picked.iter().sum();
                 let bubble = crate::protocol::packets::hb_chat(
                     0,
                     net_u16_nonneg(tgt_x),
@@ -323,9 +287,14 @@ pub fn handle_dig(
                     &crate::protocol::packets::hb_bundle(&[bubble]).1,
                 ));
             }
-            BoxPickupResult::Empty => {}
-            BoxPickupResult::MissingState(component) => {
+            crate::game::logic::boxes::BoxPickupResult::Empty => {}
+            crate::game::logic::boxes::BoxPickupResult::MissingState(component) => {
                 tracing::error!(player_id = %pid, component, "Player component missing for box pickup");
+                send_build_state_error(tx);
+                return;
+            }
+            crate::game::logic::boxes::BoxPickupResult::MissingEntity => {
+                tracing::error!(player_id = %pid, "Player entity missing for box pickup");
                 send_build_state_error(tx);
                 return;
             }
@@ -591,7 +560,7 @@ pub fn handle_dig(
 
 pub fn handle_build(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     bld: &XbldClient<'_>,
     programmatic: bool,
@@ -804,7 +773,7 @@ pub fn handle_build(
         "V" if is_truly_empty(cur) && try_spend_crystal(state, tx, pid, 5, cost) => {
             place_block(state, tgt_x, tgt_y, cell_type::MILITARY_BLOCK_FRAME);
             // Schedule conversion: frame→block after 10 ticks (1:1 C# StupidAction).
-            let mut ecs = state.ecs.write();
+            let mut ecs = state.ecs_write_profiled("build.pending_military_conversion");
             ecs.resource_mut::<crate::game::PendingCellConversions>()
                 .0
                 .push(crate::game::PendingConversion {
@@ -836,42 +805,28 @@ pub fn handle_build(
 
 pub fn try_spend_crystal(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     idx: usize,
     amount: i64,
 ) -> bool {
-    let spent = state.modify_player(pid, |ecs, entity| {
-        if ecs
-            .get::<crate::game::player::PlayerStats>(entity)
-            .is_none()
-            || ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-        {
-            return None;
+    match crate::game::logic::crystals::spend_crystal(state, pid, idx, amount) {
+        crate::game::logic::crystals::CrystalSpendResult::Spent { crystals } => {
+            send_u_packet(tx, "@B", &basket(&crystals, 1).1);
+            true
         }
-        let mut s = ecs
-            .get_mut::<crate::game::player::PlayerStats>(entity)
-            .expect("PlayerStats checked before crystal spend");
-        if s.crystals[idx] >= amount {
-            s.crystals[idx] -= amount;
-            let c_data = s.crystals;
-            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                .expect("PlayerFlags checked before crystal spend")
-                .dirty = true;
-            send_u_packet(tx, "@B", &basket(&c_data, 1).1);
-            Some(true)
-        } else {
-            Some(false)
+        crate::game::logic::crystals::CrystalSpendResult::Insufficient => false,
+        crate::game::logic::crystals::CrystalSpendResult::MissingState(component) => {
+            tracing::error!(player_id = %pid, component, "Player component missing for crystal spend");
+            send_build_state_error(tx);
+            false
         }
-    });
-    let Some(spent) = spent.flatten() else {
-        tracing::error!(player_id = %pid, "Player stats missing for crystal spend");
-        send_build_state_error(tx);
-        return false;
-    };
-    spent
+        crate::game::logic::crystals::CrystalSpendResult::MissingEntity => {
+            tracing::error!(player_id = %pid, "Player entity missing for crystal spend");
+            send_build_state_error(tx);
+            false
+        }
+    }
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
@@ -911,7 +866,7 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct TestState {
         state: Arc<GameState>,
@@ -972,7 +927,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -1021,7 +976,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_spend_missing_player_stats_is_explicit_error_not_insufficient_resources() {
         let test = make_test_state("crystal_spend_missing_stats").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1047,7 +1002,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_spend_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_test_state("crystal_spend_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1077,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_spend_success_marks_player_dirty() {
         let test = make_test_state("crystal_spend_dirty").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1107,7 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn dig_missing_player_skills_is_explicit_error_not_silent_noop() {
         let test = make_test_state("dig_missing_skills").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1137,7 +1092,7 @@ mod tests {
     #[tokio::test]
     async fn programmatic_dig_ignores_open_gui_but_manual_dig_does_not() {
         let test = make_test_state("programmatic_dig_window").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1200,7 +1155,7 @@ mod tests {
                     drop_mult: 300.0,
                 });
         }
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1247,7 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_mine_sends_skill_progress_before_basket_like_reference() {
         let test = make_test_state("crystal_mine_packet_order").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1291,7 +1246,7 @@ mod tests {
     #[tokio::test]
     async fn build_turn_marks_player_dirty_even_when_build_does_not_happen() {
         let test = make_test_state("build_turn_dirty").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1334,7 +1289,7 @@ mod tests {
     #[tokio::test]
     async fn dig_turn_marks_player_dirty_even_without_crystal_gain() {
         let test = make_test_state("dig_turn_dirty").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1376,7 +1331,7 @@ mod tests {
     #[tokio::test]
     async fn dig_missing_player_flags_is_explicit_error_before_world_damage() {
         let test = make_test_state("dig_missing_flags_no_damage").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1415,7 +1370,7 @@ mod tests {
     #[tokio::test]
     async fn dig_crystal_missing_player_flags_is_explicit_error_without_crystal_gain() {
         let test = make_test_state("dig_crystal_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1457,7 +1412,7 @@ mod tests {
     #[tokio::test]
     async fn dig_box_missing_player_flags_keeps_box_and_sends_explicit_error() {
         let test = make_test_state("dig_box_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1499,7 +1454,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_spend_insufficient_resources_stays_quiet_false() {
         let test = make_test_state("crystal_spend_insufficient").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1515,7 +1470,7 @@ mod tests {
     #[tokio::test]
     async fn build_missing_player_skills_is_explicit_error_not_blocked_fallback() {
         let test = make_test_state("build_missing_skills").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1549,7 +1504,7 @@ mod tests {
     #[tokio::test]
     async fn build_yellow_upgrade_missing_skills_does_not_use_default_cost_or_mutate_world() {
         let test = make_test_state("build_yellow_upgrade_missing_skills").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1598,7 +1553,7 @@ mod tests {
     #[tokio::test]
     async fn build_red_upgrade_missing_skills_does_not_use_default_cost_or_mutate_world() {
         let test = make_test_state("build_red_upgrade_missing_skills").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1647,7 +1602,7 @@ mod tests {
     #[tokio::test]
     async fn build_cooldown_block_stays_quiet_noop() {
         let test = make_test_state("build_cooldown_quiet").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

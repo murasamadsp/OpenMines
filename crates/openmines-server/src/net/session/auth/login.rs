@@ -5,11 +5,7 @@ use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
-fn send_auth_failure(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    _au: &AuClientPacket<'_>,
-) {
+fn send_auth_failure(state: &Arc<GameState>, tx: &Outbox, _au: &AuClientPacket<'_>) {
     let w = state.world.cells_width();
     let h = state.world.cells_height();
     // 1:1 ref: WorldInfoPacket(World.W.name, ...)
@@ -33,10 +29,10 @@ fn send_auth_failure(
 
 pub async fn handle_auth(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     au: &AuClientPacket<'_>,
     sid: &str,
-    session_token: u64,
+    session_id: SessionId,
     auth_state: &mut crate::net::session::connection::AuthState,
 ) -> Result<Option<PlayerId>> {
     tracing::debug!(uniq = %au.client_uniq(), "Attempting auth");
@@ -98,7 +94,7 @@ pub async fn handle_auth(
         send_u_packet(tx, gu.0, &gu.1);
 
         // 3. Player.Init() — в `server_reference/Auth.TryToAuth` при токене `AH` не шлётся (только после GUI-пароля / регистрации).
-        let pid = init_player(state, tx, &player, session_token);
+        let pid = init_player(state, &player, session_id);
         *auth_state = crate::net::session::connection::AuthState::Authenticated { player_id: pid };
 
         return Ok(Some(pid));

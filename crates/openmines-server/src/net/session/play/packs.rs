@@ -4,11 +4,11 @@ use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::modify_pack_with_db;
 
-fn send_resp_action_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_resp_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("РЕСП", "Некорректное действие.").1);
 }
 
-fn send_resp_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_resp_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -16,7 +16,7 @@ fn send_resp_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-fn send_gun_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_gun_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -99,7 +99,7 @@ fn apply_charge_fill(
         return FillResult::MissingState;
     };
 
-    let mut ecs = state.ecs.write();
+    let mut ecs = state.ecs_write_profiled("packs.fill_gun");
     if ecs.get::<PlayerStats>(player_entity).is_none()
         || ecs.get::<PlayerFlags>(player_entity).is_none()
         || ecs.get::<BuildingStats>(building_entity).is_none()
@@ -164,12 +164,7 @@ fn apply_charge_fill(
 /// Open Resp visitor GUI (1:1 with C# `Resp.GUIWin`).
 /// Shows bind button if not bound, or "you are bound" message.
 /// Owner gets admin gear icon to access fill/settings page.
-pub fn open_resp_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+pub fn open_resp_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     // Get player resp and check if bound here
     let player_resp = state.query_player_opt(pid, |ecs, entity| {
         let meta = ecs.get::<PlayerMetadata>(entity)?;
@@ -229,7 +224,7 @@ pub fn open_resp_gui(
 /// 1:1 with C# `Resp.AdmnPage`.
 pub fn open_resp_admin_gui(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -347,7 +342,7 @@ pub fn open_resp_admin_gui(
 /// Handle resp bind button click.
 pub fn handle_resp_bind(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -396,7 +391,7 @@ pub fn handle_resp_bind(
 /// Deducts blue crystals from player, adds charge to resp.
 pub fn handle_resp_fill(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     amount_str: &str,
     pack_x: i32,
@@ -432,7 +427,7 @@ pub fn handle_resp_fill(
 /// Handle resp profit withdrawal.
 pub fn handle_resp_profit(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -458,7 +453,7 @@ pub fn handle_resp_profit(
     };
 
     let result = {
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("packs.storage_take");
         if ecs.get::<PlayerStats>(player_entity).is_none()
             || ecs.get::<PlayerFlags>(player_entity).is_none()
             || ecs.get::<BuildingStorage>(building_entity).is_none()
@@ -535,12 +530,7 @@ fn resp_profit_state_ready(
 /// Handle resp admin save (cost, clan toggle, clanzone).
 /// Button format: `resp_save:{richlist_data}` (coordinates from `current_window`).
 /// `RichList` data from client: `key:value#key:value#...` (hash-separated, colon key:value).
-pub fn handle_resp_save(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    richlist_data: &str,
-) {
+pub fn handle_resp_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, richlist_data: &str) {
     // Resolve coordinates from current_window ("resp:{x}:{y}")
     let coords = state.query_player_opt(pid, |ecs, entity| {
         let ui = ecs.get::<PlayerUI>(entity)?;
@@ -647,13 +637,7 @@ pub fn handle_resp_save(
 }
 
 /// Открыть GUI пушки (`RichList` Fill, заряд Cyan).
-pub fn open_gun_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    pack_x: i32,
-    pack_y: i32,
-) {
+pub fn open_gun_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, pack_x: i32, pack_y: i32) {
     let fill_info = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
         let pk_stats = ecs.get::<BuildingStats>(entity)?;
         Some((pk_stats.charge, pk_stats.max_charge))
@@ -709,7 +693,7 @@ pub fn open_gun_gui(
 /// Обработать нажатие кнопки заряда пушки (+100, +1000, max).
 pub fn handle_gun_fill(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     amount_str: &str,
     pack_x: i32,
@@ -752,7 +736,7 @@ pub fn handle_gun_fill(
 #[allow(clippy::needless_pass_by_value)]
 pub fn handle_gun_fill_prog(
     state: &Arc<GameState>,
-    _tx: &mpsc::UnboundedSender<Vec<u8>>,
+    _tx: &Outbox,
     _pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -822,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn resp_fill_missing_player_flags_is_explicit_error_without_charge_or_crystal_mutation() {
         let test = make_charge_fill_test_state("resp_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -852,7 +836,7 @@ mod tests {
     #[tokio::test]
     async fn resp_bind_missing_player_flags_is_explicit_error_without_resp_mutation() {
         let test = make_charge_fill_test_state("resp_bind_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -877,7 +861,7 @@ mod tests {
     #[tokio::test]
     async fn gun_fill_missing_player_flags_is_explicit_error_without_charge_or_crystal_mutation() {
         let test = make_charge_fill_test_state("gun_missing_flags", "G", 5, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -917,7 +901,7 @@ mod tests {
         filler.y = 10;
         filler.crystals[5] = 100;
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &filler, 2);
         drain_events(&mut rx);
 
@@ -941,7 +925,7 @@ mod tests {
     #[tokio::test]
     async fn resp_profit_missing_player_flags_is_explicit_error_without_money_mutation() {
         let test = make_charge_fill_test_state("resp_profit_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -974,7 +958,7 @@ mod tests {
     #[tokio::test]
     async fn resp_profit_success_moves_money_and_marks_player_and_building_dirty() {
         let test = make_charge_fill_test_state("resp_profit_success", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1005,7 +989,7 @@ mod tests {
     #[tokio::test]
     async fn resp_save_rejects_malformed_cost_without_cost_mutation() {
         let test = make_charge_fill_test_state("resp_save_bad_cost", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1026,7 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn resp_save_missing_player_stats_is_explicit_error_without_partial_cost_mutation() {
         let test = make_charge_fill_test_state("resp_save_missing_player_stats", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1052,7 +1036,7 @@ mod tests {
     #[tokio::test]
     async fn resp_save_updates_clanzone_marks_dirty_and_refreshes_admin_gui() {
         let test = make_charge_fill_test_state("resp_save_clanzone", "R", 1, 100).await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1077,7 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn gun_fill_prog_missing_building_stats_does_not_dirty_building() {
         let test = make_charge_fill_test_state("gun_prog_missing_stats", "G", 5, 100).await;
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = crate::net::session::outbox::channel();
         let building_entity = test.state.building_entity_at(10, 10).unwrap();
         {
             let mut ecs = test.state.ecs.write();
@@ -1260,7 +1244,7 @@ mod tests {
         });
     }
 
-    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);

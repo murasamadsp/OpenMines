@@ -3,16 +3,19 @@
 //! Alive cells tick every 5 seconds (C# `UpdateAlive` interval = 5000ms).
 //! Each alive cell type has unique spreading/colony behavior.
 
-use crate::game::player::PlayerPosition;
+use crate::game::player::{PlayerConnection, PlayerPosition};
+use crate::game::programmator::ProgrammatorState;
 use crate::game::{BroadcastEffect, BroadcastQueue, ScheduleConfigResource, WorldResource};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 use rand::Rng;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// Directions used by alive cell logic (cardinal: right, down, left, up).
 const DIRS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
+const ACTIVE_RADIUS: i32 = 16;
 
 /// Check if a cell type is an alive cell.
 const fn is_alive(cell: crate::world::CellType) -> bool {
@@ -30,12 +33,48 @@ const fn is_alive(cell: crate::world::CellType) -> bool {
 
 /// Collected set of player positions for occupancy checks.
 struct PlayerPositions {
-    positions: Vec<(i32, i32)>,
+    positions: HashSet<(i32, i32)>,
 }
 
 impl PlayerPositions {
     fn has_player_at(&self, x: i32, y: i32) -> bool {
-        self.positions.iter().any(|&(px, py)| px == x && py == y)
+        self.positions.contains(&(x, y))
+    }
+}
+
+struct ActiveFrontier {
+    rows: Vec<(i32, Vec<(i32, i32)>)>,
+}
+
+impl ActiveFrontier {
+    fn around(players: &PlayerPositions) -> Self {
+        let mut rows: BTreeMap<i32, Vec<(i32, i32)>> = BTreeMap::new();
+        for &(px, py) in &players.positions {
+            let start_x = px.saturating_sub(ACTIVE_RADIUS);
+            let end_x = px.saturating_add(ACTIVE_RADIUS);
+            for y in py.saturating_sub(ACTIVE_RADIUS)..=py.saturating_add(ACTIVE_RADIUS) {
+                rows.entry(y).or_default().push((start_x, end_x));
+            }
+        }
+
+        let rows = rows
+            .into_iter()
+            .map(|(y, mut intervals)| {
+                intervals.sort_unstable();
+                let mut merged: Vec<(i32, i32)> = Vec::with_capacity(intervals.len());
+                for (start, end) in intervals {
+                    if let Some((_, previous_end)) = merged.last_mut()
+                        && start <= previous_end.saturating_add(1)
+                    {
+                        *previous_end = (*previous_end).max(end);
+                    } else {
+                        merged.push((start, end));
+                    }
+                }
+                (y, merged)
+            })
+            .collect();
+        Self { rows }
     }
 }
 
@@ -60,7 +99,11 @@ pub fn alive_physics_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    query: Query<&PlayerPosition>,
+    query: Query<(
+        &PlayerPosition,
+        Option<&PlayerConnection>,
+        Option<&ProgrammatorState>,
+    )>,
 ) {
     let started_at = Instant::now();
     let world = &world_res.0;
@@ -68,29 +111,33 @@ pub fn alive_physics_system(
 
     // Collect all player positions for occupancy check.
     let player_collect_t0 = Instant::now();
+    let simulated_positions: HashSet<(i32, i32)> = query
+        .iter()
+        .filter_map(|(pos, conn, prog)| {
+            (conn.is_some() || prog.is_some_and(|prog| prog.running)).then_some((pos.x, pos.y))
+        })
+        .collect();
     let players = PlayerPositions {
-        positions: query.iter().map(|p| (p.x, p.y)).collect(),
+        positions: simulated_positions,
     };
     let player_collect_time = player_collect_t0.elapsed();
 
-    // Collect alive cells near players (radius 16, same as sand).
+    // Merge overlapping player windows before reading the world. Work is
+    // proportional to the active spatial union, not players × window area.
     let collect_t0 = Instant::now();
     let mut alive_cells: Vec<(i32, i32, crate::world::CellType)> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
     let mut cells_scanned = 0usize;
-
-    for pos in &query {
-        for dy in -16..=16_i32 {
-            for dx in -16..=16_i32 {
+    let frontier = ActiveFrontier::around(&players);
+    for (y, intervals) in &frontier.rows {
+        for &(start_x, end_x) in intervals {
+            for x in start_x..=end_x {
                 cells_scanned += 1;
-                let x = pos.x + dx;
-                let y = pos.y + dy;
-                if !world.valid_coord(x, y) || !seen.insert((x, y)) {
+                if !world.valid_coord(x, *y) {
                     continue;
                 }
-                let cell = world.get_cell_typed(x, y);
+                let cell = world.get_cell_typed(x, *y);
                 if is_alive(cell) {
-                    alive_cells.push((x, y, cell));
+                    alive_cells.push((x, *y, cell));
                 }
             }
         }
@@ -555,5 +602,43 @@ fn alive_rainbow(
                 target_def.durability * f32::from(i16::try_from(modif).unwrap_or(i16::MAX)),
             ),
         });
+    }
+}
+
+#[cfg(test)]
+mod frontier_tests {
+    use super::{ACTIVE_RADIUS, ActiveFrontier, PlayerPositions};
+    use std::collections::HashSet;
+
+    fn frontier_cells(positions: &[(i32, i32)]) -> HashSet<(i32, i32)> {
+        let players = PlayerPositions {
+            positions: positions.iter().copied().collect(),
+        };
+        ActiveFrontier::around(&players)
+            .rows
+            .into_iter()
+            .flat_map(|(y, intervals)| {
+                intervals
+                    .into_iter()
+                    .flat_map(move |(start, end)| (start..=end).map(move |x| (x, y)))
+            })
+            .collect()
+    }
+
+    fn naive_cells(positions: &[(i32, i32)]) -> HashSet<(i32, i32)> {
+        positions
+            .iter()
+            .flat_map(|&(px, py)| {
+                (py - ACTIVE_RADIUS..=py + ACTIVE_RADIUS).flat_map(move |y| {
+                    (px - ACTIVE_RADIUS..=px + ACTIVE_RADIUS).map(move |x| (x, y))
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn active_frontier_matches_exact_union_of_overlapping_windows() {
+        let positions = [(10, 10), (10, 10), (15, 12), (100, 50)];
+        assert_eq!(frontier_cells(&positions), naive_cells(&positions));
     }
 }

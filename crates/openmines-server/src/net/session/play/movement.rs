@@ -20,7 +20,7 @@ enum MoveOutcome {
     Autodig(i32),
 }
 
-fn send_move_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_move_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -28,28 +28,52 @@ fn send_move_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
     );
 }
 
-#[allow(clippy::similar_names, clippy::too_many_arguments)]
-pub fn handle_move(
+enum MoveFollowup {
+    Autodig(i32),
+    OpenPack(crate::game::structures::buildings::PackView),
+}
+
+#[derive(Default)]
+struct MoveApplication {
+    movement_fanout: Option<crate::net::session::play::chunks::ChunkFanout>,
+    chunk_packets: Vec<Vec<u8>>,
+    chunk_fanouts: Vec<crate::net::session::play::chunks::ChunkFanout>,
+    followup: Option<MoveFollowup>,
+}
+
+#[derive(Clone, Copy)]
+pub struct MoveRequest {
+    pub target_x: i32,
+    pub target_y: i32,
+    pub direction: i32,
+    pub programmatic: bool,
+}
+
+fn apply_move(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &dyn PacketSink,
     pid: PlayerId,
-    _client_time: u32,
-    target_x: i32,
-    target_y: i32,
-    dir: i32,
-    // `true` — ход инициирован программатором (а не игроком). Пропускает guards
-    // «программа бежит»/«окно открыто», но ВСЯ валидация (coord/коллизия/ворота/
-    // дистанция) общая — чтобы программатор делал ровно то же, что ручной ход
-    // (no-DRY): нельзя пройти сквозь блоки.
-    programmatic: bool,
-) {
+    request: MoveRequest,
+) -> MoveApplication {
+    let MoveRequest {
+        target_x,
+        target_y,
+        direction,
+        programmatic,
+    } = request;
+    // `programmatic` пропускает guards «программа бежит»/«окно открыто», но
+    // coord/коллизия/ворота/дистанция остаются общими с ручным ходом.
     // C# `Player.cs:414-415`: Ctrl-move шлёт `(dir+10)` — снять флаг (клиент
     // `ClientController.cs:1022`). `dir==-1` (autoDig-в-стену) проходит без изменений.
-    let dir = if dir > 9 { dir - 10 } else { dir };
+    let dir = if direction > 9 {
+        direction - 10
+    } else {
+        direction
+    };
     let ctx = crate::game::ExpContext::from_state(state);
 
     let tp_back = |reason: &str,
-                   txc: &mpsc::UnboundedSender<Vec<u8>>,
+                   txc: &dyn PacketSink,
                    from_x: i32,
                    from_y: i32,
                    to_x: i32,
@@ -72,7 +96,7 @@ pub fn handle_move(
                     send_move_state_error(tx);
                     return None;
                 };
-                let Some(stats) = ecs.get::<PlayerStats>(entity) else {
+                let Some(player_stats) = ecs.get::<PlayerStats>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for movement");
                     send_move_state_error(tx);
                     return None;
@@ -96,8 +120,8 @@ pub fn handle_move(
                 (
                     pos.x,
                     pos.y,
-                    stats.skin,
-                    stats.clan_id.unwrap_or(0),
+                    player_stats.skin,
+                    player_stats.clan_id.unwrap_or(0),
                     ui.current_window.is_some(),
                     prog.is_manual_control_allowed(),
                     settings.auto_dig,
@@ -301,61 +325,183 @@ pub fn handle_move(
             clan,
         }) => (nx, ny, ndir, skin, clan),
         Some(MoveOutcome::Autodig(dig_dir)) => {
-            // C# `Player.cs:434`: Bz() после tp назад. handle_dig сам берёт лок —
-            // вызываем ПОСЛЕ закрытия modify_player.
-            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dig_dir, programmatic);
-            return;
+            return MoveApplication {
+                followup: Some(MoveFollowup::Autodig(dig_dir)),
+                ..MoveApplication::default()
+            };
         }
-        None => return,
+        None => return MoveApplication::default(),
     };
 
-    {
-        let tail = state
-            .query_player(pid, |ecs, entity| {
-                ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                    .map_or(0, |ps| u8::from(ps.running))
-            })
-            .unwrap_or(0);
-        let (cx, cy) = World::chunk_pos(nx, ny);
-        let bot = hb_bot(
-            net_u16_nonneg(pid),
-            net_u16_nonneg(nx),
-            net_u16_nonneg(ny),
-            net_u8_clamped(ndir, 3),
-            net_u8_clamped(skin, 255),
-            net_u16_nonneg(clan),
-            tail,
-        );
-        let hb_data = encode_hb_bundle(&hb_bundle(&[bot]).1);
-        // Включаем владельца (None): клиентский `RobotRenderer.XYBot` ЖДЁТ X своего
-        // бота. Ручной ход (tail=0) → пишет `myBotLastSync` (гейт-реконсиляция);
-        // программаторный (tail=1) → `SetXY + SetRotation` (бот идёт И поворачивается).
-        state.broadcast_to_nearby(cx, cy, &hb_data, None);
-        crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
+    let tail = state
+        .query_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                .map_or(0, |ps| u8::from(ps.running))
+        })
+        .unwrap_or(0);
+    let (cx, cy) = World::chunk_pos(nx, ny);
+    let bot = hb_bot(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(nx),
+        net_u16_nonneg(ny),
+        net_u8_clamped(ndir, 3),
+        net_u8_clamped(skin, 255),
+        net_u16_nonneg(clan),
+        tail,
+    );
+    let movement_fanout = crate::net::session::play::chunks::ChunkFanout {
+        recipients: state.nearby_session_ids(cx, cy, None),
+        data: encode_hb_bundle(&hb_bundle(&[bot]).1),
+    };
 
-        // Feature 1: ref Player.cs:462-467 — auto-open pack GUI на ORIGIN-клетке пака.
-        // C# `World.AddPack` регистрирует пак ТОЛЬКО в одной клетке (origin, `ch.SetPack(x,y,p)`),
-        // поэтому `ContainsPack`/`GetPack` срабатывает лишь на origin, НЕ на всём футпринте.
-        // Footprint-aware `find_pack_covering` (80967d4) был РЕГРЕССОМ: площадка спавна Resp
-        // (road-клетки футпринта) открывала GUI. Возврат к origin-only = 1:1 C#.
-        if let Some(view) = state.get_pack_at(nx, ny) {
-            if view.clan_id == 0 || view.clan_id == clan {
-                let prog_running = state
-                    .query_player(pid, |ecs, entity| {
-                        ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                            .is_some_and(|p| p.running)
-                    })
-                    .unwrap_or(false);
-                if !prog_running {
-                    crate::net::session::ui::gui_buttons::open_pack_gui(state, tx, pid, &view);
-                }
-            }
+    let chunk_packets = crate::net::session::wire::PacketBatch::default();
+    let chunk_fanouts =
+        crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_packets, pid);
+
+    // C# `World.AddPack` регистрирует pack только в origin-клетке. Проверка
+    // footprint здесь была регрессией: road-клетки Resp открывали GUI.
+    let followup = state.get_pack_at(nx, ny).and_then(|view| {
+        (tail == 0 && (view.clan_id == 0 || view.clan_id == clan))
+            .then_some(MoveFollowup::OpenPack(view))
+    });
+
+    MoveApplication {
+        movement_fanout: Some(movement_fanout),
+        chunk_packets: chunk_packets.into_packets(),
+        chunk_fanouts,
+        followup,
+    }
+}
+
+fn deliver_move_application(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    application: &mut MoveApplication,
+) {
+    if let Some(fanout) = application.movement_fanout.take() {
+        state.sessions.fanout(&fanout.recipients, &fanout.data);
+    }
+    for packet in application.chunk_packets.drain(..) {
+        if tx.send(packet).is_err() {
+            break;
+        }
+    }
+    for fanout in application.chunk_fanouts.drain(..) {
+        state.sessions.fanout(&fanout.recipients, &fanout.data);
+    }
+}
+
+fn run_move_followup(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    followup: MoveFollowup,
+    programmatic: bool,
+) {
+    match followup {
+        MoveFollowup::Autodig(direction) => {
+            crate::net::session::play::dig_build::handle_dig(
+                state,
+                tx,
+                pid,
+                direction,
+                programmatic,
+            );
+        }
+        MoveFollowup::OpenPack(view) => {
+            crate::net::session::ui::gui_buttons::open_pack_gui(state, tx, pid, &view);
         }
     }
 }
 
-// handle_move_pure удалён (no-DRY): программатор зовёт handle_move(..., true) —
-// та же валидация коллизии/ворот/дистанции, что и ручной ход.
+pub fn apply_move_command(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    session_id: crate::game::SessionId,
+    request: MoveRequest,
+) -> crate::game::CommandEffects {
+    if state
+        .active_player_entity_for_session(pid, session_id)
+        .is_none()
+    {
+        return crate::game::CommandEffects::default();
+    }
+    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
+        return crate::game::CommandEffects::default();
+    };
+
+    let direct_packets = crate::net::session::wire::PacketBatch::default();
+    let mut application = apply_move(state, &direct_packets, pid, request);
+    let direct_packets = direct_packets.into_packets();
+
+    if let Some(followup) = application.followup.take() {
+        // Пока auto-dig/open-pack сами не возвращают effects, весь редкий путь
+        // доставляется синхронно. Иначе GUI/dig output обгонит queued move output.
+        for packet in direct_packets {
+            if tx.send(packet).is_err() {
+                return crate::game::CommandEffects::default();
+            }
+        }
+        deliver_move_application(state, &tx, &mut application);
+        run_move_followup(state, &tx, pid, followup, request.programmatic);
+        return crate::game::CommandEffects::default();
+    }
+
+    let mut effects = crate::game::CommandEffects::default();
+    if !direct_packets.is_empty() {
+        effects.events.push(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id: pid,
+            packets: direct_packets,
+        });
+    }
+    if let Some(fanout) = application.movement_fanout {
+        effects.events.push(crate::game::GameEvent::Fanout {
+            recipients: fanout.recipients,
+            data: fanout.data,
+        });
+    }
+    if !application.chunk_packets.is_empty() {
+        effects.events.push(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id: pid,
+            packets: application.chunk_packets,
+        });
+    }
+    effects
+        .events
+        .extend(application.chunk_fanouts.into_iter().map(|fanout| {
+            crate::game::GameEvent::Fanout {
+                recipients: fanout.recipients,
+                data: fanout.data,
+            }
+        }));
+    effects
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn handle_move(
+    state: &Arc<GameState>,
+    tx: &Outbox,
+    pid: PlayerId,
+    _client_time: u32,
+    target_x: i32,
+    target_y: i32,
+    dir: i32,
+    programmatic: bool,
+) {
+    let request = MoveRequest {
+        target_x,
+        target_y,
+        direction: dir,
+        programmatic,
+    };
+    let mut application = apply_move(state, tx, pid, request);
+    deliver_move_application(state, tx, &mut application);
+    if let Some(followup) = application.followup {
+        run_move_followup(state, tx, pid, followup, programmatic);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -363,7 +509,7 @@ mod tests {
     use bytes::BytesMut;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct TestState {
         state: Arc<GameState>,
@@ -426,7 +572,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
@@ -439,9 +585,103 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_session_move_cannot_mutate_reconnected_player() {
+        let test = make_test_state("stale_session_move").await;
+        let (tx, mut rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+        let pid = PlayerId(test.player.id);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Move {
+                player_id: pid,
+                session_id: crate::game::SessionId::new(2),
+                time: 0,
+                x: 11,
+                y: 10,
+                direction: 3,
+                programmatic: false,
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(effects.saves.is_empty());
+        assert_eq!(
+            test.state.query_player(pid, |ecs, entity| {
+                let position = ecs.get::<PlayerPosition>(entity)?;
+                Some((position.x, position.y))
+            }),
+            Some(Some((10, 10)))
+        );
+        assert!(rx.try_recv().is_err());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn manual_move_returns_output_without_sending_during_dispatch() {
+        let test = make_test_state("manual_move_effect").await;
+        test.state.world.set_cell(11, 10, cell_type::EMPTY);
+        let (tx, mut rx) = crate::net::session::outbox::channel();
+        let session_id = crate::game::SessionId::new(1);
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+        let pid = PlayerId(test.player.id);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Move {
+                player_id: pid,
+                session_id,
+                time: 0,
+                x: 11,
+                y: 10,
+                direction: 3,
+                programmatic: false,
+            },
+        );
+
+        assert_eq!(
+            test.state.query_player(pid, |ecs, entity| {
+                let position = ecs.get::<PlayerPosition>(entity)?;
+                Some((position.x, position.y))
+            }),
+            Some(Some((11, 10)))
+        );
+        assert!(!effects.events.is_empty());
+        assert!(effects.saves.is_empty());
+        assert!(rx.try_recv().is_err(), "dispatch must not write to outbox");
+
+        for event in effects.events {
+            match event {
+                crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets,
+                } => crate::net::session::player::init::deliver_initial_presentation(
+                    &test.state,
+                    session_id,
+                    player_id,
+                    packets,
+                ),
+                crate::game::GameEvent::Fanout { recipients, data } => {
+                    test.state.sessions.fanout(&recipients, &data);
+                }
+            }
+        }
+        assert!(
+            drain_events(&mut rx).iter().any(|(event, _)| event == "HB"),
+            "presentation delivery must emit the movement HB"
+        );
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
     async fn move_missing_position_is_explicit_error_not_silent_reject() {
         let test = make_test_state("move_missing_position").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -466,7 +706,7 @@ mod tests {
     #[tokio::test]
     async fn move_distance_reject_stays_tp_back_without_state_error() {
         let test = make_test_state("move_distance_reject").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -493,7 +733,7 @@ mod tests {
     #[tokio::test]
     async fn programmatic_move_reject_does_not_send_tp_back() {
         let test = make_test_state("programmatic_move_distance_reject").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -520,7 +760,7 @@ mod tests {
     #[tokio::test]
     async fn programmatic_autodig_sends_self_hb_without_tp_back() {
         let test = make_test_state("programmatic_autodig_self_hb").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -577,7 +817,7 @@ mod tests {
         };
         test.state.insert_building_runtime(&spec).await.unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

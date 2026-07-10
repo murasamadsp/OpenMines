@@ -37,9 +37,9 @@ fn required_button_payload<'a>(button: &'a str, prefix: &str) -> Option<&'a str>
 /// Returns `Some(pid)` on successful login/registration (session transitions to Authenticated).
 pub async fn handle_gui_auth_flow(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     button: &str,
-    session_token: u64,
+    session_id: SessionId,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     if button.starts_with("exit") {
@@ -52,18 +52,18 @@ pub async fn handle_gui_auth_flow(
         GuiAuthStep::MainMenu => handle_main_menu(state, tx, button, step).await,
         GuiAuthStep::LoginPassword { nick } => {
             let nick = nick.clone();
-            handle_login_password(state, tx, button, &nick, session_token, step).await
+            handle_login_password(state, tx, button, &nick, session_id, step).await
         }
         GuiAuthStep::RegisterNick => handle_register_nick(state, tx, button, step).await,
         GuiAuthStep::RegisterPassword { nick } => {
             let nick = nick.clone();
-            handle_register_password(state, tx, button, &nick, session_token, step).await
+            handle_register_password(state, tx, button, &nick, session_id, step).await
         }
     }
 }
 
 /// C# ref: `def` window — main auth menu with "Новый акк" and "ok" (nick input).
-pub fn send_default_auth_window(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+pub fn send_default_auth_window(tx: &Outbox) {
     Horb::new("ВХОД")
         .text("Авторизация")
         .input(" ", true)
@@ -73,12 +73,7 @@ pub fn send_default_auth_window(tx: &mpsc::UnboundedSender<Vec<u8>>) {
         .send_raw(tx);
 }
 
-fn send_auth_input_window(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    title: &str,
-    text: &str,
-    action: &str,
-) {
+fn send_auth_input_window(tx: &Outbox, title: &str, text: &str, action: &str) {
     Horb::new(title)
         .text(text)
         .input(" ", true)
@@ -89,7 +84,7 @@ fn send_auth_input_window(
 /// Handle buttons on the main auth menu.
 async fn handle_main_menu(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -110,7 +105,7 @@ async fn handle_main_menu(
 /// C# ref: `TryToFindByNick` — look up player by name.
 async fn handle_find_by_nick(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     name: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -134,10 +129,10 @@ async fn handle_find_by_nick(
 /// Handle password input for existing player login.
 async fn handle_login_password(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     button: &str,
     nick: &str,
-    session_token: u64,
+    session_id: SessionId,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let Some(passwd) = required_button_payload(button, "passwd:") else {
@@ -163,7 +158,7 @@ async fn handle_login_password(
                 .await
                 .with_context(|| format!("migrate legacy password for player id={}", player.id))?;
         }
-        return finalize_auth(state, tx, &player, session_token, step);
+        return finalize_auth(state, tx, &player, session_id, step);
     }
 
     send_u_packet(tx, "OK", &ok_message("auth", "Не верный пароль").1);
@@ -179,7 +174,7 @@ async fn handle_login_password(
 /// Handle nick input for new account registration.
 async fn handle_register_nick(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -211,10 +206,10 @@ async fn handle_register_nick(
 /// Handle password input for new account — creates the player.
 async fn handle_register_password(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     button: &str,
     nick: &str,
-    session_token: u64,
+    session_id: SessionId,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let Some(passwd) = required_button_payload(button, "passwd:") else {
@@ -237,15 +232,15 @@ async fn handle_register_password(
         "New player registered via GUI"
     );
 
-    finalize_auth(state, tx, &player, session_token, step)
+    finalize_auth(state, tx, &player, session_id, step)
 }
 
 /// Shared finalization: send AH, cf, Gu, `init_player`.
 fn finalize_auth(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     player: &crate::db::players::PlayerRow,
-    session_token: u64,
+    session_id: SessionId,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
     let ah = auth_hash(player.id, &player.hash);
@@ -259,7 +254,7 @@ fn finalize_auth(
     let gu = gu_close();
     send_u_packet(tx, gu.0, &gu.1);
 
-    let pid = init_player(state, tx, player, session_token);
+    let pid = init_player(state, player, session_id);
 
     *step = GuiAuthStep::MainMenu;
     Ok(Some(pid))

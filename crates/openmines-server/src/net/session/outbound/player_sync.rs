@@ -3,7 +3,7 @@ use crate::game::skills::{OnMove, PlayerSkills, skill_progress_payload};
 use crate::net::session::prelude::*;
 use num_traits::ToPrimitive;
 
-pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
+pub fn send_player_speed(tx: &dyn PacketSink, skills: &PlayerSkillsComponent) {
     // 1:1 ref (`pSenders.SendSpeed`):
     // `new SpeedPacket((int)(p.pause * 5 * 1.4 / 1000 * 1.7),
     //                 (int)(p.pause * 0.80 * 5 * 1.4 / 1000 * 1.7),
@@ -23,23 +23,23 @@ pub fn send_player_speed(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSki
     send_u_packet(tx, "sp", &speed(xy_pause, road_pause, 100_000).1);
 }
 
-pub fn send_player_health(tx: &mpsc::UnboundedSender<Vec<u8>>, stats: &PlayerStats) {
+pub fn send_player_health(tx: &dyn PacketSink, stats: &PlayerStats) {
     send_u_packet(tx, "@L", &health(stats.health, stats.max_health).1);
 }
 
-pub fn send_player_level(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
+pub fn send_player_level(tx: &dyn PacketSink, skills: &PlayerSkillsComponent) {
     let total_lvl: i32 = skills.states.lvl_summary();
     send_u_packet(tx, "LV", &level(total_lvl).1);
 }
 
-pub fn send_player_skills(tx: &mpsc::UnboundedSender<Vec<u8>>, skills: &PlayerSkillsComponent) {
+pub fn send_player_skills(tx: &dyn PacketSink, skills: &PlayerSkillsComponent) {
     let payload = skill_progress_payload(&skills.states);
     let sk = skills_packet(&payload);
     send_u_packet(tx, sk.0, &sk.1);
 }
 
 pub fn send_player_basket(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &dyn PacketSink,
     stats: &PlayerStats,
     _skills: &PlayerSkillsComponent,
 ) {

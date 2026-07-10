@@ -1830,7 +1830,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Dig {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 dir: pos.dir,
             });
             ExecResult::None
@@ -1841,7 +1841,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 dir: pos.dir,
                 block_type: "G".to_string(),
             });
@@ -1851,7 +1851,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 dir: pos.dir,
                 block_type: "O".to_string(),
             });
@@ -1861,7 +1861,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 dir: pos.dir,
                 block_type: "R".to_string(),
             });
@@ -1871,7 +1871,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Build {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 dir: pos.dir,
                 block_type: "V".to_string(),
             });
@@ -1881,14 +1881,14 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::Geo {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
             });
             ExecResult::None
         }
         ActionType::Heal => {
             prog_q.0.push(ProgrammatorAction::Heal {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
             });
             *delay = Some(direct_action_delay(timing));
             ExecResult::None
@@ -1896,11 +1896,11 @@ fn execute_action(
         ActionType::Stop => {
             prog.stop_program();
             prog_q.0.push(ProgrammatorAction::SetProgrammatorStatus {
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 running: false,
             });
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: false,
             });
             ExecResult::None
@@ -2252,9 +2252,12 @@ fn execute_action(
             let pkt = crate::protocol::u_packet(event, &payload);
             let mut buf = bytes::BytesMut::with_capacity(pkt.wire_len());
             if pkt.encode(&mut buf).is_ok()
-                && let Some(conn) = conn
+                && let Some(session_id) = conn.map(|connection| connection.session_id)
             {
-                conn.send_or_log(buf.to_vec());
+                prog_q.0.push(ProgrammatorAction::Send {
+                    session_id,
+                    data: buf.to_vec(),
+                });
             }
             ExecResult::None
         }
@@ -2262,7 +2265,7 @@ fn execute_action(
         ActionType::EnableAutoDig => {
             prog_q.0.push(ProgrammatorAction::SetAutoDig {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: true,
             });
             ExecResult::None
@@ -2270,7 +2273,7 @@ fn execute_action(
         ActionType::DisableAutoDig => {
             prog_q.0.push(ProgrammatorAction::SetAutoDig {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: false,
             });
             ExecResult::None
@@ -2278,7 +2281,7 @@ fn execute_action(
         ActionType::EnableAgression => {
             prog_q.0.push(ProgrammatorAction::SetAggression {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: true,
             });
             ExecResult::None
@@ -2286,7 +2289,7 @@ fn execute_action(
         ActionType::DisableAgression => {
             prog_q.0.push(ProgrammatorAction::SetAggression {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: false,
             });
             ExecResult::None
@@ -2294,7 +2297,7 @@ fn execute_action(
         ActionType::HandModeOn => {
             prog.hand_mode_active = true;
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: true,
             });
             ExecResult::None
@@ -2302,7 +2305,7 @@ fn execute_action(
         ActionType::HandModeOff => {
             prog.hand_mode_active = false;
             prog_q.0.push(ProgrammatorAction::SetHandMode {
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 enabled: false,
             });
             ExecResult::None
@@ -2333,7 +2336,7 @@ fn execute_action(
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
-                        tx: conn.map(|c| c.tx.clone()),
+                        session_id: conn.map(|c| c.session_id),
                         dir: pos.dir,
                     });
                     return ExecResult::BoolResult(true);
@@ -2347,7 +2350,7 @@ fn execute_action(
             if stats.crystals[2] > 0 && stats.health < stats.max_health {
                 prog_q.0.push(ProgrammatorAction::Heal {
                     pid: meta.id,
-                    tx: conn.map(|c| c.tx.clone()),
+                    session_id: conn.map(|c| c.session_id),
                 });
                 *delay = Some(direct_action_delay(timing));
                 return ExecResult::BoolResult(true);
@@ -2366,7 +2369,7 @@ fn execute_action(
                     *delay = Some(direct_action_delay(timing));
                     prog_q.0.push(ProgrammatorAction::Dig {
                         pid: meta.id,
-                        tx: conn.map(|c| c.tx.clone()),
+                        session_id: conn.map(|c| c.session_id),
                         dir: pos.dir,
                     });
                     return ExecResult::BoolResult(true);
@@ -2381,7 +2384,7 @@ fn execute_action(
                         prog.macros_template = Some(dir_key);
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
-                            tx: conn.map(|c| c.tx.clone()),
+                            session_id: conn.map(|c| c.session_id),
                             dir: pos.dir,
                         });
                     } else {
@@ -2402,7 +2405,7 @@ fn execute_action(
             *delay = Some(direct_action_delay(timing));
             prog_q.0.push(ProgrammatorAction::FillGun {
                 pid: meta.id,
-                tx: conn.map(|c| c.tx.clone()),
+                session_id: conn.map(|c| c.session_id),
                 x: gx,
                 y: gy,
             });
@@ -2424,7 +2427,7 @@ fn execute_action(
                         *delay = Some(direct_action_delay(timing));
                         prog_q.0.push(ProgrammatorAction::Dig {
                             pid: meta.id,
-                            tx: conn.map(|c| c.tx.clone()),
+                            session_id: conn.map(|c| c.session_id),
                             dir: pos.dir,
                         });
                     } else {
@@ -2697,7 +2700,7 @@ fn push_move(
 ) {
     prog_q.0.push(ProgrammatorAction::Move {
         pid: meta.id,
-        tx: conn.map(|c| c.tx.clone()),
+        session_id: conn.map(|c| c.session_id),
         x,
         y,
         dir,
@@ -2875,7 +2878,7 @@ mod tests {
         );
         assert!(matches!(
             prog_q.0.as_slice(),
-            [ProgrammatorAction::Move { pid, tx: None, x, y, dir }]
+            [ProgrammatorAction::Move { pid, session_id: None, x, y, dir }]
                 if *pid == meta.id && *x == pos.x + 1 && *y == pos.y && *dir == -1
         ));
     }
@@ -3281,8 +3284,9 @@ mod tests {
         let skills = empty_skills();
         let settings = PlayerSettings::default();
         let meta = test_metadata();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let conn = PlayerConnection { tx };
+        let conn = PlayerConnection {
+            session_id: crate::game::SessionId::new(1),
+        };
         let mut prog_q = ProgrammatorQueue(Vec::new());
         let mut delay = None;
         let mut prog = ProgrammatorState::new();
@@ -3338,8 +3342,9 @@ mod tests {
         let skills = empty_skills();
         let settings = PlayerSettings::default();
         let meta = test_metadata();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let conn = PlayerConnection { tx };
+        let conn = PlayerConnection {
+            session_id: crate::game::SessionId::new(1),
+        };
         let mut prog_q = ProgrammatorQueue(Vec::new());
         let mut delay = None;
         let mut prog = ProgrammatorState::new();
@@ -3422,7 +3427,7 @@ mod tests {
         assert!(matches!(result, ExecResult::BoolResult(true)));
         assert!(matches!(
             prog_q.0.as_slice(),
-            [ProgrammatorAction::Heal { pid, tx: None }] if *pid == meta.id
+            [ProgrammatorAction::Heal { pid, session_id: None }] if *pid == meta.id
         ));
         assert!(delay.is_some());
     }

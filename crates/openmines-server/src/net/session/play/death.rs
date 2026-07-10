@@ -31,7 +31,7 @@ pub enum DeathCoreError {
 
 type DeathCoreOutput = (i32, i32, i32, DeathBroadcasts);
 
-fn send_death_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_death_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -334,7 +334,7 @@ pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid
 }
 
 pub fn send_respawn_after_death(
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     rx: i32,
     ry: i32,
@@ -368,10 +368,10 @@ pub fn send_respawn_after_death(
 }
 
 /// `RESP` / очередь после пушки: `ecs.write()` для мутаций, broadcast'ы снаружи.
-pub fn handle_death(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+pub fn handle_death(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let result = {
         let building_entities = state.building_entities_snapshot();
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("death.apply_player_death");
         apply_player_death_core(state, &mut ecs, &building_entities, pid)
     };
     match result {
@@ -421,37 +421,36 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;
     }
+    let Some(conn_tx) = state.player_sender(pid) else {
+        return;
+    };
     let result = state
         .modify_player(pid, |ecs, entity| {
-            let (h, mh, conn_tx, px, py) = {
-                let c = ecs.get::<crate::game::player::PlayerConnection>(entity)?;
-                let conn_tx = c.tx.clone();
+            let (h, mh, px, py) = {
                 let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity) else {
                     send_death_state_error(&conn_tx);
-                    return Some((None, None));
+                    return Some((false, None));
                 };
                 let Some(p) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
                     send_death_state_error(&conn_tx);
-                    return Some((None, None));
+                    return Some((false, None));
                 };
                 if ecs
                     .get::<crate::game::player::PlayerFlags>(entity)
                     .is_none()
                 {
                     send_death_state_error(&conn_tx);
-                    return Some((None, None));
+                    return Some((false, None));
                 }
-                (s.health, s.max_health, conn_tx, p.x, p.y)
+                (s.health, s.max_health, p.x, p.y)
             };
 
             // S3-1: Health skill exp on every hurt (C# Player.Hurt → Health.AddExp)
             if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity) {
                 let ctx = crate::game::ExpContext::from_state(state);
                 if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
-                    if let Some(c) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
-                        let _ =
-                            c.tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
-                    }
+                    let _ =
+                        conn_tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
                 }
             }
 
@@ -470,14 +469,14 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
                 &health(new_h, mh).1,
             ));
             Some(if lethal {
-                (Some(conn_tx), Some((px, py)))
+                (true, Some((px, py)))
             } else {
-                (None, Some((px, py)))
+                (false, Some((px, py)))
             })
         })
         .flatten();
-    if let Some((dead_tx, pos)) = result {
-        if let Some(conn_tx) = dead_tx {
+    if let Some((lethal, pos)) = result {
+        if lethal {
             handle_death(state, &conn_tx, pid);
         } else if let Some((px, py)) = pos {
             // S3-1: Hurt FX broadcast to nearby (C# SendDFToBots(6, 0, 0, id, 0))
@@ -494,15 +493,18 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
 pub fn flush_player_death_queue_after_tick(
     state: &Arc<GameState>,
     ecs: &mut bevy_ecs::prelude::World,
-    building_entities: &[Entity],
 ) -> Vec<(PlayerId, i32, i32, i32, DeathBroadcasts)> {
     use std::collections::HashSet;
     let raw = std::mem::take(&mut ecs.resource_mut::<crate::game::combat::DeathQueue>().0);
     let mut seen = HashSet::new();
     let pids: Vec<PlayerId> = raw.into_iter().filter(|p| seen.insert(*p)).collect();
+    if pids.is_empty() {
+        return Vec::new();
+    }
+    let building_entities = state.building_entities_snapshot();
     let mut pending = Vec::new();
     for pid in pids {
-        match apply_player_death_core(state, ecs, building_entities, pid) {
+        match apply_player_death_core(state, ecs, &building_entities, pid) {
             Ok((rx, ry, mh, bcast)) => pending.push((pid, rx, ry, mh, bcast)),
             Err(error) => {
                 tracing::error!(player_id = %pid, ?error, "Queued player death aborted");
@@ -520,7 +522,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::UnboundedReceiver;
+    use tokio::sync::mpsc::Receiver;
 
     struct DeathTestState {
         state: Arc<GameState>,
@@ -585,7 +587,7 @@ mod tests {
         }
     }
 
-    fn drain_events(rx: &mut UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = bytes::BytesMut::from(&frame[..]);
@@ -681,7 +683,7 @@ mod tests {
     #[tokio::test]
     async fn handle_death_missing_flags_is_explicit_error_without_respawn_mutation() {
         let test = make_death_test_state("missing_flags_death").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -710,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn hurt_player_pure_missing_flags_is_explicit_error_without_damage_mutation() {
         let test = make_death_test_state("missing_flags_hurt").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -738,7 +740,7 @@ mod tests {
     #[tokio::test]
     async fn public_respawn_is_free_and_does_not_decrement_charge() {
         let test = make_death_test_state("public_resp_free").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -764,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn owned_respawn_without_enough_money_falls_back_without_charging() {
         let test = make_death_test_state("owned_resp_no_money").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 

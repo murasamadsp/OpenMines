@@ -15,7 +15,8 @@ import sys
 allowed = {
     ("crates/openmines-server/src/cli.rs", 108): "test-only serialized env mutation",
     ("crates/openmines-server/src/cli.rs", 123): "test-only serialized env cleanup",
-    ("crates/openmines-world/src/lib.rs", 167): "private mmap after file length set",
+    ("crates/openmines-world/src/lib.rs", 182): "private mmap after file length set",
+    ("crates/openmines-server/src/console.rs", 45): "poll initialized stdin descriptor with bounded timeout",
 }
 
 errors = []

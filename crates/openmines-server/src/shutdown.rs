@@ -189,7 +189,7 @@ async fn flush_world_on_shutdown(game_state: &std::sync::Arc<game::GameState>) {
     )
     .await
     {
-        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Ok(_))) => {}
         Ok(Ok(Err(e))) => tracing::error!(error = ?e, "Shutdown world flush error"),
         Ok(Err(e)) => tracing::error!(error = ?e, "Shutdown world flush task failed"),
         Err(_) => tracing::error!(

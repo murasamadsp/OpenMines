@@ -10,7 +10,10 @@ pub mod world;
 
 pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
-pub use logic::contracts::PlayerCommand;
+pub use logic::contracts::{
+    CommandEffects, CommandSeq, GameEvent, PlayerCommand, QueuedPlayerCommand, SaveCommand,
+    SessionId, SimTick,
+};
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
 pub use structures::buildings;
@@ -26,13 +29,13 @@ use anyhow::Context as _;
 use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub use actors::player::{
-    ActivePlayer, PlayerConnection, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
-};
+pub use actors::player::{ActivePlayer, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats};
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
     BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats,
@@ -65,6 +68,9 @@ pub struct BoxIndexResource(pub Arc<DashMap<WorldPos, [i64; 6]>>);
 #[derive(Resource, Clone)]
 pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
 
+#[derive(Resource, Clone)]
+pub struct GranularWakeQueue(pub Arc<Mutex<HashSet<WorldPos>>>);
+
 #[derive(Resource, Default)]
 pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
 
@@ -73,20 +79,23 @@ const ECS_LOCK_PROFILE_THRESHOLD: Duration = Duration::from_millis(25);
 pub struct ProfiledEcsReadGuard<'a> {
     label: &'static str,
     acquired_at: Instant,
-    guard: RwLockReadGuard<'a, EcsWorld>,
+    guard: Option<RwLockReadGuard<'a, EcsWorld>>,
 }
 
 impl Deref for ProfiledEcsReadGuard<'_> {
     type Target = EcsWorld;
 
     fn deref(&self) -> &Self::Target {
-        &self.guard
+        self.guard
+            .as_deref()
+            .expect("profiled ECS read guard already dropped")
     }
 }
 
 impl Drop for ProfiledEcsReadGuard<'_> {
     fn drop(&mut self) {
         let held = self.acquired_at.elapsed();
+        drop(self.guard.take());
         if held > ECS_LOCK_PROFILE_THRESHOLD {
             tracing::warn!(
                 target: "tickprof",
@@ -102,26 +111,31 @@ impl Drop for ProfiledEcsReadGuard<'_> {
 pub struct ProfiledEcsWriteGuard<'a> {
     label: &'static str,
     acquired_at: Instant,
-    guard: RwLockWriteGuard<'a, EcsWorld>,
+    guard: Option<RwLockWriteGuard<'a, EcsWorld>>,
 }
 
 impl Deref for ProfiledEcsWriteGuard<'_> {
     type Target = EcsWorld;
 
     fn deref(&self) -> &Self::Target {
-        &self.guard
+        self.guard
+            .as_deref()
+            .expect("profiled ECS write guard already dropped")
     }
 }
 
 impl DerefMut for ProfiledEcsWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
+        self.guard
+            .as_deref_mut()
+            .expect("profiled ECS write guard already dropped")
     }
 }
 
 impl Drop for ProfiledEcsWriteGuard<'_> {
     fn drop(&mut self) {
         let held = self.acquired_at.elapsed();
+        drop(self.guard.take());
         if held > ECS_LOCK_PROFILE_THRESHOLD {
             tracing::warn!(
                 target: "tickprof",
@@ -135,6 +149,10 @@ impl Drop for ProfiledEcsWriteGuard<'_> {
 }
 
 pub enum BroadcastEffect {
+    Direct {
+        session_id: SessionId,
+        data: Vec<u8>,
+    },
     CellUpdate(WorldPos),
     Nearby {
         cx: u32,
@@ -150,53 +168,57 @@ pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
 pub enum ProgrammatorAction {
     Move {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         x: i32,
         y: i32,
         dir: i32,
     },
     Dig {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         dir: i32,
     },
     Build {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         dir: i32,
         block_type: String,
     },
     Geo {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
     },
     Heal {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
     },
     SetAutoDig {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         enabled: bool,
     },
     SetAggression {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         enabled: bool,
     },
     SetHandMode {
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         enabled: bool,
     },
     FillGun {
         pid: PlayerId,
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         x: i32,
         y: i32,
     },
     SetProgrammatorStatus {
-        tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+        session_id: Option<SessionId>,
         running: bool,
+    },
+    Send {
+        session_id: SessionId,
+        data: Vec<u8>,
     },
 }
 
@@ -279,20 +301,27 @@ pub struct BuildingInsertSpec<'a> {
 pub enum LifeCmd {
     Connect {
         row: Box<crate::db::players::PlayerRow>,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-        token: u64,
+        session_id: SessionId,
     },
     Disconnect {
         pid: PlayerId,
-        token: u64,
+        session_id: SessionId,
     },
 }
 
 pub struct GameSchedule {
     pub name: String,
+    pub activity: ScheduleActivity,
     pub schedule: RwLock<Schedule>,
     pub interval_ms: std::sync::atomic::AtomicU64,
-    pub last_run: Mutex<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScheduleActivity {
+    Always,
+    OnlinePlayers,
+    PlayerEntities,
+    DueCrafting,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -302,6 +331,76 @@ pub struct BotSpotView {
     pub y: i32,
     pub dir: i32,
     pub clan_id: i32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BotsRenderDue {
+    pub due_at: Instant,
+    pub player_id: PlayerId,
+    pub session_token: u64,
+}
+
+#[derive(Default)]
+struct BotsRenderSchedule {
+    due: BinaryHeap<Reverse<(Instant, PlayerId, u64)>>,
+}
+
+impl BotsRenderSchedule {
+    fn schedule(&mut self, due: BotsRenderDue) {
+        self.due
+            .push(Reverse((due.due_at, due.player_id, due.session_token)));
+    }
+
+    fn pop_due(&mut self, now: Instant) -> Option<BotsRenderDue> {
+        let Reverse((due_at, player_id, session_token)) = *self.due.peek()?;
+        if due_at > now {
+            return None;
+        }
+        self.due.pop();
+        Some(BotsRenderDue {
+            due_at,
+            player_id,
+            session_token,
+        })
+    }
+}
+
+#[derive(Default)]
+struct CraftingDueSchedule {
+    due: BinaryHeap<Reverse<(i64, Entity)>>,
+}
+
+impl CraftingDueSchedule {
+    fn schedule(&mut self, entity: Entity, end_ts: i64) {
+        if end_ts > 0 {
+            self.due.push(Reverse((end_ts, entity)));
+        }
+    }
+
+    fn is_due(&self, now_ts: i64) -> bool {
+        self.due
+            .peek()
+            .is_some_and(|Reverse((end_ts, _))| *end_ts <= now_ts)
+    }
+
+    fn pop_due(&mut self, now_ts: i64, limit: usize) -> Vec<building_damage::CraftingDue> {
+        let mut due = Vec::with_capacity(limit.min(self.due.len()));
+        while due.len() < limit {
+            let Some(&Reverse((end_ts, entity))) = self.due.peek() else {
+                break;
+            };
+            if end_ts > now_ts {
+                break;
+            }
+            self.due.pop();
+            due.push(building_damage::CraftingDue { entity, end_ts });
+        }
+        due
+    }
+
+    fn len(&self) -> usize {
+        self.due.len()
+    }
 }
 
 // ─── GameState ───────────────────────────────────────────────────────────────
@@ -325,12 +424,16 @@ pub struct GameState {
     pub ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
-    pub commands_tx: tokio::sync::mpsc::UnboundedSender<PlayerCommand>,
-    pub commands_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<PlayerCommand>>>,
+    commands_tx: tokio::sync::mpsc::UnboundedSender<QueuedPlayerCommand>,
+    pub commands_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<QueuedPlayerCommand>>>,
+    command_seq: std::sync::atomic::AtomicU64,
+    command_queue_depth: std::sync::atomic::AtomicUsize,
+    command_queue_high_water: std::sync::atomic::AtomicUsize,
+    crafting_due_schedule: Mutex<CraftingDueSchedule>,
+    bots_render_schedule: Mutex<BotsRenderSchedule>,
+    bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
-    /// Монотонный счётчик токенов сеанса (см. `LifeCmd`/`ActivePlayer`).
-    session_token_seq: std::sync::atomic::AtomicU64,
-    player_tx: DashMap<PlayerId, tokio::sync::mpsc::UnboundedSender<Vec<u8>>>,
+    pub sessions: crate::net::session::hub::SessionHub,
     /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
     /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
     /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
@@ -338,12 +441,9 @@ pub struct GameState {
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
     /// Arc — общий с ECS-ресурсами, чтобы не расходились.
     box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
+    granular_wake_q: Arc<Mutex<HashSet<WorldPos>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
-    /// Oneshot-каналы для принудительного кика: `remove` → drop sender → connection-таск
-    /// выходит из select!-loop. Также разрешает зомби-соединения при reconnect (новый
-    /// insert вытесняет старый sender → старая connection-задача чисто завершается).
-    kick_channels: DashMap<PlayerId, tokio::sync::oneshot::Sender<()>>,
     /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `WorldPos` →
     /// `(type, off)`. Клиентский `O`-пакет авторитетен для ВСЕГО чанк-`block_pos`
     /// (`RemoveObjectInBlock` чистит блок целиком), поэтому каждый `O` обязан нести
@@ -359,6 +459,10 @@ pub struct GameState {
 
 impl GameState {
     pub const CHUNK_VIEW_RADIUS: i32 = 2;
+    pub const BOTS_RENDER_INTERVAL: Duration = Duration::from_secs(4);
+    pub const BOTS_RENDER_OBSERVER_BUDGET: usize = 32;
+    pub const BOTS_RENDER_BYTE_BUDGET: usize = 1024 * 1024;
+    pub const CRAFTING_DUE_BATCH_BUDGET: usize = 256;
 
     pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
         let wait_started_at = Instant::now();
@@ -376,7 +480,7 @@ impl GameState {
         ProfiledEcsReadGuard {
             label,
             acquired_at: Instant::now(),
-            guard,
+            guard: Some(guard),
         }
     }
 
@@ -396,7 +500,7 @@ impl GameState {
         ProfiledEcsWriteGuard {
             label,
             acquired_at: Instant::now(),
-            guard,
+            guard: Some(guard),
         }
     }
 
@@ -410,7 +514,7 @@ impl GameState {
         schedule_hazards.add_systems(combat::standing_cell_hazard_system);
 
         let mut schedule_physics = Schedule::default();
-        schedule_physics.add_systems(granular::granular_physics_system);
+        granular::add_granular_physics_system(&mut schedule_physics);
 
         let mut schedule_guns = Schedule::default();
         schedule_guns.add_systems(combat::gun_firing_system);
@@ -421,11 +525,11 @@ impl GameState {
         let mut schedule_alive = Schedule::default();
         schedule_alive.add_systems(alive::alive_physics_system);
 
-        let mut schedule_building_effects = Schedule::default();
-        schedule_building_effects.add_systems((
-            building_damage::building_effect_tick_system,
-            building_damage::crafter_completion_resend_system,
-        ));
+        let mut schedule_building_visual_effects = Schedule::default();
+        schedule_building_visual_effects.add_systems(building_damage::building_effect_tick_system);
+
+        let mut schedule_building_crafting = Schedule::default();
+        schedule_building_crafting.add_systems(building_damage::crafter_completion_resend_system);
 
         let mut schedule_hourly_damage = Schedule::default();
         schedule_hourly_damage.add_systems(building_damage::building_hourly_damage_system);
@@ -468,47 +572,55 @@ impl GameState {
         let schedules = vec![
             GameSchedule {
                 name: "hazards".to_string(),
+                activity: ScheduleActivity::OnlinePlayers,
                 schedule: RwLock::new(schedule_hazards),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.hazards_ms),
-                last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "physics".to_string(),
+                activity: ScheduleActivity::PlayerEntities,
                 schedule: RwLock::new(schedule_physics),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.physics_ms),
-                last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "guns".to_string(),
+                activity: ScheduleActivity::OnlinePlayers,
                 schedule: RwLock::new(schedule_guns),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.guns_ms),
-                last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "programmator".to_string(),
+                activity: ScheduleActivity::PlayerEntities,
                 schedule: RwLock::new(schedule_programmator),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.programmator_ms),
-                last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
                 name: "alive".to_string(),
+                activity: ScheduleActivity::PlayerEntities,
                 schedule: RwLock::new(schedule_alive),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.alive_ms),
-                last_run: Mutex::new(Instant::now()),
             },
             GameSchedule {
-                name: "building_effects".to_string(),
-                schedule: RwLock::new(schedule_building_effects),
+                name: "building_visual_effects".to_string(),
+                activity: ScheduleActivity::OnlinePlayers,
+                schedule: RwLock::new(schedule_building_visual_effects),
                 interval_ms: std::sync::atomic::AtomicU64::new(
                     schedule_intervals.building_effects_ms,
                 ),
-                last_run: Mutex::new(Instant::now()),
+            },
+            GameSchedule {
+                name: "building_crafting".to_string(),
+                activity: ScheduleActivity::DueCrafting,
+                schedule: RwLock::new(schedule_building_crafting),
+                interval_ms: std::sync::atomic::AtomicU64::new(
+                    schedule_intervals.building_effects_ms,
+                ),
             },
             GameSchedule {
                 name: "hourly_damage".to_string(),
+                activity: ScheduleActivity::Always,
                 schedule: RwLock::new(schedule_hourly_damage),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.hourly_damage_ms),
-                last_run: Mutex::new(Instant::now()),
             },
         ];
 
@@ -535,13 +647,18 @@ impl GameState {
                 tx
             },
             commands_rx: Mutex::new(state_rx),
+            command_seq: std::sync::atomic::AtomicU64::new(1),
+            command_queue_depth: std::sync::atomic::AtomicUsize::new(0),
+            command_queue_high_water: std::sync::atomic::AtomicUsize::new(0),
+            crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
+            bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
+            bots_render_slot_seq: std::sync::atomic::AtomicU64::new(0),
             tokio_handle: tokio::runtime::Handle::current(),
-            session_token_seq: std::sync::atomic::AtomicU64::new(1),
-            player_tx: DashMap::new(),
+            sessions: crate::net::session::hub::SessionHub::default(),
             box_index: Arc::new(DashMap::new()),
             box_persist_q: Arc::new(Mutex::new(Vec::new())),
+            granular_wake_q: Arc::new(Mutex::new(HashSet::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
-            kick_channels: DashMap::new(),
             consumable_packs: DashMap::new(),
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
             rate_limiters: DashMap::new(),
@@ -593,7 +710,7 @@ impl GameState {
         }
 
         {
-            let mut ecs = state.ecs.write();
+            let mut ecs = state.ecs_write_profiled("game.init_resources");
             ecs.insert_resource(WorldResource(state.world.clone()));
             ecs.insert_resource(ProgrammatorConfigResource(
                 state.config.gameplay.programmator,
@@ -602,12 +719,14 @@ impl GameState {
             ecs.insert_resource(ScheduleConfigResource(state.config.gameplay.schedules));
             ecs.insert_resource(BoxIndexResource(state.box_index.clone()));
             ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
+            ecs.insert_resource(GranularWakeQueue(state.granular_wake_q.clone()));
             ecs.insert_resource(combat::DeathQueue::default());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
             ecs.insert_resource(combat::GunTickTimer::default());
             ecs.insert_resource(PendingCellConversions::default());
             ecs.insert_resource(PackResendQueue::default());
+            ecs.insert_resource(building_damage::CraftingDueBatch::default());
         }
 
         Self::load_buildings_into_ecs(&state).await?;
@@ -622,11 +741,14 @@ impl GameState {
             .await
             .context("load buildings from database")?;
         let count = all_rows.len();
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("game.load_buildings_into_ecs");
         let mut spot_count = 0u32;
         for row in all_rows {
             let (entity, pack_type) = buildings::spawn_building_from_row(&mut ecs, &row)?;
             state.register_building_entity(row.x, row.y, entity);
+            if row.craft_recipe_id.is_some() && !row.craft_ready {
+                state.schedule_crafting_completion(entity, row.craft_end_ts);
+            }
 
             if pack_type == buildings::PackType::Spot {
                 let botspot_entity = ecs
@@ -661,9 +783,28 @@ impl GameState {
     }
 
     /// Выдать новый токен сеанса (монотонный, уникальный на процесс).
-    pub fn next_session_token(&self) -> u64 {
-        self.session_token_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    pub fn schedule_crafting_completion(&self, entity: Entity, end_ts: i64) {
+        let mut schedule = self.crafting_due_schedule.lock();
+        schedule.schedule(entity, end_ts);
+        let depth = schedule.len();
+        drop(schedule);
+        crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+    }
+
+    pub fn has_due_crafting(&self, now_ts: i64) -> bool {
+        self.crafting_due_schedule.lock().is_due(now_ts)
+    }
+
+    pub fn take_due_crafting(
+        &self,
+        now_ts: i64,
+    ) -> (Vec<building_damage::CraftingDue>, bool, usize) {
+        let mut schedule = self.crafting_due_schedule.lock();
+        let due = schedule.pop_due(now_ts, Self::CRAFTING_DUE_BATCH_BUDGET);
+        let due_remaining = schedule.is_due(now_ts);
+        let depth = schedule.len();
+        drop(schedule);
+        (due, due_remaining, depth)
     }
 
     /// Проверить chat rate limit для игрока. Возвращает `true` если разрешено.
@@ -702,18 +843,72 @@ impl GameState {
     /// Поставить команду жизненного цикла в очередь (из conn-таска).
     pub fn enqueue_life(&self, cmd: LifeCmd) {
         match cmd {
-            LifeCmd::Connect { row, tx, token } => {
-                let _ = self
-                    .commands_tx
-                    .send(PlayerCommand::Connect { row, tx, token });
+            LifeCmd::Connect { row, session_id } => {
+                self.enqueue_command(PlayerCommand::Connect { row, session_id });
             }
-            LifeCmd::Disconnect { pid, token } => {
-                let _ = self.commands_tx.send(PlayerCommand::Disconnect {
+            LifeCmd::Disconnect { pid, session_id } => {
+                self.enqueue_command(PlayerCommand::Disconnect {
                     player_id: pid,
-                    token,
+                    session_id,
                 });
             }
         }
+    }
+
+    pub fn enqueue_command(&self, command: PlayerCommand) -> bool {
+        self.enqueue_command_received(command, Instant::now())
+    }
+
+    pub fn enqueue_command_received(&self, command: PlayerCommand, received_at: Instant) -> bool {
+        use std::sync::atomic::Ordering;
+
+        let kind = command.name();
+        let enqueued_at = Instant::now();
+        let sequence = CommandSeq::new(self.command_seq.fetch_add(1, Ordering::Relaxed));
+        let queued = QueuedPlayerCommand {
+            sequence,
+            received_at,
+            enqueued_at,
+            command,
+        };
+        crate::metrics::COMMAND_RECEIVE_TO_ENQUEUE_SECONDS
+            .with_label_values(&[kind])
+            .observe(
+                enqueued_at
+                    .saturating_duration_since(received_at)
+                    .as_secs_f64(),
+            );
+        let depth = self
+            .command_queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        if self.commands_tx.send(queued).is_err() {
+            self.command_queue_depth.fetch_sub(1, Ordering::Relaxed);
+            crate::metrics::COMMANDS_TOTAL
+                .with_label_values(&[kind, "queue_closed"])
+                .inc();
+            return false;
+        }
+
+        crate::metrics::COMMANDS_TOTAL
+            .with_label_values(&[kind, "enqueued"])
+            .inc();
+        let high_water = self
+            .command_queue_high_water
+            .fetch_max(depth, Ordering::Relaxed)
+            .max(depth);
+        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
+        true
+    }
+
+    pub fn record_command_dequeued(&self) {
+        use std::sync::atomic::Ordering;
+
+        let previous = self.command_queue_depth.fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(previous > 0, "command queue depth underflow");
+        let depth = previous.saturating_sub(1);
+        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
@@ -782,14 +977,21 @@ impl GameState {
     }
 
     pub fn set_schedule_interval(&self, name: &str, interval_ms: u64) -> bool {
-        self.schedules
-            .iter()
-            .find(|s| s.name == name)
-            .is_some_and(|gs| {
+        let mut updated = false;
+        for gs in &self.schedules {
+            let matches = gs.name == name
+                || (name == "building_effects"
+                    && matches!(
+                        gs.name.as_str(),
+                        "building_visual_effects" | "building_crafting"
+                    ));
+            if matches {
                 gs.interval_ms
                     .store(interval_ms, std::sync::atomic::Ordering::Relaxed);
-                true
-            })
+                updated = true;
+            }
+        }
+        updated
     }
 
     pub fn modify_building<F, R>(&self, entity: Entity, f: F) -> R
@@ -1068,10 +1270,14 @@ impl GameState {
     /// нужно при per-чанковой отправке/очистке HB (`chunks.rs`), иначе очистка
     /// ушедшего чанка затирала бы оверлеи паков в ещё видимых соседних чанках
     /// (баг «паки мерцают/пропадают на границе чанка»).
-    pub fn get_packs_in_single_chunk(&self, cx: u32, cy: u32) -> Vec<PackOverlay> {
+    pub fn get_packs_in_single_chunk_with_ecs(
+        &self,
+        ecs: &EcsWorld,
+        cx: u32,
+        cy: u32,
+    ) -> Vec<PackOverlay> {
         let mut results = Vec::new();
         let now = crate::time::now_unix();
-        let ecs = self.ecs.read();
         if let Some(entities) = self.chunk_buildings.get(&(cx, cy).into()) {
             for &entity in entities.value() {
                 let pos = ecs.get::<GridPosition>(entity);
@@ -1092,7 +1298,6 @@ impl GameState {
                 }
             }
         }
-        drop(ecs);
         results
     }
 
@@ -1146,26 +1351,67 @@ impl GameState {
     }
 
     pub fn send_to_player(&self, pid: PlayerId, data: Vec<u8>) {
-        if let Some(tx) = self.player_tx.get(&pid) {
+        if let Some(tx) = self.sessions.outbox_for_player(pid) {
             let _ = tx.send(data);
         }
     }
 
-    pub fn player_sender(
-        &self,
-        pid: PlayerId,
-    ) -> Option<tokio::sync::mpsc::UnboundedSender<Vec<u8>>> {
-        self.player_tx.get(&pid).map(|tx| tx.clone())
+    pub fn player_sender(&self, pid: PlayerId) -> Option<crate::net::session::outbox::Outbox> {
+        self.sessions.outbox_for_player(pid)
     }
 
     pub fn is_player_connected(&self, pid: PlayerId) -> bool {
-        self.player_tx.contains_key(&pid)
+        self.sessions.is_player_connected(pid)
     }
 
     pub fn active_player_ids(&self) -> Vec<PlayerId> {
         self.active_players
             .iter()
             .map(|entry| *entry.key())
+            .collect()
+    }
+
+    pub fn nearby_session_ids(
+        &self,
+        cx: u32,
+        cy: u32,
+        exclude_id: Option<PlayerId>,
+    ) -> Vec<SessionId> {
+        let mut player_ids = Vec::new();
+        for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
+            if let Some(players) = self.chunk_players.get(&(ncx, ncy).into()) {
+                player_ids.extend(players.iter().copied());
+            }
+        }
+        player_ids
+            .into_iter()
+            .filter(|player_id| Some(*player_id) != exclude_id)
+            .filter_map(|player_id| {
+                self.active_players
+                    .get(&player_id)
+                    .map(|active| active.session_id)
+            })
+            .collect()
+    }
+
+    pub fn session_ids_in_chunk(
+        &self,
+        cx: u32,
+        cy: u32,
+        exclude_id: Option<PlayerId>,
+    ) -> Vec<SessionId> {
+        let Some(players) = self.chunk_players.get(&(cx, cy).into()) else {
+            return Vec::new();
+        };
+        players
+            .iter()
+            .copied()
+            .filter(|player_id| Some(*player_id) != exclude_id)
+            .filter_map(|player_id| {
+                self.active_players
+                    .get(&player_id)
+                    .map(|active| active.session_id)
+            })
             .collect()
     }
 
@@ -1177,25 +1423,42 @@ impl GameState {
         self.active_players.len()
     }
 
-    pub fn register_active_player(&self, pid: PlayerId, entity: Entity, token: u64) {
+    pub fn register_active_player(&self, pid: PlayerId, entity: Entity, session_id: SessionId) {
         self.active_players.insert(
             pid,
             ActivePlayer {
                 ecs_entity: entity,
-                session_token: token,
-                last_bots_render: Instant::now(),
+                session_id,
             },
         );
+        let tick_ms = self.config.gameplay.schedules.game_loop_tick_rate_ms.max(1);
+        let interval_ms = u64::try_from(Self::BOTS_RENDER_INTERVAL.as_millis()).unwrap_or(u64::MAX);
+        let slots = interval_ms.checked_div(tick_ms).unwrap_or(1).max(1);
+        let slot = self
+            .bots_render_slot_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % slots
+            + 1;
+        let due_at = Instant::now() + Duration::from_millis(tick_ms.saturating_mul(slot));
+        self.bots_render_schedule.lock().schedule(BotsRenderDue {
+            due_at,
+            player_id: pid,
+            session_token: session_id.get(),
+        });
     }
 
     pub fn remove_active_player(&self, pid: PlayerId) -> Option<ActivePlayer> {
         self.active_players.remove(&pid).map(|(_, active)| active)
     }
 
-    pub fn active_player_entity_for_token(&self, pid: PlayerId, token: u64) -> Option<Entity> {
+    pub fn active_player_entity_for_session(
+        &self,
+        pid: PlayerId,
+        session_id: SessionId,
+    ) -> Option<Entity> {
         self.active_players
             .get(&pid)
-            .filter(|active| active.session_token == token)
+            .filter(|active| active.session_id == session_id)
             .map(|active| active.ecs_entity)
     }
 
@@ -1206,6 +1469,10 @@ impl GameState {
             .collect()
     }
 
+    pub fn player_entity_count(&self) -> usize {
+        self.player_entities.len()
+    }
+
     pub fn register_player_entity(&self, pid: PlayerId, entity: Entity) {
         self.player_entities.insert(pid, entity);
     }
@@ -1214,43 +1481,52 @@ impl GameState {
         self.player_entities.remove(&pid);
     }
 
-    pub fn take_due_bots_render(&self, now: Instant, interval: Duration) -> Vec<PlayerId> {
-        let mut due = Vec::new();
-        for mut entry in self.active_players.iter_mut() {
-            if now.duration_since(entry.value().last_bots_render) >= interval {
-                entry.value_mut().last_bots_render = now;
-                due.push(*entry.key());
+    pub fn take_due_bots_render(&self, now: Instant, limit: usize) -> Vec<BotsRenderDue> {
+        let mut due = Vec::with_capacity(limit);
+        while due.len() < limit {
+            let Some(candidate) = self.bots_render_schedule.lock().pop_due(now) else {
+                break;
+            };
+            if self
+                .active_players
+                .get(&candidate.player_id)
+                .is_some_and(|active| active.session_id.get() == candidate.session_token)
+            {
+                due.push(candidate);
             }
         }
         due
     }
 
-    pub fn register_player_sender(
-        &self,
-        pid: PlayerId,
-        tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
-    ) {
-        self.player_tx.insert(pid, tx);
-    }
-
-    pub fn unregister_player_sender(&self, pid: PlayerId) {
-        self.player_tx.remove(&pid);
-    }
-
-    pub fn register_kick_channel(&self, pid: PlayerId, tx: tokio::sync::oneshot::Sender<()>) {
-        self.kick_channels.insert(pid, tx);
-    }
-
-    pub fn unregister_kick_channel(&self, pid: PlayerId) {
-        self.kick_channels.remove(&pid);
+    pub fn reschedule_bots_render(&self, due: BotsRenderDue, next_at: Instant) {
+        if self
+            .active_players
+            .get(&due.player_id)
+            .is_some_and(|active| active.session_id.get() == due.session_token)
+        {
+            self.bots_render_schedule.lock().schedule(BotsRenderDue {
+                due_at: next_at,
+                ..due
+            });
+        }
     }
 
     pub fn kick_player(&self, pid: PlayerId) -> bool {
-        self.kick_channels.remove(&pid).is_some()
+        self.sessions.kick_player(pid)
+    }
+
+    pub fn wake_granular_neighborhood(&self, x: i32, y: i32) {
+        let mut q = self.granular_wake_q.lock();
+        for dy in -3..=1 {
+            for dx in -1..=1 {
+                q.insert((x + dx, y + dy).into());
+            }
+        }
     }
 
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {
         use crate::protocol::packets::hb_cell;
+        self.wake_granular_neighborhood(x, y);
         let Some(cell) = self.world.read_world_cell(x, y) else {
             return;
         };
@@ -1300,6 +1576,9 @@ impl GameState {
             buildings::spawn_building_from_extra(&mut ecs, spec)
         };
         self.register_building_entity(spec.x, spec.y, entity);
+        if spec.extra.craft_recipe_id.is_some() && !spec.extra.craft_ready {
+            self.schedule_crafting_completion(entity, spec.extra.craft_end_ts);
+        }
         self.place_building_footprint(spec.x, spec.y, spec.pack_type);
         entity
     }
@@ -1380,8 +1659,7 @@ impl GameState {
         building_entity: Entity,
     ) -> Entity {
         let botspot_entity = self
-            .ecs
-            .write()
+            .ecs_write_profiled("game.spawn_botspot_runtime")
             .spawn((
                 botspot::BotSpotMarker,
                 botspot::BotSpotData {
@@ -1411,7 +1689,7 @@ impl GameState {
             .push(entity);
     }
 
-    pub fn botspots_in_chunk(&self, cx: u32, cy: u32) -> Vec<BotSpotView> {
+    pub fn botspots_in_chunk_with_ecs(&self, ecs: &EcsWorld, cx: u32, cy: u32) -> Vec<BotSpotView> {
         let entities = self
             .chunk_botspots
             .get(&(cx, cy).into())
@@ -1421,7 +1699,6 @@ impl GameState {
             return Vec::new();
         }
 
-        let ecs = self.ecs.read();
         entities
             .into_iter()
             .filter_map(|entity| {
@@ -1566,24 +1843,6 @@ impl GameState {
         self.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(subs).1), exclude_id);
     }
 
-    pub fn broadcast_to_nearby_specific_chunk(
-        &self,
-        cx: u32,
-        cy: u32,
-        data: &[u8],
-        exclude_id: Option<PlayerId>,
-    ) {
-        // PB-2: то же — без клонирования Vec под guard'ом.
-        if let Some(players) = self.chunk_players.get(&(cx, cy).into()) {
-            for &pid in players.value() {
-                if Some(pid) == exclude_id {
-                    continue;
-                }
-                self.send_to_player(pid, data.to_vec());
-            }
-        }
-    }
-
     pub fn generate_hash() -> String {
         const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         generate_random_string(12, CHARSET)
@@ -1690,6 +1949,46 @@ mod pack_block_pos_tests {
         assert_eq!(
             pack_overlay_off(PackType::Craft, 0, Some(&craft), 1_000),
             56
+        );
+    }
+}
+
+#[cfg(test)]
+mod bots_render_schedule_tests {
+    use super::{BotsRenderDue, BotsRenderSchedule};
+    use crate::game::PlayerId;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn due_heap_orders_deadlines_and_does_not_run_early() {
+        let now = Instant::now();
+        let mut schedule = BotsRenderSchedule::default();
+        schedule.schedule(BotsRenderDue {
+            due_at: now + Duration::from_millis(20),
+            player_id: PlayerId(2),
+            session_token: 20,
+        });
+        schedule.schedule(BotsRenderDue {
+            due_at: now + Duration::from_millis(10),
+            player_id: PlayerId(1),
+            session_token: 10,
+        });
+
+        assert!(schedule.pop_due(now).is_none());
+        assert_eq!(
+            schedule
+                .pop_due(now + Duration::from_millis(10))
+                .unwrap()
+                .player_id,
+            PlayerId(1)
+        );
+        assert!(schedule.pop_due(now + Duration::from_millis(19)).is_none());
+        assert_eq!(
+            schedule
+                .pop_due(now + Duration::from_millis(20))
+                .unwrap()
+                .player_id,
+            PlayerId(2)
         );
     }
 }

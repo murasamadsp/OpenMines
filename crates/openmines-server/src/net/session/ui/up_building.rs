@@ -31,7 +31,7 @@ const MAX_SLOTS: i32 = 34;
 /// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
 
-fn send_up_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
+fn send_up_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -42,12 +42,7 @@ fn send_up_state_error(tx: &mpsc::UnboundedSender<Vec<u8>>) {
 // ─── Public API ─────────────────────────────────────────────────────────────────
 
 /// Open the Up building GUI for a player. Called from `open_pack_gui`.
-pub fn open_up_gui(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    view: &PackView,
-) {
+pub fn open_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
     let opened = state
         .modify_player(pid, |ecs, entity| {
             let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
@@ -69,12 +64,7 @@ pub fn open_up_gui(
 
 /// Handle Up building button presses.
 /// Returns `true` if the button was handled.
-pub fn handle_up_button(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    button: &str,
-) -> bool {
+pub fn handle_up_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) -> bool {
     // Check that the player has an Up window open
     let has_up_window = state.query_player_opt(pid, |ecs, entity| {
         let Some(ui) = ecs.get::<PlayerUI>(entity) else {
@@ -129,7 +119,7 @@ pub fn handle_up_button(
 
 pub fn open_up_admin_gui(
     state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
+    tx: &Outbox,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -161,22 +151,13 @@ pub fn open_up_admin_gui(
 // ─── Internal handlers ─────────────────────────────────────────────────────────
 
 /// Select a skill slot — re-render the page with the slot selected.
-fn handle_skill_select(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    slot: i32,
-) {
+fn handle_skill_select(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slot: i32) {
     send_up_page(state, tx, pid, slot);
 }
 
 /// Upgrade the skill in the currently selected slot (increase level by 1).
 /// C# ref: `Skill.Up(Player p)` — requires `exp >= Experience`.
-fn handle_skill_upgrade(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) {
+fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
         return;
     };
@@ -312,12 +293,7 @@ fn handle_skill_upgrade(
 
 /// Delete skill from the selected slot.
 /// C# ref: `PlayerSkillsComp.DeleteSkill(Player p)`.
-fn handle_skill_delete(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    slot: i32,
-) {
+fn handle_skill_delete(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slot: i32) {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
         return;
     };
@@ -378,13 +354,7 @@ fn handle_skill_delete(
 
 /// Install a new skill into the selected empty slot.
 /// C# ref: `PlayerSkillsComp.InstallSkill(string type, int slot, Player p)`.
-fn handle_skill_install(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    code: &str,
-    slot: i32,
-) {
+fn handle_skill_install(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, code: &str, slot: i32) {
     let Some(skill_type) = SkillType::from_code(code) else {
         tracing::warn!(pid = %pid, code, "Up: invalid skill code for install");
         return;
@@ -477,7 +447,7 @@ fn handle_skill_install(
 
 /// Buy an additional slot.
 /// C# ref: `PlayerSkillsComp.slots++` if `p.creds > 1000 && slots < 34`.
-fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, pid: PlayerId) {
+fn handle_buy_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let bought = state
         .modify_player(pid, |ecs, entity| {
             // Validate (immutable borrows)
@@ -534,12 +504,7 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &mpsc::UnboundedSender<Vec<u8>>, 
 
 /// Build and send the `UpPage` JSON to the client.
 /// Format: `"up:{json}"` sent via GU event.
-fn send_up_page(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-    selected_slot: i32,
-) {
+fn send_up_page(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, selected_slot: i32) {
     let page_data = state.query_player_opt(pid, |ecs, entity| {
         let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
             tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up page");
@@ -587,11 +552,7 @@ fn send_up_page(
 
 /// Get the selected slot from the player's `current_window` state.
 /// Window format: "`up:{x}:{y}:{selected_slot`}"
-fn get_selected_slot(
-    state: &Arc<GameState>,
-    tx: &mpsc::UnboundedSender<Vec<u8>>,
-    pid: PlayerId,
-) -> Option<i32> {
+fn get_selected_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> Option<i32> {
     let selected = state.query_player_opt(pid, |ecs, entity| {
         let Some(ui) = ecs.get::<PlayerUI>(entity) else {
             tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for Up selected slot");
@@ -1070,7 +1031,7 @@ mod tests {
     #[tokio::test]
     async fn buyslot_keeps_creds_and_does_not_send_money_packet() {
         let test = make_up_test_state("buyslot").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1117,7 +1078,7 @@ mod tests {
         test.player.money = 1_000;
         test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
         let expected_health = player_health_payload(&test.state, test.player.id.into());
@@ -1173,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn skill_delete_sends_level_without_skills_packet() {
         let test = make_up_test_state("delete_no_skills_packet").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1203,7 +1164,7 @@ mod tests {
     #[tokio::test]
     async fn skill_install_sends_level_without_skills_packet() {
         let test = make_up_test_state("install_no_skills_packet").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1233,7 +1194,7 @@ mod tests {
     #[tokio::test]
     async fn up_button_missing_ui_is_explicit_error_not_unhandled_button() {
         let test = make_up_test_state("up_button_missing_ui").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1258,7 +1219,7 @@ mod tests {
     #[tokio::test]
     async fn buyslot_missing_skills_is_explicit_error_not_not_enough_slots_noop() {
         let test = make_up_test_state("buyslot_missing_skills").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1288,7 +1249,7 @@ mod tests {
         test.player.money = 1_000;
         test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1317,7 +1278,7 @@ mod tests {
     #[tokio::test]
     async fn skill_delete_missing_flags_is_explicit_error_without_skill_mutation_or_rerender() {
         let test = make_up_test_state("delete_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1340,7 +1301,7 @@ mod tests {
     #[tokio::test]
     async fn skill_install_missing_flags_is_explicit_error_without_skill_mutation() {
         let test = make_up_test_state("install_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1363,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn buyslot_missing_flags_is_explicit_error_without_slot_mutation() {
         let test = make_up_test_state("buyslot_missing_flags").await;
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
         drain_events(&mut rx);
 
@@ -1401,11 +1362,7 @@ mod tests {
         }
     }
 
-    fn open_test_up_gui(
-        state: &Arc<GameState>,
-        tx: &mpsc::UnboundedSender<Vec<u8>>,
-        pid: PlayerId,
-    ) {
+    fn open_test_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
         let view = PackView {
             id: 1,
             pack_type: crate::game::PackType::Up,
@@ -1484,7 +1441,7 @@ mod tests {
 
     fn remove_player_flags(state: &Arc<GameState>, pid: PlayerId) {
         let entity = state.get_player_entity(pid).unwrap();
-        let mut ecs = state.ecs.write();
+        let mut ecs = state.ecs_write_profiled("up_building.upgrade_apply");
         ecs.entity_mut(entity).remove::<crate::game::PlayerFlags>();
     }
 
@@ -1525,7 +1482,7 @@ mod tests {
             .unwrap()
     }
 
-    fn drain_events(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    fn drain_events(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
         let mut events = Vec::new();
         while let Ok(frame) = rx.try_recv() {
             let mut buf = BytesMut::from(&frame[..]);
