@@ -62,6 +62,9 @@ pub fn claim_bonus(state: &Arc<GameState>, pid: PlayerId) -> BonusClaim {
                 .dirty = true;
 
             let row = crate::game::player::extract_player_row(ecs, entity)?;
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .expect("PlayerFlags checked before bonus snapshot handoff")
+                .dirty = false;
             let result_stats = ecs
                 .get::<crate::game::player::PlayerStats>(entity)
                 .expect("PlayerStats checked before bonus result");
@@ -76,14 +79,6 @@ pub fn claim_bonus(state: &Arc<GameState>, pid: PlayerId) -> BonusClaim {
         })
         .flatten()
         .unwrap_or(BonusClaim::MissingState)
-}
-
-pub fn mark_bonus_saved(state: &Arc<GameState>, pid: PlayerId) {
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) {
-            flags.dirty = false;
-        }
-    });
 }
 
 #[cfg(test)]

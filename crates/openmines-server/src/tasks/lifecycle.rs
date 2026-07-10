@@ -10,18 +10,6 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
-struct PendingSaveGuard {
-    state: Arc<GameState>,
-}
-
-impl Drop for PendingSaveGuard {
-    fn drop(&mut self) {
-        self.state
-            .db_pending_tasks
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
 /// Периодический flush mmap-слоёв мира.
 pub fn spawn_world_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
     tokio::spawn(async move {
@@ -85,7 +73,11 @@ fn broadcast_online_count(state: &GameState) {
 }
 
 /// Сохранение «грязных» игроков в БД.
-pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
+pub fn spawn_player_dirty_flush_loop(
+    state: Arc<GameState>,
+    mut shutdown: broadcast::Receiver<()>,
+    persistence: crate::persistence::PersistenceHandle,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         // 1:1 ref: `Player.Sync()` runs about every 10 seconds.
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
@@ -96,73 +88,69 @@ pub fn spawn_player_dirty_flush_loop(state: Arc<GameState>, mut shutdown: broadc
                 _ = shutdown.recv() => break,
             }
 
-            // Сначала снимаем список pid без вложенного `modify_player` под guard'ом итератора:
-            // иначе держим ref `active_players` + `ecs.write()` — легко словить взаимную блокировку
-            // с сессией (`query_player` / `broadcast_to_nearby`) и «зависание» всего сервера ~10 с.
-            let pids: Vec<crate::game::PlayerId> = state.player_entity_ids();
-
-            // Extract dirty rows WITHOUT clearing dirty yet — clearing happens only after
-            // a successful save so that a concurrent disconnect save or a save failure
-            // cannot silently lose the dirty flag (BUG 1 / BUG 3 fix).
-            let mut dirty_rows = Vec::new();
-            for pid in pids {
-                let row = state
-                    .modify_player(pid, |ecs, entity| {
-                        let flags = ecs.get::<crate::game::PlayerFlags>(entity)?;
-                        if flags.dirty {
-                            crate::game::player::extract_player_row(ecs, entity)
-                        } else {
-                            None
-                        }
-                    })
-                    .flatten();
-                if let Some(r) = row {
-                    dirty_rows.push((pid, r));
-                }
-            }
-
-            if !dirty_rows.is_empty() {
-                tracing::debug!(dirty_count = dirty_rows.len(), "Periodic save started");
-            }
-
-            let mut saved = 0;
-            for (pid, player_data) in dirty_rows {
-                let db = state.db.clone();
-                let state_c = state.clone();
-                let pid_c = pid;
-                tokio::spawn(async move {
-                    let res = db.save_player(&player_data).await;
-                    match res {
-                        Ok(()) => {
-                            state_c.modify_player(pid_c, |ecs, entity| {
-                                if let Some(mut flags) =
-                                    ecs.get_mut::<crate::game::PlayerFlags>(entity)
-                                {
-                                    flags.dirty = false;
-                                }
-                            });
-                            crate::metrics::PLAYER_SAVE_TOTAL.inc();
-                        }
-                        Err(e) => {
-                            tracing::error!(player_id = %pid_c, error = ?e, "Periodic save failed for player");
-                        }
-                    }
-                });
-                saved += 1;
-            }
-            if saved > 0 {
-                tracing::debug!(saved_count = saved, "Periodic save complete");
+            let accepted = flush_dirty_players_once(&state, &persistence);
+            if accepted > 0 {
+                tracing::debug!(accepted, "Periodic player snapshots admitted");
             }
         }
-    });
+    })
+}
+
+fn flush_dirty_players_once(
+    state: &Arc<GameState>,
+    persistence: &crate::persistence::PersistenceHandle,
+) -> usize {
+    let pids = state.player_entity_ids();
+    let mut accepted = 0usize;
+    for pid in pids {
+        let dirty = state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<crate::game::PlayerFlags>(entity)
+                        .is_some_and(|flags| flags.dirty),
+                )
+            })
+            .unwrap_or(false);
+        if !dirty {
+            continue;
+        }
+
+        let permit = match persistence.try_reserve(crate::game::SaveKind::Player) {
+            Ok(permit) => permit,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+                panic!("persistence worker closed during periodic player flush");
+            }
+        };
+
+        let row = state
+            .modify_player(pid, |ecs, entity| {
+                if !ecs
+                    .get::<crate::game::PlayerFlags>(entity)
+                    .is_some_and(|flags| flags.dirty)
+                {
+                    return None;
+                }
+                let row = crate::game::player::extract_player_row(ecs, entity)?;
+                ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = false;
+                Some(row)
+            })
+            .flatten();
+
+        if let Some(row) = row {
+            permit.publish(crate::game::SaveCommand::SavePlayer { row: Box::new(row) });
+            accepted = accepted.saturating_add(1);
+        }
+    }
+    accepted
 }
 
 /// Сохранение «грязных» зданий в БД.
-#[allow(clippy::significant_drop_tightening)]
 pub fn spawn_building_dirty_flush_loop(
     state: Arc<GameState>,
     mut shutdown: broadcast::Receiver<()>,
-) {
+    persistence: crate::persistence::PersistenceHandle,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(45));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -172,53 +160,56 @@ pub fn spawn_building_dirty_flush_loop(
                 _ = shutdown.recv() => break,
             }
 
-            let mut dirty_entities = Vec::new();
-            {
-                let mut ecs = state.ecs_write_profiled("building_dirty_flush.scan");
-                let mut query = ecs.query::<(Entity, &crate::game::BuildingFlags)>();
-                for (entity, flags) in query.iter(&ecs) {
-                    if flags.dirty {
-                        dirty_entities.push(entity);
-                    }
-                }
-            }
-
-            let mut saved = 0usize;
-            for entity in dirty_entities {
-                // Извлекаем row БЕЗ снятия dirty — чистим флаг только после
-                // успешного save (как в player-loop, см. :58-60). Иначе ошибка БД
-                // теряла изменения здания навсегда (флаг уже снят → не ретраится).
-                let row = state.modify_building(entity, |ecs, ent| {
-                    let flags = ecs.get::<crate::game::BuildingFlags>(ent)?;
-                    if flags.dirty {
-                        crate::game::buildings::extract_building_row(ecs, ent)
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(r) = row {
-                    let db = state.db.clone();
-                    match db.save_building(&r).await {
-                        Ok(()) => {
-                            state.modify_building(entity, |ecs, ent| {
-                                if let Some(mut flags) =
-                                    ecs.get_mut::<crate::game::BuildingFlags>(ent)
-                                {
-                                    flags.dirty = false;
-                                }
-                            });
-                            saved += 1;
-                        }
-                        Err(e) => tracing::error!(error = ?e, "Periodic save failed for building"),
-                    }
-                }
-            }
-            if saved > 0 {
-                tracing::debug!(count = saved, "Periodic save: flushed buildings");
+            let accepted = flush_dirty_buildings_once(&state, &persistence);
+            if accepted > 0 {
+                tracing::debug!(accepted, "Periodic building snapshots admitted");
             }
         }
-    });
+    })
+}
+
+fn flush_dirty_buildings_once(
+    state: &Arc<GameState>,
+    persistence: &crate::persistence::PersistenceHandle,
+) -> usize {
+    let dirty_entities = {
+        let mut ecs = state.ecs_write_profiled("building_dirty_flush.scan");
+        let mut query = ecs.query::<(Entity, &crate::game::BuildingFlags)>();
+        let entities = query
+            .iter(&ecs)
+            .filter_map(|(entity, flags)| flags.dirty.then_some(entity))
+            .collect::<Vec<_>>();
+        drop(query);
+        drop(ecs);
+        entities
+    };
+
+    let mut accepted = 0usize;
+    for entity in dirty_entities {
+        let permit = match persistence.try_reserve(crate::game::SaveKind::Building) {
+            Ok(permit) => permit,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+                panic!("persistence worker closed during periodic building flush");
+            }
+        };
+        let row = state.modify_building(entity, |ecs, ent| {
+            if !ecs
+                .get::<crate::game::BuildingFlags>(ent)
+                .is_some_and(|flags| flags.dirty)
+            {
+                return None;
+            }
+            let row = crate::game::buildings::extract_building_row(ecs, ent)?;
+            ecs.get_mut::<crate::game::BuildingFlags>(ent)?.dirty = false;
+            Some(row)
+        });
+        if let Some(row) = row {
+            permit.publish(crate::game::SaveCommand::SaveBuilding { row: Box::new(row) });
+            accepted = accepted.saturating_add(1);
+        }
+    }
+    accepted
 }
 
 /// Supervisor game-tick'а. Паника внутри tick/schedule означает неизвестное
@@ -228,9 +219,14 @@ struct TickServices {
     heartbeat: Arc<TickHeartbeat>,
     tick_log_tx: std::sync::mpsc::SyncSender<TickLogEvent>,
     presentation: crate::net::presentation::PresentationRuntime,
+    persistence: crate::persistence::PersistenceHandle,
 }
 
-pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<()>) {
+pub fn spawn_game_tick_loop(
+    state: Arc<GameState>,
+    shutdown: &broadcast::Sender<()>,
+    persistence: crate::persistence::PersistenceHandle,
+) -> std::thread::JoinHandle<()> {
     let mut rx = state
         .commands_rx
         .lock()
@@ -255,6 +251,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
         heartbeat,
         tick_log_tx,
         presentation,
+        persistence,
     };
 
     std::thread::Builder::new()
@@ -268,6 +265,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                 .unwrap_or_else(Instant::now);
             let mut schedule_clock = ScheduleClock::new(state.schedules.len(), Instant::now());
             let mut sim_tick = crate::game::SimTick::default();
+            let mut pending_command = None;
 
             let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
             let mut previous_tick_started_at = Instant::now();
@@ -298,6 +296,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                         &mut tick_window,
                         &mut last_warn,
                         &mut schedule_clock,
+                        &mut pending_command,
                         &services,
                     )
                 }));
@@ -330,7 +329,7 @@ pub fn spawn_game_tick_loop(state: Arc<GameState>, shutdown: &broadcast::Sender<
                 }
             }
         })
-        .expect("spawn game tick thread");
+        .expect("spawn game tick thread")
 }
 
 const TICK_WATCHDOG_WARN_MULTIPLIER: u64 = 200;
@@ -1333,6 +1332,7 @@ fn run_game_tick_sync(
     tick_window: &mut TickWindowProfile,
     last_warn: &mut Instant,
     schedule_clock: &mut ScheduleClock,
+    pending_command: &mut Option<crate::game::QueuedPlayerCommand>,
     services: &TickServices,
 ) -> Duration {
     let thread_cpu_started = cpu_time::ThreadTime::now();
@@ -1354,7 +1354,19 @@ fn run_game_tick_sync(
     let mut command_effects = crate::game::CommandEffects::default();
     let d0 = Instant::now();
     services.heartbeat.mark(TickStage::Dispatch);
-    while let Ok(queued) = rx.try_recv() {
+    loop {
+        let (queued, persistence_permit) =
+            match take_admitted_command(rx, pending_command, &services.persistence) {
+                Ok(Some(admitted)) => (admitted.queued, admitted.permit),
+                Ok(None) => break,
+                Err(command_name) => {
+                    deferred_commands = rx.len().saturating_add(1);
+                    crate::metrics::COMMANDS_TOTAL
+                        .with_label_values(&[command_name, "persistence_saturated"])
+                        .inc();
+                    break;
+                }
+            };
         state.record_command_dequeued();
         n_actions += 1;
         let apply_started_at = Instant::now();
@@ -1375,9 +1387,9 @@ fn run_game_tick_sync(
                     .saturating_duration_since(queued.received_at)
                     .as_secs_f64(),
             );
-        command_effects.append(crate::game::logic::commands::apply_player_command(
-            state, cmd,
-        ));
+        let mut effects = crate::game::logic::commands::apply_player_command(state, cmd);
+        publish_command_saves(persistence_permit, &mut effects.saves, cmd_name);
+        command_effects.append(effects);
         let cmd_elapsed = apply_started_at.elapsed();
         crate::metrics::COMMAND_APPLY_SECONDS
             .with_label_values(&[cmd_name])
@@ -1391,7 +1403,9 @@ fn run_game_tick_sync(
             top_command_elapsed = cmd_elapsed;
         }
         if d0.elapsed() >= tick_budget && !rx.is_empty() {
-            deferred_commands = rx.len();
+            deferred_commands = rx
+                .len()
+                .saturating_add(usize::from(pending_command.is_some()));
             break;
         }
     }
@@ -1461,7 +1475,6 @@ fn run_game_tick_sync(
 
     let side_has_work = !broadcasts.is_empty()
         || !command_effects.events.is_empty()
-        || !command_effects.saves.is_empty()
         || !pack_resends.is_empty()
         || !box_ops.is_empty()
         || !cell_conversions.is_empty()
@@ -1553,9 +1566,6 @@ fn run_game_tick_sync(
     services.heartbeat.mark(TickStage::SideBroadcasts);
     for event in command_effects.events {
         services.presentation.publish(event);
-    }
-    for save in command_effects.saves {
-        dispatch_save_command(state, save);
     }
     side_profile.broadcasts = section_t0.elapsed();
 
@@ -1995,44 +2005,56 @@ fn programmator_action_tx(
         )
 }
 
-fn dispatch_save_command(state: &Arc<GameState>, command: crate::game::SaveCommand) {
-    let crate::game::SaveCommand::SavePlayer { row } = command;
+struct AdmittedCommand {
+    queued: crate::game::QueuedPlayerCommand,
+    permit: Option<crate::persistence::PersistencePermit>,
+}
 
-    let db = state.db.clone();
-    let state_clone = state.clone();
-    state
-        .db_pending_tasks
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    state.tokio_handle.spawn(async move {
-        let _guard = PendingSaveGuard { state: state_clone };
-        let mut attempts = 0;
-        let mut backoff = Duration::from_millis(100);
-        loop {
-            match db.save_player(&row).await {
-                Ok(()) => break,
-                Err(error) => {
-                    attempts += 1;
-                    if attempts >= 3 {
-                        tracing::error!(
-                            player_id = row.id,
-                            error = ?error,
-                            "Failed to save player after 3 attempts"
-                        );
-                        break;
-                    }
-                    tracing::warn!(
-                        player_id = row.id,
-                        error = ?error,
-                        attempt = attempts,
-                        ?backoff,
-                        "Failed to save player; retrying"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-            }
+fn take_admitted_command(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    pending: &mut Option<crate::game::QueuedPlayerCommand>,
+    persistence: &crate::persistence::PersistenceHandle,
+) -> Result<Option<AdmittedCommand>, &'static str> {
+    let Some(queued) = pending.take().or_else(|| rx.try_recv().ok()) else {
+        return Ok(None);
+    };
+    let Some(kind) = queued.command.persistence_kind() else {
+        return Ok(Some(AdmittedCommand {
+            queued,
+            permit: None,
+        }));
+    };
+    match persistence.try_reserve(kind) {
+        Ok(permit) => Ok(Some(AdmittedCommand {
+            queued,
+            permit: Some(permit),
+        })),
+        Err(crate::persistence::PersistenceAdmissionError::Full) => {
+            let command_name = queued.command.name();
+            *pending = Some(queued);
+            Err(command_name)
         }
-    });
+        Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+            panic!("persistence worker closed before durable command admission");
+        }
+    }
+}
+
+fn publish_command_saves(
+    permit: Option<crate::persistence::PersistencePermit>,
+    saves: &mut Vec<crate::game::SaveCommand>,
+    command_name: &str,
+) {
+    match (permit, saves.len()) {
+        (Some(permit), 1) => permit.publish(saves.pop().expect("one save command")),
+        (Some(_) | None, 0) => {}
+        (Some(_), count) => {
+            panic!("command {command_name} produced {count} saves for one reserved slot")
+        }
+        (None, count) => {
+            panic!("command {command_name} produced {count} saves without persistence admission")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2263,6 +2285,116 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disconnect_waits_for_persistence_capacity_before_mutation() {
+        let (state, player, db_path, dir, world_name) =
+            make_persistence_test_state("disconnect_admission").await;
+        let (outbox, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 41);
+        let pid = crate::game::PlayerId(player.id);
+
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        persistence
+            .try_reserve(crate::game::SaveKind::Player)
+            .expect("filler capacity")
+            .publish(crate::game::SaveCommand::SavePlayer {
+                row: Box::new(test_player_row(99)),
+            });
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let now = Instant::now();
+        tx.send(crate::game::QueuedPlayerCommand {
+            sequence: crate::game::CommandSeq::new(1),
+            received_at: now,
+            enqueued_at: now,
+            command: crate::game::PlayerCommand::Disconnect {
+                player_id: pid,
+                session_id: crate::game::SessionId::new(41),
+            },
+        })
+        .expect("queue disconnect");
+        drop(tx);
+        let mut pending = None;
+
+        assert!(matches!(
+            take_admitted_command(&mut rx, &mut pending, &persistence),
+            Err("disconnect")
+        ));
+        assert!(pending.is_some());
+        assert!(state.is_player_active(pid));
+
+        let filler = persisted.try_recv().expect("filler command");
+        assert!(matches!(
+            filler,
+            crate::game::SaveCommand::SavePlayer { row } if row.id == 99
+        ));
+        let Ok(Some(AdmittedCommand { queued, permit })) =
+            take_admitted_command(&mut rx, &mut pending, &persistence)
+        else {
+            panic!("disconnect must be admitted after capacity is released");
+        };
+        let command_name = queued.command.name();
+        let mut effects =
+            crate::game::logic::commands::apply_player_command(&state, queued.command);
+        publish_command_saves(permit, &mut effects.saves, command_name);
+
+        assert!(!state.is_player_active(pid));
+        assert!(pending.is_none());
+        assert!(matches!(
+            take_admitted_command(&mut rx, &mut pending, &persistence),
+            Ok(None)
+        ));
+        assert!(matches!(
+            persisted.try_recv(),
+            Some(crate::game::SaveCommand::SavePlayer { row }) if row.id == player.id
+        ));
+        assert!(persisted.try_recv().is_none());
+
+        cleanup_persistence_test(&db_path, &dir, &world_name);
+    }
+
+    #[tokio::test]
+    async fn periodic_player_snapshot_preserves_dirty_on_saturation_and_new_mutation() {
+        let (state, player, db_path, dir, world_name) =
+            make_persistence_test_state("periodic_admission").await;
+        let (outbox, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 42);
+        let pid = crate::game::PlayerId(player.id);
+        state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
+            Some(())
+        });
+
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        persistence
+            .try_reserve(crate::game::SaveKind::Player)
+            .expect("filler capacity")
+            .publish(crate::game::SaveCommand::SavePlayer {
+                row: Box::new(test_player_row(99)),
+            });
+
+        assert_eq!(flush_dirty_players_once(&state, &persistence), 0);
+        assert!(player_is_dirty(&state, pid));
+        assert!(persisted.try_recv().is_some());
+
+        assert_eq!(flush_dirty_players_once(&state, &persistence), 1);
+        assert!(!player_is_dirty(&state, pid));
+        let snapshot = persisted.try_recv().expect("periodic snapshot");
+        assert!(matches!(
+            snapshot,
+            crate::game::SaveCommand::SavePlayer { row } if row.id == player.id
+        ));
+
+        state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<crate::game::PlayerStats>(entity)?.money = 123;
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
+            Some(())
+        });
+        assert!(player_is_dirty(&state, pid));
+
+        cleanup_persistence_test(&db_path, &dir, &world_name);
+    }
+
+    #[tokio::test]
     async fn online_count_broadcast_sends_on_to_active_players() {
         let dir = std::env::temp_dir();
         let nonce = format!("{}_{}", std::process::id(), unique_test_nonce());
@@ -2336,5 +2468,105 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
+    }
+
+    async fn make_persistence_test_state(
+        label: &str,
+    ) -> (
+        Arc<GameState>,
+        crate::db::PlayerRow,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        String,
+    ) {
+        let dir = std::env::temp_dir();
+        let nonce = unique_test_nonce();
+        let db_path = dir.join(format!("{label}_{nonce}.db"));
+        let database = crate::db::Database::open(&db_path).await.unwrap();
+        let mut player = database
+            .create_player("persistence-player", "password", "hash")
+            .await
+            .unwrap();
+        player.x = 5;
+        player.y = 5;
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("{label}_{nonce}_world");
+        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
+        let config = crate::config::Config {
+            world_name: world_name.clone(),
+            port: 8090,
+            world_chunks_w: 2,
+            world_chunks_h: 2,
+            data_dir: dir.to_string_lossy().to_string(),
+            logging: crate::config::LoggingConfig::runtime_baseline(),
+            cron: crate::config::CronConfig::runtime_baseline(),
+            gameplay: crate::config::GameplayConfig::runtime_baseline(),
+        };
+        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+            .await
+            .unwrap();
+        (state, player, db_path, dir, world_name)
+    }
+
+    fn test_player_row(id: i32) -> crate::db::PlayerRow {
+        crate::db::PlayerRow {
+            id,
+            name: format!("player-{id}"),
+            passwd: String::new(),
+            hash: String::new(),
+            x: 5,
+            y: 5,
+            dir: 0,
+            health: 100,
+            max_health: 100,
+            money: 0,
+            creds: 0,
+            skin: 0,
+            auto_dig: false,
+            aggression: false,
+            crystals: [0; 6],
+            clan_id: None,
+            resp_x: None,
+            resp_y: None,
+            inventory: std::collections::HashMap::new(),
+            skills: crate::db::SkillSlots {
+                skills: std::collections::HashMap::new(),
+                total_slots: 20,
+            },
+            role: 0,
+            selected_program_id: None,
+            selected_program: None,
+            programmator_running: false,
+            programmator_snapshot: None,
+            clan_rank: 0,
+            last_bonus_at: 0,
+        }
+    }
+
+    fn player_is_dirty(state: &Arc<GameState>, pid: crate::game::PlayerId) -> bool {
+        state
+            .query_player_opt(pid, |ecs, entity| {
+                Some(
+                    ecs.get::<crate::game::PlayerFlags>(entity)
+                        .is_some_and(|flags| flags.dirty),
+                )
+            })
+            .unwrap_or(false)
+    }
+
+    fn cleanup_persistence_test(
+        db_path: &std::path::Path,
+        dir: &std::path::Path,
+        world_name: &str,
+    ) {
+        let _ = std::fs::remove_file(db_path);
+        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
+        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
     }
 }

@@ -29,11 +29,11 @@ pub fn apply_player_command(state: &Arc<GameState>, command: PlayerCommand) -> C
         | PlayerCommand::Geology { .. }
         | PlayerCommand::Heal { .. }
         | PlayerCommand::Respawn { .. }
-        | PlayerCommand::OpenBox { .. }
-        | PlayerCommand::ClaimBonus { .. }) => {
+        | PlayerCommand::OpenBox { .. }) => {
             apply_gameplay_command(state, command);
             CommandEffects::default()
         }
+        PlayerCommand::ClaimBonus { player_id } => apply_bonus_claim(state, player_id),
         command @ (PlayerCommand::InventoryToggle { .. }
         | PlayerCommand::InventoryChoose { .. }
         | PlayerCommand::InventoryUse { .. }
@@ -200,11 +200,6 @@ fn apply_gameplay_command(state: &Arc<GameState>, command: PlayerCommand) {
                 crate::net::session::social::buildings::handle_dpbx_crystal_box(
                     state, &tx, player_id,
                 );
-            }
-        }
-        crate::game::PlayerCommand::ClaimBonus { player_id } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_bonus_claim(state, &tx, player_id);
             }
         }
         _ => unreachable!("non-gameplay command routed to gameplay command handler"),
@@ -1047,11 +1042,11 @@ where
     });
 }
 
-fn apply_bonus_claim(
-    state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-) {
+fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -> CommandEffects {
+    let Some(tx) = state.player_sender(player_id) else {
+        return CommandEffects::default();
+    };
+    let mut effects = CommandEffects::default();
     match crate::game::logic::bonus::claim_bonus(state, player_id) {
         crate::game::logic::bonus::BonusClaim::Claimed {
             money: new_money,
@@ -1061,44 +1056,39 @@ fn apply_bonus_claim(
             row,
         } => {
             crate::net::session::wire::send_u_packet(
-                tx,
+                &tx,
                 "P$",
                 &crate::protocol::packets::money(new_money, creds).1,
             );
-            crate::net::session::wire::send_u_packet(tx, "DR", b"0");
+            crate::net::session::wire::send_u_packet(&tx, "DR", b"0");
             crate::net::session::social::commands::send_ok(
-                tx,
+                &tx,
                 "Бонус",
                 &format!(
                     "Вы получили {reward_money}$!\nВозвращайтесь через {cooldown_hours} часов."
                 ),
             );
 
-            let db = state.db.clone();
-            let task_state = state.clone();
-            spawn_session_async_task(state, "bonus_save", async move {
-                if let Err(e) = db.save_player(&row).await {
-                    tracing::error!(player_id = %player_id, error = ?e, "Failed to write-through save player after daily bonus");
-                } else {
-                    crate::game::logic::bonus::mark_bonus_saved(&task_state, player_id);
-                }
-            });
+            effects
+                .saves
+                .push(crate::game::SaveCommand::SavePlayer { row });
         }
         crate::game::logic::bonus::BonusClaim::NotReady { hours, minutes } => {
             crate::net::session::social::commands::send_ok(
-                tx,
+                &tx,
                 "Бонус",
                 &format!("Бонус ещё не готов.\nПриходите через {hours}ч {minutes}м."),
             );
         }
         crate::game::logic::bonus::BonusClaim::MissingState => {
             crate::net::session::wire::send_u_packet(
-                tx,
+                &tx,
                 "OK",
                 &crate::protocol::packets::ok_message("Бонус", "Состояние бонуса недоступно.").1,
             );
         }
     }
+    effects
 }
 
 fn apply_geology_command(

@@ -288,6 +288,13 @@ impl PlayerCommand {
             Self::KnownNoopTy { .. } => "known_noop_ty",
         }
     }
+
+    pub const fn persistence_kind(&self) -> Option<SaveKind> {
+        match self {
+            Self::Disconnect { .. } | Self::ClaimBonus { .. } => Some(SaveKind::Player),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -337,5 +344,34 @@ impl GameEvent {
 /// All database write transactions sent from the game thread to the persistence worker.
 #[derive(Debug, Clone)]
 pub enum SaveCommand {
-    SavePlayer { row: Box<PlayerRow> },
+    SavePlayer {
+        row: Box<PlayerRow>,
+    },
+    SaveBuilding {
+        row: Box<openmines_storage::buildings::BuildingRow>,
+    },
+}
+
+impl SaveCommand {
+    pub const fn kind(&self) -> SaveKind {
+        match self {
+            Self::SavePlayer { .. } => SaveKind::Player,
+            Self::SaveBuilding { .. } => SaveKind::Building,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SaveKind {
+    Player,
+    Building,
+}
+
+impl SaveKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Player => "save_player",
+            Self::Building => "save_building",
+        }
+    }
 }

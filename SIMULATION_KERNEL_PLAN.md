@@ -218,9 +218,50 @@ Move/chunk visibility slice перенесён на command/effect boundary:
 но не завершает цель большой MMORPG. Fixed-rate `10ms` command admission всё
 ещё добавляет ожидание до simulation tick и ограничивает latency снизу.
 
-Следующий срез: bounded persistence owner. После него `bots_render` переносится
-на immutable chunk snapshots, а command admission отделяется от fixed-rate
-schedules без второго simulation owner.
+Этап 3 начат первым bounded persistence slice:
+
+- `PersistenceRuntime` владеет bounded queue (`4096`) и единственным writer;
+- writer сохраняет соседние команды одного типа batch-ами до `128`, не меняя
+  FIFO между разными типами;
+- transient DB errors ретраятся без потери уже принятых durable commands;
+- `Disconnect` и daily bonus резервируют durable slot до authoritative mutation;
+- periodic player/building snapshots используют atomic dirty handoff: при
+  saturation флаг не снимается, после admission новая mutation снова ставит
+  `dirty`;
+- tick и periodic producers имеют явные task handles; shutdown сначала
+  останавливает producers, затем дренирует writer;
+- экспортируются depth, high-water, oldest age, batch size и result counters;
+- saturation/pending disconnect, slow store, retry, mixed-type FIFO и shutdown
+  drain покрыты deterministic tests.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у box queue,
+program/chat/GUI/auction flows и shutdown snapshot. Box нельзя просто отправить
+в writer после mutation: текущий `box_persist_q` тогда останется unbounded
+fallback. Для него следующий срез обязан перенести admission до
+`box_put`/`box_take` и вернуть durable effect из authoritative command. Очередь
+writer пока in-memory: graceful drain доказан, crash/restart durability требует
+отдельного intent journal.
+
+Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
+`5000 Xmov/s`, 10 секунд:
+
+- `1000/1000` login, `50013/50013` command effects;
+- `0` unexpected disconnect, `0` drain timeout;
+- p50 `17.287ms`, p95 `23.228ms`, p99 `26.034ms`, p99.9 `28.674ms`,
+  max `39.589ms`;
+- disconnect persistence: `1000 accepted / 1000 persisted`, `11` batches,
+  queue depth после drain `0`, high-water `869`, без saturation/retry;
+- один Ctrl-C завершил release server без дополнительного Enter после полного
+  persistence и world drain.
+
+Latency gate `<50ms` пройден, потерь нет. Это не ускорение относительно лучших
+предыдущих прогонов (`p50 ~15ms`, `p99 ~22-23ms`): текущий p50/p99 хуже примерно
+на `2-3ms`, поэтому первый persistence slice оценивается как ownership/durability
+улучшение без доказанного performance gain.
+
+После закрытия persistence bypass `bots_render` переносится на immutable chunk
+snapshots, а command admission отделяется от fixed-rate schedules без второго
+simulation owner.
 
 Strict clippy всего server tree зелёный. `apply_player_command` разделён на
 typed command families, schedule tail и program-save вынесены в именованные

@@ -15,6 +15,7 @@ mod doctor;
 mod game;
 mod migrations;
 mod net;
+mod persistence;
 mod shutdown;
 mod tasks;
 
@@ -195,7 +196,7 @@ async fn main() -> Result<()> {
     .await?;
 
     // Background tasks (cron + lifecycle loops + auction loop)
-    tasks::spawn_background_tasks(&game_state, &shutdown_tx);
+    let background_tasks = tasks::spawn_background_tasks(&game_state, &shutdown_tx);
 
     // Spawning console REPL
     let repl_state = std::sync::Arc::clone(&game_state);
@@ -225,6 +226,8 @@ async fn main() -> Result<()> {
         Err(e) => tracing::error!(error = ?e, "net::run finished with error (process may exit)"),
     }
 
+    let _ = shutdown_tx.send(());
+    background_tasks.shutdown().await;
     shutdown::shutdown_flush(&game_state).await;
     net_res
 }

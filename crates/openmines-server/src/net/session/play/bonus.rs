@@ -107,11 +107,14 @@ mod tests {
             .unwrap()
     }
 
-    fn claim_bonus(state: &Arc<crate::game::GameState>, pid: crate::game::PlayerId) {
+    fn claim_bonus(
+        state: &Arc<crate::game::GameState>,
+        pid: crate::game::PlayerId,
+    ) -> crate::game::CommandEffects {
         crate::game::logic::commands::apply_player_command(
             state,
             crate::game::PlayerCommand::ClaimBonus { player_id: pid },
-        );
+        )
     }
 
     #[tokio::test]
@@ -132,17 +135,21 @@ mod tests {
         let pid = crate::game::PlayerId(test.player.id);
         let before_money = player_money(&test.state, pid);
 
-        claim_bonus(&test.state, pid);
+        let effects = claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, _)| event == "P$"));
         assert_eq!(player_money(&test.state, pid), before_money + reward_money);
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::SavePlayer { row }] if row.id == test.player.id
+        ));
 
         test.cleanup();
     }
 
     #[test]
-    fn bonus_claim_from_non_tokio_context_uses_stored_runtime_handle() {
+    fn bonus_claim_from_plain_thread_returns_durable_effect() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let test = rt.block_on(make_bonus_test_state_with_bonus(
             "non_tokio_context",
@@ -156,10 +163,11 @@ mod tests {
         drain_events(&mut rx);
 
         let pid = crate::game::PlayerId(test.player.id);
-        claim_bonus(&test.state, pid);
+        let effects = claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, _)| event == "P$"));
+        assert_eq!(effects.saves.len(), 1);
 
         rt.block_on(async {
             tokio::task::yield_now().await;
@@ -182,13 +190,14 @@ mod tests {
                 .remove::<crate::game::player::PlayerStats>();
         }
 
-        claim_bonus(&test.state, pid);
+        let effects = claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние бонуса недоступно."));
+        assert!(effects.saves.is_empty());
 
         test.cleanup();
     }
@@ -209,7 +218,7 @@ mod tests {
                 .remove::<crate::game::player::PlayerFlags>();
         }
 
-        claim_bonus(&test.state, pid);
+        let effects = claim_bonus(&test.state, pid);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -217,6 +226,7 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние бонуса недоступно."));
         assert_eq!(player_money(&test.state, pid), before_money);
+        assert!(effects.saves.is_empty());
 
         test.cleanup();
     }

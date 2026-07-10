@@ -1,6 +1,6 @@
 use prometheus::{
-    Encoder, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, Opts,
-    Registry, TextEncoder,
+    Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
+    Opts, Registry, TextEncoder,
 };
 use std::sync::LazyLock;
 
@@ -120,6 +120,72 @@ pub static PLAYER_SAVE_TOTAL: LazyLock<IntCounter> = LazyLock::new(|| {
     .expect("metric");
     REGISTRY.register(Box::new(c.clone())).expect("register");
     c
+});
+
+pub static PERSISTENCE_QUEUE_DEPTH: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_persistence_queue_depth",
+        "Accepted durable commands not yet persisted",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static PERSISTENCE_QUEUE_HIGH_WATER: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_persistence_queue_high_water",
+        "Highest durable persistence backlog since process start",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static PERSISTENCE_OLDEST_AGE_SECONDS: LazyLock<Gauge> = LazyLock::new(|| {
+    let gauge = Gauge::with_opts(Opts::new(
+        "openmines_persistence_oldest_age_seconds",
+        "Age of the oldest in-flight durable persistence command",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static PERSISTENCE_COMMANDS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "openmines_persistence_commands_total",
+            "Durable persistence commands by kind and result",
+        ),
+        &["kind", "result"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static PERSISTENCE_BATCH_SIZE: LazyLock<Histogram> = LazyLock::new(|| {
+    let histogram = Histogram::with_opts(
+        HistogramOpts::new(
+            "openmines_persistence_batch_size",
+            "Number of durable commands persisted in one transaction",
+        )
+        .buckets(vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]),
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("register");
+    histogram
 });
 
 const COMMAND_LATENCY_BUCKETS: &[f64] = &[

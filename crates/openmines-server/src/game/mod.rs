@@ -12,7 +12,7 @@ pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
     CommandEffects, CommandSeq, GameEvent, PlayerCommand, QueuedPlayerCommand, SaveCommand,
-    SessionId, SimTick,
+    SaveKind, SessionId, SimTick,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
