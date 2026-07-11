@@ -134,7 +134,7 @@ Admin, metrics и initial presentation читают versioned immutable snapshot
 Каждый этап является законченным вертикальным срезом. Нельзя начинать spatial
 sharding, пока simulation всё ещё доступна внешним writers.
 
-### Текущее состояние, 2026-07-10
+### Текущее состояние, 2026-07-11
 
 Этап 1 выполнен первым вертикальным срезом:
 
@@ -277,9 +277,37 @@ Box persistence slice завершён полностью:
   drain удалены;
 - все box upsert/delete теперь проходят только через bounded persistence owner.
 
-Этап 3 не завершён. Прямые persistence bypass ещё есть у program/chat/GUI/auction
-и shutdown player/building snapshot. Очередь writer пока in-memory: graceful
-drain доказан, crash/restart durability требует отдельного intent journal.
+Первый program persistence flow также завершён:
+
+- `PROG` формирует typed `ProgramSaveRequest` внутри simulation и больше не
+  запускает отдельную Tokio task с прямыми SQLx-вызовами;
+- save source, выбор программы и authoritative readback выполняются одной
+  storage transaction у persistence owner;
+- admission заранее резервирует bounded slots и для request, и для completion,
+  поэтому completion delivery не может заблокировать writer при shutdown;
+- transient storage failure ретраится, permanent rejection завершает request
+  без бесконечного retry;
+- completion содержит исходный `SessionId`: результат старой сессии после
+  reconnect не меняет ECS и не отправляет wire новой сессии;
+- saturation, transient retry, permanent rejection, atomic transaction,
+  отсутствие direct DB mutation и stale-session completion покрыты тестами.
+
+Свежий runtime trace уточнил следующий Stage 2 slice:
+
+- одна `GuiButton` command заняла `202.3ms wall / 195.4ms thread CPU`, то есть
+  это доказанный CPU-bound server stall, а не host preemption;
+- текущий string dispatcher объединяет authoritative craft/market/teleport
+  mutations и read-only window rendering под одним именем `gui_button`;
+- следующий срез типизирует GUI commands: mutation остаётся в simulation, а
+  immutable view/render work уходит в presentation owner;
+- granular spike `42.5ms wall` содержал только `2.6ms thread CPU` и `40.9ms
+  off-CPU`, поэтому он не является основанием для локального cell/Rayon fix;
+  spatial ownership остаётся отдельным этапом после устранения external writers.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у остальных program
+операций (open/create/rename/delete/copy), chat/GUI/auction и shutdown
+player/building snapshot. Очередь writer пока in-memory: graceful drain доказан,
+crash/restart durability требует отдельного intent journal.
 
 Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
 `5000 Xmov/s`, 10 секунд:

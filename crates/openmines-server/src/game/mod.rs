@@ -11,8 +11,9 @@ pub mod world;
 pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
-    CommandEffects, CommandSeq, GameEvent, PlayerCommand, QueuedPlayerCommand, SaveCommand,
-    SaveKind, SessionId, SimTick,
+    CommandEffects, CommandSeq, GameEvent, PersistenceCompletion, PlayerCommand,
+    ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, SaveCommand, SaveKind, SessionId,
+    SimTick,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};

@@ -9,6 +9,13 @@ pub struct ProgramRow {
     pub code: String,
 }
 
+#[derive(Debug)]
+pub enum SaveSelectProgramResult {
+    Saved(ProgramRow),
+    ProgramUnavailable,
+    PlayerUnavailable,
+}
+
 impl Database {
     pub async fn list_programs(&self, player_id: i32) -> Result<Vec<ProgramRow>> {
         let programs = sqlx::query_as::<_, ProgramRow>(
@@ -103,6 +110,45 @@ impl Database {
         Ok(())
     }
 
+    /// Atomically persist the selected program source and return its authoritative row.
+    /// `None` means that the program is missing or belongs to another player.
+    pub async fn save_select_program(
+        &self,
+        player_id: i32,
+        prog_id: i32,
+        code: &str,
+    ) -> std::result::Result<SaveSelectProgramResult, sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let updated = sqlx::query("UPDATE programs SET code = ?1 WHERE id = ?2 AND player_id = ?3")
+            .bind(code)
+            .bind(prog_id)
+            .bind(player_id)
+            .execute(&mut *transaction)
+            .await?;
+        if updated.rows_affected() != 1 {
+            return Ok(SaveSelectProgramResult::ProgramUnavailable);
+        }
+
+        let selected = sqlx::query("UPDATE players SET selected_program_id = ?1 WHERE id = ?2")
+            .bind(prog_id)
+            .bind(player_id)
+            .execute(&mut *transaction)
+            .await?;
+        if selected.rows_affected() != 1 {
+            return Ok(SaveSelectProgramResult::PlayerUnavailable);
+        }
+
+        let program = sqlx::query_as::<_, ProgramRow>(
+            "SELECT id, player_id, name, code FROM programs WHERE id = ?1 AND player_id = ?2",
+        )
+        .bind(prog_id)
+        .bind(player_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(SaveSelectProgramResult::Saved(program))
+    }
+
     /// Delete program owned by player.
     pub async fn delete_program_owned(&self, player_id: i32, prog_id: i32) -> Result<bool> {
         let result = sqlx::query("DELETE FROM programs WHERE id = ?1 AND player_id = ?2")
@@ -116,7 +162,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, SaveSelectProgramResult};
 
     async fn temp_database(name: &str) -> Database {
         let path = std::env::temp_dir().join(format!("{name}_{}.db", std::process::id()));
@@ -170,5 +216,42 @@ mod tests {
             .unwrap_err();
         assert!(missing_err.to_string().contains("save affected 0 rows"));
         assert!(database.get_program(missing_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn save_select_program_is_atomic_and_owner_checked() {
+        let database = temp_database("program_save_select").await;
+        let owner = database
+            .create_player("save-select-owner", "p", "h1")
+            .await
+            .unwrap();
+        let foreign = database
+            .create_player("save-select-foreign", "p", "h2")
+            .await
+            .unwrap();
+        let program_id = database
+            .insert_program(owner.id, "main", "old")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            database
+                .save_select_program(foreign.id, program_id, "foreign")
+                .await
+                .unwrap(),
+            SaveSelectProgramResult::ProgramUnavailable
+        ));
+        let SaveSelectProgramResult::Saved(saved) = database
+            .save_select_program(owner.id, program_id, "new")
+            .await
+            .unwrap()
+        else {
+            panic!("owned program must be saved");
+        };
+
+        assert_eq!(saved.name, "main");
+        assert_eq!(saved.code, "new");
+        let owner_after = database.get_player_by_id(owner.id).await.unwrap().unwrap();
+        assert_eq!(owner_after.selected_program_id, Some(program_id));
     }
 }

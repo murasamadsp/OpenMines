@@ -229,11 +229,24 @@ struct BoxPickupBacklog {
     players: HashSet<crate::game::PlayerId>,
 }
 
-#[derive(Default)]
 struct TickPendingWork {
     command: Option<crate::game::QueuedPlayerCommand>,
     box_pickups: BoxPickupBacklog,
     deaths: DeathBacklog,
+    persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
+}
+
+impl TickPendingWork {
+    fn new(
+        persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
+    ) -> Self {
+        Self {
+            command: None,
+            box_pickups: BoxPickupBacklog::default(),
+            deaths: DeathBacklog::default(),
+            persistence_completions,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -370,6 +383,7 @@ pub fn spawn_game_tick_loop(
     state: Arc<GameState>,
     shutdown: &broadcast::Sender<()>,
     persistence: crate::persistence::PersistenceHandle,
+    persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
 ) -> std::thread::JoinHandle<()> {
     let mut rx = state
         .commands_rx
@@ -409,7 +423,7 @@ pub fn spawn_game_tick_loop(
                 .unwrap_or_else(Instant::now);
             let mut schedule_clock = ScheduleClock::new(state.schedules.len(), Instant::now());
             let mut sim_tick = crate::game::SimTick::default();
-            let mut pending_work = TickPendingWork::default();
+            let mut pending_work = TickPendingWork::new(persistence_completions);
 
             let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
             let mut previous_tick_started_at = Instant::now();
@@ -1498,6 +1512,11 @@ fn run_game_tick_sync(
     let mut top_command_name = "-";
     let mut top_command_elapsed = Duration::ZERO;
     let mut command_effects = crate::game::CommandEffects::default();
+    while let Ok(completion) = pending_work.persistence_completions.try_recv() {
+        command_effects.append(crate::game::logic::commands::apply_persistence_completion(
+            state, completion,
+        ));
+    }
     let d0 = Instant::now();
     services.heartbeat.mark(TickStage::Dispatch);
     loop {

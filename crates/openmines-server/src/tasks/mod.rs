@@ -47,7 +47,8 @@ pub fn spawn_background_tasks(
     // 2. Воркеры периодического сохранения и тиков
     lifecycle::spawn_world_flush_loop(Arc::clone(state), shutdown.subscribe());
     lifecycle::spawn_online_count_loop(Arc::clone(state), shutdown.subscribe());
-    let persistence = crate::persistence::PersistenceRuntime::start(state.db.clone());
+    let mut persistence = crate::persistence::PersistenceRuntime::start(state.db.clone());
+    let persistence_completions = persistence.take_completion_receiver();
     let player_dirty_flush = lifecycle::spawn_player_dirty_flush_loop(
         Arc::clone(state),
         shutdown.subscribe(),
@@ -58,8 +59,12 @@ pub fn spawn_background_tasks(
         shutdown.subscribe(),
         persistence.handle(),
     );
-    let game_tick =
-        lifecycle::spawn_game_tick_loop(Arc::clone(state), shutdown, persistence.handle());
+    let game_tick = lifecycle::spawn_game_tick_loop(
+        Arc::clone(state),
+        shutdown,
+        persistence.handle(),
+        persistence_completions,
+    );
 
     // 3. Обработка завершения аукционов
     auction::spawn_auction_finalize_loop(Arc::clone(state), shutdown.subscribe());

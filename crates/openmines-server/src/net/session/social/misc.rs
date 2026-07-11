@@ -1223,4 +1223,97 @@ mod tests {
 
         test.cleanup();
     }
+
+    #[tokio::test]
+    async fn stale_program_persistence_completion_does_not_mutate_reconnected_player() {
+        let test = make_test_state("program_completion_stale_session").await;
+        let (old_tx, mut old_rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &old_tx, &test.player, 1);
+        drain_events(&mut old_rx);
+
+        let (new_tx, mut new_rx) = crate::net::session::outbox::channel();
+        let player_id = PlayerId(test.player.id);
+        let new_session = crate::game::SessionId::new(2);
+        test.state
+            .sessions
+            .register_test_outbox(new_session, new_tx);
+        assert!(test.state.sessions.bind_player(new_session, player_id));
+
+        crate::game::logic::commands::apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramSaved {
+                request: crate::game::ProgramSaveRequest {
+                    player_id,
+                    session_id: crate::game::SessionId::new(1),
+                    program_id: 77,
+                    source: "$z".to_owned(),
+                },
+                result: crate::game::ProgramSaveResult::Saved {
+                    program_name: "main".to_owned(),
+                },
+            },
+        );
+
+        let selected = test.state.query_player_opt(player_id, |ecs, entity| {
+            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                .map(|state| state.selected_id)
+        });
+        assert_eq!(selected, Some(None));
+        assert!(drain_events(&mut old_rx).is_empty());
+        assert!(drain_events(&mut new_rx).is_empty());
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn prog_command_produces_typed_save_without_direct_database_mutation() {
+        let test = make_test_state("program_command_persistence_request").await;
+        let (tx, mut rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        drain_events(&mut rx);
+        let program_id = test
+            .state
+            .db
+            .insert_program(test.player.id, "main", "old")
+            .await
+            .unwrap();
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::ProgramAction {
+                player_id: PlayerId(test.player.id),
+                session_id: crate::game::SessionId::new(1),
+                event: "PROG".to_owned(),
+                payload: bytes::Bytes::from(prog_payload(0, program_id, &[], "new")),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Program {
+                request: crate::game::ProgramSaveRequest {
+                    player_id,
+                    session_id,
+                    program_id: saved_program_id,
+                    source,
+                }
+            }] if *player_id == PlayerId(test.player.id)
+                && *session_id == crate::game::SessionId::new(1)
+                && *saved_program_id == program_id
+                && source == "new"
+        ));
+        assert_eq!(
+            test.state
+                .db
+                .get_program(program_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .code,
+            "old"
+        );
+
+        test.cleanup();
+    }
 }

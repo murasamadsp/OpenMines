@@ -216,6 +216,7 @@ fn decode_ty_command(
         "GDon" => Some(PlayerCommand::ClaimBonus { player_id }),
         "PROG" | "PDEL" | "pRST" | "PREN" | "PCOP" => Some(PlayerCommand::ProgramAction {
             player_id,
+            session_id,
             event: packet.event_str().to_owned(),
             payload: packet.sub_payload.clone(),
         }),

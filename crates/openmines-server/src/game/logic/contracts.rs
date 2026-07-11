@@ -184,16 +184,9 @@ pub enum PlayerCommand {
     /// Programmator program lifecycle action (save, delete, restart, rename, copy).
     ProgramAction {
         player_id: PlayerId,
+        session_id: SessionId,
         event: String,
         payload: Bytes,
-    },
-    /// Apply a successfully persisted programmer source to ECS and emit start wire.
-    ApplySavedProgram {
-        player_id: PlayerId,
-        session_id: SessionId,
-        program_id: i32,
-        program_name: String,
-        source: String,
     },
     /// Clear deleted programmer runtime state after DB ownership/delete succeeded.
     ApplyDeletedProgram {
@@ -277,7 +270,6 @@ impl PlayerCommand {
             Self::RequestMyBuildings { .. } => "request_my_buildings",
             Self::OpenClan { .. } => "open_clan",
             Self::ProgramAction { .. } => "program_action",
-            Self::ApplySavedProgram { .. } => "apply_saved_program",
             Self::ApplyDeletedProgram { .. } => "apply_deleted_program",
             Self::ApplyInventoryBuildingPlaced { .. } => "apply_inventory_building_placed",
             Self::ApplyPaidBuildingPlaced { .. } => "apply_paid_building_placed",
@@ -289,10 +281,11 @@ impl PlayerCommand {
         }
     }
 
-    pub const fn persistence_kind(&self) -> Option<SaveKind> {
+    pub fn persistence_kind(&self) -> Option<SaveKind> {
         match self {
             Self::Disconnect { .. } | Self::ClaimBonus { .. } => Some(SaveKind::Player),
             Self::ApplyRemovedBuilding { .. } => Some(SaveKind::Box),
+            Self::ProgramAction { event, .. } if event == "PROG" => Some(SaveKind::Program),
             _ => None,
         }
     }
@@ -354,6 +347,9 @@ pub enum SaveCommand {
     Box {
         write: openmines_storage::BoxWrite,
     },
+    Program {
+        request: ProgramSaveRequest,
+    },
 }
 
 impl SaveCommand {
@@ -362,8 +358,32 @@ impl SaveCommand {
             Self::Player { .. } => SaveKind::Player,
             Self::Building { .. } => SaveKind::Building,
             Self::Box { .. } => SaveKind::Box,
+            Self::Program { .. } => SaveKind::Program,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramSaveRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub program_id: i32,
+    pub source: String,
+}
+
+#[derive(Debug)]
+pub enum PersistenceCompletion {
+    ProgramSaved {
+        request: ProgramSaveRequest,
+        result: ProgramSaveResult,
+    },
+}
+
+#[derive(Debug)]
+pub enum ProgramSaveResult {
+    Saved { program_name: String },
+    Rejected,
+    PermanentFailure { message: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -371,6 +391,7 @@ pub enum SaveKind {
     Player,
     Building,
     Box,
+    Program,
 }
 
 impl SaveKind {
@@ -379,6 +400,7 @@ impl SaveKind {
             Self::Player => "save_player",
             Self::Building => "save_building",
             Self::Box => "save_box",
+            Self::Program => "save_program",
         }
     }
 }

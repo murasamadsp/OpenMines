@@ -63,13 +63,9 @@ pub fn apply_player_command(state: &Arc<GameState>, command: PlayerCommand) -> C
             CommandEffects::default()
         }
         command @ (PlayerCommand::ProgramAction { .. }
-        | PlayerCommand::ApplySavedProgram { .. }
         | PlayerCommand::ApplyDeletedProgram { .. }
         | PlayerCommand::ApplyProgramEditorOpen { .. }
-        | PlayerCommand::ApplyProgramEditorRename { .. }) => {
-            apply_program_command(state, command);
-            CommandEffects::default()
-        }
+        | PlayerCommand::ApplyProgramEditorRename { .. }) => apply_program_command(state, command),
         command @ (PlayerCommand::ApplyInventoryBuildingPlaced { .. }
         | PlayerCommand::ApplyPaidBuildingPlaced { .. }
         | PlayerCommand::RefundPaidBuildingPlacement { .. }
@@ -619,16 +615,26 @@ fn spawn_gui_async_task(
     });
 }
 
-fn apply_program_command(state: &Arc<GameState>, command: PlayerCommand) {
+fn apply_program_command(state: &Arc<GameState>, command: PlayerCommand) -> CommandEffects {
+    let mut effects = CommandEffects::default();
     match command {
         crate::game::PlayerCommand::ProgramAction {
             player_id,
+            session_id,
             event,
             payload,
         } => {
-            if let Some(tx) = state.player_sender(player_id) {
+            if state.sessions.session_for_player(player_id) == Some(session_id)
+                && let Some(tx) = state.sessions.outbox_for_session(session_id)
+            {
                 match event.as_str() {
-                    "PROG" => spawn_program_save_task(state, tx, player_id, payload),
+                    "PROG" => {
+                        if let Some(save) =
+                            prepare_program_save(state, tx, player_id, session_id, &payload)
+                        {
+                            effects.saves.push(save);
+                        }
+                    }
                     "PDEL" => spawn_program_delete_task(state, tx, player_id, payload),
                     "pRST" => crate::net::session::social::misc::handle_prog_reset_ty(
                         state, &tx, player_id,
@@ -657,25 +663,6 @@ fn apply_program_command(state: &Arc<GameState>, command: PlayerCommand) {
                 }
             }
         }
-        crate::game::PlayerCommand::ApplySavedProgram {
-            player_id,
-            session_id,
-            program_id,
-            program_name,
-            source,
-        } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
-            };
-            crate::net::session::social::misc::apply_saved_program_to_tick_state(
-                state,
-                &tx,
-                player_id,
-                program_id,
-                &program_name,
-                &source,
-            );
-        }
         crate::game::PlayerCommand::ApplyDeletedProgram {
             player_id,
             program_id,
@@ -702,6 +689,104 @@ fn apply_program_command(state: &Arc<GameState>, command: PlayerCommand) {
         }
         _ => unreachable!("non-program command routed to program command handler"),
     }
+    effects
+}
+
+fn prepare_program_save(
+    state: &Arc<GameState>,
+    tx: crate::net::session::outbox::Outbox,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    payload: &[u8],
+) -> Option<crate::game::SaveCommand> {
+    let (program_id, source) = decode_program_save(&tx, player_id, payload)?;
+    if program_id <= 0 {
+        tracing::warn!(
+            player_id = %player_id,
+            program_id,
+            "PROG received no selected client program; opening program list"
+        );
+        let task_state = state.clone();
+        spawn_session_async_task(state, "program_list_after_empty_save", async move {
+            crate::net::session::social::buildings::handle_programmator_pope_menu(
+                &task_state,
+                &tx,
+                player_id,
+            )
+            .await;
+        });
+        return None;
+    }
+    Some(crate::game::SaveCommand::Program {
+        request: crate::game::ProgramSaveRequest {
+            player_id,
+            session_id,
+            program_id,
+            source,
+        },
+    })
+}
+
+pub fn apply_persistence_completion(
+    state: &Arc<GameState>,
+    completion: crate::game::PersistenceCompletion,
+) -> CommandEffects {
+    match completion {
+        crate::game::PersistenceCompletion::ProgramSaved { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
+                return CommandEffects::default();
+            };
+            match result {
+                crate::game::ProgramSaveResult::Saved { program_name } => {
+                    crate::net::session::social::misc::apply_saved_program_to_tick_state(
+                        state,
+                        &tx,
+                        request.player_id,
+                        request.program_id,
+                        &program_name,
+                        &request.source,
+                    );
+                }
+                crate::game::ProgramSaveResult::Rejected => {
+                    tracing::warn!(
+                        player_id = %request.player_id,
+                        program_id = request.program_id,
+                        "Program save rejected: missing or foreign row"
+                    );
+                    crate::net::session::wire::send_u_packet(
+                        &tx,
+                        "OK",
+                        &crate::protocol::packets::ok_message(
+                            "ПРОГРАММАТОР",
+                            "Не удалось сохранить программу.",
+                        )
+                        .1,
+                    );
+                }
+                crate::game::ProgramSaveResult::PermanentFailure { message } => {
+                    tracing::error!(
+                        player_id = %request.player_id,
+                        program_id = request.program_id,
+                        error = message,
+                        "Program save permanently rejected by persistence"
+                    );
+                    crate::net::session::wire::send_u_packet(
+                        &tx,
+                        "OK",
+                        &crate::protocol::packets::ok_message(
+                            "ПРОГРАММАТОР",
+                            "Не удалось сохранить программу.",
+                        )
+                        .1,
+                    );
+                }
+            }
+        }
+    }
+    CommandEffects::default()
 }
 
 fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) -> CommandEffects {
@@ -1165,108 +1250,6 @@ fn apply_heal_command(
         }
         crate::game::logic::healing::HealResult::SilentNoop => {}
     }
-}
-
-fn spawn_program_save_task(
-    state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    payload: bytes::Bytes,
-) {
-    let Some(session_id) = state.sessions.session_for_player(player_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "program_save", async move {
-        let Some((program_id, source)) = decode_program_save(&tx, player_id, &payload) else {
-            return;
-        };
-
-        if program_id <= 0 {
-            tracing::warn!(
-                player_id = %player_id,
-                program_id,
-                "PROG received no selected client program; opening program list"
-            );
-            crate::net::session::social::buildings::handle_programmator_pope_menu(
-                &task_state,
-                &tx,
-                player_id,
-            )
-            .await;
-            return;
-        }
-
-        if let Err(e) = task_state
-            .db
-            .save_program(player_id.into(), program_id, &source)
-            .await
-        {
-            tracing::error!(player_id = %player_id, program_id, error = ?e, "DB save failed");
-            crate::net::session::wire::send_u_packet(
-                &tx,
-                "OK",
-                &crate::protocol::packets::ok_message(
-                    "ПРОГРАММАТОР",
-                    "Не удалось сохранить программу.",
-                )
-                .1,
-            );
-            return;
-        }
-        if let Err(e) = task_state
-            .db
-            .set_selected_program(player_id.into(), Some(program_id))
-            .await
-        {
-            tracing::error!(player_id = %player_id, program_id, error = ?e, "DB selected program update failed for PROG");
-            crate::net::session::wire::send_u_packet(
-                &tx,
-                "OK",
-                &crate::protocol::packets::ok_message(
-                    "ПРОГРАММАТОР",
-                    "Не удалось выбрать программу.",
-                )
-                .1,
-            );
-            return;
-        }
-
-        let program_name = match task_state.db.get_program(program_id).await {
-            Ok(Some(program)) if program.player_id == player_id.as_i32() => program.name,
-            Ok(Some(_) | None) => {
-                tracing::error!(player_id = %player_id, program_id, "Saved program is missing after PROG save");
-                crate::net::session::wire::send_u_packet(
-                    &tx,
-                    "OK",
-                    &crate::protocol::packets::ok_message("ПРОГРАММАТОР", "Программа недоступна.")
-                        .1,
-                );
-                return;
-            }
-            Err(e) => {
-                tracing::error!(player_id = %player_id, program_id, error = ?e, "DB get failed after PROG save");
-                crate::net::session::wire::send_u_packet(
-                    &tx,
-                    "OK",
-                    &crate::protocol::packets::ok_message(
-                        "ПРОГРАММАТОР",
-                        "Не удалось прочитать программу.",
-                    )
-                    .1,
-                );
-                return;
-            }
-        };
-
-        task_state.enqueue_command(crate::game::PlayerCommand::ApplySavedProgram {
-            player_id,
-            session_id,
-            program_id,
-            program_name,
-            source,
-        });
-    });
 }
 
 fn decode_program_save(

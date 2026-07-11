@@ -13,6 +13,7 @@ const RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
 struct PersistenceEnvelope {
     command: SaveCommand,
     enqueued_at: Instant,
+    completion: Option<tokio::sync::mpsc::OwnedPermit<crate::game::PersistenceCompletion>>,
 }
 
 #[derive(Default)]
@@ -50,6 +51,7 @@ impl PersistenceStatus {
 #[derive(Clone)]
 pub struct PersistenceHandle {
     tx: tokio::sync::mpsc::Sender<PersistenceEnvelope>,
+    completion_tx: tokio::sync::mpsc::Sender<crate::game::PersistenceCompletion>,
     status: Arc<PersistenceStatus>,
 }
 
@@ -57,6 +59,7 @@ pub struct PersistencePermit {
     permit: tokio::sync::mpsc::OwnedPermit<PersistenceEnvelope>,
     status: Arc<PersistenceStatus>,
     kind: SaveKind,
+    completion: Option<tokio::sync::mpsc::OwnedPermit<crate::game::PersistenceCompletion>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,11 +73,31 @@ impl PersistenceHandle {
         &self,
         kind: SaveKind,
     ) -> Result<PersistencePermit, PersistenceAdmissionError> {
+        let completion = if kind == SaveKind::Program {
+            match self.completion_tx.clone().try_reserve_owned() {
+                Ok(permit) => Some(permit),
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[kind.name(), "completion_saturated"])
+                        .inc();
+                    return Err(PersistenceAdmissionError::Full);
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[kind.name(), "completion_closed"])
+                        .inc();
+                    return Err(PersistenceAdmissionError::Closed);
+                }
+            }
+        } else {
+            None
+        };
         match self.tx.clone().try_reserve_owned() {
             Ok(permit) => Ok(PersistencePermit {
                 permit,
                 status: self.status.clone(),
                 kind,
+                completion,
             }),
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 crate::metrics::PERSISTENCE_COMMANDS_TOTAL
@@ -99,8 +122,16 @@ impl PersistenceHandle {
     #[cfg(test)]
     pub(crate) fn test_channel(capacity: usize) -> (Self, PersistenceTestReceiver) {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(capacity);
         let status = Arc::new(PersistenceStatus::default());
-        (Self { tx, status }, PersistenceTestReceiver { rx })
+        (
+            Self {
+                tx,
+                completion_tx,
+                status,
+            },
+            PersistenceTestReceiver { rx },
+        )
     }
 }
 
@@ -126,6 +157,7 @@ impl PersistencePermit {
         self.permit.send(PersistenceEnvelope {
             command,
             enqueued_at: Instant::now(),
+            completion: self.completion,
         });
         self.status.mark_accepted();
         crate::metrics::PERSISTENCE_COMMANDS_TOTAL
@@ -136,6 +168,7 @@ impl PersistencePermit {
 
 pub struct PersistenceRuntime {
     handle: PersistenceHandle,
+    completion_rx: Option<tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>>,
     worker: tokio::task::JoinHandle<()>,
 }
 
@@ -149,10 +182,16 @@ impl PersistenceRuntime {
         S: PersistenceStore,
     {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(capacity);
         let status = Arc::new(PersistenceStatus::default());
         let worker = tokio::spawn(run_worker(store, rx, status.clone()));
         Self {
-            handle: PersistenceHandle { tx, status },
+            handle: PersistenceHandle {
+                tx,
+                completion_tx,
+                status,
+            },
+            completion_rx: Some(completion_rx),
             worker,
         }
     }
@@ -161,9 +200,22 @@ impl PersistenceRuntime {
         self.handle.clone()
     }
 
+    pub const fn take_completion_receiver(
+        &mut self,
+    ) -> tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion> {
+        self.completion_rx
+            .take()
+            .expect("persistence completion receiver already taken")
+    }
+
     pub async fn shutdown(self) {
-        let Self { handle, worker } = self;
+        let Self {
+            handle,
+            completion_rx,
+            worker,
+        } = self;
         drop(handle);
+        drop(completion_rx);
         if let Err(error) = worker.await {
             tracing::error!(error = ?error, "Persistence worker failed during shutdown drain");
         }
@@ -185,6 +237,17 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         writes: &[crate::db::BoxWrite],
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn save_program(
+        &self,
+        request: &crate::game::ProgramSaveRequest,
+    ) -> impl Future<Output = Result<Option<crate::db::ProgramRow>, PersistenceStoreFailure>> + Send;
+}
+
+#[derive(Debug)]
+enum PersistenceStoreFailure {
+    Transient(anyhow::Error),
+    Permanent(anyhow::Error),
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -201,6 +264,31 @@ impl PersistenceStore for Arc<crate::db::Database> {
 
     async fn save_boxes_batch(&self, writes: &[crate::db::BoxWrite]) -> anyhow::Result<()> {
         crate::db::Database::save_boxes_batch(self, writes).await
+    }
+
+    async fn save_program(
+        &self,
+        request: &crate::game::ProgramSaveRequest,
+    ) -> Result<Option<crate::db::ProgramRow>, PersistenceStoreFailure> {
+        self.save_select_program(
+            request.player_id.as_i32(),
+            request.program_id,
+            &request.source,
+        )
+        .await
+        .map_err(|error| PersistenceStoreFailure::Transient(error.into()))
+        .and_then(|result| match result {
+            openmines_storage::programs::SaveSelectProgramResult::Saved(program) => {
+                Ok(Some(program))
+            }
+            openmines_storage::programs::SaveSelectProgramResult::ProgramUnavailable => Ok(None),
+            openmines_storage::programs::SaveSelectProgramResult::PlayerUnavailable => {
+                Err(PersistenceStoreFailure::Permanent(anyhow::anyhow!(
+                    "player {} is unavailable for program selection",
+                    request.player_id
+                )))
+            }
+        })
     }
 }
 
@@ -221,14 +309,14 @@ async fn run_worker<S>(
             batch.push(next);
         }
 
-        persist_batch(&store, &batch).await;
+        persist_batch(&store, &mut batch).await;
         status.mark_completed(batch.len());
         crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(0.0);
     }
     crate::metrics::PERSISTENCE_QUEUE_DEPTH.set(0);
 }
 
-async fn persist_batch<S>(store: &S, batch: &[PersistenceEnvelope])
+async fn persist_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
 where
     S: PersistenceStore,
 {
@@ -239,8 +327,69 @@ where
             .iter()
             .position(|envelope| envelope.command.kind() != kind)
             .map_or(batch.len(), |offset| start + offset);
-        persist_compatible_batch(store, kind, &batch[start..end]).await;
+        if kind == SaveKind::Program {
+            persist_program_batch(store, &mut batch[start..end]).await;
+        } else {
+            persist_compatible_batch(store, kind, &batch[start..end]).await;
+        }
         start = end;
+    }
+}
+
+async fn persist_program_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
+where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::Program { request } = &envelope.command else {
+            unreachable!("compatible program batch");
+        };
+        let request = request.clone();
+        let oldest = envelope.enqueued_at;
+        let mut attempt = 0u64;
+        let mut backoff = RETRY_INITIAL_BACKOFF;
+        let result = loop {
+            crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(oldest.elapsed().as_secs_f64());
+            match store.save_program(&request).await {
+                Ok(Some(program)) => {
+                    break crate::game::ProgramSaveResult::Saved {
+                        program_name: program.name,
+                    };
+                }
+                Ok(None) => break crate::game::ProgramSaveResult::Rejected,
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::ProgramSaveResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[SaveKind::Program.name(), "retry"])
+                        .inc();
+                    tracing::warn!(
+                        attempt,
+                        ?backoff,
+                        error = ?error,
+                        player_id = %request.player_id,
+                        program_id = request.program_id,
+                        "Program persistence failed transiently; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2).min(RETRY_MAX_BACKOFF);
+                }
+            }
+        };
+
+        envelope
+            .completion
+            .take()
+            .expect("program command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ProgramSaved { request, result });
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::Program.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
     }
 }
 
@@ -259,7 +408,9 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Player { row } => row.as_ref().clone(),
-                        SaveCommand::Building { .. } | SaveCommand::Box { .. } => {
+                        SaveCommand::Building { .. }
+                        | SaveCommand::Box { .. }
+                        | SaveCommand::Program { .. } => {
                             unreachable!("compatible player batch")
                         }
                     })
@@ -271,7 +422,9 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Building { row } => row.as_ref().clone(),
-                        SaveCommand::Player { .. } | SaveCommand::Box { .. } => {
+                        SaveCommand::Player { .. }
+                        | SaveCommand::Box { .. }
+                        | SaveCommand::Program { .. } => {
                             unreachable!("compatible building batch")
                         }
                     })
@@ -283,13 +436,16 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Box { write } => write.clone(),
-                        SaveCommand::Player { .. } | SaveCommand::Building { .. } => {
+                        SaveCommand::Player { .. }
+                        | SaveCommand::Building { .. }
+                        | SaveCommand::Program { .. } => {
                             unreachable!("compatible box batch")
                         }
                     })
                     .collect::<Vec<_>>();
                 store.save_boxes_batch(&writes).await
             }
+            SaveKind::Program => unreachable!("program persistence has per-request completion"),
         };
         match result {
             Ok(()) => {
@@ -329,7 +485,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     #[derive(Clone)]
     struct TestStore {
@@ -338,6 +494,7 @@ mod tests {
         started: Arc<tokio::sync::Semaphore>,
         release: Arc<tokio::sync::Semaphore>,
         block_first: bool,
+        permanent_program_failure: Arc<AtomicBool>,
         saved: Arc<Mutex<Vec<SavedBatch>>>,
     }
 
@@ -346,6 +503,11 @@ mod tests {
         Players(Vec<i32>),
         Buildings(Vec<i32>),
         Boxes(Vec<(i32, i32)>),
+        Program {
+            player_id: i32,
+            program_id: i32,
+            source: String,
+        },
     }
 
     impl TestStore {
@@ -356,8 +518,14 @@ mod tests {
                 started: Arc::new(tokio::sync::Semaphore::new(0)),
                 release: Arc::new(tokio::sync::Semaphore::new(0)),
                 block_first,
+                permanent_program_failure: Arc::new(AtomicBool::new(false)),
                 saved: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        fn reject_program_permanently(&self) {
+            self.permanent_program_failure
+                .store(true, Ordering::Release);
         }
 
         async fn persist(&self, batch: SavedBatch) -> anyhow::Result<()> {
@@ -413,6 +581,37 @@ mod tests {
             let positions = writes.iter().map(|write| (write.x, write.y)).collect();
             let store = self.clone();
             async move { store.persist(SavedBatch::Boxes(positions)).await }
+        }
+
+        fn save_program(
+            &self,
+            request: &crate::game::ProgramSaveRequest,
+        ) -> impl Future<Output = Result<Option<crate::db::ProgramRow>, PersistenceStoreFailure>> + Send
+        {
+            let store = self.clone();
+            let request = request.clone();
+            async move {
+                if store.permanent_program_failure.load(Ordering::Acquire) {
+                    store.calls.fetch_add(1, Ordering::AcqRel);
+                    return Err(PersistenceStoreFailure::Permanent(anyhow::anyhow!(
+                        "injected permanent program failure"
+                    )));
+                }
+                store
+                    .persist(SavedBatch::Program {
+                        player_id: request.player_id.as_i32(),
+                        program_id: request.program_id,
+                        source: request.source.clone(),
+                    })
+                    .await
+                    .map_err(PersistenceStoreFailure::Transient)?;
+                Ok(Some(crate::db::ProgramRow {
+                    id: request.program_id,
+                    player_id: request.player_id.as_i32(),
+                    name: "main".to_owned(),
+                    code: request.source,
+                }))
+            }
         }
     }
 
@@ -478,6 +677,25 @@ mod tests {
                     x,
                     y,
                     crystals: None,
+                },
+            });
+    }
+
+    fn publish_program(
+        handle: &PersistenceHandle,
+        player_id: i32,
+        session_id: u64,
+        program_id: i32,
+    ) {
+        handle
+            .try_reserve(SaveKind::Program)
+            .expect("program persistence capacity")
+            .publish(SaveCommand::Program {
+                request: crate::game::ProgramSaveRequest {
+                    player_id: crate::game::PlayerId(player_id),
+                    session_id: crate::game::SessionId::new(session_id),
+                    program_id,
+                    source: "source".to_owned(),
                 },
             });
     }
@@ -612,5 +830,85 @@ mod tests {
                 SavedBatch::Players(vec![3]),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn program_transient_failure_retries_and_completes_once() {
+        let store = TestStore::new(false, 2);
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 4);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_program(&handle, 7, 11, 23);
+        drop(handle);
+
+        runtime.shutdown().await;
+
+        assert_eq!(store.calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            *store.saved.lock().expect("saved lock"),
+            vec![SavedBatch::Program {
+                player_id: 7,
+                program_id: 23,
+                source: "source".to_owned(),
+            }]
+        );
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::ProgramSaved {
+                request: crate::game::ProgramSaveRequest {
+                    player_id: crate::game::PlayerId(7),
+                    session_id,
+                    program_id: 23,
+                    ..
+                },
+                result: crate::game::ProgramSaveResult::Saved { ref program_name },
+            }) if session_id == crate::game::SessionId::new(11) && program_name == "main"
+        ));
+        assert!(completions.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_permanent_failure_does_not_retry_forever() {
+        let store = TestStore::new(false, 0);
+        store.reject_program_permanently();
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 4);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_program(&handle, 7, 11, 23);
+        drop(handle);
+
+        runtime.shutdown().await;
+
+        assert_eq!(store.calls.load(Ordering::Acquire), 1);
+        assert!(store.saved.lock().expect("saved lock").is_empty());
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::ProgramSaved {
+                result: crate::game::ProgramSaveResult::PermanentFailure { .. },
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_program_completion_bounds_new_program_admission() {
+        let store = TestStore::new(false, 0);
+        let mut runtime = PersistenceRuntime::start_with_store(store, 1);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_program(&handle, 7, 11, 23);
+
+        while handle.backlog() != 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            handle.try_reserve(SaveKind::Program),
+            Err(PersistenceAdmissionError::Full)
+        ));
+        assert!(completions.try_recv().is_ok());
+        assert!(handle.try_reserve(SaveKind::Program).is_ok());
+
+        drop(handle);
+        runtime.shutdown().await;
     }
 }
