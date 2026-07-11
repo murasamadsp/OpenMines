@@ -238,12 +238,24 @@ Move/chunk visibility slice перенесён на command/effect boundary:
 до mutation, возвращает typed `BoxWrite`, а writer сохраняет ordered box batch в
 одной SQLite transaction. Старый `box_persist_q` в этом flow не используется.
 
-Этап 3 не завершён. Прямые persistence bypass ещё есть у hazard/death box flows,
-program/chat/GUI/auction и shutdown snapshot. Hazard/death нельзя просто
-отправить в writer после mutation: `box_persist_q` тогда останется unbounded
-fallback. Для них следующий срез обязан ввести intent/admission до
-`box_put`/`box_take`. Очередь writer пока in-memory: graceful drain доказан,
-crash/restart durability требует отдельного intent journal.
+Hazard box pickup также перенесён на intent/admission boundary:
+
+- ECS hazards schedule только публикует typed `BoxPickupIntent` и не меняет
+  box/player/world;
+- simulation thread держит FIFO backlog с максимум одним intent на игрока;
+- `SaveKind::Box` резервируется до authoritative pickup, а при saturation intent
+  остаётся pending без mutation;
+- после admission pickup повторно валидирует player position и box, затем одной
+  операцией меняет world/index/crystals и возвращает typed delete + broadcasts;
+- saturation, retry-after-capacity, duplicate coalescing и exactly-once save
+  покрыты deterministic tests.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у death box flow,
+program/chat/GUI/auction и shutdown snapshot. Hazard больше не использует bypass;
+следующий box-срез — death drop с admission до `box_put` и очистки корзины. Старый
+`box_persist_q` остаётся только у ещё не перенесённых box flows. Очередь writer
+пока in-memory: graceful drain доказан, crash/restart durability требует
+отдельного intent journal.
 
 Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
 `5000 Xmov/s`, 10 секунд:

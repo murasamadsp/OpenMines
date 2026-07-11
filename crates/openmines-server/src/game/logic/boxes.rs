@@ -1,5 +1,85 @@
 use crate::game::{GameState, PlayerId};
+use crate::world::WorldProvider;
 use std::sync::Arc;
+
+pub enum HazardBoxPickupResult {
+    Picked {
+        save: crate::game::SaveCommand,
+        broadcasts: Vec<crate::game::BroadcastEffect>,
+    },
+    Stale,
+}
+
+pub fn apply_hazard_box_pickup(
+    state: &Arc<GameState>,
+    intent: crate::game::BoxPickupIntent,
+) -> HazardBoxPickupResult {
+    state
+        .modify_player(intent.player_id, |ecs, entity| {
+            let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
+                return Some(HazardBoxPickupResult::Stale);
+            };
+            if crate::game::WorldPos::from((pos.x, pos.y)) != intent.pos {
+                return Some(HazardBoxPickupResult::Stale);
+            }
+            if ecs
+                .get::<crate::game::player::PlayerStats>(entity)
+                .is_none()
+                || ecs
+                    .get::<crate::game::player::PlayerFlags>(entity)
+                    .is_none()
+            {
+                return Some(HazardBoxPickupResult::Stale);
+            }
+
+            let (x, y): (i32, i32) = intent.pos.into();
+            if state.world.get_cell_typed(x, y)
+                != crate::world::CellType(crate::world::cells::cell_type::BOX)
+            {
+                return Some(HazardBoxPickupResult::Stale);
+            }
+            let Some(picked) = state.remove_box_cell_authoritative(x, y) else {
+                return Some(HazardBoxPickupResult::Stale);
+            };
+
+            let crystals = {
+                let mut player_stats = ecs
+                    .get_mut::<crate::game::player::PlayerStats>(entity)
+                    .expect("PlayerStats checked before hazard box pickup");
+                for (slot, amount) in player_stats.crystals.iter_mut().zip(picked) {
+                    *slot = slot.saturating_add(amount);
+                }
+                player_stats.crystals
+            };
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .expect("PlayerFlags checked before hazard box pickup")
+                .dirty = true;
+
+            let mut broadcasts = vec![crate::game::BroadcastEffect::CellUpdate(intent.pos)];
+            if let Some(connection) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
+                broadcasts.push(crate::game::BroadcastEffect::Direct {
+                    session_id: connection.session_id,
+                    data: crate::net::session::wire::make_u_packet_bytes(
+                        "@B",
+                        &crate::protocol::packets::basket(&crystals, 1).1,
+                    ),
+                });
+            }
+
+            Some(HazardBoxPickupResult::Picked {
+                save: crate::game::SaveCommand::Box {
+                    write: crate::db::BoxWrite {
+                        x,
+                        y,
+                        crystals: None,
+                    },
+                },
+                broadcasts,
+            })
+        })
+        .flatten()
+        .unwrap_or(HazardBoxPickupResult::Stale)
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoxPickupResult {

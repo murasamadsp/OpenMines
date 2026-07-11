@@ -8,7 +8,7 @@ use crate::game::player::{
 use crate::game::programmator::ProgrammatorState;
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
-    BoxIndexResource, BoxPersistQueue, BroadcastEffect, BroadcastQueue, CombatConfigResource,
+    BoxPickupIntent, BoxPickupQueue, BroadcastEffect, BroadcastQueue, CombatConfigResource,
     PackResendQueue, ScheduleConfigResource, WorldResource,
 };
 use crate::world::WorldProvider;
@@ -27,7 +27,6 @@ struct HazardProfile {
     active_cells: usize,
     fall_damage_hits: usize,
     boxes_seen: usize,
-    boxes_taken: usize,
     destructible_cells: usize,
     lookup_time: Duration,
     fall_damage_time: Duration,
@@ -58,7 +57,6 @@ impl HazardProfile {
             active_cells: 0,
             fall_damage_hits: 0,
             boxes_seen: 0,
-            boxes_taken: 0,
             destructible_cells: 0,
             lookup_time: Duration::ZERO,
             fall_damage_time: Duration::ZERO,
@@ -81,7 +79,6 @@ impl HazardProfile {
             active_cells = self.active_cells,
             fall_damage_hits = self.fall_damage_hits,
             boxes_seen = self.boxes_seen,
-            boxes_taken = self.boxes_taken,
             destructible_cells = self.destructible_cells,
             lookup_time = ?self.lookup_time,
             fall_damage_time = ?self.fall_damage_time,
@@ -118,8 +115,7 @@ fn send_direct(bcast_q: &mut BroadcastQueue, conn: &PlayerConnection, data: Vec<
 pub fn standing_cell_hazard_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
-    box_index: Res<BoxIndexResource>,
-    box_persist: Res<BoxPersistQueue>,
+    mut box_pickups: ResMut<BoxPickupQueue>,
     mut death_q: ResMut<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut q: HazardQuery<'_, '_>,
@@ -194,30 +190,10 @@ pub fn standing_cell_hazard_system(
         if cell == crate::world::CellType(cell_type::BOX) {
             profile.boxes_seen += 1;
             let box_t0 = Instant::now();
-            // C-1 фикс: in-memory `box_take` вместо sync SQLite под `ecs.write()`
-            // (get_box_at/delete_box_at тут фризили весь сервер каждые 10ms при
-            // игроке на BOX). Поведение 1:1 (`PEntity.GetBox`: всегда удаляет,
-            // кристаллы могут быть 0); персистенция отложена (box_persist_q).
-            if let Some(crys) = box_index.0.remove(&(px, py).into()).map(|(_, v)| v) {
-                profile.boxes_taken += 1;
-                box_persist.0.lock().push(((px, py).into(), None));
-                for (i, &c) in crys.iter().enumerate() {
-                    stats.crystals[i] = stats.crystals[i].saturating_add(c);
-                }
-                flags.dirty = true;
-                if let Some(conn) = conn {
-                    send_direct(
-                        &mut bcast_q,
-                        conn,
-                        crate::net::session::wire::make_u_packet_bytes(
-                            "@B",
-                            &crate::protocol::packets::basket(&stats.crystals, 1).1,
-                        ),
-                    );
-                }
-            }
-            let _ = world.damage_cell(px, py, 1.0);
-            bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
+            box_pickups.0.push(BoxPickupIntent {
+                player_id: p_meta.id,
+                pos: (px, py).into(),
+            });
             profile.box_time += box_t0.elapsed();
         } else if pdef.physical.is_destructible {
             profile.destructible_cells += 1;

@@ -59,14 +59,18 @@ pub struct CombatConfigResource(pub CombatConfig);
 #[derive(Resource, Clone, Copy)]
 pub struct ScheduleConfigResource(pub ScheduleConfig);
 
-/// Индекс боксов (crystal loot на земле) — lock-free `DashMap`, общий с `GameState`
-/// для консистентности между ECS-системами и async-хендлерами.
-#[derive(Resource, Clone)]
-pub struct BoxIndexResource(pub Arc<DashMap<WorldPos, [i64; 6]>>);
-
 /// Очередь персистенции боксов — общая с `GameState`.
 #[derive(Resource, Clone)]
 pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoxPickupIntent {
+    pub player_id: PlayerId,
+    pub pos: WorldPos,
+}
+
+#[derive(Resource, Default)]
+pub struct BoxPickupQueue(pub Vec<BoxPickupIntent>);
 
 #[derive(Resource, Clone)]
 pub struct GranularWakeQueue(pub Arc<Mutex<HashSet<WorldPos>>>);
@@ -717,8 +721,8 @@ impl GameState {
             ));
             ecs.insert_resource(CombatConfigResource(state.config.gameplay.combat));
             ecs.insert_resource(ScheduleConfigResource(state.config.gameplay.schedules));
-            ecs.insert_resource(BoxIndexResource(state.box_index.clone()));
             ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
+            ecs.insert_resource(BoxPickupQueue::default());
             ecs.insert_resource(GranularWakeQueue(state.granular_wake_q.clone()));
             ecs.insert_resource(combat::DeathQueue::default());
             ecs.insert_resource(BroadcastQueue::default());
@@ -1814,6 +1818,17 @@ impl GameState {
     pub fn remove_box_cell(&self, x: i32, y: i32) -> Option<[i64; 6]> {
         let crystals = self.box_take(x, y);
         self.world.damage_cell(x, y, 1.0);
+        crystals
+    }
+
+    pub fn remove_box_cell_authoritative(&self, x: i32, y: i32) -> Option<[i64; 6]> {
+        let crystals = self
+            .box_index
+            .remove(&(x, y).into())
+            .map(|(_, value)| value);
+        if crystals.is_some() {
+            self.world.damage_cell(x, y, 1.0);
+        }
         crystals
     }
 

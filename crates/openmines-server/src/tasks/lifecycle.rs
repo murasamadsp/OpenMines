@@ -5,6 +5,7 @@ use crate::game::{GameState, ScheduleActivity};
 use crate::world::WorldProvider;
 use bevy_ecs::prelude::Entity;
 use crossbeam_utils::CachePadded;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -222,6 +223,65 @@ struct TickServices {
     persistence: crate::persistence::PersistenceHandle,
 }
 
+#[derive(Default)]
+struct HazardBoxPickupBacklog {
+    queue: VecDeque<crate::game::BoxPickupIntent>,
+    players: HashSet<crate::game::PlayerId>,
+}
+
+#[derive(Default)]
+struct TickPendingWork {
+    command: Option<crate::game::QueuedPlayerCommand>,
+    hazard_box_pickups: HazardBoxPickupBacklog,
+}
+
+impl HazardBoxPickupBacklog {
+    fn extend(&mut self, intents: Vec<crate::game::BoxPickupIntent>) {
+        for intent in intents {
+            if self.players.insert(intent.player_id) {
+                self.queue.push_back(intent);
+            }
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<crate::game::BoxPickupIntent> {
+        let intent = self.queue.pop_front()?;
+        self.players.remove(&intent.player_id);
+        Some(intent)
+    }
+}
+
+fn apply_pending_hazard_box_pickups(
+    state: &Arc<GameState>,
+    persistence: &crate::persistence::PersistenceHandle,
+    backlog: &mut HazardBoxPickupBacklog,
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
+) {
+    while let Some(intent) = backlog.queue.front().copied() {
+        let permit = match persistence.try_reserve(crate::game::SaveKind::Box) {
+            Ok(permit) => permit,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+                panic!("persistence worker closed before hazard box pickup admission")
+            }
+        };
+        let popped = backlog
+            .pop_front()
+            .expect("hazard box pickup backlog front disappeared");
+        debug_assert_eq!(popped, intent);
+        match crate::game::logic::boxes::apply_hazard_box_pickup(state, intent) {
+            crate::game::logic::boxes::HazardBoxPickupResult::Picked {
+                save,
+                broadcasts: mut pickup_broadcasts,
+            } => {
+                permit.publish(save);
+                broadcasts.append(&mut pickup_broadcasts);
+            }
+            crate::game::logic::boxes::HazardBoxPickupResult::Stale => {}
+        }
+    }
+}
+
 pub fn spawn_game_tick_loop(
     state: Arc<GameState>,
     shutdown: &broadcast::Sender<()>,
@@ -265,7 +325,7 @@ pub fn spawn_game_tick_loop(
                 .unwrap_or_else(Instant::now);
             let mut schedule_clock = ScheduleClock::new(state.schedules.len(), Instant::now());
             let mut sim_tick = crate::game::SimTick::default();
-            let mut pending_command = None;
+            let mut pending_work = TickPendingWork::default();
 
             let tick_duration = std::time::Duration::from_millis(tick_rate_ms);
             let mut previous_tick_started_at = Instant::now();
@@ -296,7 +356,7 @@ pub fn spawn_game_tick_loop(
                         &mut tick_window,
                         &mut last_warn,
                         &mut schedule_clock,
-                        &mut pending_command,
+                        &mut pending_work,
                         &services,
                     )
                 }));
@@ -511,6 +571,7 @@ fn spawn_parking_lot_deadlock_detector(mut shutdown_rx: broadcast::Receiver<()>)
 struct SideProfile {
     broadcasts: std::time::Duration,
     pack_resends: std::time::Duration,
+    box_pickups: std::time::Duration,
     box_persist: std::time::Duration,
     cell_conversions: std::time::Duration,
     programmator_actions: std::time::Duration,
@@ -522,6 +583,7 @@ impl SideProfile {
     fn update_max(&mut self, other: Self) {
         self.broadcasts = self.broadcasts.max(other.broadcasts);
         self.pack_resends = self.pack_resends.max(other.pack_resends);
+        self.box_pickups = self.box_pickups.max(other.box_pickups);
         self.box_persist = self.box_persist.max(other.box_persist);
         self.cell_conversions = self.cell_conversions.max(other.cell_conversions);
         self.programmator_actions = self.programmator_actions.max(other.programmator_actions);
@@ -533,6 +595,7 @@ impl SideProfile {
         [
             ("broadcasts", self.broadcasts),
             ("pack_resends", self.pack_resends),
+            ("box_pickups", self.box_pickups),
             ("box_persist", self.box_persist),
             ("cell_conversions", self.cell_conversions),
             ("programmator_actions", self.programmator_actions),
@@ -700,6 +763,7 @@ struct ScheduleTickResult {
     cell_conversions: Vec<crate::game::PendingConversion>,
     pack_resends: Vec<(i32, i32)>,
     box_ops: Vec<BoxPersistOp>,
+    box_pickups: Vec<crate::game::BoxPickupIntent>,
     sched_select: Duration,
     sched_lock_wait: Duration,
     sched_run: Duration,
@@ -715,6 +779,7 @@ struct ScheduleTailOutput {
     cell_conversions: Vec<crate::game::PendingConversion>,
     pack_resends: Vec<(i32, i32)>,
     box_ops: Vec<BoxPersistOp>,
+    box_pickups: Vec<crate::game::BoxPickupIntent>,
     profile: ScheduleTailProfile,
     sim_profile: SimProfile,
 }
@@ -733,6 +798,7 @@ impl ScheduleTickResult {
             cell_conversions: Vec::new(),
             pack_resends: Vec::new(),
             box_ops: Vec::new(),
+            box_pickups: Vec::new(),
             sched_select,
             sched_lock_wait: Duration::ZERO,
             sched_run: Duration::ZERO,
@@ -875,6 +941,8 @@ fn drain_schedule_tail(
     let box_ops = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
     profile.box_queue = started.elapsed();
 
+    let box_pickups = std::mem::take(&mut ecs.resource_mut::<crate::game::BoxPickupQueue>().0);
+
     let started = Instant::now();
     let cell_conversions =
         std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
@@ -895,6 +963,7 @@ fn drain_schedule_tail(
         cell_conversions,
         pack_resends,
         box_ops,
+        box_pickups,
         profile,
         sim_profile,
     }
@@ -1037,6 +1106,7 @@ fn run_schedule_phase(
         cell_conversions: tail.cell_conversions,
         pack_resends: tail.pack_resends,
         box_ops: tail.box_ops,
+        box_pickups: tail.box_pickups,
         sched_select,
         sched_lock_wait: lw,
         sched_run: schedule_run_total,
@@ -1170,7 +1240,7 @@ fn log_tick_event(event: &TickLogEvent) {
         dominant_unprofiled_elapsed = ?dominant_unprofiled_elapsed,
         schedule_runs = ?event.schedule_runs,
         "OVER-BUDGET tick: total={:?} dispatch={:?} schedule={:?} side={:?} unprofiled={:?} \
-         actions={} side_broadcasts={:?} side_pack_resends={:?} side_box_persist={:?} \
+         actions={} side_broadcasts={:?} side_pack_resends={:?} side_box_pickups={:?} side_box_persist={:?} \
          side_cell_conversions={:?} side_programmator_actions={:?} side_death={:?} \
          side_bots_render={:?}",
         event.total,
@@ -1181,6 +1251,7 @@ fn log_tick_event(event: &TickLogEvent) {
         event.actions,
         event.side_profile.broadcasts,
         event.side_profile.pack_resends,
+        event.side_profile.box_pickups,
         event.side_profile.box_persist,
         event.side_profile.cell_conversions,
         event.side_profile.programmator_actions,
@@ -1332,7 +1403,7 @@ fn run_game_tick_sync(
     tick_window: &mut TickWindowProfile,
     last_warn: &mut Instant,
     schedule_clock: &mut ScheduleClock,
-    pending_command: &mut Option<crate::game::QueuedPlayerCommand>,
+    pending_work: &mut TickPendingWork,
     services: &TickServices,
 ) -> Duration {
     let thread_cpu_started = cpu_time::ThreadTime::now();
@@ -1356,7 +1427,7 @@ fn run_game_tick_sync(
     services.heartbeat.mark(TickStage::Dispatch);
     loop {
         let (queued, persistence_permit) =
-            match take_admitted_command(rx, pending_command, &services.persistence) {
+            match take_admitted_command(rx, &mut pending_work.command, &services.persistence) {
                 Ok(Some(admitted)) => (admitted.queued, admitted.permit),
                 Ok(None) => break,
                 Err(command_name) => {
@@ -1405,7 +1476,7 @@ fn run_game_tick_sync(
         if d0.elapsed() >= tick_budget && !rx.is_empty() {
             deferred_commands = rx
                 .len()
-                .saturating_add(usize::from(pending_command.is_some()));
+                .saturating_add(usize::from(pending_work.command.is_some()));
             break;
         }
     }
@@ -1420,11 +1491,12 @@ fn run_game_tick_sync(
     let player_entity_count = state.player_entity_count();
     let ScheduleTickResult {
         pending_deaths: pending,
-        broadcasts,
+        mut broadcasts,
         programmator_actions: prog_actions,
         cell_conversions,
         pack_resends,
         box_ops,
+        box_pickups,
         sched_select,
         sched_lock_wait,
         sched_run,
@@ -1449,8 +1521,18 @@ fn run_game_tick_sync(
         .saturating_sub(sched_lock_wait)
         .saturating_sub(sched_run);
 
-    // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
     let mut side_profile = SideProfile::default();
+    let section_t0 = Instant::now();
+    pending_work.hazard_box_pickups.extend(box_pickups);
+    apply_pending_hazard_box_pickups(
+        state,
+        &services.persistence,
+        &mut pending_work.hazard_box_pickups,
+        &mut broadcasts,
+    );
+    side_profile.box_pickups = section_t0.elapsed();
+
+    // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
     let mut programmator_action_profile = ProgrammatorActionProfile::default();
     for action in &prog_actions {
         programmator_action_profile.count(action);
@@ -1940,7 +2022,7 @@ fn run_game_tick_sync(
              max_total={:?} max_dispatch={:?} \
              max_schedule={:?} max_side={:?} \
              max_unprofiled={:?} max_actions={} max_top_schedule={} max_top_schedule_elapsed={:?} max_side_broadcasts={:?} \
-             max_side_pack_resends={:?} max_side_box_persist={:?} \
+             max_side_pack_resends={:?} max_side_box_pickups={:?} max_side_box_persist={:?} \
              max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
              max_side_death={:?} max_side_bots_render={:?} \
              max_sched_tail_death_queue={:?} max_sched_tail_broadcast_queue={:?} \
@@ -1962,6 +2044,7 @@ fn run_game_tick_sync(
             tick_window.max_top_schedule,
             tick_window.max_side_profile.broadcasts,
             tick_window.max_side_profile.pack_resends,
+            tick_window.max_side_profile.box_pickups,
             tick_window.max_side_profile.box_persist,
             tick_window.max_side_profile.cell_conversions,
             tick_window.max_side_profile.programmator_actions,
@@ -2252,6 +2335,7 @@ mod tests {
         let mut profile = SideProfile {
             broadcasts: std::time::Duration::from_millis(1),
             pack_resends: std::time::Duration::from_millis(5),
+            box_pickups: std::time::Duration::from_millis(6),
             box_persist: std::time::Duration::from_millis(2),
             cell_conversions: std::time::Duration::from_millis(4),
             programmator_actions: std::time::Duration::from_millis(3),
@@ -2262,6 +2346,7 @@ mod tests {
         profile.update_max(SideProfile {
             broadcasts: std::time::Duration::from_millis(9),
             pack_resends: std::time::Duration::from_millis(1),
+            box_pickups: std::time::Duration::from_millis(12),
             box_persist: std::time::Duration::from_millis(8),
             cell_conversions: std::time::Duration::from_millis(2),
             programmator_actions: std::time::Duration::from_millis(10),
@@ -2271,6 +2356,7 @@ mod tests {
 
         assert_eq!(profile.broadcasts, std::time::Duration::from_millis(9));
         assert_eq!(profile.pack_resends, std::time::Duration::from_millis(5));
+        assert_eq!(profile.box_pickups, std::time::Duration::from_millis(12));
         assert_eq!(profile.box_persist, std::time::Duration::from_millis(8));
         assert_eq!(
             profile.cell_conversions,
@@ -2408,6 +2494,118 @@ mod tests {
             }))
         ));
         assert!(pending.is_none());
+    }
+
+    #[test]
+    fn hazard_box_pickup_backlog_coalesces_by_player() {
+        let player_id = crate::game::PlayerId(7);
+        let mut backlog = HazardBoxPickupBacklog::default();
+        backlog.extend(vec![
+            crate::game::BoxPickupIntent {
+                player_id,
+                pos: (5, 5).into(),
+            },
+            crate::game::BoxPickupIntent {
+                player_id,
+                pos: (6, 5).into(),
+            },
+        ]);
+
+        assert_eq!(backlog.queue.len(), 1);
+        assert_eq!(backlog.players.len(), 1);
+        assert_eq!(
+            backlog.pop_front().expect("coalesced intent").pos,
+            (5, 5).into()
+        );
+        assert!(backlog.queue.is_empty());
+        assert!(backlog.players.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hazard_box_pickup_waits_for_capacity_then_applies_once() {
+        let (state, player, db_path, dir, world_name) =
+            make_persistence_test_state("hazard_box_admission").await;
+        let (outbox, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 43);
+        let player_id = crate::game::PlayerId(player.id);
+        state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = false;
+            Some(())
+        });
+        state.put_box_cell_authoritative(5, 5, [3, 2, 1, 0, 0, 0]);
+
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        persistence
+            .try_reserve(crate::game::SaveKind::Box)
+            .expect("filler capacity")
+            .publish(crate::game::SaveCommand::Box {
+                write: crate::db::BoxWrite {
+                    x: 1,
+                    y: 1,
+                    crystals: None,
+                },
+            });
+        let intent = crate::game::BoxPickupIntent {
+            player_id,
+            pos: (5, 5).into(),
+        };
+        let mut backlog = HazardBoxPickupBacklog::default();
+        backlog.extend(vec![intent, intent]);
+        let mut broadcasts = Vec::new();
+
+        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+
+        assert_eq!(backlog.queue.len(), 1);
+        assert!(broadcasts.is_empty());
+        assert_eq!(
+            state.world.get_cell(5, 5),
+            crate::world::cells::cell_type::BOX
+        );
+        let (crystals, dirty) = state
+            .query_player_opt(player_id, |ecs, entity| {
+                Some((
+                    ecs.get::<crate::game::PlayerStats>(entity)?.crystals,
+                    ecs.get::<crate::game::PlayerFlags>(entity)?.dirty,
+                ))
+            })
+            .expect("connected player state");
+        assert_eq!(crystals, [0; 6]);
+        assert!(!dirty);
+
+        assert!(persisted.try_recv().is_some());
+        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+
+        assert!(backlog.queue.is_empty());
+        assert_eq!(
+            state.world.get_cell(5, 5),
+            crate::world::cells::cell_type::EMPTY
+        );
+        let crystals = state
+            .query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<crate::game::PlayerStats>(entity)?.crystals)
+            })
+            .expect("connected player crystals");
+        assert_eq!(crystals, [3, 2, 1, 0, 0, 0]);
+        assert_eq!(broadcasts.len(), 2);
+        assert!(matches!(
+            persisted.try_recv(),
+            Some(crate::game::SaveCommand::Box { write })
+                if write.x == 5 && write.y == 5 && write.crystals.is_none()
+        ));
+        assert!(persisted.try_recv().is_none());
+
+        backlog.extend(vec![intent]);
+        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+        assert!(backlog.queue.is_empty());
+        assert!(persisted.try_recv().is_none());
+        let crystals_after_stale = state
+            .query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<crate::game::PlayerStats>(entity)?.crystals)
+            })
+            .expect("connected player crystals after stale intent");
+        assert_eq!(crystals_after_stale, [3, 2, 1, 0, 0, 0]);
+
+        cleanup_persistence_test(&db_path, &dir, &world_name);
     }
 
     #[tokio::test]
