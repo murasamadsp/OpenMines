@@ -188,6 +188,12 @@ Wall-clock profiler теперь пишет `thread_cpu`, `off_cpu` и `executio
 `9.797ms off-CPU`; пустые/random section spikes больше не считаются
 алгоритмическим доказательством без CPU time.
 
+Чистые host-preemption misses (`thread_cpu <= 25% budget`, `off_cpu >= 4x CPU`)
+больше не публикуются как server `WARN`: они остаются throttled `DEBUG` и в
+cadence metrics. CPU-bound и mixed stalls по-прежнему являются `WARN`. Реальные
+примеры `0.174ms CPU + 17.680ms off-CPU` и `5.151ms CPU + 13.594ms off-CPU`
+зафиксированы classification test как `preempted` и `mixed` соответственно.
+
 Move/chunk visibility slice перенесён на command/effect boundary:
 
 - сетевой `Move` несёт исходный `SessionId`, поэтому stale queued move после

@@ -1171,19 +1171,63 @@ fn spawn_tick_log_worker(rx: std::sync::mpsc::Receiver<TickLogEvent>) {
         .expect("spawn tickprof log worker");
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TickExecutionClass {
+    CpuBound,
+    Preempted,
+    Mixed,
+}
+
+impl TickExecutionClass {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::CpuBound => "cpu_bound",
+            Self::Preempted => "preempted",
+            Self::Mixed => "mixed",
+        }
+    }
+}
+
+fn classify_tick_execution(
+    thread_cpu: Duration,
+    off_cpu: Duration,
+    tick_budget: Duration,
+) -> TickExecutionClass {
+    if thread_cpu > tick_budget {
+        TickExecutionClass::CpuBound
+    } else if thread_cpu <= tick_budget / 4 && off_cpu >= thread_cpu.saturating_mul(4) {
+        TickExecutionClass::Preempted
+    } else {
+        TickExecutionClass::Mixed
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn log_tick_event(event: &TickLogEvent) {
     let (dominant_schedule_tail, dominant_schedule_tail_elapsed) =
         event.schedule_tail_profile.dominant();
     let (dominant_side, dominant_side_elapsed) = event.side_profile.dominant();
     let (dominant_unprofiled, dominant_unprofiled_elapsed) = event.unprofiled_profile.dominant();
-    let execution_class = if event.thread_cpu > event.tick_budget {
-        "cpu_bound"
-    } else if event.off_cpu > event.thread_cpu {
-        "preempted"
-    } else {
-        "mixed"
-    };
+    let execution_class =
+        classify_tick_execution(event.thread_cpu, event.off_cpu, event.tick_budget);
+    if execution_class == TickExecutionClass::Preempted {
+        tracing::debug!(
+            target: "tickprof",
+            tick_budget = ?event.tick_budget,
+            total = ?event.total,
+            thread_cpu = ?event.thread_cpu,
+            off_cpu = ?event.off_cpu,
+            execution_class = execution_class.name(),
+            dominant_section = event.dominant_section,
+            sim_player_entities = event.sim_profile.player_entities,
+            sim_online_players = event.sim_profile.online_players,
+            sched_select = ?event.sched_select,
+            sched_run = ?event.sched_run,
+            "Tick deadline missed while game thread was descheduled"
+        );
+        return;
+    }
+    let execution_class = execution_class.name();
     if !event.full {
         tracing::warn!(
             target: "tickprof",
@@ -2359,6 +2403,31 @@ mod tests {
         );
         assert_eq!(profile.death, std::time::Duration::from_millis(7));
         assert_eq!(profile.bots_render, std::time::Duration::from_millis(11));
+    }
+
+    #[test]
+    fn tick_execution_class_separates_host_preemption_from_server_stalls() {
+        let budget = Duration::from_millis(10);
+        assert_eq!(
+            classify_tick_execution(
+                Duration::from_micros(174),
+                Duration::from_micros(17_680),
+                budget,
+            ),
+            TickExecutionClass::Preempted
+        );
+        assert_eq!(
+            classify_tick_execution(
+                Duration::from_micros(5_151),
+                Duration::from_micros(13_594),
+                budget,
+            ),
+            TickExecutionClass::Mixed
+        );
+        assert_eq!(
+            classify_tick_execution(Duration::from_millis(11), Duration::from_millis(1), budget),
+            TickExecutionClass::CpuBound
+        );
     }
 
     #[tokio::test]
