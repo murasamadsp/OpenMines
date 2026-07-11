@@ -1433,7 +1433,8 @@ mod tests {
             ecs.entity_mut(entity)
                 .remove::<crate::game::player::PlayerFlags>();
         }
-        test.state.put_box_cell(10, 11, [3, 2, 1, 0, 0, 0]);
+        test.state
+            .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
 
         handle_dig(&test.state, &tx, pid, 0, false);
 

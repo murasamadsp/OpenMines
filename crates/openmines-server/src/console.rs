@@ -331,8 +331,8 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     continue;
                 };
                 let conn_tx = state.player_sender(pid);
-                if let Some(tx) = conn_tx {
-                    crate::net::session::play::death::handle_death(&state, &tx, pid);
+                if conn_tx.is_some() {
+                    crate::net::session::play::death::request_death(&state, pid);
                     tracing::info!(target: "console", player_id = %pid, "Killed player");
                     println!("Killed player {pid}.");
                 } else {

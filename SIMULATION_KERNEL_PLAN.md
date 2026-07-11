@@ -250,12 +250,23 @@ Hazard box pickup также перенесён на intent/admission boundary:
 - saturation, retry-after-capacity, duplicate coalescing и exactly-once save
   покрыты deterministic tests.
 
-Этап 3 не завершён. Прямые persistence bypass ещё есть у death box flow,
-program/chat/GUI/auction и shutdown snapshot. Hazard больше не использует bypass;
-следующий box-срез — death drop с admission до `box_put` и очистки корзины. Старый
-`box_persist_q` остаётся только у ещё не перенесённых box flows. Очередь writer
-пока in-memory: graceful drain доказан, crash/restart durability требует
-отдельного intent journal.
+Death box drop перенесён на тот же boundary:
+
+- gameplay, AoE, console и ECS schedules публикуют death intent в один
+  deduplicating FIFO owner;
+- lifecycle резервирует `SaveKind::Box` до любых death/respawn mutation;
+- после admission death batch одним authoritative apply меняет player/world,
+  возвращает box upsert и только затем публикует wire effects;
+- при saturation позиция, корзина и world остаются неизменными, intent pending;
+- death больше не пишет в `box_persist_q`; saturation и exactly-once box save
+  покрыты deterministic test.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у manual dig box pickup,
+старого async building removal, program/chat/GUI/auction и shutdown snapshot.
+Hazard и death больше не используют bypass. Следующий box-срез должен перенести
+оставшиеся два producer-а и удалить `box_persist_q` целиком. Очередь writer пока
+in-memory: graceful drain доказан, crash/restart durability требует отдельного
+intent journal.
 
 Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
 `5000 Xmov/s`, 10 секунд:

@@ -1272,11 +1272,17 @@ mod tests {
             crate::game::player::PlayerId(1),
         );
         assert!(result.is_ok());
-        let (rx, ry, _, bcast) = result.unwrap();
+        let output = result.unwrap();
 
         // Verify the block was cleared and the cleared position is tracked in DeathBroadcasts
-        assert_eq!(state.world.get_cell(rx, ry), cell_type::EMPTY);
-        assert_eq!(bcast.cleared_spawn_cell, Some((rx, ry)));
+        assert_eq!(
+            state.world.get_cell(output.resp_x, output.resp_y),
+            cell_type::EMPTY
+        );
+        assert_eq!(
+            output.broadcasts.cleared_spawn_cell,
+            Some((output.resp_x, output.resp_y))
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(&db_path);

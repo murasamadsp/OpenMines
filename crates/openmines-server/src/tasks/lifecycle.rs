@@ -233,6 +233,29 @@ struct HazardBoxPickupBacklog {
 struct TickPendingWork {
     command: Option<crate::game::QueuedPlayerCommand>,
     hazard_box_pickups: HazardBoxPickupBacklog,
+    deaths: DeathBacklog,
+}
+
+#[derive(Default)]
+struct DeathBacklog {
+    queue: VecDeque<crate::game::PlayerId>,
+    players: HashSet<crate::game::PlayerId>,
+}
+
+impl DeathBacklog {
+    fn extend(&mut self, player_ids: Vec<crate::game::PlayerId>) {
+        for player_id in player_ids {
+            if self.players.insert(player_id) {
+                self.queue.push_back(player_id);
+            }
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<crate::game::PlayerId> {
+        let player_id = self.queue.pop_front()?;
+        self.players.remove(&player_id);
+        Some(player_id)
+    }
 }
 
 impl HazardBoxPickupBacklog {
@@ -280,6 +303,67 @@ fn apply_pending_hazard_box_pickups(
             crate::game::logic::boxes::HazardBoxPickupResult::Stale => {}
         }
     }
+}
+
+fn apply_pending_deaths(
+    state: &Arc<GameState>,
+    persistence: &crate::persistence::PersistenceHandle,
+    backlog: &mut DeathBacklog,
+) -> Vec<PendingDeathEffect> {
+    let mut admitted = Vec::new();
+    while let Some(player_id) = backlog.queue.front().copied() {
+        let permit = match persistence.try_reserve(crate::game::SaveKind::Box) {
+            Ok(permit) => permit,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+                panic!("persistence worker closed before player death admission")
+            }
+        };
+        let popped = backlog
+            .pop_front()
+            .expect("death backlog front disappeared");
+        debug_assert_eq!(popped, player_id);
+        admitted.push((player_id, permit));
+    }
+    if admitted.is_empty() {
+        return Vec::new();
+    }
+
+    let building_entities = state.building_entities_snapshot();
+    let mut effects = Vec::with_capacity(admitted.len());
+    let mut errors = Vec::new();
+    {
+        let mut ecs = state.ecs_write_profiled("death.apply_admitted_batch");
+        for (player_id, permit) in admitted {
+            match crate::net::session::play::death::apply_player_death_core(
+                state,
+                &mut ecs,
+                &building_entities,
+                player_id,
+            ) {
+                Ok(output) => {
+                    if let Some(save) = output.save {
+                        permit.publish(save);
+                    }
+                    effects.push((
+                        player_id,
+                        output.resp_x,
+                        output.resp_y,
+                        output.max_health,
+                        output.broadcasts,
+                    ));
+                }
+                Err(error) => errors.push((player_id, error)),
+            }
+        }
+    }
+    for (player_id, error) in errors {
+        tracing::error!(player_id = %player_id, ?error, "Queued player death aborted");
+        if let Some(tx) = state.player_sender(player_id) {
+            crate::net::session::play::death::send_death_state_error(&tx);
+        }
+    }
+    effects
 }
 
 pub fn spawn_game_tick_loop(
@@ -757,7 +841,6 @@ type PendingDeathEffect = (
 type BoxPersistOp = (crate::game::WorldPos, Option<[i64; 6]>);
 
 struct ScheduleTickResult {
-    pending_deaths: Vec<PendingDeathEffect>,
     broadcasts: Vec<crate::game::BroadcastEffect>,
     programmator_actions: Vec<crate::game::ProgrammatorAction>,
     cell_conversions: Vec<crate::game::PendingConversion>,
@@ -773,7 +856,6 @@ struct ScheduleTickResult {
 }
 
 struct ScheduleTailOutput {
-    pending_deaths: Vec<PendingDeathEffect>,
     broadcasts: Vec<crate::game::BroadcastEffect>,
     programmator_actions: Vec<crate::game::ProgrammatorAction>,
     cell_conversions: Vec<crate::game::PendingConversion>,
@@ -792,7 +874,6 @@ impl ScheduleTickResult {
         schedule_runs: Vec<ScheduleRunProfile>,
     ) -> Self {
         Self {
-            pending_deaths: Vec::new(),
             broadcasts: Vec::new(),
             programmator_actions: Vec::new(),
             cell_conversions: Vec::new(),
@@ -915,7 +996,6 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
 }
 
 fn drain_schedule_tail(
-    state: &Arc<GameState>,
     heartbeat: &TickHeartbeat,
     ecs: &mut bevy_ecs::prelude::World,
     player_entity_count: usize,
@@ -923,11 +1003,6 @@ fn drain_schedule_tail(
 ) -> ScheduleTailOutput {
     let mut profile = ScheduleTailProfile::default();
     heartbeat.mark(TickStage::FlushQueues);
-    let started = Instant::now();
-    let pending_deaths =
-        crate::net::session::play::death::flush_player_death_queue_after_tick(state, ecs);
-    profile.death_queue = started.elapsed();
-
     let started = Instant::now();
     let broadcasts = std::mem::take(&mut ecs.resource_mut::<crate::game::BroadcastQueue>().0);
     profile.broadcast_queue = started.elapsed();
@@ -957,7 +1032,6 @@ fn drain_schedule_tail(
     profile.sim_profile = started.elapsed();
 
     ScheduleTailOutput {
-        pending_deaths,
         broadcasts,
         programmator_actions,
         cell_conversions,
@@ -1087,20 +1161,13 @@ fn run_schedule_phase(
         }
     }
 
-    let tail = drain_schedule_tail(
-        state,
-        heartbeat,
-        &mut ecs,
-        player_entity_count,
-        online_count,
-    );
+    let tail = drain_schedule_tail(heartbeat, &mut ecs, player_entity_count, online_count);
 
     let tail_t0 = Instant::now();
     drop(ecs);
     let mut tail_profile = tail.profile;
     tail_profile.drop_ecs_lock = tail_t0.elapsed();
     ScheduleTickResult {
-        pending_deaths: tail.pending_deaths,
         broadcasts: tail.broadcasts,
         programmator_actions: tail.programmator_actions,
         cell_conversions: tail.cell_conversions,
@@ -1221,7 +1288,6 @@ fn log_tick_event(event: &TickLogEvent) {
         dominant_side,
         dominant_side_elapsed = ?dominant_side_elapsed,
         sched_tail_total = ?event.schedule_tail_profile.total(),
-        sched_tail_death_queue = ?event.schedule_tail_profile.death_queue,
         sched_tail_broadcast_queue = ?event.schedule_tail_profile.broadcast_queue,
         sched_tail_programmator_queue = ?event.schedule_tail_profile.programmator_queue,
         sched_tail_box_queue = ?event.schedule_tail_profile.box_queue,
@@ -1262,7 +1328,6 @@ fn log_tick_event(event: &TickLogEvent) {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ScheduleTailProfile {
-    death_queue: Duration,
     broadcast_queue: Duration,
     programmator_queue: Duration,
     box_queue: Duration,
@@ -1274,7 +1339,6 @@ struct ScheduleTailProfile {
 
 impl ScheduleTailProfile {
     fn update_max(&mut self, other: Self) {
-        self.death_queue = self.death_queue.max(other.death_queue);
         self.broadcast_queue = self.broadcast_queue.max(other.broadcast_queue);
         self.programmator_queue = self.programmator_queue.max(other.programmator_queue);
         self.box_queue = self.box_queue.max(other.box_queue);
@@ -1285,8 +1349,7 @@ impl ScheduleTailProfile {
     }
 
     fn total(self) -> Duration {
-        self.death_queue
-            + self.broadcast_queue
+        self.broadcast_queue
             + self.programmator_queue
             + self.box_queue
             + self.cell_conversion_queue
@@ -1297,7 +1360,6 @@ impl ScheduleTailProfile {
 
     fn dominant(self) -> (&'static str, Duration) {
         [
-            ("death_queue", self.death_queue),
             ("broadcast_queue", self.broadcast_queue),
             ("programmator_queue", self.programmator_queue),
             ("box_queue", self.box_queue),
@@ -1490,7 +1552,6 @@ fn run_game_tick_sync(
     let online_count = state.online_count();
     let player_entity_count = state.player_entity_count();
     let ScheduleTickResult {
-        pending_deaths: pending,
         mut broadcasts,
         programmator_actions: prog_actions,
         cell_conversions,
@@ -1531,6 +1592,11 @@ fn run_game_tick_sync(
         &mut broadcasts,
     );
     side_profile.box_pickups = section_t0.elapsed();
+
+    let section_t0 = Instant::now();
+    pending_work.deaths.extend(state.drain_player_deaths());
+    let pending = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
+    side_profile.death = section_t0.elapsed();
 
     // 3. Side-effects: broadcasts + конвертации + программатор + смерти.
     let mut programmator_action_profile = ProgrammatorActionProfile::default();
@@ -1901,10 +1967,11 @@ fn run_game_tick_sync(
             crate::net::session::play::death::send_respawn_after_death(
                 &tx, pid, rx, ry, mh, &bcast,
             );
+            crate::net::session::play::death::broadcast_self_after_respawn(state, pid, rx, ry);
             crate::net::session::play::chunks::check_chunk_changed(state, &tx, pid);
         }
     }
-    side_profile.death = section_t0.elapsed();
+    side_profile.death += section_t0.elapsed();
 
     let section_t0 = Instant::now();
     services.heartbeat.mark(TickStage::SideBotsRender);
@@ -2025,7 +2092,7 @@ fn run_game_tick_sync(
              max_side_pack_resends={:?} max_side_box_pickups={:?} max_side_box_persist={:?} \
              max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
              max_side_death={:?} max_side_bots_render={:?} \
-             max_sched_tail_death_queue={:?} max_sched_tail_broadcast_queue={:?} \
+             max_sched_tail_broadcast_queue={:?} \
              max_sched_tail_programmator_queue={:?} max_sched_tail_box_queue={:?} \
              max_sched_tail_cell_conversion_queue={:?} max_sched_tail_pack_resend_queue={:?} \
              max_sched_tail_sim_profile={:?} max_sched_tail_drop_ecs_lock={:?} \
@@ -2050,7 +2117,6 @@ fn run_game_tick_sync(
             tick_window.max_side_profile.programmator_actions,
             tick_window.max_side_profile.death,
             tick_window.max_side_profile.bots_render,
-            tick_window.max_schedule_tail_profile.death_queue,
             tick_window.max_schedule_tail_profile.broadcast_queue,
             tick_window.max_schedule_tail_profile.programmator_queue,
             tick_window.max_schedule_tail_profile.box_queue,
@@ -2604,6 +2670,87 @@ mod tests {
             })
             .expect("connected player crystals after stale intent");
         assert_eq!(crystals_after_stale, [3, 2, 1, 0, 0, 0]);
+
+        cleanup_persistence_test(&db_path, &dir, &world_name);
+    }
+
+    #[tokio::test]
+    async fn death_box_drop_waits_for_capacity_then_persists_once() {
+        let (state, player, db_path, dir, world_name) =
+            make_persistence_test_state("death_box_admission").await;
+        let (outbox, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 44);
+        let player_id = crate::game::PlayerId(player.id);
+        state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::PlayerStats>(entity)?.crystals = [3, 2, 1, 0, 0, 0];
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = false;
+            Some(())
+        });
+
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        persistence
+            .try_reserve(crate::game::SaveKind::Box)
+            .expect("filler capacity")
+            .publish(crate::game::SaveCommand::Box {
+                write: crate::db::BoxWrite {
+                    x: 1,
+                    y: 1,
+                    crystals: None,
+                },
+            });
+        state.request_player_death(player_id);
+        state.request_player_death(player_id);
+        let mut backlog = DeathBacklog::default();
+        backlog.extend(state.drain_player_deaths());
+        assert_eq!(backlog.queue.len(), 1);
+
+        let effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+
+        assert!(effects.is_empty());
+        assert_eq!(backlog.queue.len(), 1);
+        let (position, crystals, dirty) = state
+            .query_player_opt(player_id, |ecs, entity| {
+                let position = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                Some((
+                    (position.x, position.y),
+                    ecs.get::<crate::game::PlayerStats>(entity)?.crystals,
+                    ecs.get::<crate::game::PlayerFlags>(entity)?.dirty,
+                ))
+            })
+            .expect("connected player state");
+        assert_eq!(position, (5, 5));
+        assert_eq!(crystals, [3, 2, 1, 0, 0, 0]);
+        assert!(!dirty);
+        assert!(state.drain_box_persist().is_empty());
+
+        assert!(persisted.try_recv().is_some());
+        let effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+
+        assert_eq!(effects.len(), 1);
+        assert!(backlog.queue.is_empty());
+        let crystals = state
+            .query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<crate::game::PlayerStats>(entity)?.crystals)
+            })
+            .expect("connected player crystals");
+        assert_eq!(crystals, [0; 6]);
+        let save = persisted.try_recv().expect("death box save");
+        let crate::game::SaveCommand::Box { write } = save else {
+            panic!("death must publish a box save");
+        };
+        assert_eq!(write.crystals, Some([3, 2, 1, 0, 0, 0]));
+        assert_eq!(
+            state.world.get_cell(write.x, write.y),
+            crate::world::cells::cell_type::BOX
+        );
+        assert!(persisted.try_recv().is_none());
+        assert!(state.drain_box_persist().is_empty());
+
+        state.request_player_death(player_id);
+        backlog.extend(state.drain_player_deaths());
+        let second_effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+        assert_eq!(second_effects.len(), 1);
+        assert!(persisted.try_recv().is_none());
 
         cleanup_persistence_test(&db_path, &dir, &world_name);
     }

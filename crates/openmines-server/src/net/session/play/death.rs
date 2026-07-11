@@ -1,7 +1,6 @@
 //! Смерть, респавн, урон (Player.Death / Player.Hurt).
 use crate::db::pick_box_coord;
 use crate::game::broadcast_cell_update;
-use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::Entity;
 
@@ -29,9 +28,15 @@ pub enum DeathCoreError {
     RespState(&'static str),
 }
 
-type DeathCoreOutput = (i32, i32, i32, DeathBroadcasts);
+pub struct DeathCoreOutput {
+    pub resp_x: i32,
+    pub resp_y: i32,
+    pub max_health: i32,
+    pub broadcasts: DeathBroadcasts,
+    pub save: Option<crate::game::SaveCommand>,
+}
 
-fn send_death_state_error(tx: &Outbox) {
+pub fn send_death_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
         "OK",
@@ -89,6 +94,7 @@ pub fn apply_player_death_core(
         prog_stopped: false,
         cleared_spawn_cell: None, // временная система
     };
+    let mut box_save = None;
 
     if cry.iter().sum::<i64>() > 0 {
         let c = cry;
@@ -105,10 +111,14 @@ pub fn apply_player_death_core(
             },
         ) {
             Some((bx, by)) if state.find_pack_covering_in_ecs(ecs, bx, by).is_none() => {
-                // C-2 фикс: in-memory put + отложенная персистенция вместо
-                // sync `db.upsert_box` под удерживаемым `ecs.write()` (death
-                // flush в tick-цикле) — фризило при каждой смерти.
-                state.put_box_cell(bx, by, c);
+                state.put_box_cell_authoritative(bx, by, c);
+                box_save = Some(crate::game::SaveCommand::Box {
+                    write: crate::db::BoxWrite {
+                        x: bx,
+                        y: by,
+                        crystals: Some(c),
+                    },
+                });
                 let mut s = ecs
                     .get_mut::<crate::game::player::PlayerStats>(entity)
                     .ok_or(DeathCoreError::PlayerState("PlayerStats"))?;
@@ -279,7 +289,13 @@ pub fn apply_player_death_core(
         }
     }
 
-    Ok((rx, ry, mh, bcast))
+    Ok(DeathCoreOutput {
+        resp_x: rx,
+        resp_y: ry,
+        max_health: mh,
+        broadcasts: bcast,
+        save: box_save,
+    })
 }
 
 /// C# ref: Player.resp getter — when null, pick random public resp (ownerid==0).
@@ -367,31 +383,14 @@ pub fn send_respawn_after_death(
     }
 }
 
-/// `RESP` / очередь после пушки: `ecs.write()` для мутаций, broadcast'ы снаружи.
-pub fn handle_death(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    let result = {
-        let building_entities = state.building_entities_snapshot();
-        let mut ecs = state.ecs_write_profiled("death.apply_player_death");
-        apply_player_death_core(state, &mut ecs, &building_entities, pid)
-    };
-    match result {
-        Ok((rx, ry, mh, bcast)) => {
-            run_death_broadcasts(state, &bcast, pid);
-            send_respawn_after_death(tx, pid, rx, ry, mh, &bcast);
-            broadcast_self_after_respawn(state, pid, rx, ry);
-            check_chunk_changed(state, tx, pid);
-        }
-        Err(error) => {
-            tracing::error!(player_id = %pid, ?error, "Player death aborted");
-            send_death_state_error(tx);
-        }
-    }
+pub fn request_death(state: &GameState, pid: PlayerId) {
+    state.request_player_death(pid);
 }
 
 /// C# `tp` → `SendMyMove`: после респавна разослать `hb_bot` СЕБЯ соседям новой
 /// позиции. Иначе воскресший бот невидим соседям до следующего `bots_render`
 /// (~4с), т.к. `run_death_broadcasts` уже удалил его на старой позиции.
-fn broadcast_self_after_respawn(state: &Arc<GameState>, pid: PlayerId, rx: i32, ry: i32) {
+pub fn broadcast_self_after_respawn(state: &Arc<GameState>, pid: PlayerId, rx: i32, ry: i32) {
     let attrs = state.query_player_opt(pid, |ecs, entity| {
         let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
         let p_stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
@@ -416,7 +415,7 @@ fn broadcast_self_after_respawn(state: &Arc<GameState>, pid: PlayerId, rx: i32, 
     }
 }
 
-/// `Player.Hurt(num, Pure)` — без `AntiGun`; смерть через `handle_death` после отпускания ECS (как предметы в `heal_inventory`).
+/// `Player.Hurt(num, Pure)` — без `AntiGun`; смерть применяется lifecycle после persistence admission.
 pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;
@@ -477,7 +476,7 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
         .flatten();
     if let Some((lethal, pos)) = result {
         if lethal {
-            handle_death(state, &conn_tx, pid);
+            request_death(state, pid);
         } else if let Some((px, py)) = pos {
             // S3-1: Hurt FX broadcast to nearby (C# SendDFToBots(6, 0, 0, id, 0))
             let fx = crate::protocol::packets::hb_hurt_fx(
@@ -486,32 +485,6 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
             state.broadcast_hb_at(px, py, &[fx], Some(pid));
         }
     }
-}
-
-/// Внутри одного `ecs.write()` после `schedule.run`: снять `DeathQueue` и применить `Player.Death` для пушки.
-/// Возвращает `(pid, rx, ry, mh, broadcasts)` — broadcast'ы выполнить ПОСЛЕ отпускания `ecs.write()`.
-pub fn flush_player_death_queue_after_tick(
-    state: &Arc<GameState>,
-    ecs: &mut bevy_ecs::prelude::World,
-) -> Vec<(PlayerId, i32, i32, i32, DeathBroadcasts)> {
-    use std::collections::HashSet;
-    let raw = std::mem::take(&mut ecs.resource_mut::<crate::game::combat::DeathQueue>().0);
-    let mut seen = HashSet::new();
-    let pids: Vec<PlayerId> = raw.into_iter().filter(|p| seen.insert(*p)).collect();
-    if pids.is_empty() {
-        return Vec::new();
-    }
-    let building_entities = state.building_entities_snapshot();
-    let mut pending = Vec::new();
-    for pid in pids {
-        match apply_player_death_core(state, ecs, &building_entities, pid) {
-            Ok((rx, ry, mh, bcast)) => pending.push((pid, rx, ry, mh, bcast)),
-            Err(error) => {
-                tracing::error!(player_id = %pid, ?error, "Queued player death aborted");
-            }
-        }
-    }
-    pending
 }
 
 #[cfg(test)]
@@ -681,7 +654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_death_missing_flags_is_explicit_error_without_respawn_mutation() {
+    async fn death_core_missing_flags_is_explicit_error_without_respawn_mutation() {
         let test = make_death_test_state("missing_flags_death").await;
         let (tx, mut rx) = crate::net::session::outbox::channel();
         crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
@@ -696,13 +669,17 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerFlags>();
         }
 
-        handle_death(&test.state, &tx, pid);
+        let result = {
+            let building_entities = test.state.building_entities_snapshot();
+            let mut ecs = test.state.ecs.write();
+            apply_player_death_core(&test.state, &mut ecs, &building_entities, pid)
+        };
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
-        assert!(message.contains("Состояние игрока недоступно."));
+        assert_eq!(
+            result.err(),
+            Some(DeathCoreError::PlayerState("PlayerFlags"))
+        );
+        assert!(drain_events(&mut rx).is_empty());
         assert_eq!(player_health(&test.state, pid), before_health);
         assert_eq!(player_pos(&test.state, pid), before_pos);
 
@@ -748,17 +725,17 @@ mod tests {
         let pid = PlayerId(test.player.id);
         set_player_resp_and_money(&test.state, pid, 20, 20, 5);
 
-        let (rx, ry, _, bcast) = {
+        let output = {
             let building_entities = test.state.building_entities_snapshot();
             let mut ecs = test.state.ecs.write();
             apply_player_death_core(&test.state, &mut ecs, &building_entities, pid).unwrap()
         };
 
-        assert!((22..=24).contains(&rx));
-        assert!((19..=22).contains(&ry));
+        assert!((22..=24).contains(&output.resp_x));
+        assert!((19..=22).contains(&output.resp_y));
         assert_eq!(player_money_after(&test.state, pid), 5);
         assert_eq!(resp_charge_and_storage_money(&test.state, 20, 20), (100, 0));
-        assert!(!bcast.resp_used);
+        assert!(!output.broadcasts.resp_used);
 
         test.cleanup();
     }
@@ -775,17 +752,17 @@ mod tests {
         let pid = PlayerId(test.player.id);
         set_player_resp_and_money(&test.state, pid, 10, 10, 10);
 
-        let (rx, ry, _, bcast) = {
+        let output = {
             let building_entities = test.state.building_entities_snapshot();
             let mut ecs = test.state.ecs.write();
             apply_player_death_core(&test.state, &mut ecs, &building_entities, pid).unwrap()
         };
 
-        assert!((22..=24).contains(&rx));
-        assert!((19..=22).contains(&ry));
+        assert!((22..=24).contains(&output.resp_x));
+        assert!((19..=22).contains(&output.resp_y));
         assert_eq!(player_money_after(&test.state, pid), 10);
         assert_eq!(resp_charge_and_storage_money(&test.state, 10, 10), (100, 0));
-        assert!(!bcast.resp_used);
+        assert!(!output.broadcasts.resp_used);
 
         test.cleanup();
     }

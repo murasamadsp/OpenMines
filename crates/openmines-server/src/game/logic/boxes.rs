@@ -203,7 +203,8 @@ mod tests {
     async fn pickup_box_updates_crystals_marks_dirty_and_removes_box() {
         let test = make_box_test_state("pickup").await;
         let pid = PlayerId(test.player.id);
-        test.state.put_box_cell(10, 11, [3, 2, 1, 0, 0, 0]);
+        test.state
+            .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
 
         let result = pickup_box(&test.state, pid, 10, 11);
 
@@ -243,7 +244,8 @@ mod tests {
             ecs.entity_mut(entity)
                 .remove::<crate::game::player::PlayerFlags>();
         }
-        test.state.put_box_cell(10, 11, [3, 2, 1, 0, 0, 0]);
+        test.state
+            .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
 
         let result = pickup_box(&test.state, pid, 10, 11);
 

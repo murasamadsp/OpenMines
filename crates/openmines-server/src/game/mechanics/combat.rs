@@ -15,11 +15,34 @@ use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 use num_traits::ToPrimitive;
+use parking_lot::Mutex;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Очередь смерти после `gun_firing_system`: нельзя вызывать `handle_death` изнутри `schedule.run` (вложенный `ecs.write()`).
-#[derive(Resource, Default)]
-pub struct DeathQueue(pub Vec<PlayerId>);
+#[derive(Default)]
+struct DeathQueueState {
+    queue: VecDeque<PlayerId>,
+    players: HashSet<PlayerId>,
+}
+
+#[derive(Resource, Clone, Default)]
+pub struct DeathQueue(Arc<Mutex<DeathQueueState>>);
+
+impl DeathQueue {
+    pub fn push(&self, player_id: PlayerId) {
+        let mut state = self.0.lock();
+        if state.players.insert(player_id) {
+            state.queue.push_back(player_id);
+        }
+    }
+
+    pub fn drain(&self) -> Vec<PlayerId> {
+        let mut state = self.0.lock();
+        state.players.clear();
+        state.queue.drain(..).collect()
+    }
+}
 
 struct HazardProfile {
     started_at: Instant,
@@ -116,7 +139,7 @@ pub fn standing_cell_hazard_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
     mut box_pickups: ResMut<BoxPickupQueue>,
-    mut death_q: ResMut<DeathQueue>,
+    death_q: Res<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut q: HazardQuery<'_, '_>,
 ) {
@@ -165,7 +188,7 @@ pub fn standing_cell_hazard_system(
                 stats.health -= fd;
             } else {
                 stats.health = 0;
-                death_q.0.push(p_meta.id);
+                death_q.push(p_meta.id);
             }
             flags.dirty = true;
             if let Some(conn) = conn {
@@ -271,7 +294,7 @@ fn is_same_gun_clan(player_clan_id: Option<i32>, gun_clan_id: i32) -> bool {
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
     combat_cfg: Res<CombatConfigResource>,
-    mut death_q: ResMut<DeathQueue>,
+    death_q: Res<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut pack_resend_q: ResMut<PackResendQueue>,
     mut fire_timer: ResMut<GunTickTimer>,
@@ -358,7 +381,7 @@ pub fn gun_firing_system(
                 } else {
                     stats.health = 0;
                     flags.dirty = true;
-                    death_q.0.push(p_meta.id);
+                    death_q.push(p_meta.id);
                 }
             }
             send_direct(

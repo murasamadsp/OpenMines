@@ -7,7 +7,7 @@ use crate::game::player::{
     PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::play::death::handle_death;
+use crate::net::session::play::death::request_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
@@ -831,8 +831,8 @@ fn boom_detonate(state: &Arc<GameState>, _pid: PlayerId, cx: i32, cy: i32) {
 
     // Damage: 40 HP to players in radius
     let killed = aoe_damage_players(state, cx, cy, 4, 3.5, 40);
-    for (opid, tx) in killed {
-        handle_death(state, &tx, opid);
+    for (opid, _) in killed {
+        request_death(state, opid);
     }
 
     let fx = hb_world_blast_fx(net_u16_nonneg(cx), net_u16_nonneg(cy), 3, 0);
@@ -906,8 +906,8 @@ async fn prot_detonate(state: &Arc<GameState>, _pid: PlayerId, cx: i32, cy: i32)
 
     // 50 HP damage to players in range
     let killed = aoe_damage_players(state, cx, cy, 1, 3.5, 50);
-    for (opid, tx) in killed {
-        handle_death(state, &tx, opid);
+    for (opid, _) in killed {
+        request_death(state, opid);
     }
 
     // C# ShitClass.Prot: SendDirectedFx(fx=1, x, y, dir=1, bid=0, color=1).
@@ -987,8 +987,8 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 
     // 500 HP damage to ALL players in radius 9.5
     let killed = aoe_damage_players(state, cx, cy, 10, 9.5, 500);
-    for (opid, tx) in killed {
-        handle_death(state, &tx, opid);
+    for (opid, _) in killed {
+        request_death(state, opid);
     }
 
     // C# ShitClass.Raz: SendDirectedFx(fx=1, x, y, dir=9, bid=0, color=2).
@@ -1126,7 +1126,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                 .flatten();
             if let Some(died) = death_tx {
                 if died {
-                    handle_death(state, &conn_tx, opid);
+                    request_death(state, opid);
                 } else {
                     // Hurt FX for survivor: SendDFToBots(6, 0, 0, id, 0)
                     let fx = hb_hurt_fx(net_u16_nonneg(opid));

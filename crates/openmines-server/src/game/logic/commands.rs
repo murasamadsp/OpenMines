@@ -188,9 +188,7 @@ fn apply_gameplay_command(state: &Arc<GameState>, command: PlayerCommand) {
             }
         }
         crate::game::PlayerCommand::Respawn { player_id } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                crate::net::session::play::death::handle_death(state, &tx, player_id);
-            }
+            crate::net::session::play::death::request_death(state, player_id);
         }
         crate::game::PlayerCommand::OpenBox { player_id } => {
             if let Some(tx) = state.player_sender(player_id) {

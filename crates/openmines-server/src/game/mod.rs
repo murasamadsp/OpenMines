@@ -445,6 +445,7 @@ pub struct GameState {
     /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
     /// Arc — общий с ECS-ресурсами, чтобы не расходились.
     box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
+    death_queue: combat::DeathQueue,
     granular_wake_q: Arc<Mutex<HashSet<WorldPos>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
@@ -661,6 +662,7 @@ impl GameState {
             sessions: crate::net::session::hub::SessionHub::default(),
             box_index: Arc::new(DashMap::new()),
             box_persist_q: Arc::new(Mutex::new(Vec::new())),
+            death_queue: combat::DeathQueue::default(),
             granular_wake_q: Arc::new(Mutex::new(HashSet::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
             consumable_packs: DashMap::new(),
@@ -724,7 +726,7 @@ impl GameState {
             ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
             ecs.insert_resource(BoxPickupQueue::default());
             ecs.insert_resource(GranularWakeQueue(state.granular_wake_q.clone()));
-            ecs.insert_resource(combat::DeathQueue::default());
+            ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
             ecs.insert_resource(combat::GunTickTimer::default());
@@ -1786,18 +1788,6 @@ impl GameState {
         removed
     }
 
-    /// Положить box-клетку и её содержимое одной доменной операцией.
-    /// Это первый слой boundary для `WorldCell { type, durability, pack/box }`:
-    /// callers не должны отдельно помнить про mmap-клетку и `box_index`.
-    pub fn put_box_cell(&self, x: i32, y: i32, crystals: [i64; 6]) {
-        self.put_box_cell_authoritative(x, y, crystals);
-        self.queue_box_write(&crate::db::BoxWrite {
-            x,
-            y,
-            crystals: Some(crystals),
-        });
-    }
-
     pub fn put_box_cell_authoritative(&self, x: i32, y: i32, crystals: [i64; 6]) {
         self.world.set_cell_typed(
             x,
@@ -1830,6 +1820,16 @@ impl GameState {
             self.world.damage_cell(x, y, 1.0);
         }
         crystals
+    }
+
+    pub fn request_player_death(&self, player_id: PlayerId) {
+        if self.get_player_entity(player_id).is_some() {
+            self.death_queue.push(player_id);
+        }
+    }
+
+    pub fn drain_player_deaths(&self) -> Vec<PlayerId> {
+        self.death_queue.drain()
     }
 
     /// Слить очередь персистенции боксов. На hot-path `BoxPersistQueue` дренится
