@@ -224,7 +224,7 @@ struct TickServices {
 }
 
 #[derive(Default)]
-struct HazardBoxPickupBacklog {
+struct BoxPickupBacklog {
     queue: VecDeque<crate::game::BoxPickupIntent>,
     players: HashSet<crate::game::PlayerId>,
 }
@@ -232,7 +232,7 @@ struct HazardBoxPickupBacklog {
 #[derive(Default)]
 struct TickPendingWork {
     command: Option<crate::game::QueuedPlayerCommand>,
-    hazard_box_pickups: HazardBoxPickupBacklog,
+    box_pickups: BoxPickupBacklog,
     deaths: DeathBacklog,
 }
 
@@ -258,7 +258,7 @@ impl DeathBacklog {
     }
 }
 
-impl HazardBoxPickupBacklog {
+impl BoxPickupBacklog {
     fn extend(&mut self, intents: Vec<crate::game::BoxPickupIntent>) {
         for intent in intents {
             if self.players.insert(intent.player_id) {
@@ -274,10 +274,10 @@ impl HazardBoxPickupBacklog {
     }
 }
 
-fn apply_pending_hazard_box_pickups(
+fn apply_pending_box_pickups(
     state: &Arc<GameState>,
     persistence: &crate::persistence::PersistenceHandle,
-    backlog: &mut HazardBoxPickupBacklog,
+    backlog: &mut BoxPickupBacklog,
     broadcasts: &mut Vec<crate::game::BroadcastEffect>,
 ) {
     while let Some(intent) = backlog.queue.front().copied() {
@@ -292,15 +292,15 @@ fn apply_pending_hazard_box_pickups(
             .pop_front()
             .expect("hazard box pickup backlog front disappeared");
         debug_assert_eq!(popped, intent);
-        match crate::game::logic::boxes::apply_hazard_box_pickup(state, intent) {
-            crate::game::logic::boxes::HazardBoxPickupResult::Picked {
+        match crate::game::logic::boxes::apply_box_pickup(state, intent) {
+            crate::game::logic::boxes::BoxPickupApplyResult::Picked {
                 save,
                 broadcasts: mut pickup_broadcasts,
             } => {
                 permit.publish(save);
                 broadcasts.append(&mut pickup_broadcasts);
             }
-            crate::game::logic::boxes::HazardBoxPickupResult::Stale => {}
+            crate::game::logic::boxes::BoxPickupApplyResult::Stale => {}
         }
     }
 }
@@ -526,13 +526,12 @@ enum TickStage {
     FlushQueues = 5,
     SideBroadcasts = 6,
     SidePackResends = 7,
-    SideBoxPersist = 8,
-    SideCellConversions = 9,
-    SideCellConversionsEcsLockWait = 10,
-    SideProgrammatorActions = 11,
-    SideDeath = 12,
-    SideBotsRender = 13,
-    Summary = 14,
+    SideCellConversions = 8,
+    SideCellConversionsEcsLockWait = 9,
+    SideProgrammatorActions = 10,
+    SideDeath = 11,
+    SideBotsRender = 12,
+    Summary = 13,
 }
 
 const fn tick_stage_name(stage: u8) -> &'static str {
@@ -545,13 +544,12 @@ const fn tick_stage_name(stage: u8) -> &'static str {
         5 => "flush_queues",
         6 => "side_broadcasts",
         7 => "side_pack_resends",
-        8 => "side_box_persist",
-        9 => "side_cell_conversions",
-        10 => "side_cell_conversions_ecs_lock_wait",
-        11 => "side_programmator_actions",
-        12 => "side_death",
-        13 => "side_bots_render",
-        14 => "summary",
+        8 => "side_cell_conversions",
+        9 => "side_cell_conversions_ecs_lock_wait",
+        10 => "side_programmator_actions",
+        11 => "side_death",
+        12 => "side_bots_render",
+        13 => "summary",
         _ => "unknown",
     }
 }
@@ -656,7 +654,6 @@ struct SideProfile {
     broadcasts: std::time::Duration,
     pack_resends: std::time::Duration,
     box_pickups: std::time::Duration,
-    box_persist: std::time::Duration,
     cell_conversions: std::time::Duration,
     programmator_actions: std::time::Duration,
     death: std::time::Duration,
@@ -668,7 +665,6 @@ impl SideProfile {
         self.broadcasts = self.broadcasts.max(other.broadcasts);
         self.pack_resends = self.pack_resends.max(other.pack_resends);
         self.box_pickups = self.box_pickups.max(other.box_pickups);
-        self.box_persist = self.box_persist.max(other.box_persist);
         self.cell_conversions = self.cell_conversions.max(other.cell_conversions);
         self.programmator_actions = self.programmator_actions.max(other.programmator_actions);
         self.death = self.death.max(other.death);
@@ -680,7 +676,6 @@ impl SideProfile {
             ("broadcasts", self.broadcasts),
             ("pack_resends", self.pack_resends),
             ("box_pickups", self.box_pickups),
-            ("box_persist", self.box_persist),
             ("cell_conversions", self.cell_conversions),
             ("programmator_actions", self.programmator_actions),
             ("death", self.death),
@@ -838,15 +833,11 @@ type PendingDeathEffect = (
     crate::net::session::play::death::DeathBroadcasts,
 );
 
-type BoxPersistOp = (crate::game::WorldPos, Option<[i64; 6]>);
-
 struct ScheduleTickResult {
     broadcasts: Vec<crate::game::BroadcastEffect>,
     programmator_actions: Vec<crate::game::ProgrammatorAction>,
     cell_conversions: Vec<crate::game::PendingConversion>,
     pack_resends: Vec<(i32, i32)>,
-    box_ops: Vec<BoxPersistOp>,
-    box_pickups: Vec<crate::game::BoxPickupIntent>,
     sched_select: Duration,
     sched_lock_wait: Duration,
     sched_run: Duration,
@@ -860,8 +851,6 @@ struct ScheduleTailOutput {
     programmator_actions: Vec<crate::game::ProgrammatorAction>,
     cell_conversions: Vec<crate::game::PendingConversion>,
     pack_resends: Vec<(i32, i32)>,
-    box_ops: Vec<BoxPersistOp>,
-    box_pickups: Vec<crate::game::BoxPickupIntent>,
     profile: ScheduleTailProfile,
     sim_profile: SimProfile,
 }
@@ -878,8 +867,6 @@ impl ScheduleTickResult {
             programmator_actions: Vec::new(),
             cell_conversions: Vec::new(),
             pack_resends: Vec::new(),
-            box_ops: Vec::new(),
-            box_pickups: Vec::new(),
             sched_select,
             sched_lock_wait: Duration::ZERO,
             sched_run: Duration::ZERO,
@@ -1013,12 +1000,6 @@ fn drain_schedule_tail(
     profile.programmator_queue = started.elapsed();
 
     let started = Instant::now();
-    let box_ops = std::mem::take(&mut *ecs.resource_mut::<crate::game::BoxPersistQueue>().0.lock());
-    profile.box_queue = started.elapsed();
-
-    let box_pickups = std::mem::take(&mut ecs.resource_mut::<crate::game::BoxPickupQueue>().0);
-
-    let started = Instant::now();
     let cell_conversions =
         std::mem::take(&mut ecs.resource_mut::<crate::game::PendingCellConversions>().0);
     profile.cell_conversion_queue = started.elapsed();
@@ -1036,8 +1017,6 @@ fn drain_schedule_tail(
         programmator_actions,
         cell_conversions,
         pack_resends,
-        box_ops,
-        box_pickups,
         profile,
         sim_profile,
     }
@@ -1172,8 +1151,6 @@ fn run_schedule_phase(
         programmator_actions: tail.programmator_actions,
         cell_conversions: tail.cell_conversions,
         pack_resends: tail.pack_resends,
-        box_ops: tail.box_ops,
-        box_pickups: tail.box_pickups,
         sched_select,
         sched_lock_wait: lw,
         sched_run: schedule_run_total,
@@ -1254,7 +1231,6 @@ fn log_tick_event(event: &TickLogEvent) {
         sim_offline_running_programmators = event.sim_profile.offline_running_programmators,
         queue_broadcasts = event.queue_profile.broadcasts,
         queue_pack_resends = event.queue_profile.pack_resends,
-        queue_box_ops = event.queue_profile.box_ops,
         queue_cell_conversions_in = event.queue_profile.cell_conversions_in,
         queue_cell_conversions_remaining = event.queue_profile.cell_conversions_remaining,
         queue_cell_conversions_applied = event.queue_profile.cell_conversions_applied,
@@ -1290,7 +1266,6 @@ fn log_tick_event(event: &TickLogEvent) {
         sched_tail_total = ?event.schedule_tail_profile.total(),
         sched_tail_broadcast_queue = ?event.schedule_tail_profile.broadcast_queue,
         sched_tail_programmator_queue = ?event.schedule_tail_profile.programmator_queue,
-        sched_tail_box_queue = ?event.schedule_tail_profile.box_queue,
         sched_tail_cell_conversion_queue = ?event.schedule_tail_profile.cell_conversion_queue,
         sched_tail_pack_resend_queue = ?event.schedule_tail_profile.pack_resend_queue,
         sched_tail_sim_profile = ?event.schedule_tail_profile.sim_profile,
@@ -1306,7 +1281,7 @@ fn log_tick_event(event: &TickLogEvent) {
         dominant_unprofiled_elapsed = ?dominant_unprofiled_elapsed,
         schedule_runs = ?event.schedule_runs,
         "OVER-BUDGET tick: total={:?} dispatch={:?} schedule={:?} side={:?} unprofiled={:?} \
-         actions={} side_broadcasts={:?} side_pack_resends={:?} side_box_pickups={:?} side_box_persist={:?} \
+         actions={} side_broadcasts={:?} side_pack_resends={:?} side_box_pickups={:?} \
          side_cell_conversions={:?} side_programmator_actions={:?} side_death={:?} \
          side_bots_render={:?}",
         event.total,
@@ -1318,7 +1293,6 @@ fn log_tick_event(event: &TickLogEvent) {
         event.side_profile.broadcasts,
         event.side_profile.pack_resends,
         event.side_profile.box_pickups,
-        event.side_profile.box_persist,
         event.side_profile.cell_conversions,
         event.side_profile.programmator_actions,
         event.side_profile.death,
@@ -1330,7 +1304,6 @@ fn log_tick_event(event: &TickLogEvent) {
 struct ScheduleTailProfile {
     broadcast_queue: Duration,
     programmator_queue: Duration,
-    box_queue: Duration,
     cell_conversion_queue: Duration,
     pack_resend_queue: Duration,
     sim_profile: Duration,
@@ -1341,7 +1314,6 @@ impl ScheduleTailProfile {
     fn update_max(&mut self, other: Self) {
         self.broadcast_queue = self.broadcast_queue.max(other.broadcast_queue);
         self.programmator_queue = self.programmator_queue.max(other.programmator_queue);
-        self.box_queue = self.box_queue.max(other.box_queue);
         self.cell_conversion_queue = self.cell_conversion_queue.max(other.cell_conversion_queue);
         self.pack_resend_queue = self.pack_resend_queue.max(other.pack_resend_queue);
         self.sim_profile = self.sim_profile.max(other.sim_profile);
@@ -1351,7 +1323,6 @@ impl ScheduleTailProfile {
     fn total(self) -> Duration {
         self.broadcast_queue
             + self.programmator_queue
-            + self.box_queue
             + self.cell_conversion_queue
             + self.pack_resend_queue
             + self.sim_profile
@@ -1362,7 +1333,6 @@ impl ScheduleTailProfile {
         [
             ("broadcast_queue", self.broadcast_queue),
             ("programmator_queue", self.programmator_queue),
-            ("box_queue", self.box_queue),
             ("cell_conversion_queue", self.cell_conversion_queue),
             ("pack_resend_queue", self.pack_resend_queue),
             ("sim_profile", self.sim_profile),
@@ -1407,7 +1377,6 @@ struct SimProfile {
 struct QueueProfile {
     broadcasts: usize,
     pack_resends: usize,
-    box_ops: usize,
     cell_conversions_in: usize,
     cell_conversions_remaining: usize,
     cell_conversions_applied: usize,
@@ -1556,8 +1525,6 @@ fn run_game_tick_sync(
         programmator_actions: prog_actions,
         cell_conversions,
         pack_resends,
-        box_ops,
-        box_pickups,
         sched_select,
         sched_lock_wait,
         sched_run,
@@ -1584,11 +1551,11 @@ fn run_game_tick_sync(
 
     let mut side_profile = SideProfile::default();
     let section_t0 = Instant::now();
-    pending_work.hazard_box_pickups.extend(box_pickups);
-    apply_pending_hazard_box_pickups(
+    pending_work.box_pickups.extend(state.drain_box_pickups());
+    apply_pending_box_pickups(
         state,
         &services.persistence,
-        &mut pending_work.hazard_box_pickups,
+        &mut pending_work.box_pickups,
         &mut broadcasts,
     );
     side_profile.box_pickups = section_t0.elapsed();
@@ -1606,7 +1573,6 @@ fn run_game_tick_sync(
     let mut queue_profile = QueueProfile {
         broadcasts: broadcasts.len(),
         pack_resends: pack_resends.len(),
-        box_ops: box_ops.len(),
         cell_conversions_in: cell_conversions.len(),
         programmator_actions: prog_actions.len(),
         deaths: pending.len(),
@@ -1624,7 +1590,6 @@ fn run_game_tick_sync(
     let side_has_work = !broadcasts.is_empty()
         || !command_effects.events.is_empty()
         || !pack_resends.is_empty()
-        || !box_ops.is_empty()
         || !cell_conversions.is_empty()
         || !prog_actions.is_empty()
         || !pending.is_empty()
@@ -1750,41 +1715,6 @@ fn run_game_tick_sync(
         }
     }
     side_profile.pack_resends = section_t0.elapsed();
-
-    let section_t0 = Instant::now();
-    services.heartbeat.mark(TickStage::SideBoxPersist);
-    if !box_ops.is_empty() {
-        struct DbTaskGuard {
-            state: Arc<GameState>,
-        }
-        impl Drop for DbTaskGuard {
-            fn drop(&mut self) {
-                self.state
-                    .db_pending_tasks
-                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }
-
-        let db = state.db.clone();
-        let state_clone = state.clone();
-        state
-            .db_pending_tasks
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        state.tokio_handle.spawn(async move {
-            let _guard = DbTaskGuard { state: state_clone };
-            for (pos, op) in box_ops {
-                let (bx, by): (i32, i32) = pos.into();
-                let r = match op {
-                    None => db.delete_box_at(bx, by).await,
-                    Some(crystals) => db.upsert_box(bx, by, &crystals).await,
-                };
-                if let Err(e) = r {
-                    tracing::error!(x = bx, y = by, error = ?e, "box persist failed");
-                }
-            }
-        });
-    }
-    side_profile.box_persist = section_t0.elapsed();
 
     let section_t0 = Instant::now();
     services.heartbeat.mark(TickStage::SideCellConversions);
@@ -2089,11 +2019,11 @@ fn run_game_tick_sync(
              max_total={:?} max_dispatch={:?} \
              max_schedule={:?} max_side={:?} \
              max_unprofiled={:?} max_actions={} max_top_schedule={} max_top_schedule_elapsed={:?} max_side_broadcasts={:?} \
-             max_side_pack_resends={:?} max_side_box_pickups={:?} max_side_box_persist={:?} \
+             max_side_pack_resends={:?} max_side_box_pickups={:?} \
              max_side_cell_conversions={:?} max_side_programmator_actions={:?} \
              max_side_death={:?} max_side_bots_render={:?} \
              max_sched_tail_broadcast_queue={:?} \
-             max_sched_tail_programmator_queue={:?} max_sched_tail_box_queue={:?} \
+             max_sched_tail_programmator_queue={:?} \
              max_sched_tail_cell_conversion_queue={:?} max_sched_tail_pack_resend_queue={:?} \
              max_sched_tail_sim_profile={:?} max_sched_tail_drop_ecs_lock={:?} \
              max_unprofiled_setup={:?} max_unprofiled_dispatch_to_schedule={:?} \
@@ -2112,14 +2042,12 @@ fn run_game_tick_sync(
             tick_window.max_side_profile.broadcasts,
             tick_window.max_side_profile.pack_resends,
             tick_window.max_side_profile.box_pickups,
-            tick_window.max_side_profile.box_persist,
             tick_window.max_side_profile.cell_conversions,
             tick_window.max_side_profile.programmator_actions,
             tick_window.max_side_profile.death,
             tick_window.max_side_profile.bots_render,
             tick_window.max_schedule_tail_profile.broadcast_queue,
             tick_window.max_schedule_tail_profile.programmator_queue,
-            tick_window.max_schedule_tail_profile.box_queue,
             tick_window.max_schedule_tail_profile.cell_conversion_queue,
             tick_window.max_schedule_tail_profile.pack_resend_queue,
             tick_window.max_schedule_tail_profile.sim_profile,
@@ -2402,7 +2330,6 @@ mod tests {
             broadcasts: std::time::Duration::from_millis(1),
             pack_resends: std::time::Duration::from_millis(5),
             box_pickups: std::time::Duration::from_millis(6),
-            box_persist: std::time::Duration::from_millis(2),
             cell_conversions: std::time::Duration::from_millis(4),
             programmator_actions: std::time::Duration::from_millis(3),
             death: std::time::Duration::from_millis(7),
@@ -2413,7 +2340,6 @@ mod tests {
             broadcasts: std::time::Duration::from_millis(9),
             pack_resends: std::time::Duration::from_millis(1),
             box_pickups: std::time::Duration::from_millis(12),
-            box_persist: std::time::Duration::from_millis(8),
             cell_conversions: std::time::Duration::from_millis(2),
             programmator_actions: std::time::Duration::from_millis(10),
             death: std::time::Duration::from_millis(1),
@@ -2423,7 +2349,6 @@ mod tests {
         assert_eq!(profile.broadcasts, std::time::Duration::from_millis(9));
         assert_eq!(profile.pack_resends, std::time::Duration::from_millis(5));
         assert_eq!(profile.box_pickups, std::time::Duration::from_millis(12));
-        assert_eq!(profile.box_persist, std::time::Duration::from_millis(8));
         assert_eq!(
             profile.cell_conversions,
             std::time::Duration::from_millis(4)
@@ -2565,22 +2490,26 @@ mod tests {
     #[test]
     fn hazard_box_pickup_backlog_coalesces_by_player() {
         let player_id = crate::game::PlayerId(7);
-        let mut backlog = HazardBoxPickupBacklog::default();
+        let mut backlog = BoxPickupBacklog::default();
         backlog.extend(vec![
             crate::game::BoxPickupIntent {
                 player_id,
-                pos: (5, 5).into(),
+                player_pos: (5, 5).into(),
+                box_pos: (5, 5).into(),
+                source: crate::game::BoxPickupSource::Standing,
             },
             crate::game::BoxPickupIntent {
                 player_id,
-                pos: (6, 5).into(),
+                player_pos: (6, 5).into(),
+                box_pos: (6, 5).into(),
+                source: crate::game::BoxPickupSource::Standing,
             },
         ]);
 
         assert_eq!(backlog.queue.len(), 1);
         assert_eq!(backlog.players.len(), 1);
         assert_eq!(
-            backlog.pop_front().expect("coalesced intent").pos,
+            backlog.pop_front().expect("coalesced intent").box_pos,
             (5, 5).into()
         );
         assert!(backlog.queue.is_empty());
@@ -2613,13 +2542,15 @@ mod tests {
             });
         let intent = crate::game::BoxPickupIntent {
             player_id,
-            pos: (5, 5).into(),
+            player_pos: (5, 5).into(),
+            box_pos: (5, 5).into(),
+            source: crate::game::BoxPickupSource::Standing,
         };
-        let mut backlog = HazardBoxPickupBacklog::default();
+        let mut backlog = BoxPickupBacklog::default();
         backlog.extend(vec![intent, intent]);
         let mut broadcasts = Vec::new();
 
-        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+        apply_pending_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
 
         assert_eq!(backlog.queue.len(), 1);
         assert!(broadcasts.is_empty());
@@ -2639,7 +2570,7 @@ mod tests {
         assert!(!dirty);
 
         assert!(persisted.try_recv().is_some());
-        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+        apply_pending_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
 
         assert!(backlog.queue.is_empty());
         assert_eq!(
@@ -2661,7 +2592,7 @@ mod tests {
         assert!(persisted.try_recv().is_none());
 
         backlog.extend(vec![intent]);
-        apply_pending_hazard_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+        apply_pending_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
         assert!(backlog.queue.is_empty());
         assert!(persisted.try_recv().is_none());
         let crystals_after_stale = state
@@ -2670,6 +2601,65 @@ mod tests {
             })
             .expect("connected player crystals after stale intent");
         assert_eq!(crystals_after_stale, [3, 2, 1, 0, 0, 0]);
+
+        cleanup_persistence_test(&db_path, &dir, &world_name);
+    }
+
+    #[tokio::test]
+    async fn dig_box_pickup_persists_and_returns_ordered_effects() {
+        let (state, player, db_path, dir, world_name) =
+            make_persistence_test_state("dig_box_admission").await;
+        let (outbox, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 45);
+        let player_id = crate::game::PlayerId(player.id);
+        state.put_box_cell_authoritative(5, 6, [4, 0, 0, 0, 0, 0]);
+        state.request_box_pickup(crate::game::BoxPickupIntent {
+            player_id,
+            player_pos: (5, 5).into(),
+            box_pos: (5, 6).into(),
+            source: crate::game::BoxPickupSource::Dig {
+                session_id: Some(crate::game::SessionId::new(45)),
+                direction: 0,
+                skin: 0,
+                clan_id: 0,
+                tail: 0,
+                exclude_self: true,
+            },
+        });
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        let mut backlog = BoxPickupBacklog::default();
+        backlog.extend(state.drain_box_pickups());
+        let mut broadcasts = Vec::new();
+
+        apply_pending_box_pickups(&state, &persistence, &mut backlog, &mut broadcasts);
+
+        assert!(backlog.queue.is_empty());
+        assert_eq!(broadcasts.len(), 4);
+        assert!(matches!(
+            broadcasts[0],
+            crate::game::BroadcastEffect::Direct { .. }
+        ));
+        assert!(matches!(
+            broadcasts[1],
+            crate::game::BroadcastEffect::Direct { .. }
+        ));
+        assert!(matches!(
+            broadcasts[2],
+            crate::game::BroadcastEffect::Nearby { .. }
+        ));
+        assert!(matches!(
+            broadcasts[3],
+            crate::game::BroadcastEffect::CellUpdate(_)
+        ));
+        assert!(matches!(
+            persisted.try_recv(),
+            Some(crate::game::SaveCommand::Box { write })
+                if write.x == 5 && write.y == 6 && write.crystals.is_none()
+        ));
+        assert_eq!(
+            state.world.get_cell(5, 6),
+            crate::world::cells::cell_type::EMPTY
+        );
 
         cleanup_persistence_test(&db_path, &dir, &world_name);
     }
@@ -2721,7 +2711,6 @@ mod tests {
         assert_eq!(position, (5, 5));
         assert_eq!(crystals, [3, 2, 1, 0, 0, 0]);
         assert!(!dirty);
-        assert!(state.drain_box_persist().is_empty());
 
         assert!(persisted.try_recv().is_some());
         let effects = apply_pending_deaths(&state, &persistence, &mut backlog);
@@ -2744,7 +2733,6 @@ mod tests {
             crate::world::cells::cell_type::BOX
         );
         assert!(persisted.try_recv().is_none());
-        assert!(state.drain_box_persist().is_empty());
 
         state.request_player_death(player_id);
         backlog.extend(state.drain_player_deaths());

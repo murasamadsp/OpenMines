@@ -30,7 +30,7 @@ use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -59,18 +59,50 @@ pub struct CombatConfigResource(pub CombatConfig);
 #[derive(Resource, Clone, Copy)]
 pub struct ScheduleConfigResource(pub ScheduleConfig);
 
-/// Очередь персистенции боксов — общая с `GameState`.
-#[derive(Resource, Clone)]
-pub struct BoxPersistQueue(pub Arc<Mutex<Vec<BoxPersist>>>);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoxPickupSource {
+    Standing,
+    Dig {
+        session_id: Option<SessionId>,
+        direction: i32,
+        skin: i32,
+        clan_id: i32,
+        tail: u8,
+        exclude_self: bool,
+    },
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BoxPickupIntent {
     pub player_id: PlayerId,
-    pub pos: WorldPos,
+    pub player_pos: WorldPos,
+    pub box_pos: WorldPos,
+    pub source: BoxPickupSource,
 }
 
-#[derive(Resource, Default)]
-pub struct BoxPickupQueue(pub Vec<BoxPickupIntent>);
+#[derive(Default)]
+struct BoxPickupQueueState {
+    queue: VecDeque<BoxPickupIntent>,
+    players: HashSet<PlayerId>,
+}
+
+#[derive(Resource, Clone, Default)]
+pub struct BoxPickupQueue(Arc<Mutex<BoxPickupQueueState>>);
+
+impl BoxPickupQueue {
+    pub fn push(&self, intent: BoxPickupIntent) {
+        let mut state = self.0.lock();
+        if state.players.insert(intent.player_id) {
+            state.queue.push_back(intent);
+        }
+    }
+
+    pub fn drain(&self) -> Vec<BoxPickupIntent> {
+        let mut state = self.0.lock();
+        state.players.clear();
+        state.queue.drain(..).collect()
+    }
+}
 
 #[derive(Resource, Clone)]
 pub struct GranularWakeQueue(pub Arc<Mutex<HashSet<WorldPos>>>);
@@ -245,7 +277,6 @@ pub struct PendingConversion {
 }
 
 /// Запись персистенции бокса: (координата, `Some`=upsert | `None`=delete).
-type BoxPersist = (WorldPos, Option<[i64; 6]>);
 /// Пакет в HB-overlay здания: поля именованы для читаемости (IR-3).
 #[derive(Clone, Copy, Debug)]
 pub struct PackOverlay {
@@ -438,13 +469,9 @@ pub struct GameState {
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
     pub sessions: crate::net::session::hub::SessionHub,
-    /// Боксы (ячейка 90) в памяти — авторитетно. Read/изменение без `SQLite`
-    /// (был фриз: sync `SQLite` по боксам под `ecs.write()` в physics-системе
-    /// каждые 10ms — `combat.rs` C-1). Персистенция отложена в `box_persist_q`.
+    /// Боксы (ячейка 90) в памяти — авторитетно.
     box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
-    /// Очередь персистенции боксов: `(coord, Some(crystals)=upsert | None=delete)`.
-    /// Arc — общий с ECS-ресурсами, чтобы не расходились.
-    box_persist_q: Arc<Mutex<Vec<BoxPersist>>>,
+    box_pickup_queue: BoxPickupQueue,
     death_queue: combat::DeathQueue,
     granular_wake_q: Arc<Mutex<HashSet<WorldPos>>>,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
@@ -661,7 +688,7 @@ impl GameState {
             tokio_handle: tokio::runtime::Handle::current(),
             sessions: crate::net::session::hub::SessionHub::default(),
             box_index: Arc::new(DashMap::new()),
-            box_persist_q: Arc::new(Mutex::new(Vec::new())),
+            box_pickup_queue: BoxPickupQueue::default(),
             death_queue: combat::DeathQueue::default(),
             granular_wake_q: Arc::new(Mutex::new(HashSet::new())),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
@@ -723,8 +750,7 @@ impl GameState {
             ));
             ecs.insert_resource(CombatConfigResource(state.config.gameplay.combat));
             ecs.insert_resource(ScheduleConfigResource(state.config.gameplay.schedules));
-            ecs.insert_resource(BoxPersistQueue(state.box_persist_q.clone()));
-            ecs.insert_resource(BoxPickupQueue::default());
+            ecs.insert_resource(state.box_pickup_queue.clone());
             ecs.insert_resource(GranularWakeQueue(state.granular_wake_q.clone()));
             ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
@@ -1778,16 +1804,6 @@ impl GameState {
 
     // ─── Боксы: in-memory, без SQLite на hot-path (фикс фриза C-1/C-2/H-1) ──
 
-    /// Атомарно забрать бокс (pickup): удалить из индекса, вернуть кристаллы,
-    /// поставить delete в очередь персистенции. Без `SQLite` (lock-free `DashMap`).
-    pub fn box_take(&self, x: i32, y: i32) -> Option<[i64; 6]> {
-        let removed = self.box_index.remove(&(x, y).into()).map(|(_, v)| v);
-        if removed.is_some() {
-            self.box_persist_q.lock().push(((x, y).into(), None));
-        }
-        removed
-    }
-
     pub fn put_box_cell_authoritative(&self, x: i32, y: i32, crystals: [i64; 6]) {
         self.world.set_cell_typed(
             x,
@@ -1795,20 +1811,6 @@ impl GameState {
             crate::world::CellType(crate::world::cells::cell_type::BOX),
         );
         self.box_index.insert((x, y).into(), crystals);
-    }
-
-    pub fn queue_box_write(&self, write: &crate::db::BoxWrite) {
-        self.box_persist_q
-            .lock()
-            .push(((write.x, write.y).into(), write.crystals));
-    }
-
-    /// Убрать box-клетку и связанный индекс. Если индекс уже потерян, orphan BOX
-    /// всё равно очищается из мира, как прежний `damage_cell`-path при копании.
-    pub fn remove_box_cell(&self, x: i32, y: i32) -> Option<[i64; 6]> {
-        let crystals = self.box_take(x, y);
-        self.world.damage_cell(x, y, 1.0);
-        crystals
     }
 
     pub fn remove_box_cell_authoritative(&self, x: i32, y: i32) -> Option<[i64; 6]> {
@@ -1832,12 +1834,14 @@ impl GameState {
         self.death_queue.drain()
     }
 
-    /// Слить очередь персистенции боксов. На hot-path `BoxPersistQueue` дренится
-    /// внутри `ecs.write()` в lifecycle.rs; этот метод — для финального drain при
-    /// shutdown (`main::shutdown_flush`), чтобы не потерять последние upsert/delete.
-    pub fn drain_box_persist(&self) -> Vec<BoxPersist> {
-        let mut q = self.box_persist_q.lock();
-        std::mem::take(&mut *q)
+    pub fn request_box_pickup(&self, intent: BoxPickupIntent) {
+        if self.get_player_entity(intent.player_id).is_some() {
+            self.box_pickup_queue.push(intent);
+        }
+    }
+
+    pub fn drain_box_pickups(&self) -> Vec<BoxPickupIntent> {
+        self.box_pickup_queue.drain()
     }
 
     pub fn broadcast_to_nearby(&self, cx: u32, cy: u32, data: &[u8], exclude_id: Option<PlayerId>) {

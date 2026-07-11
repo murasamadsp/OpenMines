@@ -1,8 +1,8 @@
-use crate::game::{GameState, PlayerId};
+use crate::game::GameState;
 use crate::world::WorldProvider;
 use std::sync::Arc;
 
-pub enum HazardBoxPickupResult {
+pub enum BoxPickupApplyResult {
     Picked {
         save: crate::game::SaveCommand,
         broadcasts: Vec<crate::game::BroadcastEffect>,
@@ -10,17 +10,83 @@ pub enum HazardBoxPickupResult {
     Stale,
 }
 
-pub fn apply_hazard_box_pickup(
+fn box_pickup_broadcasts(
+    intent: crate::game::BoxPickupIntent,
+    picked: [i64; 6],
+    crystals: [i64; 6],
+    connection: Option<crate::game::SessionId>,
+) -> Vec<crate::game::BroadcastEffect> {
+    let mut broadcasts = Vec::new();
+    if let Some(session_id) = connection {
+        broadcasts.push(crate::game::BroadcastEffect::Direct {
+            session_id,
+            data: crate::net::session::wire::make_u_packet_bytes(
+                "@B",
+                &crate::protocol::packets::basket(&crystals, 1).1,
+            ),
+        });
+    }
+
+    if let crate::game::BoxPickupSource::Dig {
+        direction,
+        skin,
+        clan_id,
+        tail,
+        exclude_self,
+        ..
+    } = intent.source
+    {
+        let (box_x, box_y): (i32, i32) = intent.box_pos.into();
+        if let Some(session_id) = connection {
+            let total: i64 = picked.iter().sum();
+            let bubble = crate::protocol::packets::hb_chat(
+                0,
+                crate::net::session::util::net_u16_nonneg(box_x),
+                crate::net::session::util::net_u16_nonneg(box_y),
+                &format!("+ {total}"),
+            );
+            broadcasts.push(crate::game::BroadcastEffect::Direct {
+                session_id,
+                data: crate::net::session::wire::encode_hb_bundle(
+                    &crate::protocol::packets::hb_bundle(&[bubble]).1,
+                ),
+            });
+        }
+        let (player_x, player_y): (i32, i32) = intent.player_pos.into();
+        let bot = crate::protocol::packets::hb_bot(
+            crate::net::session::util::net_u16_nonneg(intent.player_id),
+            crate::net::session::util::net_u16_nonneg(player_x),
+            crate::net::session::util::net_u16_nonneg(player_y),
+            crate::net::session::util::net_u8_clamped(direction, 3),
+            crate::net::session::util::net_u8_clamped(skin, 255),
+            crate::net::session::util::net_u16_nonneg(clan_id),
+            tail,
+        );
+        let (cx, cy) = crate::world::World::chunk_pos(player_x, player_y);
+        broadcasts.push(crate::game::BroadcastEffect::Nearby {
+            cx,
+            cy,
+            data: crate::net::session::wire::encode_hb_bundle(
+                &crate::protocol::packets::hb_bundle(&[bot]).1,
+            ),
+            exclude: exclude_self.then_some(intent.player_id),
+        });
+    }
+    broadcasts.push(crate::game::BroadcastEffect::CellUpdate(intent.box_pos));
+    broadcasts
+}
+
+pub fn apply_box_pickup(
     state: &Arc<GameState>,
     intent: crate::game::BoxPickupIntent,
-) -> HazardBoxPickupResult {
+) -> BoxPickupApplyResult {
     state
         .modify_player(intent.player_id, |ecs, entity| {
             let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
-                return Some(HazardBoxPickupResult::Stale);
+                return Some(BoxPickupApplyResult::Stale);
             };
-            if crate::game::WorldPos::from((pos.x, pos.y)) != intent.pos {
-                return Some(HazardBoxPickupResult::Stale);
+            if crate::game::WorldPos::from((pos.x, pos.y)) != intent.player_pos {
+                return Some(BoxPickupApplyResult::Stale);
             }
             if ecs
                 .get::<crate::game::player::PlayerStats>(entity)
@@ -29,17 +95,29 @@ pub fn apply_hazard_box_pickup(
                     .get::<crate::game::player::PlayerFlags>(entity)
                     .is_none()
             {
-                return Some(HazardBoxPickupResult::Stale);
+                return Some(BoxPickupApplyResult::Stale);
             }
 
-            let (x, y): (i32, i32) = intent.pos.into();
+            let connection = ecs
+                .get::<crate::game::player::PlayerConnection>(entity)
+                .map(|connection| connection.session_id);
+            if let crate::game::BoxPickupSource::Dig {
+                session_id: Some(expected),
+                ..
+            } = intent.source
+                && connection != Some(expected)
+            {
+                return Some(BoxPickupApplyResult::Stale);
+            }
+
+            let (x, y): (i32, i32) = intent.box_pos.into();
             if state.world.get_cell_typed(x, y)
                 != crate::world::CellType(crate::world::cells::cell_type::BOX)
             {
-                return Some(HazardBoxPickupResult::Stale);
+                return Some(BoxPickupApplyResult::Stale);
             }
             let Some(picked) = state.remove_box_cell_authoritative(x, y) else {
-                return Some(HazardBoxPickupResult::Stale);
+                return Some(BoxPickupApplyResult::Stale);
             };
 
             let crystals = {
@@ -55,18 +133,9 @@ pub fn apply_hazard_box_pickup(
                 .expect("PlayerFlags checked before hazard box pickup")
                 .dirty = true;
 
-            let mut broadcasts = vec![crate::game::BroadcastEffect::CellUpdate(intent.pos)];
-            if let Some(connection) = ecs.get::<crate::game::player::PlayerConnection>(entity) {
-                broadcasts.push(crate::game::BroadcastEffect::Direct {
-                    session_id: connection.session_id,
-                    data: crate::net::session::wire::make_u_packet_bytes(
-                        "@B",
-                        &crate::protocol::packets::basket(&crystals, 1).1,
-                    ),
-                });
-            }
+            let broadcasts = box_pickup_broadcasts(intent, picked, crystals, connection);
 
-            Some(HazardBoxPickupResult::Picked {
+            Some(BoxPickupApplyResult::Picked {
                 save: crate::game::SaveCommand::Box {
                     write: crate::db::BoxWrite {
                         x,
@@ -78,60 +147,13 @@ pub fn apply_hazard_box_pickup(
             })
         })
         .flatten()
-        .unwrap_or(HazardBoxPickupResult::Stale)
-}
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum BoxPickupResult {
-    Picked {
-        picked: [i64; 6],
-        crystals: [i64; 6],
-    },
-    Empty,
-    MissingState(&'static str),
-    MissingEntity,
-}
-
-pub fn pickup_box(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i32) -> BoxPickupResult {
-    state
-        .modify_player(pid, |ecs, entity| {
-            if ecs
-                .get::<crate::game::player::PlayerStats>(entity)
-                .is_none()
-            {
-                return Some(BoxPickupResult::MissingState("PlayerStats"));
-            }
-            if ecs
-                .get::<crate::game::player::PlayerFlags>(entity)
-                .is_none()
-            {
-                return Some(BoxPickupResult::MissingState("PlayerFlags"));
-            }
-
-            let Some(picked) = state.remove_box_cell(x, y) else {
-                return Some(BoxPickupResult::Empty);
-            };
-
-            let mut player_stats = ecs
-                .get_mut::<crate::game::player::PlayerStats>(entity)
-                .expect("PlayerStats checked before box pickup");
-            for (slot, amount) in player_stats.crystals.iter_mut().zip(picked) {
-                *slot = slot.saturating_add(amount);
-            }
-            let crystals = player_stats.crystals;
-            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
-                .expect("PlayerFlags checked before box pickup")
-                .dirty = true;
-
-            Some(BoxPickupResult::Picked { picked, crystals })
-        })
-        .flatten()
-        .unwrap_or(BoxPickupResult::MissingEntity)
+        .unwrap_or(BoxPickupApplyResult::Stale)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::PlayerId;
     use crate::world::WorldProvider;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -205,16 +227,29 @@ mod tests {
         let pid = PlayerId(test.player.id);
         test.state
             .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
+        let player_pos = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                Some((pos.x, pos.y).into())
+            })
+            .unwrap();
 
-        let result = pickup_box(&test.state, pid, 10, 11);
-
-        assert_eq!(
-            result,
-            BoxPickupResult::Picked {
-                picked: [3, 2, 1, 0, 0, 0],
-                crystals: [3, 2, 1, 0, 0, 0],
-            }
+        let result = apply_box_pickup(
+            &test.state,
+            crate::game::BoxPickupIntent {
+                player_id: pid,
+                player_pos,
+                box_pos: (10, 11).into(),
+                source: crate::game::BoxPickupSource::Standing,
+            },
         );
+
+        let BoxPickupApplyResult::Picked { save, broadcasts } = result else {
+            panic!("box pickup must apply");
+        };
+        assert!(matches!(save, crate::game::SaveCommand::Box { .. }));
+        assert_eq!(broadcasts.len(), 2);
         let (crystals, dirty) = test
             .state
             .query_player_opt(pid, |ecs, entity| {
@@ -225,7 +260,6 @@ mod tests {
             .unwrap();
         assert_eq!(crystals, [3, 2, 1, 0, 0, 0]);
         assert!(dirty);
-        assert_eq!(test.state.box_take(10, 11), None);
         assert_eq!(
             test.state.world.get_cell(10, 11),
             crate::world::cells::cell_type::EMPTY
@@ -246,10 +280,25 @@ mod tests {
         }
         test.state
             .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
+        let player_pos = test
+            .state
+            .query_player_opt(pid, |ecs, entity| {
+                let pos = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+                Some((pos.x, pos.y).into())
+            })
+            .unwrap();
 
-        let result = pickup_box(&test.state, pid, 10, 11);
+        let result = apply_box_pickup(
+            &test.state,
+            crate::game::BoxPickupIntent {
+                player_id: pid,
+                player_pos,
+                box_pos: (10, 11).into(),
+                source: crate::game::BoxPickupSource::Standing,
+            },
+        );
 
-        assert_eq!(result, BoxPickupResult::MissingState("PlayerFlags"));
+        assert!(matches!(result, BoxPickupApplyResult::Stale));
         let crystals = test
             .state
             .query_player_opt(pid, |ecs, entity| {
@@ -260,7 +309,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(crystals, [0; 6]);
-        assert_eq!(test.state.box_take(10, 11), Some([3, 2, 1, 0, 0, 0]));
+        assert_eq!(
+            test.state.world.get_cell(10, 11),
+            crate::world::cells::cell_type::BOX
+        );
 
         test.cleanup();
     }

@@ -2,13 +2,12 @@ use crate::game;
 use crate::world::WorldProvider as _;
 
 const SHUTDOWN_DB_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const SHUTDOWN_BOX_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const SHUTDOWN_WORLD_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Финальное сохранение при остановке: игроки (в одной транзакции с ретраем) +
-/// грязные здания (в одной транзакции) + отложенная очередь боксов + flush мира.
+/// грязные здания (в одной транзакции) + flush мира.
 pub async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
-    tracing::info!("Shutdown: saving players, buildings, boxes and flushing world...");
+    tracing::info!("Shutdown: saving players and buildings, then flushing world...");
 
     let player_rows = collect_player_rows(game_state);
     save_players_on_shutdown(game_state, &player_rows).await;
@@ -16,7 +15,6 @@ pub async fn shutdown_flush(game_state: &std::sync::Arc<game::GameState>) {
     let building_rows = collect_dirty_building_rows(game_state);
     save_buildings_on_shutdown(game_state, &building_rows).await;
 
-    persist_boxes_on_shutdown(game_state).await;
     wait_pending_db_tasks(game_state).await;
     flush_world_on_shutdown(game_state).await;
 
@@ -134,34 +132,6 @@ async fn save_buildings_on_shutdown(
             timeout_ms = SHUTDOWN_DB_TIMEOUT.as_millis(),
             "Shutdown buildings batch save timed out"
         ),
-    }
-}
-
-async fn persist_boxes_on_shutdown(game_state: &std::sync::Arc<game::GameState>) {
-    let box_ops = game_state.drain_box_persist();
-    tracing::info!(count = box_ops.len(), "Shutdown: persisting box queue");
-    for (pos, op) in box_ops {
-        let (bx, by): (i32, i32) = pos.into();
-        let persist = async {
-            match op {
-                None => game_state.db.delete_box_at(bx, by).await,
-                Some(crystals) => game_state.db.upsert_box(bx, by, &crystals).await,
-            }
-        };
-        match tokio::time::timeout(SHUTDOWN_BOX_TIMEOUT, persist).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                tracing::error!(x = bx, y = by, error = ?e, "Shutdown box persist failed");
-            }
-            Err(_) => {
-                tracing::error!(
-                    x = bx,
-                    y = by,
-                    timeout_ms = SHUTDOWN_BOX_TIMEOUT.as_millis(),
-                    "Shutdown box persist timed out"
-                );
-            }
-        }
     }
 }
 

@@ -482,9 +482,7 @@ pub async fn handle_remove_building(
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
         return;
     }
-    if let Some(write) = apply_removed_building(state, &removal) {
-        state.queue_box_write(&write);
-    }
+    state.enqueue_command(crate::game::PlayerCommand::ApplyRemovedBuilding { removal });
 }
 
 pub fn prepare_building_removal(
@@ -764,7 +762,7 @@ pub async fn destroy_damagable_building(
     if !delete_destroyed_building_db(state, &removal.view).await {
         return false;
     }
-    apply_removed_building(state, &removal);
+    state.enqueue_command(crate::game::PlayerCommand::ApplyRemovedBuilding { removal });
     true
 }
 
@@ -1187,6 +1185,20 @@ mod tests {
         });
 
         assert!(destroy_damagable_building(&test.state, None, 10, 10).await);
+        let queued = test
+            .state
+            .commands_rx
+            .lock()
+            .as_mut()
+            .expect("test command receiver")
+            .try_recv()
+            .expect("building removal completion");
+        assert!(matches!(
+            queued.command,
+            crate::game::PlayerCommand::ApplyRemovedBuilding { .. }
+        ));
+        let _effects =
+            crate::game::logic::commands::apply_player_command(&test.state, queued.command);
 
         assert!(test.state.get_pack_at(10, 10).is_none());
         assert!(
@@ -1269,7 +1281,6 @@ mod tests {
                 if write.x == 10 && write.y == 10
                     && write.crystals == Some([0, 0, 0, 0, 7, 0])
         ));
-        assert!(test.state.drain_box_persist().is_empty());
         assert_eq!(
             test.state.world.get_cell_typed(10, 10),
             crate::world::CellType(crate::world::cells::cell_type::BOX)

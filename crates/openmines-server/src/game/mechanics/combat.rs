@@ -8,8 +8,8 @@ use crate::game::player::{
 use crate::game::programmator::ProgrammatorState;
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
-    BoxPickupIntent, BoxPickupQueue, BroadcastEffect, BroadcastQueue, CombatConfigResource,
-    PackResendQueue, ScheduleConfigResource, WorldResource,
+    BoxPickupIntent, BoxPickupQueue, BoxPickupSource, BroadcastEffect, BroadcastQueue,
+    CombatConfigResource, PackResendQueue, ScheduleConfigResource, WorldResource,
 };
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
@@ -138,7 +138,7 @@ fn send_direct(bcast_q: &mut BroadcastQueue, conn: &PlayerConnection, data: Vec<
 pub fn standing_cell_hazard_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
-    mut box_pickups: ResMut<BoxPickupQueue>,
+    box_pickups: Res<BoxPickupQueue>,
     death_q: Res<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut q: HazardQuery<'_, '_>,
@@ -213,9 +213,11 @@ pub fn standing_cell_hazard_system(
         if cell == crate::world::CellType(cell_type::BOX) {
             profile.boxes_seen += 1;
             let box_t0 = Instant::now();
-            box_pickups.0.push(BoxPickupIntent {
+            box_pickups.push(BoxPickupIntent {
                 player_id: p_meta.id,
-                pos: (px, py).into(),
+                player_pos: (px, py).into(),
+                box_pos: (px, py).into(),
+                source: BoxPickupSource::Standing,
             });
             profile.box_time += box_t0.elapsed();
         } else if pdef.physical.is_destructible {

@@ -53,6 +53,7 @@ struct DigPlayerData {
     mine_by_crystal: [f32; 6],
     skin: i32,
     clan_id: i32,
+    session_id: Option<crate::game::SessionId>,
 }
 
 enum DigPlayerRead {
@@ -160,6 +161,9 @@ pub fn handle_dig(
                 mine_by_crystal,
                 skin: p_stats.skin,
                 clan_id: p_stats.clan_id.unwrap_or(0),
+                session_id: ecs
+                    .get::<crate::game::player::PlayerConnection>(entity)
+                    .map(|connection| connection.session_id),
             };
             // Референс: `player.Move(player.x, player.y, dir)` сначала, потом `player.Bz()`.
             // Move с target == own position просто обновляет направление, не перемещает игрока.
@@ -230,6 +234,7 @@ pub fn handle_dig(
         mine_by_crystal,
         skin,
         clan_id,
+        session_id,
     } = player_data;
 
     let (dx, dy) = dir_offset(actual_dir);
@@ -267,50 +272,21 @@ pub fn handle_dig(
     let exclude_self = if programmatic { None } else { Some(pid) };
     state.broadcast_hb_at(px, py, &[fx], exclude_self);
 
-    // Fix 2: BOX (90) special case — pick up crystals and destroy.
-    // H-1 фикс: in-memory `box_take` вместо sync SQLite на tick-пути.
+    // BOX pickup применяется lifecycle только после persistence admission.
     if cell.0 == cell_type::BOX {
-        let pickup = crate::game::logic::boxes::pickup_box(state, pid, tgt_x, tgt_y);
-        match pickup {
-            crate::game::logic::boxes::BoxPickupResult::Picked { picked, crystals } => {
-                send_u_packet(tx, "@B", &basket(&crystals, 1).1);
-                // C# `Player.GetBox` → `HBChatPacket(0, x, y, "+ " + AllCrys)` — бабл
-                // с суммой кристаллов над боксом, ТОЛЬКО своему соединению (bot_id=0).
-                let total: i64 = picked.iter().sum();
-                let bubble = crate::protocol::packets::hb_chat(
-                    0,
-                    net_u16_nonneg(tgt_x),
-                    net_u16_nonneg(tgt_y),
-                    &format!("+ {total}"),
-                );
-                let _ = tx.send(crate::net::session::wire::encode_hb_bundle(
-                    &crate::protocol::packets::hb_bundle(&[bubble]).1,
-                ));
-            }
-            crate::game::logic::boxes::BoxPickupResult::Empty => {}
-            crate::game::logic::boxes::BoxPickupResult::MissingState(component) => {
-                tracing::error!(player_id = %pid, component, "Player component missing for box pickup");
-                send_build_state_error(tx);
-                return;
-            }
-            crate::game::logic::boxes::BoxPickupResult::MissingEntity => {
-                tracing::error!(player_id = %pid, "Player entity missing for box pickup");
-                send_build_state_error(tx);
-                return;
-            }
-        }
-        broadcast_cell_update(state, tgt_x, tgt_y);
-        // Референс: `player.Move(player.x, player.y, dir)` → `SendMyMove()`.
-        let bot = hb_bot(
-            net_u16_nonneg(pid),
-            net_u16_nonneg(px),
-            net_u16_nonneg(py),
-            net_u8_clamped(actual_dir, 3),
-            net_u8_clamped(skin, 255),
-            net_u16_nonneg(clan_id),
-            tail,
-        );
-        state.broadcast_hb_at(px, py, &[bot], exclude_self);
+        state.request_box_pickup(crate::game::BoxPickupIntent {
+            player_id: pid,
+            player_pos: (px, py).into(),
+            box_pos: (tgt_x, tgt_y).into(),
+            source: crate::game::BoxPickupSource::Dig {
+                session_id,
+                direction: actual_dir,
+                skin,
+                clan_id,
+                tail,
+                exclude_self: !programmatic,
+            },
+        });
         return;
     }
 
@@ -1440,7 +1416,6 @@ mod tests {
 
         assert_eq!(player_crystal(&test.state, pid, 0), 0);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::BOX);
-        assert_eq!(test.state.box_take(10, 11), Some([3, 2, 1, 0, 0, 0]));
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, payload)| {
             event == "OK"
@@ -1448,6 +1423,51 @@ mod tests {
                     .is_ok_and(|message| message.contains("Состояние игрока недоступно."))
         }));
         assert!(!events.iter().any(|(event, _)| event == "@B"));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn dig_box_publishes_intent_without_mutating_box_or_crystals() {
+        let test = make_test_state("dig_box_intent").await;
+        let (tx, mut rx) = crate::net::session::outbox::channel();
+        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 2);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
+                .unwrap()
+                .last_dig -= Duration::from_millis(500);
+        }
+        test.state
+            .put_box_cell_authoritative(10, 11, [3, 2, 1, 0, 0, 0]);
+
+        handle_dig(&test.state, &tx, pid, 0, false);
+
+        let intents = test.state.drain_box_pickups();
+        assert_eq!(intents.len(), 1);
+        assert_eq!(intents[0].player_pos, (10, 10).into());
+        assert_eq!(intents[0].box_pos, (10, 11).into());
+        assert!(matches!(
+            intents[0].source,
+            crate::game::BoxPickupSource::Dig {
+                session_id: Some(session_id),
+                exclude_self: true,
+                ..
+            } if session_id == crate::game::SessionId::new(2)
+        ));
+        assert_eq!(player_crystal(&test.state, pid, 0), 0);
+        assert_eq!(test.state.world.get_cell(10, 11), cell_type::BOX);
+        assert!(!drain_events(&mut rx).iter().any(|(event, _)| event == "@B"));
 
         test.cleanup();
     }

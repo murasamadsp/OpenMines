@@ -261,12 +261,19 @@ Death box drop перенесён на тот же boundary:
 - death больше не пишет в `box_persist_q`; saturation и exactly-once box save
   покрыты deterministic test.
 
-Этап 3 не завершён. Прямые persistence bypass ещё есть у manual dig box pickup,
-старого async building removal, program/chat/GUI/auction и shutdown snapshot.
-Hazard и death больше не используют bypass. Следующий box-срез должен перенести
-оставшиеся два producer-а и удалить `box_persist_q` целиком. Очередь writer пока
-in-memory: graceful drain доказан, crash/restart durability требует отдельного
-intent journal.
+Box persistence slice завершён полностью:
+
+- manual/programmatic/auto-dig публикуют typed pickup intent и получают ordered
+  basket/bubble/cell/bot effects только после admission;
+- async building removal и damage destruction завершаются typed
+  `ApplyRemovedBuilding` command;
+- `BoxPersistQueue`, `box_persist_q`, per-tick Tokio DB spawn и shutdown direct
+  drain удалены;
+- все box upsert/delete теперь проходят только через bounded persistence owner.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у program/chat/GUI/auction
+и shutdown player/building snapshot. Очередь writer пока in-memory: graceful
+drain доказан, crash/restart durability требует отдельного intent journal.
 
 Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
 `5000 Xmov/s`, 10 секунд:
