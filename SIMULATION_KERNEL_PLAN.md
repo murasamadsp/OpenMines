@@ -304,6 +304,30 @@ Box persistence slice завершён полностью:
   off-CPU`, поэтому он не является основанием для локального cell/Rayon fix;
   spatial ownership остаётся отдельным этапом после устранения external writers.
 
+Первый structural slice owned simulation runtime завершён:
+
+- прежний `tasks/lifecycle.rs` на `3051` строку разделён на periodic IO lifecycle
+  (`66` строк), supervisor/owner `SimulationRuntime` (`~500` строк) и закрытые
+  модули command admission, scheduler, effects, dirty snapshots и profiler;
+- `SimulationRuntime` единолично владеет command receiver, persistence completion
+  receiver, pending command/death/box backlogs, schedule clock и tick counters;
+- lifecycle больше не содержит scheduler, profiling, gameplay apply или effect
+  flush;
+- `tick.rs` теперь только координатор фаз (`~200` строк), без scheduler internals,
+  persistence scan implementation и формата profiler-логов; production-функции
+  проходят strict `too_many_lines` без нового suppression;
+- `scripts/arch-guard.sh` запрещает async task spawn и direct DB access внутри
+  simulation owner, чтобы новый boundary нельзя было обойти незаметно;
+- это structural ownership move, а не финальное когнитивное упрощение всего
+  сервера: старые external writers и публичные `GameState` mutation APIs ещё
+  удаляются следующими срезами;
+- это пока не полный Stage 4: runtime всё ещё держит `Arc<GameState>`, а полный
+  production audit нашёл внешние ECS access paths и direct DB mutations;
+- первый обязательный writer-removal slice — delayed consumables: их Tokio timers
+  сейчас после sleep мутируют ECS/world вне simulation; затем auction completion;
+- только после удаления external writers Bevy `World` переносится в runtime по
+  значению и `RwLock<EcsWorld>` удаляется физически.
+
 Этап 3 не завершён. Прямые persistence bypass ещё есть у остальных program
 операций (open/create/rename/delete/copy), chat/GUI/auction и shutdown
 player/building snapshot. Очередь writer пока in-memory: graceful drain доказан,

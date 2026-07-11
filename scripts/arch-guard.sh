@@ -22,6 +22,8 @@ check_forbidden() {
 check_forbidden "direct ECS write from TCP connection lifecycle" "crates/openmines-server/src/net/session/connection.rs" 'state\.ecs\.write\('
 check_forbidden "direct ECS schedule run from session layer" "crates/openmines-server/src/net/session" '\.schedule\.write\(\)\.run\('
 check_forbidden "direct background task spawn from gameplay modules" "crates/openmines-server/src/game" 'tokio::spawn|spawn_blocking'
+check_forbidden "async task spawn inside simulation owner" "crates/openmines-server/src/tasks/simulation" 'tokio::spawn|spawn_blocking'
+check_forbidden "direct database access inside simulation owner" "crates/openmines-server/src/tasks/simulation" 'state\.db|\.db\.(insert|update|delete|save|add|finalize|list|get|load|create)'
 
 scripts/ownership-audit.sh || fail=1
 scripts/ub-audit.sh || fail=1

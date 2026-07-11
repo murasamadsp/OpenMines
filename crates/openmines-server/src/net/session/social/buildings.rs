@@ -637,10 +637,9 @@ where
     }
     let res = f(&mut ecs, entity);
 
-    // Помечаем dirty — периодический spawn_building_dirty_flush_loop (каждые 45с)
-    // подхватит и сохранит. Снимает флаг только после успешного save, поэтому
-    // ошибка БД не теряет изменения тихо. Немедленный tokio::spawn(save) убран:
-    // он создавал два конкурирующих UPSERT к одной строке (dirty-flush + spawn).
+    // Помечаем dirty для периодического snapshot flush (каждые 45с).
+    // Флаг снимается только после admission в bounded persistence owner; принятые
+    // команды не теряются и повторяются при transient DB error.
     let mut flags = ecs
         .get_mut::<BuildingFlags>(entity)
         .ok_or_else(|| "Состояние здания недоступно".to_string())?;

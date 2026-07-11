@@ -1,6 +1,7 @@
 pub mod auction;
 pub mod cron;
 pub mod lifecycle;
+pub mod simulation;
 
 use crate::game::GameState;
 use std::sync::Arc;
@@ -9,8 +10,6 @@ use tokio::sync::broadcast;
 /// Запуск всех фоновых задач, воркеров периодического сохранения и планировщика.
 pub struct BackgroundTasks {
     game_tick: std::thread::JoinHandle<()>,
-    player_dirty_flush: tokio::task::JoinHandle<()>,
-    building_dirty_flush: tokio::task::JoinHandle<()>,
     persistence: crate::persistence::PersistenceRuntime,
 }
 
@@ -18,20 +17,12 @@ impl BackgroundTasks {
     pub async fn shutdown(self) {
         let Self {
             game_tick,
-            player_dirty_flush,
-            building_dirty_flush,
             persistence,
         } = self;
         match tokio::task::spawn_blocking(move || game_tick.join()).await {
             Ok(Ok(())) => {}
             Ok(Err(panic)) => std::panic::resume_unwind(panic),
             Err(error) => panic!("failed to join game tick thread: {error}"),
-        }
-        if let Err(error) = player_dirty_flush.await {
-            panic!("player dirty flush task failed: {error}");
-        }
-        if let Err(error) = building_dirty_flush.await {
-            panic!("building dirty flush task failed: {error}");
         }
         persistence.shutdown().await;
     }
@@ -49,17 +40,7 @@ pub fn spawn_background_tasks(
     lifecycle::spawn_online_count_loop(Arc::clone(state), shutdown.subscribe());
     let mut persistence = crate::persistence::PersistenceRuntime::start(state.db.clone());
     let persistence_completions = persistence.take_completion_receiver();
-    let player_dirty_flush = lifecycle::spawn_player_dirty_flush_loop(
-        Arc::clone(state),
-        shutdown.subscribe(),
-        persistence.handle(),
-    );
-    let building_dirty_flush = lifecycle::spawn_building_dirty_flush_loop(
-        Arc::clone(state),
-        shutdown.subscribe(),
-        persistence.handle(),
-    );
-    let game_tick = lifecycle::spawn_game_tick_loop(
+    let game_tick = simulation::spawn_game_tick_loop(
         Arc::clone(state),
         shutdown,
         persistence.handle(),
@@ -71,8 +52,6 @@ pub fn spawn_background_tasks(
 
     BackgroundTasks {
         game_tick,
-        player_dirty_flush,
-        building_dirty_flush,
         persistence,
     }
 }
