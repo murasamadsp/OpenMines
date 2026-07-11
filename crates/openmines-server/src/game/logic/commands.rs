@@ -73,10 +73,7 @@ pub fn apply_player_command(state: &Arc<GameState>, command: PlayerCommand) -> C
         command @ (PlayerCommand::ApplyInventoryBuildingPlaced { .. }
         | PlayerCommand::ApplyPaidBuildingPlaced { .. }
         | PlayerCommand::RefundPaidBuildingPlacement { .. }
-        | PlayerCommand::ApplyRemovedBuilding { .. }) => {
-            apply_building_completion(state, command);
-            CommandEffects::default()
-        }
+        | PlayerCommand::ApplyRemovedBuilding { .. }) => apply_building_completion(state, command),
         PlayerCommand::KnownNoopTy {
             player_id,
             event,
@@ -709,7 +706,8 @@ fn apply_program_command(state: &Arc<GameState>, command: PlayerCommand) {
     }
 }
 
-fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) {
+fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) -> CommandEffects {
+    let mut effects = CommandEffects::default();
     match command {
         crate::game::PlayerCommand::ApplyInventoryBuildingPlaced {
             session_id,
@@ -717,7 +715,7 @@ fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) {
             db_id,
         } => {
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
+                return effects;
             };
             crate::net::session::ui::heal_inventory::apply_inventory_building_placed(
                 state, &tx, &placement, db_id,
@@ -729,7 +727,7 @@ fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) {
             db_id,
         } => {
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
+                return effects;
             };
             crate::net::session::social::buildings::apply_paid_building_placed(
                 state, &tx, &placement, db_id,
@@ -741,17 +739,22 @@ fn apply_building_completion(state: &Arc<GameState>, command: PlayerCommand) {
             cost,
         } => {
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
+                return effects;
             };
             crate::net::session::social::buildings::refund_paid_building_placement(
                 state, &tx, player_id, cost,
             );
         }
         crate::game::PlayerCommand::ApplyRemovedBuilding { removal } => {
-            crate::net::session::social::buildings::apply_removed_building(state, &removal);
+            if let Some(write) =
+                crate::net::session::social::buildings::apply_removed_building(state, &removal)
+            {
+                effects.saves.push(crate::game::SaveCommand::Box { write });
+            }
         }
         _ => unreachable!("non-building command routed to building completion handler"),
     }
+    effects
 }
 
 fn apply_program_editor_completion(state: &Arc<GameState>, command: PlayerCommand) {
@@ -1069,9 +1072,7 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
                 ),
             );
 
-            effects
-                .saves
-                .push(crate::game::SaveCommand::SavePlayer { row });
+            effects.saves.push(crate::game::SaveCommand::Player { row });
         }
         crate::game::logic::bonus::BonusClaim::NotReady { hours, minutes } => {
             crate::net::session::social::commands::send_ok(

@@ -234,13 +234,16 @@ Move/chunk visibility slice перенесён на command/effect boundary:
 - saturation/pending disconnect, slow store, retry, mixed-type FIFO и shutdown
   drain покрыты deterministic tests.
 
-Этап 3 не завершён. Прямые persistence bypass ещё есть у box queue,
-program/chat/GUI/auction flows и shutdown snapshot. Box нельзя просто отправить
-в writer после mutation: текущий `box_persist_q` тогда останется unbounded
-fallback. Для него следующий срез обязан перенести admission до
-`box_put`/`box_take` и вернуть durable effect из authoritative command. Очередь
-writer пока in-memory: graceful drain доказан, crash/restart durability требует
-отдельного intent journal.
+Первый box flow также перенесён: `ApplyRemovedBuilding` резервирует `SaveKind::Box`
+до mutation, возвращает typed `BoxWrite`, а writer сохраняет ordered box batch в
+одной SQLite transaction. Старый `box_persist_q` в этом flow не используется.
+
+Этап 3 не завершён. Прямые persistence bypass ещё есть у hazard/death box flows,
+program/chat/GUI/auction и shutdown snapshot. Hazard/death нельзя просто
+отправить в writer после mutation: `box_persist_q` тогда останется unbounded
+fallback. Для них следующий срез обязан ввести intent/admission до
+`box_put`/`box_take`. Очередь writer пока in-memory: graceful drain доказан,
+crash/restart durability требует отдельного intent journal.
 
 Проверка первого persistence milestone, release `1000 clients`, ramp `3ms`,
 `5000 Xmov/s`, 10 секунд:

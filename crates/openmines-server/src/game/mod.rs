@@ -1782,24 +1782,31 @@ impl GameState {
         removed
     }
 
-    /// Положить/обновить бокс (death drop): индекс + upsert в очередь.
-    pub fn box_put(&self, x: i32, y: i32, crystals: [i64; 6]) {
-        self.box_index.insert((x, y).into(), crystals);
-        self.box_persist_q
-            .lock()
-            .push(((x, y).into(), Some(crystals)));
-    }
-
     /// Положить box-клетку и её содержимое одной доменной операцией.
     /// Это первый слой boundary для `WorldCell { type, durability, pack/box }`:
     /// callers не должны отдельно помнить про mmap-клетку и `box_index`.
     pub fn put_box_cell(&self, x: i32, y: i32, crystals: [i64; 6]) {
+        self.put_box_cell_authoritative(x, y, crystals);
+        self.queue_box_write(&crate::db::BoxWrite {
+            x,
+            y,
+            crystals: Some(crystals),
+        });
+    }
+
+    pub fn put_box_cell_authoritative(&self, x: i32, y: i32, crystals: [i64; 6]) {
         self.world.set_cell_typed(
             x,
             y,
             crate::world::CellType(crate::world::cells::cell_type::BOX),
         );
-        self.box_put(x, y, crystals);
+        self.box_index.insert((x, y).into(), crystals);
+    }
+
+    pub fn queue_box_write(&self, write: &crate::db::BoxWrite) {
+        self.box_persist_q
+            .lock()
+            .push(((write.x, write.y).into(), write.crystals));
     }
 
     /// Убрать box-клетку и связанный индекс. Если индекс уже потерян, orphan BOX

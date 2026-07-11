@@ -482,7 +482,9 @@ pub async fn handle_remove_building(
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
         return;
     }
-    apply_removed_building(state, &removal);
+    if let Some(write) = apply_removed_building(state, &removal) {
+        state.queue_box_write(&write);
+    }
 }
 
 pub fn prepare_building_removal(
@@ -791,7 +793,7 @@ fn snapshot_building_removal(
 pub fn apply_removed_building(
     state: &Arc<GameState>,
     removal: &crate::game::logic::contracts::BuildingRemoval,
-) {
+) -> Option<crate::db::BoxWrite> {
     let view = &removal.view;
     state.remove_building_runtime(view);
     if view.pack_type == PackType::Resp {
@@ -802,24 +804,25 @@ pub fn apply_removed_building(
 
     // C# `<Building>.Destroy()`: дроп кристаллов в Box.
     // Teleport — White по charge (`[0,0,0,0,charge,0]`); Storage — crysinside.
-    match view.pack_type {
+    let box_write = match view.pack_type {
         PackType::Teleport if view.charge > 0 => {
-            drop_destroy_box(
-                state,
-                view.x,
-                view.y,
-                [0, 0, 0, 0, charge_to_crys(view.charge), 0],
-            );
+            let crystals = [0, 0, 0, 0, charge_to_crys(view.charge), 0];
+            drop_destroy_box(state, view.x, view.y, crystals).then_some(crate::db::BoxWrite {
+                x: view.x,
+                y: view.y,
+                crystals: Some(crystals),
+            })
         }
-        PackType::Storage => {
-            if let Some(crys) = removal.storage_crystals {
-                if crys.iter().sum::<i64>() > 0 {
-                    drop_destroy_box(state, view.x, view.y, crys);
-                }
-            }
-        }
-        _ => {}
-    }
+        PackType::Storage => removal.storage_crystals.and_then(|crystals| {
+            (crystals.iter().sum::<i64>() > 0 && drop_destroy_box(state, view.x, view.y, crystals))
+                .then_some(crate::db::BoxWrite {
+                    x: view.x,
+                    y: view.y,
+                    crystals: Some(crystals),
+                })
+        }),
+        _ => None,
+    };
 
     // C# `<Building>.Destroy()`: 40% шанс вернуть предмет-размещения в инвентарь сносящего
     // + HB bubble "ШПАААК ВЫПАЛ". Индекс = item-код здания (см. `shpaak_item_index`).
@@ -851,6 +854,7 @@ pub fn apply_removed_building(
             }
         }
     }
+    box_write
 }
 
 pub async fn delete_destroyed_building_db(state: &Arc<GameState>, view: &PackView) -> bool {
@@ -932,19 +936,20 @@ const fn charge_to_crys(charge: i32) -> i64 {
 
 /// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).
 /// Проверка размещения 1:1: `isEmpty && can_place_over && !PackPart`.
-fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) {
+fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) -> bool {
     if !state.world.valid_coord(x, y) {
-        return;
+        return false;
     }
     let cell = state.world.get_cell_typed(x, y);
     if !state.world.is_empty(x, y) || !state.world.cell_defs().get_typed(cell).can_place_over() {
-        return;
+        return false;
     }
     if state.get_pack_at(x, y).is_some() {
-        return;
+        return false;
     }
-    state.put_box_cell(x, y, crystals);
+    state.put_box_cell_authoritative(x, y, crystals);
     broadcast_cell_update(state, x, y);
+    true
 }
 
 #[cfg(test)]
@@ -1218,6 +1223,57 @@ mod tests {
             })
             .unwrap();
         assert_eq!(online_ecs, (None, None, true));
+
+        test.cleanup();
+    }
+
+    #[tokio::test]
+    async fn removed_teleport_returns_box_save_without_legacy_queue() {
+        let test = make_building_test_state("teleport_box_effect").await;
+        let extra = crate::db::buildings::BuildingExtra {
+            charge: 7,
+            max_charge: 100,
+            cost: 0,
+            hp: 100,
+            max_hp: 100,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        let spec = crate::game::BuildingInsertSpec {
+            type_code: "T",
+            pack_type: PackType::Teleport,
+            x: 10,
+            y: 10,
+            owner_id: PlayerId(test.player.id),
+            clan_id: 0,
+            extra: &extra,
+        };
+        test.state.insert_building_runtime(&spec).await.unwrap();
+        let view = test.state.get_pack_at(10, 10).expect("teleport view");
+        let removal = snapshot_building_removal(&test.state, None, view);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::ApplyRemovedBuilding { removal },
+        );
+
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Box { write }]
+                if write.x == 10 && write.y == 10
+                    && write.crystals == Some([0, 0, 0, 0, 7, 0])
+        ));
+        assert!(test.state.drain_box_persist().is_empty());
+        assert_eq!(
+            test.state.world.get_cell_typed(10, 10),
+            crate::world::CellType(crate::world::cells::cell_type::BOX)
+        );
 
         test.cleanup();
     }

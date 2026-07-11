@@ -27,7 +27,7 @@ pub mod players;
 pub mod programs;
 pub mod provider;
 
-pub use boxes::pick_box_coord;
+pub use boxes::{BoxWrite, pick_box_coord};
 pub use buildings::{BuildingExtra, BuildingRow};
 pub use chats::ChatRow;
 pub use clans::{ClanRank, ClanRow};

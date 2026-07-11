@@ -180,6 +180,11 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         buildings: &[crate::db::BuildingRow],
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn save_boxes_batch(
+        &self,
+        writes: &[crate::db::BoxWrite],
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -192,6 +197,10 @@ impl PersistenceStore for Arc<crate::db::Database> {
         buildings: &[crate::db::BuildingRow],
     ) -> anyhow::Result<()> {
         crate::db::Database::save_buildings_batch(self, buildings).await
+    }
+
+    async fn save_boxes_batch(&self, writes: &[crate::db::BoxWrite]) -> anyhow::Result<()> {
+        crate::db::Database::save_boxes_batch(self, writes).await
     }
 }
 
@@ -249,8 +258,10 @@ where
                 let rows = batch
                     .iter()
                     .map(|envelope| match &envelope.command {
-                        SaveCommand::SavePlayer { row } => row.as_ref().clone(),
-                        SaveCommand::SaveBuilding { .. } => unreachable!("compatible player batch"),
+                        SaveCommand::Player { row } => row.as_ref().clone(),
+                        SaveCommand::Building { .. } | SaveCommand::Box { .. } => {
+                            unreachable!("compatible player batch")
+                        }
                     })
                     .collect::<Vec<_>>();
                 store.save_players_batch(&rows).await
@@ -259,11 +270,25 @@ where
                 let rows = batch
                     .iter()
                     .map(|envelope| match &envelope.command {
-                        SaveCommand::SaveBuilding { row } => row.as_ref().clone(),
-                        SaveCommand::SavePlayer { .. } => unreachable!("compatible building batch"),
+                        SaveCommand::Building { row } => row.as_ref().clone(),
+                        SaveCommand::Player { .. } | SaveCommand::Box { .. } => {
+                            unreachable!("compatible building batch")
+                        }
                     })
                     .collect::<Vec<_>>();
                 store.save_buildings_batch(&rows).await
+            }
+            SaveKind::Box => {
+                let writes = batch
+                    .iter()
+                    .map(|envelope| match &envelope.command {
+                        SaveCommand::Box { write } => write.clone(),
+                        SaveCommand::Player { .. } | SaveCommand::Building { .. } => {
+                            unreachable!("compatible box batch")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                store.save_boxes_batch(&writes).await
             }
         };
         match result {
@@ -320,6 +345,7 @@ mod tests {
     enum SavedBatch {
         Players(Vec<i32>),
         Buildings(Vec<i32>),
+        Boxes(Vec<(i32, i32)>),
     }
 
     impl TestStore {
@@ -379,6 +405,15 @@ mod tests {
             let store = self.clone();
             async move { store.persist(SavedBatch::Buildings(ids)).await }
         }
+
+        fn save_boxes_batch(
+            &self,
+            writes: &[crate::db::BoxWrite],
+        ) -> impl Future<Output = anyhow::Result<()>> + Send {
+            let positions = writes.iter().map(|write| (write.x, write.y)).collect();
+            let store = self.clone();
+            async move { store.persist(SavedBatch::Boxes(positions)).await }
+        }
     }
 
     fn player(id: i32) -> crate::db::PlayerRow {
@@ -420,7 +455,7 @@ mod tests {
         handle
             .try_reserve(SaveKind::Player)
             .expect("persistence capacity")
-            .publish(SaveCommand::SavePlayer {
+            .publish(SaveCommand::Player {
                 row: Box::new(player(id)),
             });
     }
@@ -429,8 +464,21 @@ mod tests {
         handle
             .try_reserve(SaveKind::Building)
             .expect("persistence capacity")
-            .publish(SaveCommand::SaveBuilding {
+            .publish(SaveCommand::Building {
                 row: Box::new(building(id)),
+            });
+    }
+
+    fn publish_box(handle: &PersistenceHandle, x: i32, y: i32) {
+        handle
+            .try_reserve(SaveKind::Box)
+            .expect("persistence capacity")
+            .publish(SaveCommand::Box {
+                write: crate::db::BoxWrite {
+                    x,
+                    y,
+                    crystals: None,
+                },
             });
     }
 
@@ -549,6 +597,7 @@ mod tests {
         publish(&handle, 2);
         publish_building(&handle, 10);
         publish_building(&handle, 11);
+        publish_box(&handle, 20, 21);
         publish(&handle, 3);
         drop(handle);
 
@@ -559,6 +608,7 @@ mod tests {
             vec![
                 SavedBatch::Players(vec![1, 2]),
                 SavedBatch::Buildings(vec![10, 11]),
+                SavedBatch::Boxes(vec![(20, 21)]),
                 SavedBatch::Players(vec![3]),
             ]
         );

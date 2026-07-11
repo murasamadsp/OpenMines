@@ -138,7 +138,7 @@ fn flush_dirty_players_once(
             .flatten();
 
         if let Some(row) = row {
-            permit.publish(crate::game::SaveCommand::SavePlayer { row: Box::new(row) });
+            permit.publish(crate::game::SaveCommand::Player { row: Box::new(row) });
             accepted = accepted.saturating_add(1);
         }
     }
@@ -205,7 +205,7 @@ fn flush_dirty_buildings_once(
             Some(row)
         });
         if let Some(row) = row {
-            permit.publish(crate::game::SaveCommand::SaveBuilding { row: Box::new(row) });
+            permit.publish(crate::game::SaveCommand::Building { row: Box::new(row) });
             accepted = accepted.saturating_add(1);
         }
     }
@@ -2296,7 +2296,7 @@ mod tests {
         persistence
             .try_reserve(crate::game::SaveKind::Player)
             .expect("filler capacity")
-            .publish(crate::game::SaveCommand::SavePlayer {
+            .publish(crate::game::SaveCommand::Player {
                 row: Box::new(test_player_row(99)),
             });
 
@@ -2325,7 +2325,7 @@ mod tests {
         let filler = persisted.try_recv().expect("filler command");
         assert!(matches!(
             filler,
-            crate::game::SaveCommand::SavePlayer { row } if row.id == 99
+            crate::game::SaveCommand::Player { row } if row.id == 99
         ));
         let Ok(Some(AdmittedCommand { queued, permit })) =
             take_admitted_command(&mut rx, &mut pending, &persistence)
@@ -2345,11 +2345,69 @@ mod tests {
         ));
         assert!(matches!(
             persisted.try_recv(),
-            Some(crate::game::SaveCommand::SavePlayer { row }) if row.id == player.id
+            Some(crate::game::SaveCommand::Player { row }) if row.id == player.id
         ));
         assert!(persisted.try_recv().is_none());
 
         cleanup_persistence_test(&db_path, &dir, &world_name);
+    }
+
+    #[test]
+    fn building_removal_waits_for_box_persistence_capacity() {
+        let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+        persistence
+            .try_reserve(crate::game::SaveKind::Box)
+            .expect("filler capacity")
+            .publish(crate::game::SaveCommand::Box {
+                write: crate::db::BoxWrite {
+                    x: 1,
+                    y: 1,
+                    crystals: None,
+                },
+            });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let now = Instant::now();
+        tx.send(crate::game::QueuedPlayerCommand {
+            sequence: crate::game::CommandSeq::new(1),
+            received_at: now,
+            enqueued_at: now,
+            command: crate::game::PlayerCommand::ApplyRemovedBuilding {
+                removal: crate::game::logic::contracts::BuildingRemoval {
+                    view: crate::game::PackView {
+                        id: 1,
+                        pack_type: crate::game::PackType::Teleport,
+                        x: 10,
+                        y: 10,
+                        owner_id: crate::game::PlayerId(1),
+                        clan_id: 0,
+                        charge: 7,
+                        max_charge: 100,
+                        hp: 0,
+                        max_hp: 100,
+                    },
+                    trigger_pid: None,
+                    storage_crystals: None,
+                },
+            },
+        })
+        .expect("queue building removal");
+        drop(tx);
+        let mut pending = None;
+
+        assert!(matches!(
+            take_admitted_command(&mut rx, &mut pending, &persistence),
+            Err("apply_removed_building")
+        ));
+        assert!(pending.is_some());
+        assert!(persisted.try_recv().is_some());
+        assert!(matches!(
+            take_admitted_command(&mut rx, &mut pending, &persistence),
+            Ok(Some(AdmittedCommand {
+                permit: Some(_),
+                ..
+            }))
+        ));
+        assert!(pending.is_none());
     }
 
     #[tokio::test]
@@ -2368,7 +2426,7 @@ mod tests {
         persistence
             .try_reserve(crate::game::SaveKind::Player)
             .expect("filler capacity")
-            .publish(crate::game::SaveCommand::SavePlayer {
+            .publish(crate::game::SaveCommand::Player {
                 row: Box::new(test_player_row(99)),
             });
 
@@ -2381,7 +2439,7 @@ mod tests {
         let snapshot = persisted.try_recv().expect("periodic snapshot");
         assert!(matches!(
             snapshot,
-            crate::game::SaveCommand::SavePlayer { row } if row.id == player.id
+            crate::game::SaveCommand::Player { row } if row.id == player.id
         ));
 
         state.modify_player(pid, |ecs, entity| {

@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(player_money(&test.state, pid), before_money + reward_money);
         assert!(matches!(
             effects.saves.as_slice(),
-            [crate::game::SaveCommand::SavePlayer { row }] if row.id == test.player.id
+            [crate::game::SaveCommand::Player { row }] if row.id == test.player.id
         ));
 
         test.cleanup();

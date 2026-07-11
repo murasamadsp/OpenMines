@@ -292,6 +292,7 @@ impl PlayerCommand {
     pub const fn persistence_kind(&self) -> Option<SaveKind> {
         match self {
             Self::Disconnect { .. } | Self::ClaimBonus { .. } => Some(SaveKind::Player),
+            Self::ApplyRemovedBuilding { .. } => Some(SaveKind::Box),
             _ => None,
         }
     }
@@ -344,19 +345,23 @@ impl GameEvent {
 /// All database write transactions sent from the game thread to the persistence worker.
 #[derive(Debug, Clone)]
 pub enum SaveCommand {
-    SavePlayer {
+    Player {
         row: Box<PlayerRow>,
     },
-    SaveBuilding {
+    Building {
         row: Box<openmines_storage::buildings::BuildingRow>,
+    },
+    Box {
+        write: openmines_storage::BoxWrite,
     },
 }
 
 impl SaveCommand {
     pub const fn kind(&self) -> SaveKind {
         match self {
-            Self::SavePlayer { .. } => SaveKind::Player,
-            Self::SaveBuilding { .. } => SaveKind::Building,
+            Self::Player { .. } => SaveKind::Player,
+            Self::Building { .. } => SaveKind::Building,
+            Self::Box { .. } => SaveKind::Box,
         }
     }
 }
@@ -365,6 +370,7 @@ impl SaveCommand {
 pub enum SaveKind {
     Player,
     Building,
+    Box,
 }
 
 impl SaveKind {
@@ -372,6 +378,7 @@ impl SaveKind {
         match self {
             Self::Player => "save_player",
             Self::Building => "save_building",
+            Self::Box => "save_box",
         }
     }
 }

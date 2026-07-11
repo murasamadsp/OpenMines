@@ -458,7 +458,7 @@ pub fn disconnect_in_tick(
     if let Some(row) = row {
         effects
             .saves
-            .push(crate::game::SaveCommand::SavePlayer { row: Box::new(row) });
+            .push(crate::game::SaveCommand::Player { row: Box::new(row) });
     }
 
     let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(effects.saves.len(), 1);
         assert!(matches!(
             &effects.saves[0],
-            crate::game::SaveCommand::SavePlayer { row } if row.id == player.id
+            crate::game::SaveCommand::Player { row } if row.id == player.id
         ));
         assert_eq!(effects.events.len(), 1);
         assert!(matches!(
