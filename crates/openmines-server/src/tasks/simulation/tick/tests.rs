@@ -200,6 +200,72 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
 }
 
 #[test]
+fn schedule_clock_deadline_skips_idle_work_without_catchup() {
+    let base = Instant::now();
+    let idle_checked_at = base + Duration::from_millis(5);
+    let schedules = [
+        candidate("online", ScheduleActivity::OnlinePlayers, 10),
+        candidate("always", ScheduleActivity::Always, 20),
+    ];
+    let mut clock = ScheduleClock::new(schedules.len(), base);
+
+    let deadline = clock.next_deadline(
+        schedules.len(),
+        idle_checked_at,
+        ScheduleWorkload {
+            online_count: 0,
+            player_entity_count: 0,
+            crafting_due: false,
+        },
+        |index| schedules.get(index).copied(),
+    );
+    assert_eq!(deadline, Some(base + Duration::from_millis(20)));
+
+    let enabled_at = idle_checked_at + Duration::from_millis(1);
+    let deadline = clock.next_deadline(
+        schedules.len(),
+        enabled_at,
+        ScheduleWorkload {
+            online_count: 1,
+            player_entity_count: 0,
+            crafting_due: false,
+        },
+        |index| schedules.get(index).copied(),
+    );
+    assert_eq!(deadline, Some(idle_checked_at + Duration::from_millis(10)));
+}
+
+#[test]
+fn due_crafting_uses_its_domain_deadline_not_the_periodic_interval() {
+    let base = Instant::now();
+    let now = base + Duration::from_millis(1);
+    let schedules = [candidate(
+        "building_crafting",
+        ScheduleActivity::DueCrafting,
+        500,
+    )];
+    let workload = ScheduleWorkload {
+        online_count: 0,
+        player_entity_count: 0,
+        crafting_due: true,
+    };
+    let mut clock = ScheduleClock::new(schedules.len(), base);
+
+    assert_eq!(
+        clock.next_deadline(schedules.len(), now, workload, |index| {
+            schedules.get(index).copied()
+        }),
+        Some(now)
+    );
+    assert_eq!(
+        clock.select_due(schedules.len(), now, workload, |index| {
+            schedules.get(index).copied()
+        }),
+        vec![0]
+    );
+}
+
+#[test]
 fn side_profile_update_max_keeps_per_section_maximums() {
     let mut profile = SideProfile {
         broadcasts: std::time::Duration::from_millis(1),
@@ -359,7 +425,6 @@ async fn building_delete_saturation_preserves_runtime_state_until_admission() {
                 y: 10,
                 cause: crate::game::BuildingDeleteCause::Damage {
                     trigger_player_id: None,
-                    origin_session_id: None,
                 },
             },
         },

@@ -1,6 +1,6 @@
 //! Bounded drain and presentation adaptation for simulation-owned delayed work.
 
-use crate::game::logic::consumables::BoomApplyEffects;
+use crate::game::logic::consumables::{AreaConsumableApplyEffects, BoomApplyEffects};
 use crate::game::logic::due::{DueAction, DueActionQueue};
 use crate::game::{GameState, PlayerId};
 use std::sync::Arc;
@@ -14,12 +14,15 @@ pub(super) struct DuePhase {
 
 pub(super) enum DueEffect {
     Boom(BoomApplyEffects),
+    Protector(AreaConsumableApplyEffects),
+    Raz(AreaConsumableApplyEffects),
 }
 
 impl DueEffect {
     pub(super) fn deaths(&self) -> &[PlayerId] {
         match self {
             Self::Boom(effect) => &effect.deaths,
+            Self::Protector(effect) | Self::Raz(effect) => &effect.deaths,
         }
     }
 }
@@ -57,6 +60,14 @@ pub(super) fn run_due_action_phase_at(
             DueAction::Boom(action) => {
                 let effect = crate::game::logic::consumables::apply_boom(state, action);
                 effects.push(DueEffect::Boom(effect));
+            }
+            DueAction::Protector(action) => {
+                let effect = crate::game::logic::consumables::apply_protector(state, action);
+                effects.push(DueEffect::Protector(effect));
+            }
+            DueAction::Raz(action) => {
+                let effect = crate::game::logic::consumables::apply_raz(state, action);
+                effects.push(DueEffect::Raz(effect));
             }
         }
         crate::metrics::DUE_ACTIONS_TOTAL

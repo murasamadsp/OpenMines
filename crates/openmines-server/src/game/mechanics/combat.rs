@@ -44,6 +44,10 @@ impl DeathQueue {
         state.players.clear();
         state.queue.drain(..).collect()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().queue.is_empty()
+    }
 }
 
 struct HazardProfile {

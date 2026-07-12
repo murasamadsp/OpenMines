@@ -7,13 +7,14 @@ mod profiler;
 mod scheduler;
 mod snapshots;
 mod tick;
+mod wait;
 
 use crate::game::GameState;
 use crossbeam_utils::CachePadded;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 struct TickServices {
@@ -260,9 +261,9 @@ struct SimulationRuntime {
     due_actions: crate::game::logic::due::DueActionQueue,
     sim_tick: crate::game::SimTick,
     pending_work: TickPendingWork,
-    tick_duration: Duration,
-    previous_tick_started_at: Instant,
-    next_tick_at: Instant,
+    tick_budget: Duration,
+    previous_tick_started_at: Option<Instant>,
+    planned_deadline: Option<Instant>,
 }
 
 impl SimulationRuntime {
@@ -274,7 +275,7 @@ impl SimulationRuntime {
         persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
     ) -> Self {
         let now = Instant::now();
-        let tick_duration =
+        let tick_budget =
             Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
         let due_action_capacity = state.config.gameplay.simulation.due_action_capacity;
         Self {
@@ -287,18 +288,21 @@ impl SimulationRuntime {
             due_actions: crate::game::logic::due::DueActionQueue::new(due_action_capacity),
             sim_tick: crate::game::SimTick::default(),
             pending_work: TickPendingWork::new(persistence_completions),
-            tick_duration,
-            previous_tick_started_at: now,
-            next_tick_at: now,
+            tick_budget,
+            previous_tick_started_at: None,
+            planned_deadline: None,
         }
     }
 
     fn run(mut self) {
+        self.state.simulation_waker().register_current();
         tracing::info!(
-            tick_rate_ms = self.tick_duration.as_millis(),
+            tick_budget_ms = self.tick_budget.as_millis(),
             "ECS Game Thread started"
         );
-        while self.run_once() {}
+        while self.wait_until_runnable() {
+            self.run_tick();
+        }
         self.finish_shutdown();
         tracing::info!("ECS Game Thread shutting down");
     }
@@ -327,30 +331,126 @@ impl SimulationRuntime {
         tracing::info!(completions, "Simulation persistence completions drained");
     }
 
-    fn run_once(&mut self) -> bool {
-        let started_at = Instant::now();
-        crate::metrics::TICK_START_INTERVAL_SECONDS.observe(
-            started_at
-                .duration_since(self.previous_tick_started_at)
-                .as_secs_f64(),
-        );
-        crate::metrics::TICK_WAKE_LATENESS_SECONDS.observe(
-            started_at
-                .saturating_duration_since(self.next_tick_at)
-                .as_secs_f64(),
-        );
-        self.previous_tick_started_at = started_at;
-        self.next_tick_at = started_at + self.tick_duration;
-        self.sim_tick = self.sim_tick.next();
-        crate::metrics::SIMULATION_TICK.set(i64::try_from(self.sim_tick.get()).unwrap_or(i64::MAX));
+    fn wait_until_runnable(&mut self) -> bool {
+        loop {
+            if self.shutdown_requested() {
+                return false;
+            }
+
+            let now = Instant::now();
+            match self.next_wait_plan(now) {
+                wait::WaitPlan::Immediate => return true,
+                wait::WaitPlan::Until(deadline) => {
+                    self.planned_deadline = Some(deadline);
+                    self.services.heartbeat.mark_idle(Some(deadline));
+                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
+                }
+                wait::WaitPlan::Indefinite => {
+                    self.planned_deadline = None;
+                    self.services.heartbeat.mark_idle(None);
+                    std::thread::park();
+                }
+            }
+        }
+    }
+
+    fn shutdown_requested(&mut self) -> bool {
         match self.shutdown.try_recv() {
             Ok(())
             | Err(
                 tokio::sync::broadcast::error::TryRecvError::Closed
                 | tokio::sync::broadcast::error::TryRecvError::Lagged(_),
-            ) => return false,
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+            ) => true,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => false,
         }
+    }
+
+    fn next_wait_plan(&mut self, now: Instant) -> wait::WaitPlan {
+        let command_ready = match self.pending_work.command.as_ref() {
+            Some(queued) => queued
+                .command
+                .persistence_kind()
+                .is_none_or(|kind| self.persistence_capacity_available(kind)),
+            None => !self.commands.is_empty(),
+        };
+        let completion_ready = !self.pending_work.persistence_completions.is_empty();
+        let persistence_backlog_pending = !self.pending_work.box_pickups.queue.is_empty()
+            || !self.pending_work.deaths.queue.is_empty()
+            || self.state.has_pending_box_pickups()
+            || self.state.has_pending_player_deaths();
+        let persistence_backlog_ready = persistence_backlog_pending
+            && self.persistence_capacity_available(crate::game::SaveKind::Box);
+
+        let online_count = self.state.online_count();
+        let now_ts = crate::time::now_unix();
+        let mut schedule_deadline = self.schedule_clock.next_deadline(
+            self.state.schedules.len(),
+            now,
+            scheduler::ScheduleWorkload {
+                online_count,
+                player_entity_count: self.state.player_entity_count(),
+                crafting_due: self.state.has_due_crafting(now_ts),
+            },
+            |index| scheduler::configured_candidate(&self.state, index),
+        );
+        if let Some(crafting_ts) = self
+            .state
+            .next_crafting_due_ts()
+            .filter(|deadline| *deadline > now_ts)
+        {
+            let crafting_deadline = unix_timestamp_to_instant(now, crafting_ts);
+            schedule_deadline = Some(schedule_deadline.map_or(crafting_deadline, |deadline| {
+                deadline.min(crafting_deadline)
+            }));
+        }
+
+        wait::plan_wait(
+            now,
+            wait::WaitInputs {
+                command_ready,
+                completion_ready,
+                persistence_backlog_ready,
+                due_deadline: self.due_actions.next_due_at(),
+                schedule_deadline,
+                bots_render_deadline: (online_count > 0)
+                    .then(|| self.state.next_bots_render_at())
+                    .flatten(),
+                player_flush_deadline: Some(self.pending_work.next_player_flush),
+                building_flush_deadline: Some(self.pending_work.next_building_flush),
+            },
+        )
+    }
+
+    fn persistence_capacity_available(&self, kind: crate::game::SaveKind) -> bool {
+        match self.services.persistence.check_capacity(kind) {
+            Ok(()) => true,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => false,
+            Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+                tracing::error!(
+                    save_kind = kind.name(),
+                    "Persistence worker closed while authoritative work was pending"
+                );
+                std::process::exit(101);
+            }
+        }
+    }
+
+    fn run_tick(&mut self) {
+        let started_at = Instant::now();
+        if let Some(previous) = self.previous_tick_started_at.replace(started_at) {
+            crate::metrics::TICK_START_INTERVAL_SECONDS
+                .observe(started_at.duration_since(previous).as_secs_f64());
+        }
+        if let Some(deadline) = self
+            .planned_deadline
+            .take()
+            .filter(|deadline| *deadline <= started_at)
+        {
+            crate::metrics::TICK_WAKE_LATENESS_SECONDS
+                .observe(started_at.saturating_duration_since(deadline).as_secs_f64());
+        }
+        self.sim_tick = self.sim_tick.next();
+        crate::metrics::SIMULATION_TICK.set(i64::try_from(self.sim_tick.get()).unwrap_or(i64::MAX));
 
         let state = self.state.clone();
         let run_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -362,10 +462,10 @@ impl SimulationRuntime {
                 &mut self.schedule_clock,
                 &mut self.pending_work,
                 &self.services,
-            )
+            );
         }));
-        let inner_tick_elapsed = match run_result {
-            Ok(elapsed) => elapsed,
+        match run_result {
+            Ok(()) => {}
             Err(panic) => {
                 tracing::error!(
                     target: "tickprof",
@@ -374,23 +474,21 @@ impl SimulationRuntime {
                 );
                 std::process::exit(101);
             }
-        };
-        let elapsed = started_at.elapsed();
-        let outer_overhead = elapsed.saturating_sub(inner_tick_elapsed);
-        if outer_overhead > Duration::from_millis(50) {
-            tracing::warn!(
-                target: "tickprof",
-                total_wall = ?elapsed,
-                inner_tick = ?inner_tick_elapsed,
-                ?outer_overhead,
-                "SLOW game tick outer overhead"
-            );
         }
-        if let Some(remaining) = self.next_tick_at.checked_duration_since(Instant::now()) {
-            std::thread::sleep(remaining);
-        }
-        true
     }
+}
+
+fn unix_timestamp_to_instant(now: Instant, timestamp: i64) -> Instant {
+    let wall_now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    unix_timestamp_to_instant_at(now, wall_now, timestamp)
+}
+
+fn unix_timestamp_to_instant_at(now: Instant, wall_now: Duration, timestamp: i64) -> Instant {
+    let timestamp = u64::try_from(timestamp).expect("crafting timestamp must be non-negative");
+    now.checked_add(Duration::from_secs(timestamp).saturating_sub(wall_now))
+        .expect("crafting timestamp must fit monotonic clock")
 }
 
 fn drain_persistence_completions(
@@ -416,9 +514,12 @@ struct TickHeartbeat {
     tick_seq: CachePadded<AtomicU64>,
     stage: CachePadded<AtomicU8>,
     schedule_index: CachePadded<AtomicU64>,
+    idle_deadline_ms: CachePadded<AtomicU64>,
 }
 
 impl TickHeartbeat {
+    const NO_IDLE_DEADLINE: u64 = u64::MAX;
+
     const fn new(started_at: Instant) -> Self {
         Self {
             started_at,
@@ -426,6 +527,7 @@ impl TickHeartbeat {
             tick_seq: CachePadded::new(AtomicU64::new(0)),
             stage: CachePadded::new(AtomicU8::new(TickStage::Idle as u8)),
             schedule_index: CachePadded::new(AtomicU64::new(u64::MAX)),
+            idle_deadline_ms: CachePadded::new(AtomicU64::new(Self::NO_IDLE_DEADLINE)),
         }
     }
 
@@ -438,12 +540,30 @@ impl TickHeartbeat {
         self.mark_schedule(stage, u64::MAX);
     }
 
+    fn mark_idle(&self, deadline: Option<Instant>) {
+        let deadline_ms = deadline.map_or(Self::NO_IDLE_DEADLINE, |deadline| {
+            u64::try_from(
+                deadline
+                    .saturating_duration_since(self.started_at)
+                    .as_millis(),
+            )
+            .unwrap_or(u64::MAX - 1)
+        });
+        self.publish(TickStage::Idle, u64::MAX, deadline_ms);
+    }
+
     fn mark_schedule(&self, stage: TickStage, schedule_index: u64) {
+        self.publish(stage, schedule_index, Self::NO_IDLE_DEADLINE);
+    }
+
+    fn publish(&self, stage: TickStage, schedule_index: u64, idle_deadline_ms: u64) {
         let elapsed_ms = self.started_at.elapsed().as_millis();
         let elapsed_ms = u64::try_from(elapsed_ms).unwrap_or(u64::MAX);
-        self.stage.store(stage as u8, Ordering::Relaxed);
         self.schedule_index.store(schedule_index, Ordering::Relaxed);
+        self.idle_deadline_ms
+            .store(idle_deadline_ms, Ordering::Relaxed);
         self.last_mark_ms.store(elapsed_ms, Ordering::Relaxed);
+        self.stage.store(stage as u8, Ordering::Release);
     }
 }
 
@@ -506,13 +626,15 @@ fn spawn_game_tick_watchdog(
 
                 let now_ms =
                     u64::try_from(heartbeat.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let stage_id = heartbeat.stage.load(Ordering::Acquire);
                 let last_ms = heartbeat.last_mark_ms.load(Ordering::Relaxed);
-                let age_ms = now_ms.saturating_sub(last_ms);
-                if age_ms <= warn_after_ms {
+                let idle_deadline_ms = heartbeat.idle_deadline_ms.load(Ordering::Relaxed);
+                if !watchdog_should_warn(stage_id, now_ms, last_ms, idle_deadline_ms, warn_after_ms)
+                {
                     continue;
                 }
 
-                let stage_id = heartbeat.stage.load(Ordering::Relaxed);
+                let age_ms = now_ms.saturating_sub(last_ms);
                 let schedule_index = heartbeat.schedule_index.load(Ordering::Relaxed);
                 let schedule = usize::try_from(schedule_index)
                     .ok()
@@ -532,6 +654,20 @@ fn spawn_game_tick_watchdog(
             }
         })
         .expect("spawn game tick watchdog thread");
+}
+
+const fn watchdog_should_warn(
+    stage: u8,
+    now_ms: u64,
+    last_mark_ms: u64,
+    idle_deadline_ms: u64,
+    warn_after_ms: u64,
+) -> bool {
+    if stage == TickStage::Idle as u8 {
+        return idle_deadline_ms != TickHeartbeat::NO_IDLE_DEADLINE
+            && now_ms > idle_deadline_ms.saturating_add(warn_after_ms);
+    }
+    now_ms.saturating_sub(last_mark_ms) > warn_after_ms
 }
 
 fn spawn_parking_lot_deadlock_detector(mut shutdown_rx: broadcast::Receiver<()>) {
@@ -574,6 +710,42 @@ fn spawn_parking_lot_deadlock_detector(mut shutdown_rx: broadcast::Receiver<()>)
             }
         })
         .expect("spawn parking_lot deadlock detector thread");
+}
+
+#[cfg(test)]
+mod runtime_policy_tests {
+    use super::*;
+
+    #[test]
+    fn unix_deadline_preserves_fractional_remaining_time() {
+        let now = Instant::now();
+        let wall_now = Duration::from_millis(100_250);
+
+        assert_eq!(
+            unix_timestamp_to_instant_at(now, wall_now, 101),
+            now + Duration::from_millis(750)
+        );
+        assert_eq!(unix_timestamp_to_instant_at(now, wall_now, 100), now);
+    }
+
+    #[test]
+    fn watchdog_distinguishes_idle_wait_from_a_stalled_owner() {
+        let idle = TickStage::Idle as u8;
+        let active = TickStage::ScheduleRun as u8;
+        let threshold = 2_000;
+
+        assert!(!watchdog_should_warn(
+            idle,
+            20_000,
+            0,
+            TickHeartbeat::NO_IDLE_DEADLINE,
+            threshold,
+        ));
+        assert!(!watchdog_should_warn(idle, 12_000, 0, 10_000, threshold,));
+        assert!(watchdog_should_warn(idle, 12_001, 0, 10_000, threshold,));
+        assert!(!watchdog_should_warn(active, 12_000, 10_000, 0, threshold,));
+        assert!(watchdog_should_warn(active, 12_001, 10_000, 0, threshold,));
+    }
 }
 
 #[cfg(test)]
@@ -637,7 +809,6 @@ mod shutdown_tests {
                 y: 10,
                 cause: crate::game::BuildingDeleteCause::Damage {
                     trigger_player_id: None,
-                    origin_session_id: None,
                 },
             },
             crate::game::BuildingDeleteOperationId::new(31),

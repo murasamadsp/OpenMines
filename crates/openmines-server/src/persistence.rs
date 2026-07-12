@@ -70,6 +70,22 @@ pub enum PersistenceAdmissionError {
 }
 
 impl PersistenceHandle {
+    pub fn check_capacity(&self, kind: SaveKind) -> Result<(), PersistenceAdmissionError> {
+        if self.tx.is_closed()
+            || (matches!(kind, SaveKind::Program | SaveKind::BuildingDelete)
+                && self.completion_tx.is_closed())
+        {
+            return Err(PersistenceAdmissionError::Closed);
+        }
+        if self.tx.capacity() == 0
+            || (matches!(kind, SaveKind::Program | SaveKind::BuildingDelete)
+                && self.completion_tx.capacity() == 0)
+        {
+            return Err(PersistenceAdmissionError::Full);
+        }
+        Ok(())
+    }
+
     pub fn try_reserve(
         &self,
         kind: SaveKind,
@@ -179,18 +195,37 @@ pub struct PersistenceRuntime {
 }
 
 impl PersistenceRuntime {
-    pub fn start(database: Arc<crate::db::Database>) -> Self {
-        Self::start_with_store(database, QUEUE_CAPACITY)
+    pub fn start(
+        database: Arc<crate::db::Database>,
+        simulation_waker: crate::simulation_waker::SimulationWaker,
+    ) -> Self {
+        Self::start_with_store_and_waker(database, QUEUE_CAPACITY, simulation_waker)
     }
 
+    #[cfg(test)]
     fn start_with_store<S>(store: S, capacity: usize) -> Self
+    where
+        S: PersistenceStore,
+    {
+        Self::start_with_store_and_waker(
+            store,
+            capacity,
+            crate::simulation_waker::SimulationWaker::default(),
+        )
+    }
+
+    fn start_with_store_and_waker<S>(
+        store: S,
+        capacity: usize,
+        simulation_waker: crate::simulation_waker::SimulationWaker,
+    ) -> Self
     where
         S: PersistenceStore,
     {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
         let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(capacity);
         let status = Arc::new(PersistenceStatus::default());
-        let worker = tokio::spawn(run_worker(store, rx, status.clone()));
+        let worker = tokio::spawn(run_worker(store, rx, status.clone(), simulation_waker));
         Self {
             handle: PersistenceHandle {
                 tx,
@@ -316,9 +351,11 @@ async fn run_worker<S>(
     store: S,
     mut rx: tokio::sync::mpsc::Receiver<PersistenceEnvelope>,
     status: Arc<PersistenceStatus>,
+    simulation_waker: crate::simulation_waker::SimulationWaker,
 ) where
     S: PersistenceStore,
 {
+    let _wake_owner_on_exit = WakeOwnerOnDrop(simulation_waker.clone());
     while let Some(first) = rx.recv().await {
         let mut batch = Vec::with_capacity(BATCH_LIMIT);
         batch.push(first);
@@ -329,15 +366,28 @@ async fn run_worker<S>(
             batch.push(next);
         }
 
-        persist_batch(&store, &mut batch).await;
+        simulation_waker.wake();
+        persist_batch(&store, &mut batch, &simulation_waker).await;
         status.mark_completed(batch.len());
+        simulation_waker.wake();
         crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(0.0);
     }
     crate::metrics::PERSISTENCE_QUEUE_DEPTH.set(0);
 }
 
-async fn persist_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
-where
+struct WakeOwnerOnDrop(crate::simulation_waker::SimulationWaker);
+
+impl Drop for WakeOwnerOnDrop {
+    fn drop(&mut self) {
+        self.0.wake();
+    }
+}
+
+async fn persist_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
     S: PersistenceStore,
 {
     let mut start = 0usize;
@@ -348,9 +398,12 @@ where
             .position(|envelope| envelope.command.kind() != kind)
             .map_or(batch.len(), |offset| start + offset);
         match kind {
-            SaveKind::Program => persist_program_batch(store, &mut batch[start..end]).await,
+            SaveKind::Program => {
+                persist_program_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::BuildingDelete => {
-                persist_building_delete_batch(store, &mut batch[start..end]).await;
+                persist_building_delete_batch(store, &mut batch[start..end], simulation_waker)
+                    .await;
             }
             SaveKind::Player | SaveKind::Building | SaveKind::Box => {
                 persist_compatible_batch(store, kind, &batch[start..end]).await;
@@ -360,8 +413,11 @@ where
     }
 }
 
-async fn persist_building_delete_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
-where
+async fn persist_building_delete_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
     S: PersistenceStore,
 {
     for envelope in batch {
@@ -427,6 +483,7 @@ where
             .take()
             .expect("building-delete command must reserve completion capacity")
             .send(crate::game::PersistenceCompletion::BuildingDeleted { request, result });
+        simulation_waker.wake();
         crate::metrics::PERSISTENCE_COMMANDS_TOTAL
             .with_label_values(&[SaveKind::BuildingDelete.name(), "persisted"])
             .inc();
@@ -434,8 +491,11 @@ where
     }
 }
 
-async fn persist_program_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
-where
+async fn persist_program_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
     S: PersistenceStore,
 {
     for envelope in batch {
@@ -484,6 +544,7 @@ where
             .take()
             .expect("program command must reserve completion capacity")
             .send(crate::game::PersistenceCompletion::ProgramSaved { request, result });
+        simulation_waker.wake();
         crate::metrics::PERSISTENCE_COMMANDS_TOTAL
             .with_label_values(&[SaveKind::Program.name(), "persisted"])
             .inc();
@@ -596,7 +657,7 @@ mod tests {
         failures_left: Arc<CachePadded<AtomicUsize>>,
         started: Arc<tokio::sync::Semaphore>,
         release: Arc<tokio::sync::Semaphore>,
-        block_first: bool,
+        blocked_calls: Arc<Vec<usize>>,
         permanent_program_failure: Arc<CachePadded<AtomicBool>>,
         permanent_building_failure: Arc<CachePadded<AtomicBool>>,
         saved: Arc<Mutex<Vec<SavedBatch>>>,
@@ -622,7 +683,7 @@ mod tests {
                 failures_left: Arc::new(CachePadded::new(AtomicUsize::new(failures))),
                 started: Arc::new(tokio::sync::Semaphore::new(0)),
                 release: Arc::new(tokio::sync::Semaphore::new(0)),
-                block_first,
+                blocked_calls: Arc::new(if block_first { vec![0] } else { Vec::new() }),
                 permanent_program_failure: Arc::new(CachePadded::new(AtomicBool::new(false))),
                 permanent_building_failure: Arc::new(CachePadded::new(AtomicBool::new(false))),
                 saved: Arc::new(Mutex::new(Vec::new())),
@@ -634,6 +695,12 @@ mod tests {
                 .store(true, Ordering::Release);
         }
 
+        fn with_blocked_calls(calls: &[usize]) -> Self {
+            let mut store = Self::new(false, 0);
+            store.blocked_calls = Arc::new(calls.to_vec());
+            store
+        }
+
         fn reject_building_permanently(&self) {
             self.permanent_building_failure
                 .store(true, Ordering::Release);
@@ -642,7 +709,7 @@ mod tests {
         async fn persist(&self, batch: SavedBatch) -> anyhow::Result<()> {
             let call = self.calls.fetch_add(1, Ordering::AcqRel);
             self.started.add_permits(1);
-            if self.block_first && call == 0 {
+            if self.blocked_calls.contains(&call) {
                 self.release
                     .acquire()
                     .await
@@ -785,6 +852,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn capacity_check_distinguishes_closed_from_saturation() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(1);
+        let handle = PersistenceHandle {
+            tx,
+            completion_tx,
+            status: Arc::new(PersistenceStatus::default()),
+        };
+
+        assert_eq!(handle.check_capacity(SaveKind::Player), Ok(()));
+        let permit = handle.tx.try_reserve().unwrap();
+        assert_eq!(
+            handle.check_capacity(SaveKind::Player),
+            Err(PersistenceAdmissionError::Full)
+        );
+        drop(permit);
+        drop(completion_rx);
+        assert_eq!(
+            handle.check_capacity(SaveKind::Program),
+            Err(PersistenceAdmissionError::Closed)
+        );
+        assert_eq!(handle.check_capacity(SaveKind::Player), Ok(()));
+        drop(rx);
+        assert_eq!(
+            handle.check_capacity(SaveKind::Player),
+            Err(PersistenceAdmissionError::Closed)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn each_completion_wakes_owner_before_later_batch_work_finishes() {
+        let store = TestStore::with_blocked_calls(&[0, 1]);
+        let waker = crate::simulation_waker::SimulationWaker::default();
+        waker.register_current();
+        let mut runtime = PersistenceRuntime::start_with_store_and_waker(store.clone(), 4, waker);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_program(&handle, 7, 11, 1);
+        publish_program(&handle, 7, 12, 2);
+
+        store.started.acquire().await.unwrap().forget();
+        std::thread::park_timeout(Duration::ZERO);
+        store.release.add_permits(1);
+        store.started.acquire().await.unwrap().forget();
+        assert!(completions.recv().await.is_some());
+
+        let started = Instant::now();
+        std::thread::park_timeout(Duration::from_millis(200));
+        assert!(started.elapsed() < Duration::from_millis(50));
+
+        store.release.add_permits(1);
+        drop(handle);
+        runtime.shutdown().await;
+        assert!(completions.recv().await.is_some());
+    }
+
     fn publish(handle: &PersistenceHandle, id: i32) {
         handle
             .try_reserve(SaveKind::Player)
@@ -861,7 +985,6 @@ mod tests {
                     },
                     cause: crate::game::BuildingDeleteCause::Damage {
                         trigger_player_id: None,
-                        origin_session_id: None,
                     },
                     box_write: None,
                     inventory_drop_item: None,

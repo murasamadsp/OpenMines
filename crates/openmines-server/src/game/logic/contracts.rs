@@ -104,23 +104,13 @@ pub struct BuildingDeleteOrigin {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BuildingDeleteCause {
     PlayerRequest(BuildingDeleteOrigin),
-    Damage {
-        trigger_player_id: Option<PlayerId>,
-        origin_session_id: Option<SessionId>,
-    },
+    Damage { trigger_player_id: Option<PlayerId> },
 }
 
 impl BuildingDeleteCause {
     pub const fn origin(self) -> Option<BuildingDeleteOrigin> {
         match self {
             Self::PlayerRequest(origin) => Some(origin),
-            Self::Damage {
-                trigger_player_id: Some(player_id),
-                origin_session_id: Some(session_id),
-            } => Some(BuildingDeleteOrigin {
-                session_id,
-                player_id,
-            }),
             Self::Damage { .. } => None,
         }
     }

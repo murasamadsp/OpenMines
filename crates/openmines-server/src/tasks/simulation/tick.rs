@@ -45,7 +45,7 @@ pub(super) fn run_game_tick_sync(
     schedule_clock: &mut ScheduleClock,
     pending_work: &mut TickPendingWork,
     services: &TickServices,
-) -> Duration {
+) {
     let thread_cpu_started = cpu_time::ThreadTime::now();
     let tick_budget = Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
     let schedule_warn_threshold =
@@ -69,13 +69,6 @@ pub(super) fn run_game_tick_sync(
         elapsed: due_elapsed,
         executed: due_actions_executed,
     } = run_due_action_phase(state, due_actions);
-    pending_work.deaths.extend(
-        due_effects
-            .iter()
-            .flat_map(super::due::DueEffect::deaths)
-            .copied()
-            .collect(),
-    );
     if due_elapsed > top_command_elapsed {
         top_command_name = "due_actions";
         top_command_elapsed = due_elapsed;
@@ -133,10 +126,6 @@ pub(super) fn run_game_tick_sync(
         },
         simulation.has_work,
     );
-    if simulation.has_work {
-        services.heartbeat.mark(TickStage::Idle);
-    }
-    total
 }
 
 fn run_simulation_phase(

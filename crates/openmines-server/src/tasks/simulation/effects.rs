@@ -71,6 +71,12 @@ pub(super) fn collect_pending_effects(
     broadcasts.extend(sources.schedule_broadcasts);
     side_profile.broadcasts = started_at.elapsed();
 
+    // Respawn is a liveness boundary and must not wait behind pickup bursts.
+    let started_at = Instant::now();
+    pending_work.deaths.extend(state.drain_player_deaths());
+    let deaths = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
+    side_profile.death = started_at.elapsed();
+
     let started_at = Instant::now();
     pending_work.box_pickups.extend(state.drain_box_pickups());
     apply_pending_box_pickups(
@@ -80,11 +86,6 @@ pub(super) fn collect_pending_effects(
         &mut broadcasts,
     );
     side_profile.box_pickups = started_at.elapsed();
-
-    let started_at = Instant::now();
-    pending_work.deaths.extend(state.drain_player_deaths());
-    let deaths = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
-    side_profile.death = started_at.elapsed();
 
     let mut programmator_action_profile = ProgrammatorActionProfile::default();
     for action in &sources.programmator_actions {
@@ -207,8 +208,14 @@ fn adapt_due_effects(
     broadcasts: &mut Vec<crate::game::BroadcastEffect>,
 ) {
     for effect in effects {
+        for &player_id in effect.deaths() {
+            state.request_player_death(player_id);
+        }
         match effect {
             DueEffect::Boom(effect) => adapt_boom_effects(state, effect, broadcasts),
+            DueEffect::Protector(effect) | DueEffect::Raz(effect) => {
+                adapt_area_consumable_effects(state, effect, broadcasts);
+            }
         }
     }
 }
@@ -224,24 +231,7 @@ fn adapt_boom_effects(
             .into_iter()
             .map(crate::game::BroadcastEffect::CellUpdate),
     );
-    for health_effect in effects.player_health {
-        let Some(session_id) = state.active_session_for_player(health_effect.player_id) else {
-            continue;
-        };
-        if let Some(skill_progress) = health_effect.skill_progress {
-            let packet = crate::protocol::packets::skills_packet(&skill_progress.entries);
-            broadcasts.push(crate::game::BroadcastEffect::Direct {
-                session_id,
-                data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
-            });
-        }
-        let packet =
-            crate::protocol::packets::health(health_effect.health, health_effect.max_health);
-        broadcasts.push(crate::game::BroadcastEffect::Direct {
-            session_id,
-            data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
-        });
-    }
+    adapt_consumable_health(state, &effects.player_health, broadcasts);
     for fx in effects.fx {
         let (position, packet) = match fx {
             crate::game::logic::consumables::BoomFxEffect::Hurt {
@@ -265,6 +255,84 @@ fn adapt_boom_effects(
         };
         broadcasts.push(nearby_hb_effect(position, packet));
     }
+    broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(
+        effects.cleared_pack,
+    ));
+}
+
+fn adapt_consumable_health(
+    state: &GameState,
+    effects: &[crate::game::logic::consumables::ConsumablePlayerHealthEffect],
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
+) {
+    for health_effect in effects {
+        let Some(session_id) = state.active_session_for_player(health_effect.player_id) else {
+            continue;
+        };
+        if let Some(skill_progress) = &health_effect.skill_progress {
+            let packet = crate::protocol::packets::skills_packet(&skill_progress.entries);
+            broadcasts.push(crate::game::BroadcastEffect::Direct {
+                session_id,
+                data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+            });
+        }
+        let packet =
+            crate::protocol::packets::health(health_effect.health, health_effect.max_health);
+        broadcasts.push(crate::game::BroadcastEffect::Direct {
+            session_id,
+            data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+        });
+    }
+}
+
+fn adapt_area_consumable_effects(
+    state: &Arc<GameState>,
+    effects: crate::game::logic::consumables::AreaConsumableApplyEffects,
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
+) {
+    broadcasts.extend(
+        effects
+            .changed_cells
+            .into_iter()
+            .map(crate::game::BroadcastEffect::CellUpdate),
+    );
+    adapt_consumable_health(state, &effects.player_health, broadcasts);
+    broadcasts.extend(
+        effects
+            .player_health
+            .iter()
+            .filter(|effect| effect.health > 0)
+            .map(|effect| {
+                nearby_hb_effect(
+                    effect.position,
+                    crate::protocol::packets::hb_hurt_fx(
+                        crate::net::session::util::net_u16_nonneg(effect.player_id),
+                    ),
+                )
+            }),
+    );
+    let blast = crate::protocol::packets::hb_world_blast_fx(
+        crate::net::session::util::net_u16_nonneg(effects.cleared_pack.0),
+        crate::net::session::util::net_u16_nonneg(effects.cleared_pack.1),
+        effects.blast_direction,
+        effects.blast_color,
+    );
+    broadcasts.push(nearby_hb_effect(effects.cleared_pack, blast));
+    for remove in effects.building_removals {
+        if !state.enqueue_command(crate::game::PlayerCommand::RemovePack { remove }) {
+            tracing::error!(
+                x = remove.x,
+                y = remove.y,
+                "Simulation command queue closed before consumable building delete"
+            );
+        }
+    }
+    broadcasts.extend(
+        effects
+            .pack_resends
+            .into_iter()
+            .map(crate::game::BroadcastEffect::BlockUpdate),
+    );
     broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(
         effects.cleared_pack,
     ));
@@ -580,6 +648,54 @@ mod tests {
     use crate::world::WorldProvider;
     use std::time::Duration;
 
+    fn prepare_delayed_consumable(
+        state: &Arc<GameState>,
+        player_id: crate::game::PlayerId,
+        item_id: i32,
+        health: i32,
+    ) -> crate::game::WorldPos {
+        let center = crate::game::WorldPos(10, 11);
+        state
+            .modify_player(player_id, |ecs, entity| {
+                {
+                    let mut position = ecs.get_mut::<PlayerPosition>(entity)?;
+                    position.x = 10;
+                    position.y = 10;
+                    position.dir = 0;
+                }
+                {
+                    let mut player_stats = ecs.get_mut::<PlayerStats>(entity)?;
+                    player_stats.health = health;
+                    player_stats.max_health = health;
+                }
+                ecs.get_mut::<PlayerCooldowns>(entity)?.last_inventory_use =
+                    Instant::now().checked_sub(Duration::from_secs(1))?;
+                let mut inventory = ecs.get_mut::<PlayerInventory>(entity)?;
+                inventory.selected = item_id;
+                inventory.items.insert(item_id, 1);
+                Some(())
+            })
+            .unwrap();
+        for x in (center.0 - 1)..=(center.0 + 1) {
+            for y in (center.1 - 1)..=(center.1 + 1) {
+                state.world.destroy_cell_and_road(x, y);
+            }
+        }
+        center
+    }
+
+    fn event_names(events: &[(String, Vec<u8>)]) -> Vec<&str> {
+        events.iter().map(|(event, _)| event.as_str()).collect()
+    }
+
+    fn hb_tags(events: &[(String, Vec<u8>)]) -> Vec<u8> {
+        events
+            .iter()
+            .filter(|(event, _)| event == "HB")
+            .map(|(_, payload)| payload[0])
+            .collect()
+    }
+
     #[tokio::test]
     async fn boom_flows_from_admission_through_deadline_to_ordered_wire_effects() {
         let test = crate::test_support::ServerTestHarness::new("boom_e2e", "boom-e2e-user").await;
@@ -649,6 +765,147 @@ mod tests {
             ["@S", "@L", "HB", "HB"]
         );
         assert_eq!(test.state.world.get_solid_cell(center.0, center.1), 0);
+        assert!(!test.state.consumable_packs.contains_key(&center));
+    }
+
+    #[tokio::test]
+    async fn protector_flows_from_admission_through_exact_deadline_to_ordered_wire_effects() {
+        let test =
+            crate::test_support::ServerTestHarness::new("protector_e2e", "protector-e2e-user")
+                .await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let center = prepare_delayed_consumable(&test.state, player_id, 6, 100);
+
+        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+        let admitted_before = Instant::now();
+        let admitted = crate::game::logic::commands::apply_player_command_with_due(
+            &test.state,
+            crate::game::PlayerCommand::InventoryUse {
+                session_id: crate::game::SessionId::new(1),
+                player_id,
+            },
+            &mut due_actions,
+        );
+        let admitted_after = Instant::now();
+        broadcast_world_effects(&test.state, admitted.broadcasts);
+        let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(event_names(&admission_events), ["HB", "IN"]);
+        assert_eq!(hb_tags(&admission_events), [b'O']);
+        assert_eq!(
+            test.state.consumable_packs.get(&center).map(|pack| *pack),
+            Some((b'B', 1))
+        );
+
+        let deadline = due_actions
+            .next_due_at()
+            .expect("admitted Protector deadline");
+        assert!(deadline >= admitted_before + Duration::from_secs(2));
+        assert!(deadline <= admitted_after + Duration::from_secs(2));
+        let early = super::super::due::run_due_action_phase_at(
+            &test.state,
+            &mut due_actions,
+            deadline.checked_sub(Duration::from_nanos(1)).unwrap(),
+        );
+        assert_eq!(early.executed, 0);
+        assert!(early.effects.is_empty());
+        assert_eq!(due_actions.len(), 1);
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<PlayerStats>(entity)?.health)
+            }),
+            Some(100)
+        );
+        assert!(crate::test_support::ServerTestHarness::drain_events(&mut receiver).is_empty());
+
+        let due =
+            super::super::due::run_due_action_phase_at(&test.state, &mut due_actions, deadline);
+        assert_eq!(due.executed, 1);
+        assert_eq!(due_actions.len(), 0);
+        assert!(matches!(
+            due.effects.as_slice(),
+            [DueEffect::Protector(effect)]
+                if effect.deaths.is_empty() && effect.cleared_pack == center
+        ));
+        let mut broadcasts = Vec::new();
+        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        broadcast_world_effects(&test.state, broadcasts);
+
+        let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(
+            event_names(&detonation_events),
+            ["@S", "@L", "HB", "HB", "HB"]
+        );
+        assert_eq!(hb_tags(&detonation_events), [b'D', b'D', b'O']);
+        assert!(!test.state.consumable_packs.contains_key(&center));
+    }
+
+    #[tokio::test]
+    async fn lethal_raz_flows_from_admission_through_exact_deadline_to_death_queue() {
+        let test = crate::test_support::ServerTestHarness::new("raz_e2e", "raz-e2e-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let center = prepare_delayed_consumable(&test.state, player_id, 7, 500);
+
+        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+        let admitted_before = Instant::now();
+        let admitted = crate::game::logic::commands::apply_player_command_with_due(
+            &test.state,
+            crate::game::PlayerCommand::InventoryUse {
+                session_id: crate::game::SessionId::new(1),
+                player_id,
+            },
+            &mut due_actions,
+        );
+        let admitted_after = Instant::now();
+        broadcast_world_effects(&test.state, admitted.broadcasts);
+        let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(event_names(&admission_events), ["HB", "IN"]);
+        assert_eq!(hb_tags(&admission_events), [b'O']);
+        assert_eq!(
+            test.state.consumable_packs.get(&center).map(|pack| *pack),
+            Some((b'B', 2))
+        );
+
+        let deadline = due_actions.next_due_at().expect("admitted Raz deadline");
+        assert!(deadline >= admitted_before + Duration::from_secs(5));
+        assert!(deadline <= admitted_after + Duration::from_secs(5));
+        let early = super::super::due::run_due_action_phase_at(
+            &test.state,
+            &mut due_actions,
+            deadline.checked_sub(Duration::from_nanos(1)).unwrap(),
+        );
+        assert_eq!(early.executed, 0);
+        assert!(early.effects.is_empty());
+        assert_eq!(due_actions.len(), 1);
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<PlayerStats>(entity)?.health)
+            }),
+            Some(500)
+        );
+        assert!(crate::test_support::ServerTestHarness::drain_events(&mut receiver).is_empty());
+
+        let due =
+            super::super::due::run_due_action_phase_at(&test.state, &mut due_actions, deadline);
+        assert_eq!(due.executed, 1);
+        assert_eq!(due_actions.len(), 0);
+        assert!(matches!(
+            due.effects.as_slice(),
+            [DueEffect::Raz(effect)]
+                if effect.deaths == [player_id] && effect.cleared_pack == center
+        ));
+        assert!(test.state.drain_player_deaths().is_empty());
+        let mut broadcasts = Vec::new();
+        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        assert_eq!(test.state.drain_player_deaths(), [player_id]);
+        broadcast_world_effects(&test.state, broadcasts);
+
+        let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(event_names(&detonation_events), ["@S", "@L", "HB", "HB"]);
+        assert_eq!(hb_tags(&detonation_events), [b'D', b'O']);
         assert!(!test.state.consumable_packs.contains_key(&center));
     }
 }

@@ -131,6 +131,16 @@ Admin, metrics и initial presentation читают versioned immutable snapshot
 11. Каждый migrated flow имеет одну форму: typed input -> bounded admission ->
     authoritative apply -> typed effects. IO/presentation adapters находятся за
     этой границей, а не образуют исключения внутри apply.
+12. Authoritative apply детерминирован для ordered input, явного clock value и
+    explicit RNG seed. OS scheduling, network arrival и presentation могут быть
+    недетерминированы только за typed policy boundary и не меняют state result.
+13. Gameplay delay выражается deadline, а не `sleep`. Реакция на нагрузку
+    выражается budgets, admission и backpressure, а не скрытым adaptive tick.
+14. Crate/file boundary вводится по владельцу state или capability, а не по
+    размеру файла. Reverse dependency запрещается compile/architecture guard.
+15. Simulation kernel является внутренним ядром OpenMines, не универсальным
+    framework: generic abstraction появляется только после двух доказанных
+    одинаковых contracts.
 
 ## Что сохраняется
 
@@ -436,7 +446,7 @@ simulation capacity:
 | 1. Session/output owner | существенно начат | common authenticated envelope, без sender capability |
 | 2. Command/effects | частично | каждый перенесённый flow имеет один path и zero direct output |
 | 3. Persistence owner | частично; building delete закрыт | zero direct gameplay DB writes |
-| 4. Admission/isolation | не начат | bounded queues и connect storm без gameplay starvation |
+| 4. Admission/isolation | event-driven wait и due queue закрыты; ingress unbounded | bounded queues и connect storm без gameplay starvation |
 | 5. Owned simulation | только structural foundation | zero external ECS writers, удалить `RwLock<EcsWorld>` |
 | 6. Active/due work | ранние slices | zero scan-all для sleeping/clean actors |
 | 7. Interest/read model | pilot | immutable per-chunk snapshots и bounded fanout |
@@ -444,14 +454,15 @@ simulation capacity:
 
 Ближайший обязательный порядок:
 
-1. Protector/Raz через тот же due contract, затем ban gameplay `Tokio::sleep`;
-2. auction/program/chat/GUI completions через persistence owner;
-3. generation journal и explicit dirty sets;
-4. bounded lifecycle/gameplay admission и workload budgets;
-5. admin/web/session/shutdown через command/read snapshots;
-6. передать ECS и indexes в `SimulationRuntime` по значению, удалить внешний
+1. graceful `Quiescing` drain для accepted due actions и owner-local follow-ups;
+2. bounded typed ingress и lifecycle/gameplay starvation budgets;
+3. explicit player/building dirty registries вместо periodic scan-all;
+4. auction/program/chat/GUI completions через persistence owner;
+5. generation journal;
+6. admin/web/session/shutdown через command/read snapshots;
+7. передать ECS и indexes в `SimulationRuntime` по значению, удалить внешний
    mutable `GameState` и `RwLock<EcsWorld>`;
-7. active/due registries, immutable chunk snapshots, затем spatial workers.
+8. active/due registries, immutable chunk snapshots, затем spatial workers.
 
 Typed building-delete gate закрыт 2026-07-12:
 
@@ -503,10 +514,58 @@ Gate закрыт 2026-07-11:
   network/DB/task capabilities;
 - command -> due -> schedule effect ordering и active `SessionId` после
   reconnect закреплены end-to-end тестом;
-- legacy Boom timer удалён; оставшиеся Protector/Raz timers являются следующим
-  отдельным due-action slice;
+- legacy Boom timer удалён;
 - strict server clippy, `331 passed / 1 ignored`, protocol `120 passed` и
   `scripts/dev-smoke.sh` зелёные.
+
+Protector/Raz due-action gate закрыт 2026-07-12:
+
+- общий inventory admission резервирует due capacity до cooldown, item и
+  transient-pack mutation для Boom, Protector и Raz;
+- saturation оставляет cooldown, inventory, pack registry и wire неизменными;
+- payload хранит только authoritative center и trigger player, без socket/session;
+- Protector/Raz apply выполняется simulation owner, не делает send/DB/spawn и
+  возвращает typed cell/health/death/building-delete/pack/FX effects;
+- player и building candidates берутся из chunk indexes; Raz больше не сканирует
+  все здания мира и помечает каждое повреждённое здание dirty;
+- damage attribution отделена от player-request authorization: AoE delete не
+  требует ownership/proximity, ручное удаление по-прежнему требует;
+- удаление Gate/IDamagable проходит только через durable `RemovePack` completion;
+- legacy Protector/Raz `tokio_handle.spawn + sleep`, direct wire и второй damage
+  path удалены; architecture guard запрещает их возврат;
+- saturation, exact 2s/5s deadline, mixed FIFO, wire-free apply, damage rights,
+  building dirty и ordered end-to-end wire покрыты deterministic tests.
+
+Event-driven owner wait gate закрыт 2026-07-12:
+
+- fixed `sleep`/`next_tick_at` удалены; owner запускает active cycle только для
+  runnable command/completion/backlog или due/schedule/maintenance deadline;
+- command, persistence capacity/completion, crafting, external death/box,
+  schedule change и shutdown публикуют state до lost-wake-safe `unpark`;
+- spurious/coalesced wake приводит к повторному plan, а не пустому tick;
+- persistence saturation паркует только заблокированный work class и не создаёт
+  busy-spin; independent completion/Box work продолжает исполняться;
+- indefinite idle не тревожит watchdog, timed park остаётся наблюдаемым после
+  deadline+tolerance; blocking wait исключён из tickprof wall/off-CPU;
+- fixed `10ms` сохранился как active-cycle budget, а gun/due delays остаются
+  точными domain deadlines;
+- deterministic tests покрывают earliest deadline, idle schedules без catch-up,
+  persistence blocking, wake-before-park, watchdog idle/overdue и Unix deadline;
+- release `0 players`: за контрольные `120s` выполнено `15` active cycles вместо
+  теоретических `12_000` fixed ticks, process CPU `0.14s`, текущий CPU `0.0%`,
+  RSS `5-12 MiB`, idle `OVER-BUDGET`/watchdog warnings отсутствуют;
+- один SIGINT полностью остановил owner, persistence и world flush без Enter.
+
+Остаток idle-cost теперь локализован: periodic dirty flush будит owner раз в
+`10s/45s` и сканирует все player/building entities. Следующий performance gate -
+explicit dirty registries с работой `O(dirty)`. Дешёвый `1 idle player` после
+этого требует due-only hazards/guns/programmator вместо periodic entity scans.
+
+Event-driven wait не закрывает два соседних correctness gate: основной command
+ingress остаётся unbounded, а graceful shutdown пока может отбросить accepted
+future DueAction после уже сохранённого списания item. Они имеют приоритет над
+следующим performance slice и подробно зафиксированы в
+`SERVER_MIGRATION_STATUS.md`.
 
 Этап 3 не завершён. Прямые persistence bypass ещё есть у остальных program
 операций (open/create/rename/delete/copy), chat/GUI/auction и shutdown

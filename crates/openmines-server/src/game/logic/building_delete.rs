@@ -424,7 +424,6 @@ mod tests {
             y,
             cause: crate::game::BuildingDeleteCause::Damage {
                 trigger_player_id: None,
-                origin_session_id: None,
             },
         }
     }
@@ -500,6 +499,110 @@ mod tests {
         for (roll, expected) in [(1, true), (39, true), (40, false), (100, false)] {
             assert_eq!(should_drop_item(roll), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn damage_trigger_does_not_require_session_ownership_or_proximity() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "building_delete_damage_authorization",
+            "damage-building-owner",
+        )
+        .await;
+        let (_, entity) = insert_test_pack(&test, PackType::Resp, 100).await;
+        let trigger_player_id = crate::game::PlayerId(i32::MAX);
+
+        let request = admit_with_roll(
+            &test.state,
+            RemovePack {
+                x: 10,
+                y: 10,
+                cause: crate::game::BuildingDeleteCause::Damage {
+                    trigger_player_id: Some(trigger_player_id),
+                },
+            },
+            BuildingDeleteOperationId::new(3),
+            100,
+        )
+        .expect("damage attribution must not become player-request authorization");
+
+        assert_eq!(request.cause.trigger_player_id(), Some(trigger_player_id));
+        assert!(
+            test.state
+                .ecs
+                .read()
+                .get::<BuildingDeletePending>(entity)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn player_request_still_requires_rights_and_proximity() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "building_delete_player_authorization",
+            "request-building-owner",
+        )
+        .await;
+        insert_test_pack(&test, PackType::Resp, 100).await;
+
+        let owner_id = crate::game::PlayerId(test.player.id);
+        let owner_session_id = SessionId::new(101);
+        let _owner_receiver = test.connect(owner_session_id.get());
+        test.state
+            .modify_player(owner_id, |ecs, entity| {
+                let mut position = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+                position.x = 0;
+                position.y = 0;
+            })
+            .unwrap();
+
+        let owner_request = RemovePack {
+            x: 10,
+            y: 10,
+            cause: crate::game::BuildingDeleteCause::PlayerRequest(BuildingDeleteOrigin {
+                session_id: owner_session_id,
+                player_id: owner_id,
+            }),
+        };
+        assert!(matches!(
+            admit_with_roll(
+                &test.state,
+                owner_request,
+                BuildingDeleteOperationId::new(4),
+                100,
+            ),
+            Err(BuildingDeleteError::NotAtObject)
+        ));
+
+        let attacker = test.create_player("request-building-attacker").await;
+        let attacker_id = crate::game::PlayerId(attacker.id);
+        let attacker_session_id = SessionId::new(102);
+        let (_attacker_outbox, _attacker_receiver) =
+            test.connect_player_with_outbox(&attacker, attacker_session_id.get());
+        test.state
+            .modify_player(attacker_id, |ecs, entity| {
+                let mut position = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+                position.x = 10;
+                position.y = 10;
+            })
+            .unwrap();
+
+        let attacker_request = RemovePack {
+            x: 10,
+            y: 10,
+            cause: crate::game::BuildingDeleteCause::PlayerRequest(BuildingDeleteOrigin {
+                session_id: attacker_session_id,
+                player_id: attacker_id,
+            }),
+        };
+        assert!(matches!(
+            admit_with_roll(
+                &test.state,
+                attacker_request,
+                BuildingDeleteOperationId::new(5),
+                100,
+            ),
+            Err(BuildingDeleteError::NoRights)
+        ));
     }
 
     #[tokio::test]

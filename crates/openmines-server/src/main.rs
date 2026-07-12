@@ -17,6 +17,7 @@ mod migrations;
 mod net;
 mod persistence;
 mod shutdown;
+mod simulation_waker;
 mod tasks;
 #[cfg(test)]
 mod test_support;

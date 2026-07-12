@@ -1,8 +1,4 @@
 //! Лечение и инвентарь.
-use crate::game::buildings::{
-    BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, can_destroy, damage_building,
-    is_damagable,
-};
 use crate::game::player::{
     PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
@@ -11,8 +7,7 @@ use crate::net::session::play::death::request_death;
 use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
-    broadcast_building_placed, broadcast_pack_update, building_extra_for_pack_type,
-    destroy_damagable_building, validate_building_area,
+    broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
 };
 
 // ─── Inventory ──────────────────────────────────────────────────────────────
@@ -112,8 +107,6 @@ pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &Outbox, pid: Play
         }
     } else {
         match sel {
-            6 => use_protector(state, pid),
-            7 => use_razryadka(state, pid),
             35 => use_poli(state, pid),
             40 => use_c190(state, pid),
             _ => false,
@@ -156,10 +149,11 @@ pub fn handle_inventory_use_sync_nonbuilding(
         return false;
     }
 
-    let mut boom_reservation = if sel == 5 {
+    let delayed_kind = crate::game::logic::consumables::DelayedConsumableKind::from_item(sel);
+    let mut due_reservation = if let Some(kind) = delayed_kind {
         let Some(reservation) = due_actions.try_reserve() else {
             crate::metrics::DUE_ACTIONS_TOTAL
-                .with_label_values(&["boom", "saturated"])
+                .with_label_values(&[kind.metric_label(), "saturated"])
                 .inc();
             return true;
         };
@@ -209,9 +203,8 @@ pub fn handle_inventory_use_sync_nonbuilding(
         }
     }
 
-    let used = match sel {
-        item if is_geopack_item(item) => use_geopack(state, tx, pid, item),
-        5 => {
+    if let Some(kind) = delayed_kind {
+        if kind.requires_gun_access() {
             let Some(cid) = state.query_player_opt(pid, |ecs, entity| {
                 let player_stats = ecs.get::<PlayerStats>(entity)?;
                 Some(player_stats.clan_id.unwrap_or(0))
@@ -219,42 +212,60 @@ pub fn handle_inventory_use_sync_nonbuilding(
                 return true;
             };
             if !state.access_gun(fx, fy, cid) {
-                false
-            } else {
-                let Some(inventory_effect) =
-                    consume_inventory_item_effect(state, pid, session_id, sel)
-                else {
-                    send_inventory_state_error(tx);
-                    return true;
-                };
-                let reservation = boom_reservation
-                    .take()
-                    .expect("Boom reservation must exist after successful admission");
-                let sequence = reservation.sequence();
-                let center = crate::game::WorldPos(fx, fy);
-                state.put_consumable_pack(fx, fy, b'B', 0);
-                reservation.publish(
-                    std::time::Instant::now() + std::time::Duration::from_secs(1),
-                    crate::game::logic::due::DueAction::Boom(
-                        crate::game::logic::consumables::BoomDueAction {
-                            center,
-                            rng_seed: sequence,
-                        },
-                    ),
-                );
-                broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(center));
-                broadcasts.push(inventory_effect);
-                crate::metrics::DUE_ACTIONS_TOTAL
-                    .with_label_values(&["boom", "admitted"])
-                    .inc();
-                drop(boom_reservation);
-                crate::metrics::DUE_ACTION_DEPTH
-                    .set(i64::try_from(due_actions.len()).unwrap_or(i64::MAX));
                 return true;
             }
         }
-        6 => use_protector(state, pid),
-        7 => use_razryadka(state, pid),
+
+        let Some(inventory_effect) = consume_inventory_item_effect(state, pid, session_id, sel)
+        else {
+            send_inventory_state_error(tx);
+            return true;
+        };
+        let reservation = due_reservation
+            .take()
+            .expect("delayed consumable reservation must exist after admission");
+        let sequence = reservation.sequence();
+        let center = crate::game::WorldPos(fx, fy);
+        let action = match kind {
+            crate::game::logic::consumables::DelayedConsumableKind::Boom => {
+                crate::game::logic::due::DueAction::Boom(
+                    crate::game::logic::consumables::BoomDueAction {
+                        center,
+                        rng_seed: sequence,
+                    },
+                )
+            }
+            crate::game::logic::consumables::DelayedConsumableKind::Protector => {
+                crate::game::logic::due::DueAction::Protector(
+                    crate::game::logic::consumables::ProtectorDueAction {
+                        center,
+                        trigger_player_id: pid,
+                    },
+                )
+            }
+            crate::game::logic::consumables::DelayedConsumableKind::Raz => {
+                crate::game::logic::due::DueAction::Raz(
+                    crate::game::logic::consumables::RazDueAction {
+                        center,
+                        trigger_player_id: pid,
+                    },
+                )
+            }
+        };
+        state.put_consumable_pack(fx, fy, b'B', kind.pack_offset());
+        reservation.publish(std::time::Instant::now() + kind.delay(), action);
+        broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(center));
+        broadcasts.push(inventory_effect);
+        crate::metrics::DUE_ACTIONS_TOTAL
+            .with_label_values(&[kind.metric_label(), "admitted"])
+            .inc();
+        drop(due_reservation);
+        crate::metrics::DUE_ACTION_DEPTH.set(i64::try_from(due_actions.len()).unwrap_or(i64::MAX));
+        return true;
+    }
+
+    let used = match sel {
+        item if is_geopack_item(item) => use_geopack(state, tx, pid, item),
         35 => use_poli(state, pid),
         40 => use_c190(state, pid),
         _ => false,
@@ -717,255 +728,6 @@ const fn is_alive_cell(cell: crate::world::CellType) -> bool {
     cell.is_living_crystal()
 }
 
-/// Helper: deal damage to nearby players, returning list of killed players.
-/// `center`: (cx, cy), `radius`: max Vector2.Distance, `damage`: HP to deal.
-fn aoe_damage_players(
-    state: &Arc<GameState>,
-    cx: i32,
-    cy: i32,
-    scan_range: i32,
-    radius: f32,
-    damage: i32,
-) -> Vec<(PlayerId, Outbox)> {
-    let now = std::time::Instant::now();
-    let ctx = crate::game::ExpContext::from_state(state);
-    let mut killed: Vec<(PlayerId, Outbox)> = Vec::new();
-    for opid in state.active_player_ids() {
-        let Some(conn_tx) = state.player_sender(opid) else {
-            continue;
-        };
-        // Returns Some((survived, px, py)) if player was in range and damaged
-        let hit_result = state
-            .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-                let (prev_x, prev_y, h, mh) = {
-                    let p = ecs.get::<PlayerPosition>(entity)?;
-                    let s = ecs.get::<PlayerStats>(entity)?;
-                    (p.x, p.y, s.health, s.max_health)
-                };
-                if (prev_x - cx).abs() > scan_range || (prev_y - cy).abs() > scan_range {
-                    return Some(None);
-                }
-                let dist = ((prev_x - cx) as f32).hypot((prev_y - cy) as f32);
-                if dist > radius {
-                    return Some(None);
-                }
-                if let Some(cd) = ecs.get::<PlayerCooldowns>(entity) {
-                    if cd.protection_until.is_some_and(|u| now < u) {
-                        return Some(None);
-                    }
-                }
-                // Health skill exp on every hurt (C# Player.Hurt → SkillType.Health)
-                if let Some(mut skills) = ecs.get_mut::<PlayerSkillsComp>(entity) {
-                    if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
-                        let _ = conn_tx
-                            .send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
-                    }
-                }
-                let mut s_mut = ecs.get_mut::<PlayerStats>(entity)?;
-                if h > damage {
-                    s_mut.health = h - damage;
-                } else {
-                    s_mut.health = 0;
-                }
-                let survived = s_mut.health > 0;
-                let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    "@L",
-                    &health(s_mut.health, mh).1,
-                ));
-                Some(Some((survived, prev_x, prev_y)))
-            })
-            .flatten();
-        // Broadcast hurt FX for surviving players (C# SendDFToBots(6,0,0,id,0))
-        if let Some(Some((true, prev_x, prev_y))) = hit_result {
-            let fx = hb_hurt_fx(net_u16_nonneg(opid));
-            state.broadcast_hb_at(prev_x, prev_y, &[fx], None);
-        }
-        let dead = state.query_player_opt(opid, |ecs, entity| {
-            let s = ecs.get::<PlayerStats>(entity)?;
-            Some(s.health <= 0)
-        });
-        if dead == Some(true) {
-            killed.push((opid, conn_tx));
-        }
-    }
-    killed
-}
-
-/// Поставить transient pack-спрайт расходника (off 0=Boom/1=Prot/2=Raz, тип `B`).
-/// C# `Chunk.SendPack('B', …)` шлёт ОДИН пак с cell-based PACKPOS; здесь `block_pos`
-/// чанковый (клиент-truth, 77033c5) — клиентский `O` чистит весь блок, поэтому
-/// регистрируем расходник и ре-бродкастим ВЕСЬ блок (здания + все расходники),
-/// иначе спрайт стирает соседние здания и другие бумы.
-fn send_consumable_pack(state: &Arc<GameState>, x: i32, y: i32, off: u8) {
-    if state.pack_block_pos(x, y).is_none() {
-        return;
-    }
-    state.put_consumable_pack(x, y, b'B', off);
-    crate::net::session::social::buildings::broadcast_block_at(state, x, y);
-}
-
-/// Снять спрайт расходника: удалить из реестра и ре-бродкастить остаток блока.
-fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
-    state.remove_consumable_pack(x, y);
-    crate::net::session::social::buildings::broadcast_block_at(state, x, y);
-}
-
-/// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
-/// C#: `AccessGun`-гейт → `SendPack`('B', off=1) → `AsyncAction`(2s) → детонация + `ClearPack`.
-pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-        let p = ecs.get::<PlayerPosition>(entity)?;
-        let s = ecs.get::<PlayerStats>(entity)?;
-        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-    });
-    let Some((px, py, pdir, cid)) = pos else {
-        return false;
-    };
-    let (dx, dy) = dir_offset(pdir);
-    let (cx, cy) = (px + dx, py + dy);
-    if !state.world.valid_coord(cx, cy) {
-        return false;
-    }
-
-    // AccessGun check on facing cell
-    if !state.access_gun(cx, cy, cid) {
-        return false;
-    }
-
-    send_consumable_pack(state, cx, cy, 1);
-    let st = state.clone();
-    state.tokio_handle.spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        prot_detonate(&st, pid, cx, cy);
-        clear_consumable_pack(&st, cx, cy);
-    });
-    true
-}
-
-/// Детонация Protector через 2с (тело C# `AsyncAction`): `AoE` 3x3 — снос гейтов +
-/// разрушение клеток + 50 HP игрокам + FX.
-fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
-    // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
-    let cell_defs = state.world.cell_defs();
-    for ddx in -1..=1 {
-        for ddy in -1..=1 {
-            let tgt_x = cx + ddx;
-            let tgt_y = cy + ddy;
-            if !state.world.valid_coord(tgt_x, tgt_y) {
-                continue;
-            }
-            // Destroy gates in range through the runtime building boundary.
-            let gate = state
-                .get_pack_at(tgt_x, tgt_y)
-                .filter(|view| view.pack_type == PackType::Gate);
-            if gate.is_some() {
-                destroy_damagable_building(state, Some(pid), tgt_x, tgt_y);
-            }
-            // Destroy destructible non-building cells
-            let c = state.world.get_cell_typed(tgt_x, tgt_y);
-            let prop = cell_defs.get_typed(c);
-            // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
-            // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
-            if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
-                state.world.destroy(tgt_x, tgt_y);
-                broadcast_cell_update(state, tgt_x, tgt_y);
-            }
-        }
-    }
-
-    // 50 HP damage to players in range
-    let killed = aoe_damage_players(state, cx, cy, 1, 3.5, 50);
-    for (opid, _) in killed {
-        request_death(state, opid);
-    }
-
-    // C# ShitClass.Prot: SendDirectedFx(fx=1, x, y, dir=1, bid=0, color=1).
-    let fx = hb_world_blast_fx(net_u16_nonneg(cx), net_u16_nonneg(cy), 1, 1);
-    state.broadcast_hb_at(cx, cy, &[fx], None);
-}
-
-/// D16: Razryadka — C# `ShitClass.Raz` parity.
-/// C#: `SendPack`('B', off=2) → `AsyncAction`(5s) → детонация + `ClearPack`. Без `AccessGun`.
-pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-        let p = ecs.get::<PlayerPosition>(entity)?;
-        Some((p.x, p.y, p.dir))
-    });
-    let Some((px, py, pdir)) = pos else {
-        return false;
-    };
-    let (dx, dy) = dir_offset(pdir);
-    let (cx, cy) = (px + dx, py + dy);
-
-    send_consumable_pack(state, cx, cy, 2);
-    let st = state.clone();
-    state.tokio_handle.spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        raz_detonate(&st, pid, cx, cy);
-        clear_consumable_pack(&st, cx, cy);
-    });
-    true
-}
-
-/// Детонация Razryadka через 5с (тело C# `AsyncAction`): `IDamagable`-здания в r=9.5
-/// (Destroy при `CanDestroy`, иначе Damage 10) + 500 HP всем игрокам + FX.
-fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
-    // Collect IDamagable buildings in radius 9.5 and apply damage (C# ShitClass.Raz).
-    let mut to_destroy: Vec<(i32, i32)> = Vec::new();
-    let mut resend_charge_zero: Vec<(i32, i32)> = Vec::new();
-    {
-        let mut ecs = state.ecs_write_profiled("inventory.raz_detonate");
-        let mut query = ecs.query_filtered::<(
-            &BuildingMetadata,
-            &GridPosition,
-            &BuildingOwnership,
-            &mut BuildingStats,
-        ), bevy_ecs::prelude::Without<crate::game::BuildingDeletePending>>(
-        );
-        for (meta, bpos, ownership, mut pstats) in query.iter_mut(&mut ecs) {
-            if !is_damagable(meta.pack_type) || ownership.owner_id == 0 {
-                continue;
-            }
-            let ddx = (bpos.x - cx) as f32;
-            let ddy = (bpos.y - cy) as f32;
-            if ddx.hypot(ddy) > 9.5 {
-                continue;
-            }
-            if can_destroy(&pstats) {
-                to_destroy.push((bpos.x, bpos.y));
-            } else {
-                damage_building(&mut pstats, 10);
-                // C#: if (pack.charge == 0) ResendPack
-                if pstats.charge == 0 {
-                    resend_charge_zero.push((bpos.x, bpos.y));
-                }
-            }
-        }
-    }
-
-    // Destroy buildings that reached CanDestroy (release ECS lock first to avoid deadlock).
-    for (bx, by) in to_destroy {
-        destroy_damagable_building(state, Some(pid), bx, by);
-    }
-
-    // Resend HB O for buildings whose charge hit 0 from damage.
-    for (bx, by) in resend_charge_zero {
-        if let Some(view) = state.get_pack_at(bx, by) {
-            broadcast_pack_update(state, &view);
-        }
-    }
-
-    // 500 HP damage to ALL players in radius 9.5
-    let killed = aoe_damage_players(state, cx, cy, 10, 9.5, 500);
-    for (opid, _) in killed {
-        request_death(state, opid);
-    }
-
-    // C# ShitClass.Raz: SendDirectedFx(fx=1, x, y, dir=9, bid=0, color=2).
-    let fx = hb_world_blast_fx(net_u16_nonneg(cx), net_u16_nonneg(cy), 9, 2);
-    state.broadcast_hb_at(cx, cy, &[fx], None);
-}
-
 /// D17: C190 — C# `ShitClass.C190Shot` parity.
 pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let ctx = crate::game::ExpContext::from_state(state);
@@ -1112,6 +874,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::buildings::{BuildingMetadata, BuildingOwnership};
     use crate::test_support::{ServerTestHarness, drain_events};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -1317,61 +1080,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saturated_due_queue_leaves_boom_admission_state_unchanged() {
-        let test = make_test_state("boom_due_saturation").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
+    async fn saturated_due_queue_leaves_delayed_consumable_admission_state_unchanged() {
+        for item_id in [5, 6, 7] {
+            let label = format!("delayed_due_saturation_{item_id}");
+            let test = make_test_state(&label).await;
+            let (tx, mut rx) = test.connect_with_outbox(1);
+            drain_events(&mut rx);
 
-        let pid = PlayerId(test.player.id);
-        let entity = test.state.get_player_entity(pid).unwrap();
-        let original_cooldown = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
-        {
-            let mut ecs = test.state.ecs.write();
-            ecs.get_mut::<PlayerCooldowns>(entity)
-                .unwrap()
-                .last_inventory_use = original_cooldown;
-            let mut inventory = ecs.get_mut::<PlayerInventory>(entity).unwrap();
-            inventory.selected = 5;
-            inventory.items.insert(5, 2);
+            let pid = PlayerId(test.player.id);
+            let entity = test.state.get_player_entity(pid).unwrap();
+            let original_cooldown = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            {
+                let mut ecs = test.state.ecs.write();
+                ecs.get_mut::<PlayerCooldowns>(entity)
+                    .unwrap()
+                    .last_inventory_use = original_cooldown;
+                let mut inventory = ecs.get_mut::<PlayerInventory>(entity).unwrap();
+                inventory.selected = item_id;
+                inventory.items.insert(item_id, 2);
+            }
+            let original_pack_count = test.state.consumable_packs.len();
+            let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+            due_actions.try_reserve().unwrap().publish(
+                Instant::now() + Duration::from_mins(1),
+                crate::game::logic::due::DueAction::Boom(
+                    crate::game::logic::consumables::BoomDueAction {
+                        center: crate::game::WorldPos(20, 20),
+                        rng_seed: 1,
+                    },
+                ),
+            );
+            let mut broadcasts = Vec::new();
+
+            assert!(handle_inventory_use_sync_nonbuilding(
+                &test.state,
+                &tx,
+                pid,
+                crate::game::SessionId::new(1),
+                &mut due_actions,
+                &mut broadcasts,
+            ));
+
+            assert_eq!(due_actions.len(), 1);
+            assert!(broadcasts.is_empty());
+            assert_eq!(test.state.consumable_packs.len(), original_pack_count);
+            let (cooldown, item_count) = test
+                .state
+                .query_player_opt(pid, |ecs, player_entity| {
+                    Some((
+                        ecs.get::<PlayerCooldowns>(player_entity)?
+                            .last_inventory_use,
+                        *ecs.get::<PlayerInventory>(player_entity)?
+                            .items
+                            .get(&item_id)?,
+                    ))
+                })
+                .expect("player admission state");
+            assert_eq!(cooldown, original_cooldown);
+            assert_eq!(item_count, 2);
+            assert!(drain_events(&mut rx).is_empty());
         }
-        let original_pack_count = test.state.consumable_packs.len();
-        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
-        due_actions.try_reserve().unwrap().publish(
-            Instant::now() + Duration::from_mins(1),
-            crate::game::logic::due::DueAction::Boom(
-                crate::game::logic::consumables::BoomDueAction {
-                    center: crate::game::WorldPos(20, 20),
-                    rng_seed: 1,
-                },
-            ),
-        );
-        let mut broadcasts = Vec::new();
-
-        assert!(handle_inventory_use_sync_nonbuilding(
-            &test.state,
-            &tx,
-            pid,
-            crate::game::SessionId::new(1),
-            &mut due_actions,
-            &mut broadcasts,
-        ));
-
-        assert_eq!(due_actions.len(), 1);
-        assert!(broadcasts.is_empty());
-        assert_eq!(test.state.consumable_packs.len(), original_pack_count);
-        let (cooldown, item_count) = test
-            .state
-            .query_player_opt(pid, |ecs, player_entity| {
-                Some((
-                    ecs.get::<PlayerCooldowns>(player_entity)?
-                        .last_inventory_use,
-                    *ecs.get::<PlayerInventory>(player_entity)?.items.get(&5)?,
-                ))
-            })
-            .expect("player admission state");
-        assert_eq!(cooldown, original_cooldown);
-        assert_eq!(item_count, 2);
-        assert!(drain_events(&mut rx).is_empty());
     }
 
     #[tokio::test]

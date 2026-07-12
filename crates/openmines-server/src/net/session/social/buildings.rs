@@ -684,31 +684,6 @@ pub fn spawn_botspot(
     state.spawn_botspot_runtime(owner_id, x, y, clan_id, building_entity);
 }
 
-/// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.
-/// Возвращает true при успехе.
-pub fn destroy_damagable_building(
-    state: &Arc<GameState>,
-    trigger_pid: Option<PlayerId>,
-    bx: i32,
-    by: i32,
-) -> bool {
-    if state.building_entity_at(bx, by).is_none() {
-        return false;
-    }
-    state.enqueue_command(crate::game::PlayerCommand::RemovePack {
-        remove: crate::game::RemovePack {
-            x: bx,
-            y: by,
-            cause: crate::game::BuildingDeleteCause::Damage {
-                trigger_player_id: trigger_pid,
-                origin_session_id: trigger_pid
-                    .and_then(|player_id| state.sessions.session_for_player(player_id)),
-            },
-        },
-    });
-    true
-}
-
 /// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).
 /// Проверка размещения 1:1: `isEmpty && can_place_over && !PackPart`.
 #[cfg(test)]
@@ -889,7 +864,18 @@ mod tests {
             Some(())
         });
 
-        assert!(destroy_damagable_building(&test.state, None, 10, 10));
+        assert!(
+            test.state
+                .enqueue_command(crate::game::PlayerCommand::RemovePack {
+                    remove: crate::game::RemovePack {
+                        x: 10,
+                        y: 10,
+                        cause: crate::game::BuildingDeleteCause::Damage {
+                            trigger_player_id: None,
+                        },
+                    },
+                })
+        );
         let queued = test
             .state
             .commands_rx
@@ -988,7 +974,6 @@ mod tests {
                     y: 10,
                     cause: crate::game::BuildingDeleteCause::Damage {
                         trigger_player_id: None,
-                        origin_session_id: None,
                     },
                 },
             },

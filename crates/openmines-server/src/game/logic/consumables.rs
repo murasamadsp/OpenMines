@@ -1,16 +1,79 @@
 use crate::game::player::{
     PlayerCooldowns, PlayerFlags, PlayerPosition, PlayerSkillsComp, PlayerStats,
 };
-use crate::game::{ExpContext, GameState, PlayerId, WorldPos};
+use crate::game::structures::buildings::{
+    BuildingDeletePending, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
+    GridPosition, PackType, can_destroy, damage_building, is_damagable,
+};
+use crate::game::{BuildingDeleteCause, ExpContext, GameState, PlayerId, RemovePack, WorldPos};
 use crate::world::WorldProvider;
+use bevy_ecs::prelude::Entity;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const BOOM_DAMAGE: i32 = 40;
 const BOOM_SCAN_RANGE: i32 = 4;
 const BOOM_RADIUS_SQUARED: i64 = 12;
+const PROTECTOR_DAMAGE: i32 = 50;
+const PROTECTOR_SCAN_RANGE: i32 = 1;
+const PROTECTOR_RADIUS_SQUARED: i64 = 12;
+const RAZ_DAMAGE: i32 = 500;
+const RAZ_BUILDING_DAMAGE: i32 = 10;
+const RAZ_SCAN_RANGE: i32 = 10;
+const RAZ_RADIUS_SQUARED: i64 = 90;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DelayedConsumableKind {
+    Boom,
+    Protector,
+    Raz,
+}
+
+impl DelayedConsumableKind {
+    #[must_use]
+    pub const fn from_item(item_id: i32) -> Option<Self> {
+        match item_id {
+            5 => Some(Self::Boom),
+            6 => Some(Self::Protector),
+            7 => Some(Self::Raz),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::Boom => "boom",
+            Self::Protector => "protector",
+            Self::Raz => "raz",
+        }
+    }
+
+    #[must_use]
+    pub const fn delay(self) -> Duration {
+        match self {
+            Self::Boom => Duration::from_secs(1),
+            Self::Protector => Duration::from_secs(2),
+            Self::Raz => Duration::from_secs(5),
+        }
+    }
+
+    #[must_use]
+    pub const fn pack_offset(self) -> u8 {
+        match self {
+            Self::Boom => 0,
+            Self::Protector => 1,
+            Self::Raz => 2,
+        }
+    }
+
+    #[must_use]
+    pub const fn requires_gun_access(self) -> bool {
+        matches!(self, Self::Boom | Self::Protector)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BoomDueAction {
@@ -18,8 +81,20 @@ pub struct BoomDueAction {
     pub rng_seed: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtectorDueAction {
+    pub center: WorldPos,
+    pub trigger_player_id: PlayerId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RazDueAction {
+    pub center: WorldPos,
+    pub trigger_player_id: PlayerId,
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct BoomPlayerHealthEffect {
+pub struct ConsumablePlayerHealthEffect {
     pub player_id: PlayerId,
     pub position: WorldPos,
     pub health: i32,
@@ -41,10 +116,22 @@ pub enum BoomFxEffect {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BoomApplyEffects {
     pub changed_cells: Vec<WorldPos>,
-    pub player_health: Vec<BoomPlayerHealthEffect>,
+    pub player_health: Vec<ConsumablePlayerHealthEffect>,
     pub deaths: Vec<PlayerId>,
     pub cleared_pack: WorldPos,
     pub fx: Vec<BoomFxEffect>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AreaConsumableApplyEffects {
+    pub changed_cells: Vec<WorldPos>,
+    pub building_removals: Vec<RemovePack>,
+    pub pack_resends: Vec<WorldPos>,
+    pub player_health: Vec<ConsumablePlayerHealthEffect>,
+    pub deaths: Vec<PlayerId>,
+    pub cleared_pack: WorldPos,
+    pub blast_direction: u16,
+    pub blast_color: u8,
 }
 
 fn inside_boom_radius(position: WorldPos, center: WorldPos) -> bool {
@@ -72,7 +159,7 @@ fn red_rock_converts(rng_seed: u64, position: WorldPos) -> bool {
     rng.random_range(1_u8..=100) >= 99
 }
 
-fn nearby_player_candidates(state: &GameState, center: WorldPos) -> Vec<PlayerId> {
+fn nearby_player_candidates(state: &GameState, center: WorldPos, scan_range: i32) -> Vec<PlayerId> {
     if !state.world.valid_coord(center.0, center.1) {
         return Vec::new();
     }
@@ -81,10 +168,10 @@ fn nearby_player_candidates(state: &GameState, center: WorldPos) -> Vec<PlayerId
         i32::try_from(state.world.cells_width().saturating_sub(1)).unwrap_or(i32::MAX);
     let max_world_y =
         i32::try_from(state.world.cells_height().saturating_sub(1)).unwrap_or(i32::MAX);
-    let min_x = center.0.saturating_sub(BOOM_SCAN_RANGE).max(0);
-    let min_y = center.1.saturating_sub(BOOM_SCAN_RANGE).max(0);
-    let max_x = center.0.saturating_add(BOOM_SCAN_RANGE).min(max_world_x);
-    let max_y = center.1.saturating_add(BOOM_SCAN_RANGE).min(max_world_y);
+    let min_x = center.0.saturating_sub(scan_range).max(0);
+    let min_y = center.1.saturating_sub(scan_range).max(0);
+    let max_x = center.0.saturating_add(scan_range).min(max_world_x);
+    let max_y = center.1.saturating_add(scan_range).min(max_world_y);
     let (min_chunk_x, min_chunk_y) = crate::world::World::chunk_pos(min_x, min_y);
     let (max_chunk_x, max_chunk_y) = crate::world::World::chunk_pos(max_x, max_y);
 
@@ -149,8 +236,8 @@ fn apply_boom_cells(state: &GameState, action: BoomDueAction) -> Vec<WorldPos> {
 fn apply_boom_damage(
     state: &GameState,
     center: WorldPos,
-) -> (Vec<BoomPlayerHealthEffect>, Vec<PlayerId>) {
-    let candidates = nearby_player_candidates(state, center);
+) -> (Vec<ConsumablePlayerHealthEffect>, Vec<PlayerId>) {
+    let candidates = nearby_player_candidates(state, center, BOOM_SCAN_RANGE);
     let exp_context = ExpContext::from_state(state);
     let now = Instant::now();
     let mut ecs = state.ecs_write_profiled("boom.apply.players");
@@ -200,7 +287,7 @@ fn apply_boom_damage(
             .expect("PlayerFlags checked before Boom damage")
             .dirty = true;
 
-        player_health.push(BoomPlayerHealthEffect {
+        player_health.push(ConsumablePlayerHealthEffect {
             player_id,
             position,
             health,
@@ -213,6 +300,254 @@ fn apply_boom_damage(
     }
     drop(ecs);
     (player_health, deaths)
+}
+
+fn inside_radius(position: WorldPos, center: WorldPos, radius_squared: i64) -> bool {
+    let dx = i64::from(position.0) - i64::from(center.0);
+    let dy = i64::from(position.1) - i64::from(center.1);
+    dx * dx + dy * dy <= radius_squared
+}
+
+fn apply_area_player_damage(
+    state: &GameState,
+    center: WorldPos,
+    scan_range: i32,
+    radius_squared: i64,
+    damage: i32,
+) -> (Vec<ConsumablePlayerHealthEffect>, Vec<PlayerId>) {
+    let candidates = nearby_player_candidates(state, center, scan_range);
+    let exp_context = ExpContext::from_state(state);
+    let now = Instant::now();
+    let mut ecs = state.ecs_write_profiled("consumable.apply.players");
+    let mut player_health = Vec::new();
+    let mut deaths = Vec::new();
+
+    for player_id in candidates {
+        if state.active_session_for_player(player_id).is_none() {
+            continue;
+        }
+        let Some(entity) = state.get_player_entity(player_id) else {
+            continue;
+        };
+        let Some(position) = ecs
+            .get::<PlayerPosition>(entity)
+            .map(|position| WorldPos(position.x, position.y))
+        else {
+            continue;
+        };
+        if !inside_radius(position, center, radius_squared)
+            || ecs
+                .get::<PlayerCooldowns>(entity)
+                .and_then(|cooldowns| cooldowns.protection_until)
+                .is_some_and(|until| now < until)
+            || ecs
+                .get::<PlayerStats>(entity)
+                .is_none_or(|stats| stats.health <= 0)
+            || ecs.get::<PlayerSkillsComp>(entity).is_none()
+            || ecs.get::<PlayerFlags>(entity).is_none()
+        {
+            continue;
+        }
+
+        let skill_progress = exp_context.add_typed_skill_exp(
+            &mut ecs
+                .get_mut::<PlayerSkillsComp>(entity)
+                .expect("PlayerSkillsComp checked before consumable damage")
+                .states,
+            crate::game::skills::SkillType::Health,
+            1.0,
+        );
+        let (health, max_health) = {
+            let mut player_stats = ecs
+                .get_mut::<PlayerStats>(entity)
+                .expect("PlayerStats checked before consumable damage");
+            player_stats.health = player_stats.health.saturating_sub(damage).max(0);
+            (player_stats.health, player_stats.max_health)
+        };
+        ecs.get_mut::<PlayerFlags>(entity)
+            .expect("PlayerFlags checked before consumable damage")
+            .dirty = true;
+
+        player_health.push(ConsumablePlayerHealthEffect {
+            player_id,
+            position,
+            health,
+            max_health,
+            skill_progress,
+        });
+        if health == 0 {
+            deaths.push(player_id);
+        }
+    }
+    drop(ecs);
+    (player_health, deaths)
+}
+
+pub fn apply_protector(
+    state: &Arc<GameState>,
+    action: ProtectorDueAction,
+) -> AreaConsumableApplyEffects {
+    let cell_defs = state.world.cell_defs();
+    let mut changed_cells = Vec::new();
+    let mut building_removals = Vec::new();
+
+    for dx in -PROTECTOR_SCAN_RANGE..=PROTECTOR_SCAN_RANGE {
+        for dy in -PROTECTOR_SCAN_RANGE..=PROTECTOR_SCAN_RANGE {
+            let Some(x) = action.center.0.checked_add(dx) else {
+                continue;
+            };
+            let Some(y) = action.center.1.checked_add(dy) else {
+                continue;
+            };
+            if !state.world.valid_coord(x, y) {
+                continue;
+            }
+            if state
+                .get_pack_at(x, y)
+                .is_some_and(|view| view.pack_type == PackType::Gate)
+            {
+                building_removals.push(RemovePack {
+                    x,
+                    y,
+                    cause: BuildingDeleteCause::Damage {
+                        trigger_player_id: Some(action.trigger_player_id),
+                    },
+                });
+            }
+            let cell = state.world.get_cell_typed(x, y);
+            if cell_defs.get_typed(cell).physical.is_destructible
+                && state.find_pack_covering(x, y).is_none()
+            {
+                state.world.destroy_cell_and_road(x, y);
+                if state.world.get_cell_typed(x, y)
+                    == crate::world::CellType(crate::world::cells::cell_type::EMPTY)
+                {
+                    changed_cells.push(WorldPos(x, y));
+                }
+            }
+        }
+    }
+    building_removals.sort_unstable_by_key(|remove| (remove.x, remove.y));
+    building_removals.dedup_by_key(|remove| (remove.x, remove.y));
+
+    let (player_health, deaths) = apply_area_player_damage(
+        state,
+        action.center,
+        PROTECTOR_SCAN_RANGE,
+        PROTECTOR_RADIUS_SQUARED,
+        PROTECTOR_DAMAGE,
+    );
+    state.remove_consumable_pack(action.center.0, action.center.1);
+
+    AreaConsumableApplyEffects {
+        changed_cells,
+        building_removals,
+        pack_resends: Vec::new(),
+        player_health,
+        deaths,
+        cleared_pack: action.center,
+        blast_direction: 1,
+        blast_color: 1,
+    }
+}
+
+fn nearby_building_candidates(state: &GameState, center: WorldPos, scan_range: i32) -> Vec<Entity> {
+    if !state.world.valid_coord(center.0, center.1) {
+        return Vec::new();
+    }
+    let max_world_x =
+        i32::try_from(state.world.cells_width().saturating_sub(1)).unwrap_or(i32::MAX);
+    let max_world_y =
+        i32::try_from(state.world.cells_height().saturating_sub(1)).unwrap_or(i32::MAX);
+    let min_x = center.0.saturating_sub(scan_range).max(0);
+    let min_y = center.1.saturating_sub(scan_range).max(0);
+    let max_x = center.0.saturating_add(scan_range).min(max_world_x);
+    let max_y = center.1.saturating_add(scan_range).min(max_world_y);
+    let (min_chunk_x, min_chunk_y) = crate::world::World::chunk_pos(min_x, min_y);
+    let (max_chunk_x, max_chunk_y) = crate::world::World::chunk_pos(max_x, max_y);
+    let mut candidates = Vec::new();
+    for chunk_x in min_chunk_x..=max_chunk_x {
+        for chunk_y in min_chunk_y..=max_chunk_y {
+            candidates.extend(state.building_entities_in_chunk_snapshot(chunk_x, chunk_y));
+        }
+    }
+    candidates.sort_unstable_by_key(|entity| entity.to_bits());
+    candidates.dedup();
+    candidates
+}
+
+fn apply_raz_buildings(
+    state: &GameState,
+    action: RazDueAction,
+) -> (Vec<RemovePack>, Vec<WorldPos>) {
+    let candidates = nearby_building_candidates(state, action.center, RAZ_SCAN_RANGE);
+    let mut ecs = state.ecs_write_profiled("raz.apply.buildings");
+    let mut query = ecs.query_filtered::<(
+        &BuildingMetadata,
+        &GridPosition,
+        &BuildingOwnership,
+        &mut BuildingStats,
+        &mut BuildingFlags,
+    ), bevy_ecs::prelude::Without<BuildingDeletePending>>();
+    let mut removals = Vec::new();
+    let mut pack_resends = Vec::new();
+
+    for entity in candidates {
+        let Ok((metadata, position, ownership, mut building_stats, mut flags)) =
+            query.get_mut(&mut ecs, entity)
+        else {
+            continue;
+        };
+        let building_position = WorldPos(position.x, position.y);
+        if !is_damagable(metadata.pack_type)
+            || ownership.owner_id == PlayerId(0)
+            || !inside_radius(building_position, action.center, RAZ_RADIUS_SQUARED)
+        {
+            continue;
+        }
+        if can_destroy(&building_stats) {
+            removals.push(RemovePack {
+                x: position.x,
+                y: position.y,
+                cause: BuildingDeleteCause::Damage {
+                    trigger_player_id: Some(action.trigger_player_id),
+                },
+            });
+            continue;
+        }
+        damage_building(&mut building_stats, RAZ_BUILDING_DAMAGE);
+        flags.dirty = true;
+        if building_stats.charge == 0 {
+            pack_resends.push(building_position);
+        }
+    }
+    drop(ecs);
+    removals.sort_unstable_by_key(|remove| (remove.x, remove.y));
+    pack_resends.sort_unstable();
+    (removals, pack_resends)
+}
+
+pub fn apply_raz(state: &Arc<GameState>, action: RazDueAction) -> AreaConsumableApplyEffects {
+    let (building_removals, pack_resends) = apply_raz_buildings(state, action);
+    let (player_health, deaths) = apply_area_player_damage(
+        state,
+        action.center,
+        RAZ_SCAN_RANGE,
+        RAZ_RADIUS_SQUARED,
+        RAZ_DAMAGE,
+    );
+    state.remove_consumable_pack(action.center.0, action.center.1);
+
+    AreaConsumableApplyEffects {
+        changed_cells: Vec::new(),
+        building_removals,
+        pack_resends,
+        player_health,
+        deaths,
+        cleared_pack: action.center,
+        blast_direction: 9,
+        blast_color: 2,
+    }
 }
 
 pub fn apply_boom(state: &Arc<GameState>, action: BoomDueAction) -> BoomApplyEffects {
@@ -276,6 +611,48 @@ mod tests {
                 .world
                 .destroy_cell_and_road(center.0 + dx, center.1 + dy);
         }
+    }
+
+    fn health_skill_state(state: &GameState, player_id: PlayerId) -> Option<(i32, u32)> {
+        state.query_player_opt(player_id, |ecs, entity| {
+            ecs.get::<PlayerSkillsComp>(entity)?
+                .states
+                .find("l")
+                .map(|skill| (skill.level, skill.exp.to_bits()))
+        })
+    }
+
+    fn spawn_test_building(
+        state: &Arc<GameState>,
+        id: i32,
+        pack_type: PackType,
+        position: WorldPos,
+        charge: i32,
+    ) -> Entity {
+        let extra = crate::db::BuildingExtra {
+            charge,
+            max_charge: 100,
+            cost: 10,
+            hp: 100,
+            max_hp: 100,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        state.spawn_building_runtime(&crate::game::BuildingSpawnSpec {
+            id,
+            pack_type,
+            x: position.0,
+            y: position.1,
+            owner_id: PlayerId(999),
+            clan_id: 0,
+            extra: &extra,
+        })
     }
 
     #[test]
@@ -379,12 +756,7 @@ mod tests {
         assert_eq!(lethal.deaths, vec![player_id]);
         assert_eq!(lethal.player_health[0].health, 0);
         assert_eq!(lethal.fx, vec![BoomFxEffect::Blast { position: center }]);
-        let skill_after_lethal = test.state.query_player_opt(player_id, |ecs, entity| {
-            ecs.get::<PlayerSkillsComp>(entity)?
-                .states
-                .find("l")
-                .map(|skill| (skill.level, skill.exp.to_bits()))
-        });
+        let skill_after_lethal = health_skill_state(&test.state, player_id);
 
         test.state.put_consumable_pack(center.0, center.1, b'B', 0);
         let repeated = apply_boom(
@@ -397,14 +769,13 @@ mod tests {
         assert!(repeated.player_health.is_empty());
         assert!(repeated.deaths.is_empty());
         assert_eq!(repeated.fx, vec![BoomFxEffect::Blast { position: center }]);
-        let skill_after_repeated = test.state.query_player_opt(player_id, |ecs, entity| {
-            ecs.get::<PlayerSkillsComp>(entity)?
-                .states
-                .find("l")
-                .map(|skill| (skill.level, skill.exp.to_bits()))
-        });
+        let skill_after_repeated = health_skill_state(&test.state, player_id);
         assert_eq!(skill_after_repeated, skill_after_lethal);
-        assert!(crate::test_support::ServerTestHarness::drain_events(&mut receiver).is_empty());
+        let wire_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert!(
+            wire_events.is_empty(),
+            "unexpected wire effects: {wire_events:?}"
+        );
     }
 
     #[tokio::test]
@@ -486,6 +857,133 @@ mod tests {
                 Some(ecs.get::<PlayerStats>(entity)?.health)
             }),
             Some(100)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_protector_is_wire_free_and_returns_typed_gate_delete() {
+        let test =
+            crate::test_support::ServerTestHarness::new("protector_apply", "protector-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = PlayerId(test.player.id);
+        let center = WorldPos(20, 20);
+        move_player(&test.state, player_id, center, None);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                test.state
+                    .world
+                    .destroy_cell_and_road(center.0 + dx, center.1 + dy);
+            }
+        }
+        let changed = WorldPos(center.0 - 1, center.1);
+        test.state.world.set_cell_typed(
+            changed.0,
+            changed.1,
+            crate::world::CellType(crate::world::cells::cell_type::ROCK),
+        );
+        let gate = WorldPos(center.0 + 1, center.1);
+        let gate_entity = spawn_test_building(&test.state, 7, PackType::Gate, gate, 0);
+        test.state.put_consumable_pack(center.0, center.1, b'B', 1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_protector(
+            &test.state,
+            ProtectorDueAction {
+                center,
+                trigger_player_id: player_id,
+            },
+        );
+
+        assert_eq!(effects.changed_cells, vec![changed]);
+        assert_eq!(effects.player_health.len(), 1);
+        assert_eq!(effects.player_health[0].health, 50);
+        assert!(effects.deaths.is_empty());
+        assert_eq!(effects.cleared_pack, center);
+        assert_eq!((effects.blast_direction, effects.blast_color), (1, 1));
+        assert_eq!(
+            effects.building_removals,
+            vec![RemovePack {
+                x: gate.0,
+                y: gate.1,
+                cause: BuildingDeleteCause::Damage {
+                    trigger_player_id: Some(player_id),
+                },
+            }]
+        );
+        assert_eq!(
+            test.state.building_entity_at(gate.0, gate.1),
+            Some(gate_entity)
+        );
+        assert!(!test.state.consumable_packs.contains_key(&center));
+        let wire_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert!(
+            wire_events.is_empty(),
+            "unexpected wire effects: {wire_events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_raz_marks_damage_dirty_and_returns_destroy_intent() {
+        let test = crate::test_support::ServerTestHarness::new("raz_apply", "raz-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = PlayerId(test.player.id);
+        let center = WorldPos(31, 31);
+        move_player(&test.state, player_id, center, None);
+        let damaged = WorldPos(25, 31);
+        let damaged_entity = spawn_test_building(&test.state, 8, PackType::Gun, damaged, 50);
+        let destroyed = WorldPos(36, 31);
+        let destroyed_entity =
+            spawn_test_building(&test.state, 9, PackType::Teleport, destroyed, 50);
+        test.state
+            .modify_building(destroyed_entity, |ecs, entity| {
+                let mut building_stats = ecs.get_mut::<BuildingStats>(entity)?;
+                building_stats.hp = 0;
+                building_stats.broken_timer = Instant::now().checked_sub(Duration::from_hours(9));
+                Some(())
+            })
+            .unwrap();
+        test.state.put_consumable_pack(center.0, center.1, b'B', 2);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_raz(
+            &test.state,
+            RazDueAction {
+                center,
+                trigger_player_id: player_id,
+            },
+        );
+
+        assert_eq!(effects.player_health.len(), 1);
+        assert_eq!(effects.player_health[0].health, 0);
+        assert_eq!(effects.deaths, vec![player_id]);
+        assert_eq!(effects.pack_resends, vec![damaged]);
+        assert_eq!(
+            effects.building_removals,
+            vec![RemovePack {
+                x: destroyed.0,
+                y: destroyed.1,
+                cause: BuildingDeleteCause::Damage {
+                    trigger_player_id: Some(player_id),
+                },
+            }]
+        );
+        assert_eq!((effects.blast_direction, effects.blast_color), (9, 2));
+        let ecs = test.state.ecs.read();
+        let damaged_stats = ecs.get::<BuildingStats>(damaged_entity).unwrap();
+        assert_eq!((damaged_stats.hp, damaged_stats.charge), (90, 0));
+        assert!(ecs.get::<BuildingFlags>(damaged_entity).unwrap().dirty);
+        drop(ecs);
+        assert_eq!(
+            test.state.building_entity_at(destroyed.0, destroyed.1),
+            Some(destroyed_entity)
+        );
+        assert!(!test.state.consumable_packs.contains_key(&center));
+        let wire_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert!(
+            wire_events.is_empty(),
+            "unexpected wire effects: {wire_events:?}"
         );
     }
 }

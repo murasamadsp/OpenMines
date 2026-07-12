@@ -104,6 +104,10 @@ impl BoxPickupQueue {
         state.players.clear();
         state.queue.drain(..).collect()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.lock().queue.is_empty()
+    }
 }
 
 #[derive(Resource, Clone)]
@@ -402,6 +406,10 @@ impl BotsRenderSchedule {
             session_token,
         })
     }
+
+    fn next_due_at(&self) -> Option<Instant> {
+        self.due.peek().map(|Reverse((due_at, _, _))| *due_at)
+    }
 }
 
 #[derive(Default)]
@@ -420,6 +428,10 @@ impl CraftingDueSchedule {
         self.due
             .peek()
             .is_some_and(|Reverse((end_ts, _))| *end_ts <= now_ts)
+    }
+
+    fn next_due_ts(&self) -> Option<i64> {
+        self.due.peek().map(|Reverse((end_ts, _))| *end_ts)
     }
 
     fn pop_due(&mut self, now_ts: i64, limit: usize) -> Vec<building_damage::CraftingDue> {
@@ -468,6 +480,7 @@ pub struct GameState {
     command_seq: std::sync::atomic::AtomicU64,
     command_queue_depth: std::sync::atomic::AtomicUsize,
     command_queue_high_water: std::sync::atomic::AtomicUsize,
+    simulation_waker: crate::simulation_waker::SimulationWaker,
     crafting_due_schedule: Mutex<CraftingDueSchedule>,
     bots_render_schedule: Mutex<BotsRenderSchedule>,
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
@@ -686,6 +699,7 @@ impl GameState {
             command_seq: std::sync::atomic::AtomicU64::new(1),
             command_queue_depth: std::sync::atomic::AtomicUsize::new(0),
             command_queue_high_water: std::sync::atomic::AtomicUsize::new(0),
+            simulation_waker: crate::simulation_waker::SimulationWaker::default(),
             crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
             bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
             bots_render_slot_seq: std::sync::atomic::AtomicU64::new(0),
@@ -825,6 +839,11 @@ impl GameState {
         let depth = schedule.len();
         drop(schedule);
         crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        self.simulation_waker.wake();
+    }
+
+    pub fn next_crafting_due_ts(&self) -> Option<i64> {
+        self.crafting_due_schedule.lock().next_due_ts()
     }
 
     pub fn has_due_crafting(&self, now_ts: i64) -> bool {
@@ -935,7 +954,12 @@ impl GameState {
             .max(depth);
         crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
         crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
+        self.simulation_waker.wake();
         true
+    }
+
+    pub(crate) fn simulation_waker(&self) -> crate::simulation_waker::SimulationWaker {
+        self.simulation_waker.clone()
     }
 
     pub fn record_command_dequeued(&self) {
@@ -1026,6 +1050,9 @@ impl GameState {
                     .store(interval_ms, std::sync::atomic::Ordering::Relaxed);
                 updated = true;
             }
+        }
+        if updated {
+            self.simulation_waker.wake();
         }
         updated
     }
@@ -1552,6 +1579,10 @@ impl GameState {
         due
     }
 
+    pub fn next_bots_render_at(&self) -> Option<Instant> {
+        self.bots_render_schedule.lock().next_due_at()
+    }
+
     pub fn reschedule_bots_render(&self, due: BotsRenderDue, next_at: Instant) {
         if self
             .active_players
@@ -1859,6 +1890,7 @@ impl GameState {
     pub fn request_player_death(&self, player_id: PlayerId) {
         if self.get_player_entity(player_id).is_some() {
             self.death_queue.push(player_id);
+            self.simulation_waker.wake();
         }
     }
 
@@ -1866,14 +1898,23 @@ impl GameState {
         self.death_queue.drain()
     }
 
+    pub fn has_pending_player_deaths(&self) -> bool {
+        !self.death_queue.is_empty()
+    }
+
     pub fn request_box_pickup(&self, intent: BoxPickupIntent) {
         if self.get_player_entity(intent.player_id).is_some() {
             self.box_pickup_queue.push(intent);
+            self.simulation_waker.wake();
         }
     }
 
     pub fn drain_box_pickups(&self) -> Vec<BoxPickupIntent> {
         self.box_pickup_queue.drain()
+    }
+
+    pub fn has_pending_box_pickups(&self) -> bool {
+        !self.box_pickup_queue.is_empty()
     }
 
     pub fn broadcast_to_nearby(&self, cx: u32, cy: u32, data: &[u8], exclude_id: Option<PlayerId>) {

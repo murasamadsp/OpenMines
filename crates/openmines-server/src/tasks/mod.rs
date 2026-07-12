@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 pub struct BackgroundTasks {
     game_tick: std::thread::JoinHandle<()>,
     persistence: crate::persistence::PersistenceRuntime,
+    simulation_waker: crate::simulation_waker::SimulationWaker,
 }
 
 impl BackgroundTasks {
@@ -18,7 +19,9 @@ impl BackgroundTasks {
         let Self {
             game_tick,
             persistence,
+            simulation_waker,
         } = self;
+        simulation_waker.wake();
         persistence.shutdown().await;
         match tokio::task::spawn_blocking(move || game_tick.join()).await {
             Ok(Ok(())) => {}
@@ -38,7 +41,8 @@ pub fn spawn_background_tasks(
     // 2. Воркеры периодического сохранения и тиков
     lifecycle::spawn_world_flush_loop(Arc::clone(state), shutdown.subscribe());
     lifecycle::spawn_online_count_loop(Arc::clone(state), shutdown.subscribe());
-    let mut persistence = crate::persistence::PersistenceRuntime::start(state.db.clone());
+    let mut persistence =
+        crate::persistence::PersistenceRuntime::start(state.db.clone(), state.simulation_waker());
     let persistence_completions = persistence.take_completion_receiver();
     let game_tick = simulation::spawn_game_tick_loop(
         Arc::clone(state),
@@ -53,5 +57,6 @@ pub fn spawn_background_tasks(
     BackgroundTasks {
         game_tick,
         persistence,
+        simulation_waker: state.simulation_waker(),
     }
 }

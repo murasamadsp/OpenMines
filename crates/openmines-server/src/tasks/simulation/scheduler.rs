@@ -67,6 +67,17 @@ pub(super) struct ScheduleCandidate {
     pub(super) interval: Duration,
 }
 
+pub(super) fn configured_candidate(state: &GameState, index: usize) -> Option<ScheduleCandidate> {
+    let schedule = state.schedules.get(index)?;
+    let interval_ms = schedule
+        .interval_ms
+        .load(std::sync::atomic::Ordering::Relaxed);
+    (interval_ms != 0).then(|| ScheduleCandidate {
+        activity: schedule.activity,
+        interval: Duration::from_millis(interval_ms),
+    })
+}
+
 impl ScheduleClock {
     pub(super) fn new(len: usize, now: Instant) -> Self {
         Self {
@@ -101,6 +112,12 @@ impl ScheduleClock {
             let Some(schedule) = candidate_at(idx) else {
                 continue;
             };
+            if schedule.activity == ScheduleActivity::DueCrafting {
+                if workload.crafting_due {
+                    due_schedules.push(idx);
+                }
+                continue;
+            }
             let last_run = self.last_run_mut(idx, now);
             if now.duration_since(*last_run) < schedule.interval {
                 continue;
@@ -112,6 +129,39 @@ impl ScheduleClock {
             due_schedules.push(idx);
         }
         due_schedules
+    }
+
+    pub(super) fn next_deadline<F>(
+        &mut self,
+        total_len: usize,
+        now: Instant,
+        workload: ScheduleWorkload,
+        mut candidate_at: F,
+    ) -> Option<Instant>
+    where
+        F: FnMut(usize) -> Option<ScheduleCandidate>,
+    {
+        self.sync_len(total_len, now);
+        let mut next = None;
+        for idx in 0..total_len {
+            let Some(schedule) = candidate_at(idx) else {
+                continue;
+            };
+            if schedule.activity == ScheduleActivity::DueCrafting {
+                if workload.crafting_due {
+                    return Some(now);
+                }
+                continue;
+            }
+            let last_run = self.last_run_mut(idx, now);
+            if schedule_due_but_idle(schedule.activity, workload) {
+                *last_run = now;
+                continue;
+            }
+            let deadline = last_run.checked_add(schedule.interval).unwrap_or(now);
+            next = Some(next.map_or(deadline, |current: Instant| current.min(deadline)));
+        }
+        next
     }
 }
 
@@ -217,14 +267,7 @@ pub(super) fn run_schedule_phase(
             player_entity_count,
             crafting_due: state.has_due_crafting(now_ts),
         },
-        |idx| {
-            let gs = state.schedules.get(idx)?;
-            let interval_ms = gs.interval_ms.load(std::sync::atomic::Ordering::Relaxed);
-            (interval_ms != 0).then(|| ScheduleCandidate {
-                activity: gs.activity,
-                interval: Duration::from_millis(interval_ms),
-            })
-        },
+        |idx| configured_candidate(state, idx),
     );
     let sched_select = select_t0.elapsed();
 
