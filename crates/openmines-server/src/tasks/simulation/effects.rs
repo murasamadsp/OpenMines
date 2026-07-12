@@ -1,5 +1,6 @@
 //! Ordered application of effects produced by commands and schedules.
 
+use super::due::DueEffect;
 use super::profiler::{ProgrammatorActionProfile, QueueProfile, SideProfile};
 use super::snapshots::flush_due_dirty_snapshots;
 use super::{
@@ -35,7 +36,9 @@ impl PendingEffects {
 
 pub(super) struct EffectSources {
     pub(super) command_events: Vec<crate::game::GameEvent>,
-    pub(super) broadcasts: Vec<crate::game::BroadcastEffect>,
+    pub(super) command_broadcasts: Vec<crate::game::BroadcastEffect>,
+    pub(super) due_effects: Vec<DueEffect>,
+    pub(super) schedule_broadcasts: Vec<crate::game::BroadcastEffect>,
     pub(super) pack_resends: Vec<(i32, i32)>,
     pub(super) cell_conversions: Vec<crate::game::PendingConversion>,
     pub(super) programmator_actions: Vec<crate::game::ProgrammatorAction>,
@@ -54,7 +57,7 @@ pub(super) fn collect_pending_effects(
     state: &Arc<GameState>,
     services: &TickServices,
     pending_work: &mut TickPendingWork,
-    mut sources: EffectSources,
+    sources: EffectSources,
     now: Instant,
 ) -> PreparedEffects {
     let mut side_profile = SideProfile::default();
@@ -63,12 +66,18 @@ pub(super) fn collect_pending_effects(
     side_profile.persistence_flush = now.elapsed();
 
     let started_at = Instant::now();
+    let mut broadcasts = sources.command_broadcasts;
+    adapt_due_effects(state, sources.due_effects, &mut broadcasts);
+    broadcasts.extend(sources.schedule_broadcasts);
+    side_profile.broadcasts = started_at.elapsed();
+
+    let started_at = Instant::now();
     pending_work.box_pickups.extend(state.drain_box_pickups());
     apply_pending_box_pickups(
         state,
         &services.persistence,
         &mut pending_work.box_pickups,
-        &mut sources.broadcasts,
+        &mut broadcasts,
     );
     side_profile.box_pickups = started_at.elapsed();
 
@@ -82,7 +91,7 @@ pub(super) fn collect_pending_effects(
         programmator_action_profile.count(action);
     }
     let queue_profile = QueueProfile {
-        broadcasts: sources.broadcasts.len(),
+        broadcasts: broadcasts.len(),
         pack_resends: sources.pack_resends.len(),
         cell_conversions_in: sources.cell_conversions.len(),
         programmator_actions: sources.programmator_actions.len(),
@@ -99,7 +108,7 @@ pub(super) fn collect_pending_effects(
     };
     let effects = PendingEffects {
         command_events: sources.command_events,
-        broadcasts: sources.broadcasts,
+        broadcasts,
         pack_resends: sources.pack_resends,
         cell_conversions: sources.cell_conversions,
         programmator_actions: sources.programmator_actions,
@@ -136,8 +145,8 @@ pub(super) fn apply_side_effects(
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideBroadcasts);
-    publish_command_events(services, command_events);
-    side_profile.broadcasts = started_at.elapsed();
+    publish_command_events(&services.presentation, command_events);
+    side_profile.broadcasts += started_at.elapsed();
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideBroadcasts);
@@ -170,9 +179,108 @@ pub(super) fn apply_side_effects(
     side_profile.bots_render = started_at.elapsed();
 }
 
-fn publish_command_events(services: &TickServices, events: Vec<crate::game::GameEvent>) {
+pub(super) fn apply_shutdown_command_effects(
+    state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
+    effects: crate::game::CommandEffects,
+) {
+    assert!(
+        effects.saves.is_empty(),
+        "persistence completion produced durable work after shutdown admission closed"
+    );
+    publish_command_events(presentation, effects.events);
+    broadcast_world_effects(state, effects.broadcasts);
+}
+
+fn publish_command_events(
+    presentation: &crate::net::presentation::PresentationRuntime,
+    events: Vec<crate::game::GameEvent>,
+) {
     for event in events {
-        services.presentation.publish(event);
+        presentation.publish(event);
+    }
+}
+
+fn adapt_due_effects(
+    state: &Arc<GameState>,
+    effects: Vec<DueEffect>,
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
+) {
+    for effect in effects {
+        match effect {
+            DueEffect::Boom(effect) => adapt_boom_effects(state, effect, broadcasts),
+        }
+    }
+}
+
+fn adapt_boom_effects(
+    state: &Arc<GameState>,
+    effects: crate::game::logic::consumables::BoomApplyEffects,
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
+) {
+    broadcasts.extend(
+        effects
+            .changed_cells
+            .into_iter()
+            .map(crate::game::BroadcastEffect::CellUpdate),
+    );
+    for health_effect in effects.player_health {
+        let Some(session_id) = state.active_session_for_player(health_effect.player_id) else {
+            continue;
+        };
+        if let Some(skill_progress) = health_effect.skill_progress {
+            let packet = crate::protocol::packets::skills_packet(&skill_progress.entries);
+            broadcasts.push(crate::game::BroadcastEffect::Direct {
+                session_id,
+                data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+            });
+        }
+        let packet =
+            crate::protocol::packets::health(health_effect.health, health_effect.max_health);
+        broadcasts.push(crate::game::BroadcastEffect::Direct {
+            session_id,
+            data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+        });
+    }
+    for fx in effects.fx {
+        let (position, packet) = match fx {
+            crate::game::logic::consumables::BoomFxEffect::Hurt {
+                player_id,
+                position,
+            } => (
+                position,
+                crate::protocol::packets::hb_hurt_fx(crate::net::session::util::net_u16_nonneg(
+                    player_id,
+                )),
+            ),
+            crate::game::logic::consumables::BoomFxEffect::Blast { position } => (
+                position,
+                crate::protocol::packets::hb_world_blast_fx(
+                    crate::net::session::util::net_u16_nonneg(position.0),
+                    crate::net::session::util::net_u16_nonneg(position.1),
+                    3,
+                    0,
+                ),
+            ),
+        };
+        broadcasts.push(nearby_hb_effect(position, packet));
+    }
+    broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(
+        effects.cleared_pack,
+    ));
+}
+
+fn nearby_hb_effect(
+    position: crate::game::WorldPos,
+    subpacket: Vec<u8>,
+) -> crate::game::BroadcastEffect {
+    let (chunk_x, chunk_y) = crate::world::World::chunk_pos(position.0, position.1);
+    let bundle = crate::protocol::packets::hb_bundle(&[subpacket]);
+    crate::game::BroadcastEffect::Nearby {
+        cx: chunk_x,
+        cy: chunk_y,
+        data: crate::net::session::wire::encode_hb_bundle(&bundle.1),
+        exclude: None,
     }
 }
 
@@ -187,6 +295,10 @@ fn broadcast_world_effects(state: &Arc<GameState>, effects: Vec<crate::game::Bro
             crate::game::BroadcastEffect::CellUpdate(pos) => {
                 let (x, y): (i32, i32) = pos.into();
                 crate::game::broadcast_cell_update(state, x, y);
+            }
+            crate::game::BroadcastEffect::BlockUpdate(pos) => {
+                let (x, y): (i32, i32) = pos.into();
+                crate::net::session::social::buildings::broadcast_block_at(state, x, y);
             }
             crate::game::BroadcastEffect::Nearby {
                 cx,
@@ -459,4 +571,84 @@ fn programmator_action_tx(
             },
             |tx| (tx, None),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::player::{PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerStats};
+    use crate::world::WorldProvider;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn boom_flows_from_admission_through_deadline_to_ordered_wire_effects() {
+        let test = crate::test_support::ServerTestHarness::new("boom_e2e", "boom-e2e-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(player_id).unwrap();
+        let center = crate::game::WorldPos(10, 11);
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut position = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+            position.x = 10;
+            position.y = 10;
+            position.dir = 0;
+            ecs.get_mut::<PlayerStats>(entity).unwrap().health = 40;
+            ecs.get_mut::<PlayerCooldowns>(entity)
+                .unwrap()
+                .last_inventory_use = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            {
+                let mut inventory = ecs.get_mut::<PlayerInventory>(entity).unwrap();
+                inventory.selected = 5;
+                inventory.items.insert(5, 1);
+            }
+            drop(ecs);
+        }
+        for x in (center.0 - 4)..=(center.0 + 4) {
+            for y in (center.1 - 4)..=(center.1 + 4) {
+                test.state.world.destroy_cell_and_road(x, y);
+            }
+        }
+
+        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+        let admitted = crate::game::logic::commands::apply_player_command_with_due(
+            &test.state,
+            crate::game::PlayerCommand::InventoryUse {
+                session_id: crate::game::SessionId::new(1),
+                player_id,
+            },
+            &mut due_actions,
+        );
+        broadcast_world_effects(&test.state, admitted.broadcasts);
+        let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(
+            admission_events
+                .iter()
+                .map(|(event, _)| event.as_str())
+                .collect::<Vec<_>>(),
+            ["HB", "IN"]
+        );
+
+        let deadline = due_actions.next_due_at().expect("admitted Boom deadline");
+        let due =
+            super::super::due::run_due_action_phase_at(&test.state, &mut due_actions, deadline);
+        assert_eq!(due.executed, 1);
+        assert_eq!(due.effects.len(), 1);
+        assert_eq!(due.effects[0].deaths(), &[player_id]);
+        let mut broadcasts = Vec::new();
+        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        broadcast_world_effects(&test.state, broadcasts);
+
+        let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(
+            detonation_events
+                .iter()
+                .map(|(event, _)| event.as_str())
+                .collect::<Vec<_>>(),
+            ["@S", "@L", "HB", "HB"]
+        );
+        assert_eq!(test.state.world.get_solid_cell(center.0, center.1), 0);
+        assert!(!test.state.consumable_packs.contains_key(&center));
+    }
 }

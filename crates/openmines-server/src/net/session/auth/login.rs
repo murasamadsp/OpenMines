@@ -6,12 +6,8 @@ use crate::net::session::prelude::*;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
 fn send_auth_failure(state: &Arc<GameState>, tx: &Outbox, _au: &AuClientPacket<'_>) {
-    let w = state.world.cells_width();
-    let h = state.world.cells_height();
     // 1:1 ref: WorldInfoPacket(World.W.name, ...)
-    // ref: WorldInfoPacket(..., 0, "COCK", "http://pi.door/", "ok")
-    let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
-    send_u_packet(tx, world.0, &world.1);
+    super::send_world_info(state, tx);
 
     // 1:1 ref: BotInfoPacket("pidor", 0, 0, -1)
     let bi = bot_info("pidor", 0, 0, -1);
@@ -82,12 +78,8 @@ pub async fn handle_auth(
 
         // 1. Сначала CF (world_info) — клиент в OnWorldConfig вызывает ServerController.Init(),
         //    который регистрирует ВСЕ остальные обработчики пакетов. Без CF клиент мёртв.
-        let w = state.world.cells_width();
-        let h = state.world.cells_height();
         // 1:1 ref: WorldInfoPacket(World.W.name, ...)
-        // ref: WorldInfoPacket(..., 0, "COCK", "http://pi.door/", "ok")
-        let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
-        send_u_packet(tx, world.0, &world.1);
+        super::send_world_info(state, tx);
 
         // 2. Gu (закрыть окно авторизации) — референс: SendU(new GuPacket()) перед Init()
         let gu = gu_close();

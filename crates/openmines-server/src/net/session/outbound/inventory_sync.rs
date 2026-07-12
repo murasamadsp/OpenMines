@@ -1,7 +1,7 @@
 use crate::game::player::PlayerInventory;
 use crate::net::session::prelude::*;
 
-/// Как `Inventory.InvToSend` → `InventoryShowPacket` (`Inventory.cs`).
+/// Синхронизировать инвентарь в совместимом с Unity wire-формате.
 pub fn send_inventory(tx: &dyn PacketSink, inv: &mut PlayerInventory) {
     let pkt = crate::game::logic::inventory::inventory_packet(inv);
     send_u_packet(tx, pkt.0, &pkt.1);
@@ -27,7 +27,7 @@ mod tests {
     }
 
     #[test]
-    fn mini_inventory_uses_show_with_total_count() {
+    fn mini_inventory_uses_client_compatible_full_with_toggle_padding() {
         let inv = PlayerInventory {
             items: HashMap::from([(1, 5), (2, 3), (3, 1), (4, 2), (5, 9)]),
             selected: 2,
@@ -35,7 +35,7 @@ mod tests {
             miniq: vec![2, 5],
         };
 
-        assert_eq!(sent_payload(inv), b"show:5:2:1#5#2#3#3#1#5#9");
+        assert_eq!(sent_payload(inv), b"full:2:1#5#2#3#3#1#5#9#-1#0");
     }
 
     #[test]

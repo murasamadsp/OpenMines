@@ -80,11 +80,220 @@ pub struct PaidBuildingPlacement {
     pub extra: BuildingExtra,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BuildingDeleteOperationId(u64);
+
+impl BuildingDeleteOperationId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<CommandSeq> for BuildingDeleteOperationId {
+    fn from(sequence: CommandSeq) -> Self {
+        Self::new(sequence.get())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuildingDeleteOrigin {
+    pub session_id: SessionId,
+    pub player_id: PlayerId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildingDeleteCause {
+    PlayerRequest(BuildingDeleteOrigin),
+    Damage {
+        trigger_player_id: Option<PlayerId>,
+        origin_session_id: Option<SessionId>,
+    },
+}
+
+impl BuildingDeleteCause {
+    pub const fn origin(self) -> Option<BuildingDeleteOrigin> {
+        match self {
+            Self::PlayerRequest(origin) => Some(origin),
+            Self::Damage {
+                trigger_player_id: Some(player_id),
+                origin_session_id: Some(session_id),
+            } => Some(BuildingDeleteOrigin {
+                session_id,
+                player_id,
+            }),
+            Self::Damage { .. } => None,
+        }
+    }
+
+    pub const fn trigger_player_id(self) -> Option<PlayerId> {
+        match self {
+            Self::PlayerRequest(origin) => Some(origin.player_id),
+            Self::Damage {
+                trigger_player_id, ..
+            } => trigger_player_id,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RemovePack {
+    pub x: i32,
+    pub y: i32,
+    pub cause: BuildingDeleteCause,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuildingIdentity {
+    pub building_id: i32,
+    pub x: i32,
+    pub y: i32,
+}
+
 #[derive(Debug, Clone)]
-pub struct BuildingRemoval {
+pub struct BuildingDeleteRequest {
+    pub operation_id: BuildingDeleteOperationId,
+    pub expected: BuildingIdentity,
     pub view: PackView,
-    pub trigger_pid: Option<PlayerId>,
-    pub storage_crystals: Option<[i64; 6]>,
+    pub cause: BuildingDeleteCause,
+    pub box_write: Option<openmines_storage::BoxWrite>,
+    pub inventory_drop_item: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum GuiButtonKind {
+    Close,
+    Building,
+    Pack,
+    Storage,
+    Craft,
+    Teleport,
+    Respawn,
+    Gun,
+    Market,
+    Settings,
+    Programmer,
+    Clan,
+    Auction,
+    Up,
+    Other,
+}
+
+impl GuiButtonKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Close => "gui.close",
+            Self::Building => "gui.building",
+            Self::Pack => "gui.pack",
+            Self::Storage => "gui.storage",
+            Self::Craft => "gui.craft",
+            Self::Teleport => "gui.teleport",
+            Self::Respawn => "gui.respawn",
+            Self::Gun => "gui.gun",
+            Self::Market => "gui.market",
+            Self::Settings => "gui.settings",
+            Self::Programmer => "gui.programmer",
+            Self::Clan => "gui.clan",
+            Self::Auction => "gui.auction",
+            Self::Up => "gui.up",
+            Self::Other => "gui.other",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum GuiCommand {
+    OpenPack { x: i32, y: i32 },
+    Button { kind: GuiButtonKind, raw: String },
+}
+
+impl GuiCommand {
+    pub fn parse(button: String) -> Self {
+        if let Some(rest) = button.strip_prefix("pack_op:open:") {
+            let mut parts = rest.split(':');
+            if let (Some(x), Some(y), None) = (parts.next(), parts.next(), parts.next())
+                && let (Ok(x), Ok(y)) = (x.parse::<i32>(), y.parse::<i32>())
+            {
+                return Self::OpenPack { x, y };
+            }
+        }
+
+        let kind = classify_gui_button(&button);
+        Self::Button { kind, raw: button }
+    }
+
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::OpenPack { .. } => "gui.pack.open",
+            Self::Button { kind, .. } => kind.label(),
+        }
+    }
+}
+
+fn classify_gui_button(button: &str) -> GuiButtonKind {
+    if matches!(button, "exit" | "exit:0" | "close") {
+        GuiButtonKind::Close
+    } else if button.starts_with("bld_place:") || button == "open_buildings" {
+        GuiButtonKind::Building
+    } else if button.starts_with("pack_op:") || button.starts_with("pack_save:") {
+        GuiButtonKind::Pack
+    } else if button.starts_with("transfer:") {
+        GuiButtonKind::Storage
+    } else if button.starts_with("craft_") {
+        GuiButtonKind::Craft
+    } else if button.starts_with("tp:") {
+        GuiButtonKind::Teleport
+    } else if button.starts_with("resp_") {
+        GuiButtonKind::Respawn
+    } else if button.starts_with("gun_") {
+        GuiButtonKind::Gun
+    } else if matches!(button, "sellcrys" | "buycrys" | "sellall" | "getprofit")
+        || button.starts_with("sell:")
+        || button.starts_with("buy:")
+    {
+        GuiButtonKind::Market
+    } else if button.starts_with("save:") {
+        GuiButtonKind::Settings
+    } else if button == "prog"
+        || button == "createprog"
+        || button.starts_with("openprog:")
+        || button.starts_with("createprog:")
+        || button.starts_with("rename:")
+    {
+        GuiButtonKind::Programmer
+    } else if button.starts_with("clan") {
+        GuiButtonKind::Clan
+    } else if button == "auc"
+        || button.starts_with("choose:")
+        || button.starts_with("openorder:")
+        || button.starts_with("auc")
+    {
+        GuiButtonKind::Auction
+    } else if button == "upgrade"
+        || button == "buyslot"
+        || button.starts_with("skill:")
+        || button.starts_with("delete:")
+        || button.starts_with("install:")
+    {
+        GuiButtonKind::Up
+    } else {
+        GuiButtonKind::Other
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TeleportGuiView {
+    pub source: crate::game::WorldPos,
+    pub charge: i32,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub destinations: Vec<crate::game::WorldPos>,
+    pub map_tiles: Vec<Option<bool>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GuiView {
+    Close,
+    Teleport(TeleportGuiView),
 }
 
 /// All incoming action commands from client sessions to the game tick loop.
@@ -134,8 +343,12 @@ pub enum PlayerCommand {
         player_id: PlayerId,
         programmatic: bool,
     },
-    /// GUI button click action.
-    GuiButton { player_id: PlayerId, button: String },
+    /// Parsed GUI action from one concrete authenticated session.
+    Gui {
+        session_id: SessionId,
+        player_id: PlayerId,
+        command: GuiCommand,
+    },
     /// Local area chat message.
     LocalChat {
         player_id: PlayerId,
@@ -162,7 +375,10 @@ pub enum PlayerCommand {
     /// Select item index in player inventory.
     InventoryChoose { player_id: PlayerId, payload: Bytes },
     /// Use currently selected inventory item.
-    InventoryUse { player_id: PlayerId },
+    InventoryUse {
+        session_id: SessionId,
+        player_id: PlayerId,
+    },
     /// Toggle inventory GUI visibility.
     InventoryToggle { player_id: PlayerId },
     /// Open a nearby box / chest.
@@ -211,8 +427,8 @@ pub enum PlayerCommand {
         player_id: PlayerId,
         cost: i64,
     },
-    /// Commit a building removal after DB delete succeeded.
-    ApplyRemovedBuilding { removal: BuildingRemoval },
+    /// Authoritative request to delete one building through persistence admission.
+    RemovePack { remove: RemovePack },
     /// Apply a GUI program open/create after DB ownership/selection succeeded.
     ApplyProgramEditorOpen {
         session_id: SessionId,
@@ -247,7 +463,7 @@ impl PlayerCommand {
             Self::Build { .. } => "build",
             Self::Geology { .. } => "geology",
             Self::Heal { .. } => "heal",
-            Self::GuiButton { .. } => "gui_button",
+            Self::Gui { command, .. } => command.label(),
             Self::LocalChat { .. } => "local_chat",
             Self::ChannelChat { .. } => "channel_chat",
             Self::ChatResync { .. } => "chat_resync",
@@ -274,7 +490,7 @@ impl PlayerCommand {
             Self::ApplyInventoryBuildingPlaced { .. } => "apply_inventory_building_placed",
             Self::ApplyPaidBuildingPlaced { .. } => "apply_paid_building_placed",
             Self::RefundPaidBuildingPlacement { .. } => "refund_paid_building_placement",
-            Self::ApplyRemovedBuilding { .. } => "apply_removed_building",
+            Self::RemovePack { .. } => "remove_pack",
             Self::ApplyProgramEditorOpen { .. } => "apply_program_editor_open",
             Self::ApplyProgramEditorRename { .. } => "apply_program_editor_rename",
             Self::KnownNoopTy { .. } => "known_noop_ty",
@@ -284,7 +500,7 @@ impl PlayerCommand {
     pub fn persistence_kind(&self) -> Option<SaveKind> {
         match self {
             Self::Disconnect { .. } | Self::ClaimBonus { .. } => Some(SaveKind::Player),
-            Self::ApplyRemovedBuilding { .. } => Some(SaveKind::Box),
+            Self::RemovePack { .. } => Some(SaveKind::BuildingDelete),
             Self::ProgramAction { event, .. } if event == "PROG" => Some(SaveKind::Program),
             _ => None,
         }
@@ -303,12 +519,14 @@ pub struct QueuedPlayerCommand {
 pub struct CommandEffects {
     pub events: Vec<GameEvent>,
     pub saves: Vec<SaveCommand>,
+    pub broadcasts: Vec<crate::game::BroadcastEffect>,
 }
 
 impl CommandEffects {
     pub fn append(&mut self, mut other: Self) {
         self.events.append(&mut other.events);
         self.saves.append(&mut other.saves);
+        self.broadcasts.append(&mut other.broadcasts);
     }
 }
 
@@ -324,6 +542,11 @@ pub enum GameEvent {
         recipients: Vec<SessionId>,
         data: Vec<u8>,
     },
+    GuiView {
+        session_id: SessionId,
+        player_id: PlayerId,
+        view: GuiView,
+    },
 }
 
 impl GameEvent {
@@ -331,6 +554,7 @@ impl GameEvent {
         match self {
             Self::SessionBatch { .. } => "session_batch",
             Self::Fanout { .. } => "fanout",
+            Self::GuiView { .. } => "gui_view",
         }
     }
 }
@@ -350,6 +574,9 @@ pub enum SaveCommand {
     Program {
         request: ProgramSaveRequest,
     },
+    BuildingDelete {
+        request: BuildingDeleteRequest,
+    },
 }
 
 impl SaveCommand {
@@ -359,6 +586,7 @@ impl SaveCommand {
             Self::Building { .. } => SaveKind::Building,
             Self::Box { .. } => SaveKind::Box,
             Self::Program { .. } => SaveKind::Program,
+            Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
         }
     }
 }
@@ -377,6 +605,10 @@ pub enum PersistenceCompletion {
         request: ProgramSaveRequest,
         result: ProgramSaveResult,
     },
+    BuildingDeleted {
+        request: BuildingDeleteRequest,
+        result: BuildingDeleteResult,
+    },
 }
 
 #[derive(Debug)]
@@ -386,12 +618,20 @@ pub enum ProgramSaveResult {
     PermanentFailure { message: String },
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum BuildingDeleteResult {
+    Deleted { cleared_resp_bindings: u64 },
+    IdentityMismatch,
+    PermanentFailure { message: String },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SaveKind {
     Player,
     Building,
     Box,
     Program,
+    BuildingDelete,
 }
 
 impl SaveKind {
@@ -401,6 +641,7 @@ impl SaveKind {
             Self::Building => "save_building",
             Self::Box => "save_box",
             Self::Program => "save_program",
+            Self::BuildingDelete => "delete_building",
         }
     }
 }

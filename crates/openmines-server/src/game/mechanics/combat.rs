@@ -1,6 +1,8 @@
 use crate::game::buildings::{
-    BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition, PackType,
+    BuildingDeletePending, BuildingMetadata, BuildingOwnership, BuildingStats, GridPosition,
+    PackType,
 };
+use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition,
     PlayerSkillsComp as PlayerSkillsCom, PlayerStats,
@@ -151,6 +153,9 @@ pub fn standing_cell_hazard_system(
         if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
             continue;
         }
+        if stats.health <= 0 {
+            continue;
+        }
         profile.players_scanned += 1;
         // C# ref Player.Update: reset c190stacks to 1 after 1 minute
         reset_c190_if_due(&mut cooldowns);
@@ -246,6 +251,16 @@ impl Default for GunTickTimer {
     }
 }
 
+impl GunTickTimer {
+    fn is_due_at(&self, now: Instant, interval: Duration) -> bool {
+        now.saturating_duration_since(self.0) >= interval
+    }
+
+    const fn mark_completed_at(&mut self, completed_at: Instant) {
+        self.0 = completed_at;
+    }
+}
+
 fn inside_gun_radius(player: &PlayerPosition, gun: &GridPosition, radius_cells: i32) -> bool {
     let dx = i64::from(player.x) - i64::from(gun.x);
     let dy = i64::from(player.y) - i64::from(gun.y);
@@ -258,14 +273,14 @@ fn gun_damage_after_skills(base_damage: i32, skills: &crate::db::SkillSlots) -> 
     // 1:1 ref default Gun damage = 60 * (1 - AntiGun/100); AntiGun effect — f32
     // из get_player_skill_effect (1:1 с C#, нельзя переводить в int без
     // потери паритета). Округлённый каст намеренный и ограничен снизу.
-    (sk.on_hurt(
-        base_damage
-            .to_f32()
-            .expect("validated positive gun_damage must fit f32"),
+    saturating_trunc_f32_to_i32(
+        sk.on_hurt(
+            base_damage
+                .to_f32()
+                .expect("validated positive gun_damage must fit f32"),
+        )
+        .round(),
     )
-    .round()
-    .to_i32()
-    .expect("gun damage after skills must fit i32"))
     .max(0)
 }
 
@@ -300,12 +315,15 @@ pub fn gun_firing_system(
     mut bcast_q: ResMut<BroadcastQueue>,
     mut pack_resend_q: ResMut<PackResendQueue>,
     mut fire_timer: ResMut<GunTickTimer>,
-    mut guns_query: Query<(
-        &BuildingMetadata,
-        &mut BuildingStats,
-        &BuildingOwnership,
-        &GridPosition,
-    )>,
+    mut guns_query: Query<
+        (
+            &BuildingMetadata,
+            &mut BuildingStats,
+            &BuildingOwnership,
+            &GridPosition,
+        ),
+        Without<BuildingDeletePending>,
+    >,
     mut players_query: Query<(
         Entity,
         &PlayerMetadata,
@@ -321,10 +339,10 @@ pub fn gun_firing_system(
     let combat = combat_cfg.0;
     // Залп раз в `gameplay.combat.gun_fire_interval_ms`
     // (default 500ms = 1:1 C# `lastpackeffect`), а не каждый тик.
-    if fire_timer.0.elapsed().as_millis() < u128::from(combat.gun_fire_interval_ms) {
+    let fire_interval = Duration::from_millis(combat.gun_fire_interval_ms);
+    if !fire_timer.is_due_at(now, fire_interval) {
         return;
     }
-    fire_timer.0 = now;
 
     for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {
         if meta.pack_type != PackType::Gun || b_stats.charge <= 0 {
@@ -338,6 +356,9 @@ pub fn gun_firing_system(
         for (_p_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
             &mut players_query
         {
+            if stats.health <= 0 {
+                continue;
+            }
             // clan immunity (C# `player.cid == cid` → continue). cid у безкланового
             // = 0; нормализуем Option→0, иначе `None == Some(0)` ложно и пушка
             // без клана била бесклановых игроков (баг: «бьют, я у них во врагах»).
@@ -439,16 +460,108 @@ pub fn gun_firing_system(
             });
         }
     }
+
+    // C# `World.Update` обновляет `lastpackeffect` после полного обхода паков.
+    // Отсчёт от начала залпа сжимал интервалы после долгого ECS-прохода.
+    fire_timer.mark_completed_at(Instant::now());
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{gun_damage_after_skills, hurt_fx_broadcast, is_same_gun_clan};
+    use super::{GunTickTimer, gun_damage_after_skills, hurt_fx_broadcast, is_same_gun_clan};
     use crate::db::{SkillEntry, SkillSlots};
     use crate::game::BroadcastEffect;
     use crate::game::player::PlayerId;
     use crate::game::skills::SkillType;
     use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    fn apply_test_gun_hit(
+        timer: &mut GunTickTimer,
+        started_at: Instant,
+        completed_at: Instant,
+        interval: Duration,
+        health: &mut i32,
+    ) -> bool {
+        if !timer.is_due_at(started_at, interval) {
+            return false;
+        }
+        *health = health.saturating_sub(60);
+        timer.mark_completed_at(completed_at);
+        true
+    }
+
+    #[test]
+    fn gun_cadence_waits_500ms_and_does_not_burst_after_time_jump() {
+        let base = Instant::now();
+        let interval = Duration::from_millis(500);
+        let mut timer = GunTickTimer(base);
+        let mut health = 300;
+
+        assert!(!apply_test_gun_hit(
+            &mut timer,
+            base + Duration::from_millis(499),
+            base + Duration::from_millis(499),
+            interval,
+            &mut health,
+        ));
+        assert_eq!(health, 300, "damage before the 500ms deadline");
+
+        let first_deadline = base + interval;
+        let slow_fire_completed_at = base + Duration::from_millis(1_200);
+        assert!(apply_test_gun_hit(
+            &mut timer,
+            first_deadline,
+            slow_fire_completed_at,
+            interval,
+            &mut health,
+        ));
+        assert_eq!(health, 240, "deadline must apply exactly one hit");
+        assert!(!apply_test_gun_hit(
+            &mut timer,
+            slow_fire_completed_at,
+            slow_fire_completed_at,
+            interval,
+            &mut health,
+        ));
+        assert_eq!(
+            health, 240,
+            "slow fire must not make another hit immediately due"
+        );
+        assert!(!apply_test_gun_hit(
+            &mut timer,
+            base + Duration::from_millis(1_699),
+            base + Duration::from_millis(1_699),
+            interval,
+            &mut health,
+        ));
+        assert!(apply_test_gun_hit(
+            &mut timer,
+            base + Duration::from_millis(1_700),
+            base + Duration::from_millis(1_700),
+            interval,
+            &mut health,
+        ));
+        assert_eq!(health, 180, "next hit must wait from completion time");
+
+        let after_stall = base + Duration::from_secs(10);
+        let stalled_fire_completed_at = base + Duration::from_secs(12);
+        assert!(apply_test_gun_hit(
+            &mut timer,
+            after_stall,
+            stalled_fire_completed_at,
+            interval,
+            &mut health,
+        ));
+        assert!(!apply_test_gun_hit(
+            &mut timer,
+            stalled_fire_completed_at,
+            stalled_fire_completed_at,
+            interval,
+            &mut health,
+        ));
+        assert_eq!(health, 120, "missed intervals must not replay as a burst");
+    }
 
     #[test]
     fn gun_damage_truncates_antigun_reduction_like_reference() {
@@ -488,7 +601,9 @@ mod tests {
                 assert_eq!(data, expected_data);
                 assert_eq!(exclude, None);
             }
-            BroadcastEffect::CellUpdate(_) | BroadcastEffect::Direct { .. } => {
+            BroadcastEffect::CellUpdate(_)
+            | BroadcastEffect::BlockUpdate(_)
+            | BroadcastEffect::Direct { .. } => {
                 panic!("expected nearby hurt FX broadcast");
             }
         }

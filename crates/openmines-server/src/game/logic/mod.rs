@@ -1,12 +1,17 @@
 pub mod bonus;
 pub mod boxes;
+pub mod building_delete;
 pub mod commands;
+pub mod consumables;
 pub mod contracts;
 pub mod crafting;
 pub mod crystals;
+pub mod due;
 pub mod geology;
 pub mod healing;
 pub mod inventory;
+pub mod items;
+pub mod numeric;
 pub mod random;
 pub mod settings;
 pub mod skills;

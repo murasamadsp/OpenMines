@@ -506,89 +506,19 @@ pub fn handle_move(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
 
-    struct TestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        world_name: String,
-        db_path: std::path::PathBuf,
-    }
-
-    impl TestState {
-        fn cleanup(&self) {
-            let dir = std::env::temp_dir();
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_test_state(label: &str) -> TestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database.create_player("move-user", "p", "h").await.unwrap();
-        player.x = 10;
-        player.y = 10;
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        TestState {
-            state,
-            player,
-            world_name,
-            db_path,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_test_state(label: &str) -> ServerTestHarness {
+        let mut builder = ServerTestHarnessBuilder::new(label, "move-user").await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.build().await
     }
 
     #[tokio::test]
     async fn stale_session_move_cannot_mutate_reconnected_player() {
         let test = make_test_state("stale_session_move").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
         let pid = PlayerId(test.player.id);
 
@@ -615,17 +545,14 @@ mod tests {
             Some(Some((10, 10)))
         );
         assert!(rx.try_recv().is_err());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn manual_move_returns_output_without_sending_during_dispatch() {
         let test = make_test_state("manual_move_effect").await;
         test.state.world.set_cell(11, 10, cell_type::EMPTY);
-        let (tx, mut rx) = crate::net::session::outbox::channel();
         let session_id = crate::game::SessionId::new(1);
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
         let pid = PlayerId(test.player.id);
 
@@ -668,21 +595,21 @@ mod tests {
                 crate::game::GameEvent::Fanout { recipients, data } => {
                     test.state.sessions.fanout(&recipients, &data);
                 }
+                crate::game::GameEvent::GuiView { .. } => {
+                    panic!("ordinary move cannot produce GUI view events")
+                }
             }
         }
         assert!(
             drain_events(&mut rx).iter().any(|(event, _)| event == "HB"),
             "presentation delivery must emit the movement HB"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn move_missing_position_is_explicit_error_not_silent_reject() {
         let test = make_test_state("move_missing_position").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -699,15 +626,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn move_distance_reject_stays_tp_back_without_state_error() {
         let test = make_test_state("move_distance_reject").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_move(
@@ -726,15 +650,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "@T");
         assert_eq!(events[0].1, b"10:10");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn programmatic_move_reject_does_not_send_tp_back() {
         let test = make_test_state("programmatic_move_distance_reject").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_move(
@@ -753,15 +674,12 @@ mod tests {
             events.iter().all(|(event, _)| event != "@T"),
             "server-driven programmator move must not rubber-band the client"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn programmatic_autodig_sends_self_hb_without_tp_back() {
         let test = make_test_state("programmatic_autodig_self_hb").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -782,8 +700,6 @@ mod tests {
             events.iter().any(|(event, _)| event == "HB"),
             "programmatic autodig must notify the owning client through HB"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -817,8 +733,7 @@ mod tests {
         };
         test.state.insert_building_runtime(&spec).await.unwrap();
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_move(
@@ -843,7 +758,5 @@ mod tests {
             events.iter().all(|(event, _)| event != "GU"),
             "Gate.GUIWin returns null; it must not open a GU window, events: {events:?}"
         );
-
-        test.cleanup();
     }
 }

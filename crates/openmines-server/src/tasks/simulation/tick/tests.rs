@@ -14,9 +14,7 @@ use crate::tasks::simulation::{
     BoxPickupBacklog, DeathBacklog, apply_pending_box_pickups, apply_pending_deaths,
 };
 use crate::world::WorldProvider as _;
-use bytes::BytesMut;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 fn candidate(
     _name: &'static str,
@@ -271,10 +269,10 @@ fn tick_execution_class_separates_host_preemption_from_server_stalls() {
 
 #[tokio::test]
 async fn disconnect_waits_for_persistence_capacity_before_mutation() {
-    let (state, player, db_path, dir, world_name) =
-        make_persistence_test_state("disconnect_admission").await;
-    let (outbox, _rx) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 41);
+    let test = make_persistence_test_state("disconnect_admission").await;
+    let state = test.state.clone();
+    let player = test.player.clone();
+    let (_outbox, _rx) = test.connect_with_outbox(41);
     let pid = crate::game::PlayerId(player.id);
 
     let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
@@ -332,12 +330,12 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
         Some(crate::game::SaveCommand::Player { row }) if row.id == player.id
     ));
     assert!(persisted.try_recv().is_none());
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
-#[test]
-fn building_removal_waits_for_box_persistence_capacity() {
+#[tokio::test]
+async fn building_delete_saturation_preserves_runtime_state_until_admission() {
+    let test = make_persistence_test_state("building_delete_saturation").await;
+    let building_entity = insert_persistence_test_building(&test).await;
     let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
     persistence
         .try_reserve(crate::game::SaveKind::Box)
@@ -355,22 +353,14 @@ fn building_removal_waits_for_box_persistence_capacity() {
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,
-        command: crate::game::PlayerCommand::ApplyRemovedBuilding {
-            removal: crate::game::logic::contracts::BuildingRemoval {
-                view: crate::game::PackView {
-                    id: 1,
-                    pack_type: crate::game::PackType::Teleport,
-                    x: 10,
-                    y: 10,
-                    owner_id: crate::game::PlayerId(1),
-                    clan_id: 0,
-                    charge: 7,
-                    max_charge: 100,
-                    hp: 0,
-                    max_hp: 100,
+        command: crate::game::PlayerCommand::RemovePack {
+            remove: crate::game::RemovePack {
+                x: 10,
+                y: 10,
+                cause: crate::game::BuildingDeleteCause::Damage {
+                    trigger_player_id: None,
+                    origin_session_id: None,
                 },
-                trigger_pid: None,
-                storage_crystals: None,
             },
         },
     })
@@ -380,18 +370,55 @@ fn building_removal_waits_for_box_persistence_capacity() {
 
     assert!(matches!(
         take_admitted_command(&mut rx, &mut pending, &persistence),
-        Err("apply_removed_building")
+        Err("remove_pack")
     ));
     assert!(pending.is_some());
+    {
+        let ecs = test.state.ecs.read();
+        assert!(
+            ecs.get::<crate::game::BuildingDeletePending>(building_entity)
+                .is_none()
+        );
+        assert!(
+            ecs.get::<crate::game::BuildingFlags>(building_entity)
+                .is_some()
+        );
+        drop(ecs);
+    }
+    assert!(test.state.get_pack_at(10, 10).is_some());
     assert!(persisted.try_recv().is_some());
-    assert!(matches!(
-        take_admitted_command(&mut rx, &mut pending, &persistence),
-        Ok(Some(AdmittedCommand {
-            permit: Some(_),
-            ..
-        }))
-    ));
+    let Ok(Some(AdmittedCommand { queued, permit })) =
+        take_admitted_command(&mut rx, &mut pending, &persistence)
+    else {
+        panic!("building delete must be admitted after capacity is released");
+    };
     assert!(pending.is_none());
+    let command_name = queued.command.name();
+    let mut due_actions = crate::game::logic::due::DueActionQueue::new(4);
+    let mut effects = crate::game::logic::commands::apply_queued_player_command_with_due(
+        &test.state,
+        queued.command,
+        queued.sequence,
+        &mut due_actions,
+    );
+    publish_command_saves(permit, &mut effects.saves, command_name);
+    {
+        let ecs = test.state.ecs.read();
+        assert!(
+            ecs.get::<crate::game::BuildingDeletePending>(building_entity)
+                .is_some()
+        );
+        assert!(
+            ecs.get::<crate::game::BuildingFlags>(building_entity)
+                .is_none()
+        );
+        drop(ecs);
+    }
+    assert!(matches!(
+        persisted.try_recv(),
+        Some(crate::game::SaveCommand::BuildingDelete { .. })
+    ));
+    assert_eq!(persisted.completion_capacity(), 1);
 }
 
 #[test]
@@ -425,10 +452,10 @@ fn hazard_box_pickup_backlog_coalesces_by_player() {
 
 #[tokio::test]
 async fn hazard_box_pickup_waits_for_capacity_then_applies_once() {
-    let (state, player, db_path, dir, world_name) =
-        make_persistence_test_state("hazard_box_admission").await;
-    let (outbox, _rx) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 43);
+    let test = make_persistence_test_state("hazard_box_admission").await;
+    let state = test.state.clone();
+    let player = test.player.clone();
+    let (_outbox, _rx) = test.connect_with_outbox(43);
     let player_id = crate::game::PlayerId(player.id);
     state.modify_player(player_id, |ecs, entity| {
         ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = false;
@@ -508,16 +535,14 @@ async fn hazard_box_pickup_waits_for_capacity_then_applies_once() {
         })
         .expect("connected player crystals after stale intent");
     assert_eq!(crystals_after_stale, [3, 2, 1, 0, 0, 0]);
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
 #[tokio::test]
 async fn dig_box_pickup_persists_and_returns_ordered_effects() {
-    let (state, player, db_path, dir, world_name) =
-        make_persistence_test_state("dig_box_admission").await;
-    let (outbox, _rx) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 45);
+    let test = make_persistence_test_state("dig_box_admission").await;
+    let state = test.state.clone();
+    let player = test.player.clone();
+    let (_outbox, _rx) = test.connect_with_outbox(45);
     let player_id = crate::game::PlayerId(player.id);
     state.put_box_cell_authoritative(5, 6, [4, 0, 0, 0, 0, 0]);
     state.request_box_pickup(crate::game::BoxPickupIntent {
@@ -567,16 +592,14 @@ async fn dig_box_pickup_persists_and_returns_ordered_effects() {
         state.world.get_cell(5, 6),
         crate::world::cells::cell_type::EMPTY
     );
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
 #[tokio::test]
 async fn death_box_drop_waits_for_capacity_then_persists_once() {
-    let (state, player, db_path, dir, world_name) =
-        make_persistence_test_state("death_box_admission").await;
-    let (outbox, _rx) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 44);
+    let test = make_persistence_test_state("death_box_admission").await;
+    let state = test.state.clone();
+    let player = test.player.clone();
+    let (_outbox, _rx) = test.connect_with_outbox(44);
     let player_id = crate::game::PlayerId(player.id);
     state.modify_player(player_id, |ecs, entity| {
         ecs.get_mut::<crate::game::PlayerStats>(entity)?.crystals = [3, 2, 1, 0, 0, 0];
@@ -646,16 +669,14 @@ async fn death_box_drop_waits_for_capacity_then_persists_once() {
     let second_effects = apply_pending_deaths(&state, &persistence, &mut backlog);
     assert_eq!(second_effects.len(), 1);
     assert!(persisted.try_recv().is_none());
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
 #[tokio::test]
 async fn periodic_player_snapshot_preserves_dirty_on_saturation_and_new_mutation() {
-    let (state, player, db_path, dir, world_name) =
-        make_persistence_test_state("periodic_admission").await;
-    let (outbox, _rx) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &outbox, &player, 42);
+    let test = make_persistence_test_state("periodic_admission").await;
+    let state = test.state.clone();
+    let player = test.player.clone();
+    let (_outbox, _rx) = test.connect_with_outbox(42);
     let pid = crate::game::PlayerId(player.id);
     state.modify_player(pid, |ecs, entity| {
         ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
@@ -727,14 +748,12 @@ async fn periodic_player_snapshot_preserves_dirty_on_saturation_and_new_mutation
             if row.id == player.id && row.money == 123
     ));
     assert!(persisted.try_recv().is_none());
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
 #[tokio::test]
 async fn periodic_building_snapshot_preserves_dirty_on_saturation_and_persists_once() {
-    let (state, _player, db_path, dir, world_name) =
-        make_persistence_test_state("periodic_building_admission").await;
+    let test = make_persistence_test_state("periodic_building_admission").await;
+    let state = test.state.clone();
     let extra = crate::db::BuildingExtra {
         charge: 7,
         max_charge: 100,
@@ -801,122 +820,74 @@ async fn periodic_building_snapshot_preserves_dirty_on_saturation_and_persists_o
     ));
     assert_eq!(flush_dirty_buildings_once(&state, &persistence), 0);
     assert!(persisted.try_recv().is_none());
-
-    cleanup_persistence_test(&db_path, &dir, &world_name);
 }
 
 #[tokio::test]
 async fn online_count_broadcast_sends_on_to_active_players() {
-    let dir = std::env::temp_dir();
-    let nonce = format!("{}_{}", std::process::id(), unique_test_nonce());
-    let db_path = dir.join(format!("online_count_{nonce}.db"));
-    let _ = std::fs::remove_file(&db_path);
-
-    let database = crate::db::Database::open(&db_path).await.unwrap();
-    let mut p1 = database.create_player("online-a", "p", "h1").await.unwrap();
-    let mut p2 = database.create_player("online-b", "p", "h2").await.unwrap();
-    p1.x = 5;
-    p1.y = 5;
+    let mut builder =
+        crate::test_support::ServerTestHarnessBuilder::new("online_count", "online-a").await;
+    builder.player.x = 5;
+    builder.player.y = 5;
+    let mut p2 = builder.create_player("online-b").await;
     p2.x = 6;
     p2.y = 5;
+    let test = builder.build().await;
+    let (_tx1, mut rx1) = test.connect_with_outbox(1);
+    let (_tx2, mut rx2) = test.connect_player_with_outbox(&p2, 2);
+    crate::test_support::drain_events(&mut rx1);
+    crate::test_support::drain_events(&mut rx2);
 
-    let cell_defs =
-        crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
-    let world_name = format!("online_count_world_{nonce}");
-    let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-    let config = crate::config::Config {
-        world_name: world_name.clone(),
-        port: 8090,
-        world_chunks_w: 2,
-        world_chunks_h: 2,
-        data_dir: dir.to_string_lossy().to_string(),
-        logging: crate::config::LoggingConfig::runtime_baseline(),
-        cron: crate::config::CronConfig::runtime_baseline(),
-        gameplay: crate::config::GameplayConfig::runtime_baseline(),
+    crate::tasks::lifecycle::broadcast_online_count(&test.state);
+
+    assert_eq!(
+        crate::test_support::drain_events(&mut rx1),
+        vec![("ON".to_owned(), b"2:0".to_vec())]
+    );
+    assert_eq!(
+        crate::test_support::drain_events(&mut rx2),
+        vec![("ON".to_owned(), b"2:0".to_vec())]
+    );
+}
+
+async fn make_persistence_test_state(label: &str) -> crate::test_support::ServerTestHarness {
+    let mut builder =
+        crate::test_support::ServerTestHarnessBuilder::new(label, "persistence-player").await;
+    builder.player.x = 5;
+    builder.player.y = 5;
+    builder.build().await
+}
+
+async fn insert_persistence_test_building(
+    test: &crate::test_support::ServerTestHarness,
+) -> bevy_ecs::prelude::Entity {
+    let extra = crate::db::BuildingExtra {
+        charge: 7,
+        max_charge: 100,
+        cost: 10,
+        hp: 100,
+        max_hp: 100,
+        money_inside: 0,
+        crystals_inside: [0; 6],
+        items_inside: std::collections::HashMap::new(),
+        craft_recipe_id: None,
+        craft_num: 0,
+        craft_end_ts: 0,
+        craft_ready: false,
+        clanzone: 0,
     };
-    let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+    test.state
+        .insert_building_runtime(&crate::game::BuildingInsertSpec {
+            type_code: "T",
+            pack_type: crate::game::PackType::Teleport,
+            x: 10,
+            y: 10,
+            owner_id: crate::game::PlayerId(test.player.id),
+            clan_id: 0,
+            extra: &extra,
+        })
         .await
-        .unwrap();
-
-    let (tx1, mut rx1) = crate::net::session::outbox::channel();
-    let (tx2, mut rx2) = crate::net::session::outbox::channel();
-    crate::net::session::player::init::connect_in_tick(&state, &tx1, &p1, 1);
-    crate::net::session::player::init::connect_in_tick(&state, &tx2, &p2, 2);
-    drain_queued_packets(&mut rx1);
-    drain_queued_packets(&mut rx2);
-
-    crate::tasks::lifecycle::broadcast_online_count(&state);
-
-    assert_online_packet(&mut rx1, b"2:0");
-    assert_online_packet(&mut rx2, b"2:0");
-    assert!(rx1.try_recv().is_err());
-    assert!(rx2.try_recv().is_err());
-
-    let _ = std::fs::remove_file(&db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-}
-
-fn drain_queued_packets(rx: &mut mpsc::Receiver<Vec<u8>>) {
-    while rx.try_recv().is_ok() {}
-}
-
-fn assert_online_packet(rx: &mut mpsc::Receiver<Vec<u8>>, expected_payload: &[u8]) {
-    let frame = rx.try_recv().expect("ON frame");
-    let mut buf = BytesMut::from(&frame[..]);
-    let packet = crate::protocol::Packet::try_decode(&mut buf)
-        .expect("valid packet")
-        .expect("decoded packet");
-    assert_eq!(packet.event_str(), "ON");
-    assert_eq!(packet.payload.as_ref(), expected_payload);
-}
-
-fn unique_test_nonce() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_nanos()
-}
-
-async fn make_persistence_test_state(
-    label: &str,
-) -> (
-    Arc<GameState>,
-    crate::db::PlayerRow,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    String,
-) {
-    let dir = std::env::temp_dir();
-    let nonce = unique_test_nonce();
-    let db_path = dir.join(format!("{label}_{nonce}.db"));
-    let database = crate::db::Database::open(&db_path).await.unwrap();
-    let mut player = database
-        .create_player("persistence-player", "password", "hash")
-        .await
-        .unwrap();
-    player.x = 5;
-    player.y = 5;
-    let cell_defs =
-        crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap();
-    let world_name = format!("{label}_{nonce}_world");
-    let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-    let config = crate::config::Config {
-        world_name: world_name.clone(),
-        port: 8090,
-        world_chunks_w: 2,
-        world_chunks_h: 2,
-        data_dir: dir.to_string_lossy().to_string(),
-        logging: crate::config::LoggingConfig::runtime_baseline(),
-        cron: crate::config::CronConfig::runtime_baseline(),
-        gameplay: crate::config::GameplayConfig::runtime_baseline(),
-    };
-    let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-        .await
-        .unwrap();
-    (state, player, db_path, dir, world_name)
+        .1
 }
 
 fn test_player_row(id: i32) -> crate::db::PlayerRow {
@@ -971,14 +942,4 @@ fn building_is_dirty(state: &Arc<GameState>, entity: bevy_ecs::prelude::Entity) 
         .read()
         .get::<crate::game::BuildingFlags>(entity)
         .is_some_and(|flags| flags.dirty)
-}
-
-fn cleanup_persistence_test(db_path: &std::path::Path, dir: &std::path::Path, world_name: &str) {
-    let _ = std::fs::remove_file(db_path);
-    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-    let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
 }

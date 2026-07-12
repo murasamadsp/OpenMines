@@ -115,17 +115,17 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
             "Console operator command executed"
         );
 
-        match cmd {
-            "help" | "?" => {
+        match crate::admin::AdminCommandName::from_console(cmd) {
+            Some(crate::admin::AdminCommandName::Help) => {
                 println!("{}", crate::admin::console_help());
             }
-            "stop" | "shutdown" => {
+            Some(crate::admin::AdminCommandName::Shutdown) => {
                 tracing::info!(target: "console", "Graceful shutdown triggered from console.");
                 println!("Graceful shutdown triggered from console.");
                 let _ = shutdown_tx.send(());
                 break;
             }
-            "online" => {
+            Some(crate::admin::AdminCommandName::Online) => {
                 let online: Vec<_> = state
                     .active_player_ids()
                     .into_iter()
@@ -152,7 +152,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
             }
-            "find" => {
+            Some(crate::admin::AdminCommandName::Find) => {
                 if args.is_empty() {
                     println!("Usage: find <name>");
                     continue;
@@ -193,7 +193,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     Err(e) => println!("DB error: {e}"),
                 }
             }
-            "announce" => {
+            Some(crate::admin::AdminCommandName::Announce) => {
                 if args.is_empty() {
                     println!("Usage: announce <message>");
                     continue;
@@ -208,7 +208,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 }
                 println!("Announced to {count} players.");
             }
-            "give" => {
+            Some(crate::admin::AdminCommandName::Give) => {
                 let pid = parse_flag::<PlayerId>(args, "--player", "-p");
                 let iid = parse_flag::<i32>(args, "--item", "-i");
                 let amount = parse_flag::<i32>(args, "--amount", "-a").unwrap_or(1);
@@ -242,7 +242,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "money" => {
+            Some(crate::admin::AdminCommandName::Money) => {
                 let pid = parse_flag::<PlayerId>(args, "--player", "-p");
                 let amount = parse_flag::<i64>(args, "--amount", "-a");
                 let (Some(pid), Some(amount)) = (pid, amount) else {
@@ -264,7 +264,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
             }
-            "tp" => {
+            Some(crate::admin::AdminCommandName::Teleport) => {
                 let pid = parse_flag::<PlayerId>(args, "--player", "-p");
                 let x = parse_flag::<i32>(args, "--x", "-x");
                 let y = parse_flag::<i32>(args, "--y", "-y");
@@ -305,7 +305,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "heal" => {
+            Some(crate::admin::AdminCommandName::Heal) => {
                 let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
                     println!("Usage: heal -p <ID>");
                     continue;
@@ -325,7 +325,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
             }
-            "kill" => {
+            Some(crate::admin::AdminCommandName::Kill) => {
                 let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
                     println!("Usage: kill -p <ID>");
                     continue;
@@ -340,7 +340,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "kick" => {
+            Some(crate::admin::AdminCommandName::Kick) => {
                 let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
                     println!("Usage: kick -p <ID>");
                     continue;
@@ -353,7 +353,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "role" => {
+            Some(crate::admin::AdminCommandName::Role) => {
                 let pid = parse_flag::<i32>(args, "--player", "-p");
                 let role_arg = flag_value(args, "--role", "-r");
                 let (Some(pid), Some(role_arg)) = (pid, role_arg) else {
@@ -390,7 +390,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
             }
-            "info" => {
+            Some(crate::admin::AdminCommandName::Info) => {
                 let Some(pid) = parse_flag::<PlayerId>(args, "--player", "-p") else {
                     println!("Usage: info -p <ID>");
                     continue;
@@ -452,7 +452,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Player {pid} not found/offline.");
                 }
             }
-            "save" => {
+            Some(crate::admin::AdminCommandName::Save) => {
                 tracing::info!(target: "console", "Manual save triggered from console");
                 println!("Saving all active players and flushing world...");
                 let pids: Vec<_> = state.active_player_ids();
@@ -482,7 +482,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     }
                 }
             }
-            "schedule" => {
+            Some(crate::admin::AdminCommandName::Schedule) => {
                 let [name, interval_ms] = args else {
                     println!("Usage: schedule <name> <ms>");
                     continue;
@@ -507,9 +507,10 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     println!("Unknown schedule '{name}'.");
                 }
             }
-            unknown => {
-                println!("Unknown command: '{unknown}'. Type 'help' or '?' for commands.");
+            None => {
+                println!("Unknown command: '{cmd}'. Type 'help' or '?' for commands.");
             }
+            Some(_) => unreachable!("console parser returned a slash-only admin command"),
         }
     }
 

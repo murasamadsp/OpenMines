@@ -246,10 +246,7 @@ fn finalize_auth(
     let ah = auth_hash(player.id, &player.hash);
     send_u_packet(tx, ah.0, &ah.1);
 
-    let w = state.world.cells_width();
-    let h = state.world.cells_height();
-    let world = world_info(state.world.name(), w, h, 0, "COCK", "http://pi.door/", "ok");
-    send_u_packet(tx, world.0, &world.1);
+    super::send_world_info(state, tx);
 
     let gu = gu_close();
     send_u_packet(tx, gu.0, &gu.1);

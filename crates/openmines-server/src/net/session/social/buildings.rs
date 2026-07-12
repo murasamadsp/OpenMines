@@ -1,17 +1,9 @@
 //! Меню построек и установка здания на карте.
-use crate::game::broadcast_cell_update;
-use crate::game::buildings::{
-    BuildingFlags, BuildingStorage, PackType, PackView, get_building_config,
-};
-use crate::game::player::{
-    PlayerFlags, PlayerInventory, PlayerMetadata, PlayerPosition, PlayerStats, PlayerUI,
-};
+use crate::game::buildings::{BuildingFlags, PackType, PackView, get_building_config};
+use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
-
-/// Шанс дропа предмета-размещения при сносе здания (C# `Building.Destroy`: 40%).
-const SHPAAK_DROP_PCT: u32 = 40;
 
 fn send_building_state_error(tx: &Outbox) {
     send_u_packet(
@@ -467,64 +459,29 @@ pub fn broadcast_building_placed(
     );
 }
 
-pub async fn handle_remove_building(
+pub fn handle_remove_building(
     state: &Arc<GameState>,
     tx: &Outbox,
     pid: PlayerId,
     bx: i32,
     by: i32,
 ) {
-    let Some(removal) = prepare_building_removal(state, tx, pid, bx, by) else {
+    let Some(session_id) = state.sessions.session_for_player(pid) else {
+        send_building_error(tx, "Сессия устарела");
         return;
     };
-
-    if !delete_destroyed_building_db(state, &removal.view).await {
-        send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-        return;
-    }
-    state.enqueue_command(crate::game::PlayerCommand::ApplyRemovedBuilding { removal });
-}
-
-pub fn prepare_building_removal(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    bx: i32,
-    by: i32,
-) -> Option<crate::game::logic::contracts::BuildingRemoval> {
-    let actor_pos = state.query_player_opt(pid, |ecs, entity| {
-        let p = ecs.get::<PlayerPosition>(entity)?;
-        Some((p.x, p.y))
+    state.enqueue_command(crate::game::PlayerCommand::RemovePack {
+        remove: crate::game::RemovePack {
+            x: bx,
+            y: by,
+            cause: crate::game::BuildingDeleteCause::PlayerRequest(
+                crate::game::BuildingDeleteOrigin {
+                    session_id,
+                    player_id: pid,
+                },
+            ),
+        },
     });
-
-    let actor_pos = actor_pos?;
-    let Some(view) = state.get_pack_at(bx, by) else {
-        send_building_error(tx, "Объект не найден");
-        return None;
-    };
-
-    if !is_pack_owner_or_clan_member(state, pid, &view) {
-        send_building_error(tx, "Нет прав");
-        return None;
-    }
-
-    let cells = match view.pack_type.building_cells() {
-        Ok(cells) => cells,
-        Err(e) => {
-            tracing::error!(pack_type = ?view.pack_type, error = ?e, "Missing building config for remove");
-            send_building_error(tx, "Конфиг здания не найден");
-            return None;
-        }
-    };
-    if !cells
-        .iter()
-        .any(|(dx, dy, _)| view.x + dx == actor_pos.0 && view.y + dy == actor_pos.1)
-    {
-        send_building_error(tx, "Вы не у объекта");
-        return None;
-    }
-
-    Some(snapshot_building_removal(state, Some(pid), view))
 }
 
 pub fn building_extra_for_pack_type(pack_type: PackType) -> anyhow::Result<BuildingExtra> {
@@ -697,25 +654,6 @@ fn send_building_error(tx: &Outbox, text: &str) {
     send_u_packet(tx, "OK", &ok_message("Ошибка", text).1);
 }
 
-fn close_pack_windows(state: &Arc<GameState>, view: &PackView) {
-    let window_key = format!("pack:{}:{}", view.x, view.y);
-    let (pcx, pcy) = World::chunk_pos(view.x, view.y);
-    for (cx, cy) in state.visible_chunks_around(pcx, pcy) {
-        for pid in state.players_in_chunk(cx, cy) {
-            state.modify_player(pid, |ecs, entity| {
-                if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-                    if ui.current_window.as_deref() == Some(window_key.as_str()) {
-                        ui.current_window = None;
-                        let g = gu_close();
-                        state.send_to_player(pid, make_u_packet_bytes(g.0, &g.1));
-                    }
-                }
-                Some(())
-            });
-        }
-    }
-}
-
 /// Перенос футпринта здания на новую позицию — ЗЕРКАЛО remove+place, чтобы все
 /// слои совпали: клетки мира И O-оверлей пака (иконка). Без оверлей-броадкаста
 /// иконка пака осталась бы на старом месте, хотя клетки/индекс/ECS/БД — на новом.
@@ -748,293 +686,40 @@ pub fn spawn_botspot(
 
 /// Уничтожить `IDamagable` здание (C# `Destroy(Player p)`): убрать из мира/ECS/DB, Gun-специфика.
 /// Возвращает true при успехе.
-pub async fn destroy_damagable_building(
+pub fn destroy_damagable_building(
     state: &Arc<GameState>,
     trigger_pid: Option<PlayerId>,
     bx: i32,
     by: i32,
 ) -> bool {
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return false;
-    };
-    let removal = snapshot_building_removal(state, trigger_pid, view);
-    if !delete_destroyed_building_db(state, &removal.view).await {
+    if state.building_entity_at(bx, by).is_none() {
         return false;
     }
-    state.enqueue_command(crate::game::PlayerCommand::ApplyRemovedBuilding { removal });
+    state.enqueue_command(crate::game::PlayerCommand::RemovePack {
+        remove: crate::game::RemovePack {
+            x: bx,
+            y: by,
+            cause: crate::game::BuildingDeleteCause::Damage {
+                trigger_player_id: trigger_pid,
+                origin_session_id: trigger_pid
+                    .and_then(|player_id| state.sessions.session_for_player(player_id)),
+            },
+        },
+    });
     true
-}
-
-fn snapshot_building_removal(
-    state: &Arc<GameState>,
-    trigger_pid: Option<PlayerId>,
-    view: PackView,
-) -> crate::game::logic::contracts::BuildingRemoval {
-    // Захват crysinside до despawn (для Box-дропа Storage, C# `Storage.Destroy`).
-    let storage_crystals: Option<[i64; 6]> = if view.pack_type == PackType::Storage {
-        let ecs = state.ecs.read();
-        state
-            .building_entity_at(view.x, view.y)
-            .and_then(|entity| ecs.get::<BuildingStorage>(entity).map(|s| s.crystals))
-    } else {
-        None
-    };
-
-    crate::game::logic::contracts::BuildingRemoval {
-        view,
-        trigger_pid,
-        storage_crystals,
-    }
-}
-
-pub fn apply_removed_building(
-    state: &Arc<GameState>,
-    removal: &crate::game::logic::contracts::BuildingRemoval,
-) -> Option<crate::db::BoxWrite> {
-    let view = &removal.view;
-    state.remove_building_runtime(view);
-    if view.pack_type == PackType::Resp {
-        clear_online_resp_bindings(state, view.x, view.y);
-    }
-    broadcast_pack_clear(state, view);
-    close_pack_windows(state, view);
-
-    // C# `<Building>.Destroy()`: дроп кристаллов в Box.
-    // Teleport — White по charge (`[0,0,0,0,charge,0]`); Storage — crysinside.
-    let box_write = match view.pack_type {
-        PackType::Teleport if view.charge > 0 => {
-            let crystals = [0, 0, 0, 0, charge_to_crys(view.charge), 0];
-            drop_destroy_box(state, view.x, view.y, crystals).then_some(crate::db::BoxWrite {
-                x: view.x,
-                y: view.y,
-                crystals: Some(crystals),
-            })
-        }
-        PackType::Storage => removal.storage_crystals.and_then(|crystals| {
-            (crystals.iter().sum::<i64>() > 0 && drop_destroy_box(state, view.x, view.y, crystals))
-                .then_some(crate::db::BoxWrite {
-                    x: view.x,
-                    y: view.y,
-                    crystals: Some(crystals),
-                })
-        }),
-        _ => None,
-    };
-
-    // C# `<Building>.Destroy()`: 40% шанс вернуть предмет-размещения в инвентарь сносящего
-    // + HB bubble "ШПАААК ВЫПАЛ". Индекс = item-код здания (см. `shpaak_item_index`).
-    if let (Some(pid), Some(item_idx)) = (removal.trigger_pid, shpaak_item_index(view.pack_type)) {
-        use rand::Rng as _;
-        if rand::rng().random_range(1u32..=100) < SHPAAK_DROP_PCT {
-            let tx = state.player_sender(pid);
-            if let Some(tx) = tx {
-                let chat_sub = hb_chat(
-                    0,
-                    u16::try_from(view.x.rem_euclid(65536)).unwrap_or(0),
-                    u16::try_from(view.y.rem_euclid(65536)).unwrap_or(0),
-                    "ШПАААК ВЫПАЛ",
-                );
-                let _ = tx.send(encode_hb_bundle(&hb_bundle(&[chat_sub]).1));
-                state.modify_player(pid, |ecs, entity| {
-                    if ecs.get::<PlayerInventory>(entity).is_none()
-                        || ecs.get::<PlayerFlags>(entity).is_none()
-                    {
-                        send_building_state_error(&tx);
-                        return Some(());
-                    }
-                    let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-                    *inv.items.entry(item_idx).or_insert(0) += 1;
-                    let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
-                    flags.dirty = true;
-                    Some(())
-                });
-            }
-        }
-    }
-    box_write
-}
-
-pub async fn delete_destroyed_building_db(state: &Arc<GameState>, view: &PackView) -> bool {
-    if view.pack_type == PackType::Resp {
-        match state
-            .db
-            .delete_resp_building_and_clear_bindings(view.id, view.x, view.y)
-            .await
-        {
-            Ok(_) => true,
-            Err(e) => {
-                tracing::error!(
-                    building_id = view.id,
-                    x = view.x,
-                    y = view.y,
-                    error = ?e,
-                    "Resp destroy DB transaction failed"
-                );
-                false
-            }
-        }
-    } else if let Err(e) = state.db.delete_building(view.id).await {
-        tracing::error!(
-            building_id = view.id,
-            x = view.x,
-            y = view.y,
-            error = ?e,
-            "Building destroy DB delete failed"
-        );
-        false
-    } else {
-        true
-    }
-}
-
-fn clear_online_resp_bindings(state: &Arc<GameState>, resp_x: i32, resp_y: i32) {
-    for pid in state.player_entity_ids() {
-        state.modify_player(pid, |ecs, entity| {
-            let cleared = {
-                let mut meta = ecs.get_mut::<PlayerMetadata>(entity)?;
-                if meta.resp_x == Some(resp_x) && meta.resp_y == Some(resp_y) {
-                    meta.resp_x = None;
-                    meta.resp_y = None;
-                    true
-                } else {
-                    false
-                }
-            };
-            if cleared {
-                if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
-                    flags.dirty = true;
-                }
-            }
-            Some(())
-        });
-    }
-}
-
-/// Индекс предмета-размещения здания для 40%-дропа при `Destroy` (C# `p.inventory[N]++`).
-/// `None` — здания без дропа (Gate/Spot и прочие).
-const fn shpaak_item_index(pt: PackType) -> Option<i32> {
-    match pt {
-        PackType::Teleport => Some(0),
-        PackType::Resp => Some(1),
-        PackType::Up => Some(2),
-        PackType::Market => Some(3),
-        PackType::Craft => Some(24),
-        PackType::Gun => Some(26),
-        PackType::Storage => Some(29),
-        _ => None,
-    }
-}
-
-/// `charge` → кол-во кристаллов для Box.
-/// 1:1 с C# `(long)charge`.
-const fn charge_to_crys(charge: i32) -> i64 {
-    if charge <= 0 { 0 } else { charge as i64 }
 }
 
 /// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).
 /// Проверка размещения 1:1: `isEmpty && can_place_over && !PackPart`.
-fn drop_destroy_box(state: &Arc<GameState>, x: i32, y: i32, crystals: [i64; 6]) -> bool {
-    if !state.world.valid_coord(x, y) {
-        return false;
-    }
-    let cell = state.world.get_cell_typed(x, y);
-    if !state.world.is_empty(x, y) || !state.world.cell_defs().get_typed(cell).can_place_over() {
-        return false;
-    }
-    if state.get_pack_at(x, y).is_some() {
-        return false;
-    }
-    state.put_box_cell_authoritative(x, y, crystals);
-    broadcast_cell_update(state, x, y);
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::players::PlayerRow;
     use crate::game::buildings::{BuildingMetadata, BuildingOwnership, GridPosition};
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::game::player::PlayerMetadata;
+    use crate::test_support::{ServerTestHarness, drain_events};
 
-    struct BuildingTestState {
-        state: Arc<GameState>,
-        player: PlayerRow,
-        db_path: PathBuf,
-        world_name: String,
-        dir: PathBuf,
-    }
-
-    impl BuildingTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_building_test_state(label: &str) -> BuildingTestState {
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!(
-            "buildings_{label}_{}_{}.db",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("building-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("buildings_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        BuildingTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = bytes::BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_building_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("buildings_{label}"), "building-user").await
     }
 
     fn player_money(game_state: &Arc<GameState>, pid: PlayerId) -> i64 {
@@ -1046,24 +731,55 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn shpaak_destroy_item_indices_match_reference_inventory_slots() {
-        assert_eq!(shpaak_item_index(PackType::Teleport), Some(0));
-        assert_eq!(shpaak_item_index(PackType::Resp), Some(1));
-        assert_eq!(shpaak_item_index(PackType::Up), Some(2));
-        assert_eq!(shpaak_item_index(PackType::Market), Some(3));
-        assert_eq!(shpaak_item_index(PackType::Craft), Some(24));
-        assert_eq!(shpaak_item_index(PackType::Gun), Some(26));
-        assert_eq!(shpaak_item_index(PackType::Storage), Some(29));
-        assert_eq!(shpaak_item_index(PackType::Gate), None);
-        assert_eq!(shpaak_item_index(PackType::Spot), None);
+    fn admit_building_delete(
+        state: &Arc<GameState>,
+        command: crate::game::PlayerCommand,
+    ) -> crate::game::BuildingDeleteRequest {
+        let mut effects = crate::game::logic::commands::apply_player_command(state, command);
+        assert!(effects.events.is_empty());
+        assert!(effects.broadcasts.is_empty());
+        assert_eq!(effects.saves.len(), 1);
+        match effects.saves.pop().expect("building-delete save") {
+            crate::game::SaveCommand::BuildingDelete { request } => request,
+            _ => panic!("remove-pack must produce one typed building-delete save"),
+        }
+    }
+
+    async fn persist_and_complete_building_delete(
+        state: &Arc<GameState>,
+        request: crate::game::BuildingDeleteRequest,
+    ) -> crate::game::CommandEffects {
+        let outcome = state
+            .db
+            .apply_building_delete(&crate::db::BuildingDeleteWrite {
+                building_id: request.expected.building_id,
+                x: request.expected.x,
+                y: request.expected.y,
+                clear_resp_bindings: request.view.pack_type == PackType::Resp,
+                box_write: request.box_write.clone(),
+            })
+            .await
+            .unwrap();
+        let result = match outcome {
+            crate::db::BuildingDeleteOutcome::Deleted {
+                cleared_resp_bindings,
+            } => crate::game::BuildingDeleteResult::Deleted {
+                cleared_resp_bindings,
+            },
+            crate::db::BuildingDeleteOutcome::IdentityMismatch => {
+                crate::game::BuildingDeleteResult::IdentityMismatch
+            }
+        };
+        crate::game::logic::commands::apply_persistence_completion(
+            state,
+            crate::game::PersistenceCompletion::BuildingDeleted { request, result },
+        )
     }
 
     #[tokio::test]
     async fn place_building_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_building_test_state("place_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1083,8 +799,6 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_money(&test.state, pid), 10_000);
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -1121,15 +835,12 @@ mod tests {
                 .owner_id
         };
         assert_eq!(owner_id, PlayerId(1));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn destroying_resp_clears_matching_online_and_offline_resp_bindings() {
         let test = make_building_test_state("resp_destroy_clears_bindings").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let extra = crate::db::buildings::BuildingExtra {
@@ -1157,12 +868,7 @@ mod tests {
             extra: &extra,
         };
         let (building_id, _) = test.state.insert_building_runtime(&spec).await.unwrap();
-        let offline = test
-            .state
-            .db
-            .create_player("resp-offline-bound", "p", "h")
-            .await
-            .unwrap();
+        let offline = test.create_player("resp-offline-bound").await;
         test.state
             .db
             .update_player_resp(test.player.id, Some(10), Some(10))
@@ -1183,7 +889,7 @@ mod tests {
             Some(())
         });
 
-        assert!(destroy_damagable_building(&test.state, None, 10, 10).await);
+        assert!(destroy_damagable_building(&test.state, None, 10, 10));
         let queued = test
             .state
             .commands_rx
@@ -1191,13 +897,23 @@ mod tests {
             .as_mut()
             .expect("test command receiver")
             .try_recv()
-            .expect("building removal completion");
+            .expect("building delete request");
         assert!(matches!(
             queued.command,
-            crate::game::PlayerCommand::ApplyRemovedBuilding { .. }
+            crate::game::PlayerCommand::RemovePack { .. }
         ));
-        let _effects =
-            crate::game::logic::commands::apply_player_command(&test.state, queued.command);
+        let request = admit_building_delete(&test.state, queued.command);
+        assert!(test.state.get_pack_at(10, 10).is_none());
+        assert!(
+            test.state
+                .db
+                .load_all_buildings()
+                .await
+                .unwrap()
+                .iter()
+                .any(|building| building.id == building_id)
+        );
+        let _effects = persist_and_complete_building_delete(&test.state, request).await;
 
         assert!(test.state.get_pack_at(10, 10).is_none());
         assert!(
@@ -1234,12 +950,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(online_ecs, (None, None, true));
-
-        test.cleanup();
     }
 
     #[tokio::test]
-    async fn removed_teleport_returns_box_save_without_legacy_queue() {
+    async fn removed_teleport_persists_box_in_same_delete_transaction() {
         let test = make_building_test_state("teleport_box_effect").await;
         let extra = crate::db::buildings::BuildingExtra {
             charge: 7,
@@ -1266,25 +980,35 @@ mod tests {
             extra: &extra,
         };
         test.state.insert_building_runtime(&spec).await.unwrap();
-        let view = test.state.get_pack_at(10, 10).expect("teleport view");
-        let removal = snapshot_building_removal(&test.state, None, view);
-
-        let effects = crate::game::logic::commands::apply_player_command(
+        let request = admit_building_delete(
             &test.state,
-            crate::game::PlayerCommand::ApplyRemovedBuilding { removal },
+            crate::game::PlayerCommand::RemovePack {
+                remove: crate::game::RemovePack {
+                    x: 10,
+                    y: 10,
+                    cause: crate::game::BuildingDeleteCause::Damage {
+                        trigger_player_id: None,
+                        origin_session_id: None,
+                    },
+                },
+            },
         );
 
-        assert!(matches!(
-            effects.saves.as_slice(),
-            [crate::game::SaveCommand::Box { write }]
-                if write.x == 10 && write.y == 10
-                    && write.crystals == Some([0, 0, 0, 0, 7, 0])
-        ));
+        assert!(request.box_write.as_ref().is_some_and(|write| {
+            write.x == 10 && write.y == 10 && write.crystals == Some([0, 0, 0, 0, 7, 0])
+        }));
+        assert_ne!(
+            test.state.world.get_cell_typed(10, 10),
+            crate::world::CellType(crate::world::cells::cell_type::BOX)
+        );
+        let _effects = persist_and_complete_building_delete(&test.state, request).await;
         assert_eq!(
             test.state.world.get_cell_typed(10, 10),
             crate::world::CellType(crate::world::cells::cell_type::BOX)
         );
-
-        test.cleanup();
+        assert_eq!(
+            test.state.db.load_all_boxes().await.unwrap(),
+            vec![(10, 10, [0, 0, 0, 0, 7, 0])]
+        );
     }
 }

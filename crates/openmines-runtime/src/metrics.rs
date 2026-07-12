@@ -308,6 +308,56 @@ pub static COMMAND_SEQUENCE: LazyLock<IntGauge> = LazyLock::new(|| {
     gauge
 });
 
+pub static DUE_ACTION_DEPTH: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::with_opts(Opts::new(
+        "openmines_due_action_depth",
+        "Current number of admitted delayed simulation actions",
+    ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static DUE_ACTIONS_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "openmines_due_actions_total",
+            "Delayed simulation actions by stable kind and result",
+        ),
+        &["kind", "result"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(counter.clone()))
+        .expect("register");
+    counter
+});
+
+pub static DUE_ACTION_LATENESS_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let histogram = HistogramVec::new(
+        HistogramOpts::new(
+            "openmines_due_action_lateness_seconds",
+            "Delay between a due-action deadline and authoritative apply",
+        )
+        .buckets(TICK_CADENCE_BUCKETS.to_vec()),
+        &["kind"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("register");
+    histogram
+});
+
+pub static DUE_ACTION_DRAIN_SECONDS: LazyLock<Histogram> = LazyLock::new(|| {
+    tick_histogram(
+        "openmines_due_action_drain_seconds",
+        "Wall-clock time spent draining delayed simulation actions per cycle",
+    )
+});
+
 pub static SIMULATION_TICK: LazyLock<IntGauge> = LazyLock::new(|| {
     let gauge = IntGauge::with_opts(Opts::new(
         "openmines_simulation_tick",

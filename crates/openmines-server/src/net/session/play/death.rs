@@ -146,6 +146,12 @@ pub fn apply_player_death_core(
     let (rx, ry) = if let (Some(x), Some(y)) = (rebind_x, rebind_y) {
         // Collect resp building data immutably first, then mutate.
         let resp_data = state.building_entity_at(x, y).map(|bld_ent| {
+            if ecs
+                .get::<crate::game::BuildingDeletePending>(bld_ent)
+                .is_some()
+            {
+                return Ok(None);
+            }
             let Some(meta) = ecs.get::<crate::game::buildings::BuildingMetadata>(bld_ent) else {
                 return Err(DeathCoreError::RespState("BuildingMetadata"));
             };
@@ -308,6 +314,12 @@ fn find_random_public_resp(
         .iter()
         .copied()
         .filter_map(|entity| {
+            if ecs
+                .get::<crate::game::BuildingDeletePending>(entity)
+                .is_some()
+            {
+                return None;
+            }
             let meta = ecs.get::<crate::game::buildings::BuildingMetadata>(entity)?;
             if meta.pack_type != crate::game::buildings::PackType::Resp {
                 return None;
@@ -490,86 +502,12 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::players::PlayerRow;
     use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerPosition, PlayerStats};
+    use crate::test_support::{ServerTestHarness, drain_events};
     use std::collections::HashMap;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
 
-    struct DeathTestState {
-        state: Arc<GameState>,
-        player: PlayerRow,
-        db_path: PathBuf,
-        world_name: String,
-        dir: PathBuf,
-    }
-
-    impl DeathTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_death_test_state(label: &str) -> DeathTestState {
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("death_{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("death-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("death_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        DeathTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = bytes::BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_death_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("death_{label}"), "death-user").await
     }
 
     fn player_health(state: &Arc<GameState>, pid: PlayerId) -> i32 {
@@ -656,8 +594,7 @@ mod tests {
     #[tokio::test]
     async fn death_core_missing_flags_is_explicit_error_without_respawn_mutation() {
         let test = make_death_test_state("missing_flags_death").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -682,15 +619,12 @@ mod tests {
         assert!(drain_events(&mut rx).is_empty());
         assert_eq!(player_health(&test.state, pid), before_health);
         assert_eq!(player_pos(&test.state, pid), before_pos);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn hurt_player_pure_missing_flags_is_explicit_error_without_damage_mutation() {
         let test = make_death_test_state("missing_flags_hurt").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -710,15 +644,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_health(&test.state, pid), 90);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn public_respawn_is_free_and_does_not_decrement_charge() {
         let test = make_death_test_state("public_resp_free").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         insert_resp(&test.state, 20, 20, PlayerId(0), 10, 100).await;
@@ -736,15 +667,12 @@ mod tests {
         assert_eq!(player_money_after(&test.state, pid), 5);
         assert_eq!(resp_charge_and_storage_money(&test.state, 20, 20), (100, 0));
         assert!(!output.broadcasts.resp_used);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn owned_respawn_without_enough_money_falls_back_without_charging() {
         let test = make_death_test_state("owned_resp_no_money").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         insert_resp(&test.state, 20, 20, PlayerId(0), 10, 100).await;
@@ -763,8 +691,6 @@ mod tests {
         assert_eq!(player_money_after(&test.state, pid), 10);
         assert_eq!(resp_charge_and_storage_money(&test.state, 10, 10), (100, 0));
         assert!(!output.broadcasts.resp_used);
-
-        test.cleanup();
     }
 
     fn player_money_after(state: &Arc<GameState>, pid: PlayerId) -> i64 {

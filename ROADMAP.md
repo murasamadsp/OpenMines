@@ -8,6 +8,8 @@
 ## Где смотреть актуальный статус
 
 - `AGENTS.md` — честный high-level статус реализации и правила работы.
+- `SIMULATION_KERNEL_PLAN.md` — ownership, latency, active work и spatial multicore.
+- `SERVER_CONSISTENCY_PLAN.md` — единая форма feature-модулей и capability gates.
 - `TODO.md` — текущие задачи и критерии готовности.
 - `docs/backlog/` — непортированные или недоделанные подсистемы.
 - `docs/reference/PARITY_AUDIT.md` — подробный parity-аудит. Использовать только

@@ -1,6 +1,8 @@
 use crate::db::SkillSlots;
-use num_traits::ToPrimitive;
+use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use std::collections::HashMap;
+
+pub const MAX_SKILL_SLOTS: i32 = 34;
 
 /// Коды (`#[strum(serialize)]`) — единственный источник истины для wire (@S) и
 /// БД (skills JSON keyed by code). `code()`/`from_code()` выведены из них через
@@ -364,9 +366,7 @@ impl OnBld for PlayerSkills<'_> {
 
 impl OnHealth for PlayerSkills<'_> {
     fn on_health_max(&self, _current_max: i32) -> i32 {
-        get_player_skill_effect(self.skills, SkillType::Health)
-            .to_i32()
-            .expect("health skill effect must fit i32")
+        saturating_trunc_f32_to_i32(get_player_skill_effect(self.skills, SkillType::Health))
     }
     fn on_health_regen(&self, _current_regen: f32) -> f32 {
         get_player_skill_effect(self.skills, SkillType::Repair)
@@ -563,7 +563,18 @@ pub fn add_skill_exp(skills: &mut SkillSlots, code: &str, amount: f32) -> bool {
     let gained_exp = PlayerSkills { skills }.on_exp(amount);
 
     if let Some(entry) = skills.find_mut(code) {
-        entry.exp += gained_exp;
+        let next_exp = entry.exp + gained_exp;
+        entry.exp = if next_exp.is_nan() {
+            0.0
+        } else if next_exp.is_infinite() {
+            if next_exp.is_sign_negative() {
+                f32::MIN
+            } else {
+                f32::MAX
+            }
+        } else {
+            next_exp
+        };
         true
     } else {
         false
@@ -605,7 +616,7 @@ pub fn add_player_skill_exp(
         .unwrap_or(SkillExpMutation::MissingEntity)
 }
 
-/// Convert skills into outbound packets payload (`(skill_code, percent)`), preserving legacy rounding.
+/// Convert skills into outbound packets payload (`(skill_code, percent)`) with reference truncation.
 #[must_use]
 pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {
     skills
@@ -619,9 +630,7 @@ pub fn skill_progress_payload(skills: &SkillSlots) -> Vec<(String, i32)> {
             // (удвоенная полоса); прежний `clamp(0,100)` делал >=200 недостижимым.
             // Guard деления на ноль (`needed>0`) сохранён — AntiGun имеет expfunc=0.
             let pct = if needed > 0.0 {
-                (f64::from(s.exp) * 100.0 / f64::from(needed))
-                    .to_i32()
-                    .expect("skill progress percent must fit i32")
+                saturating_trunc_f32_to_i32(s.exp * 100.0 / needed)
             } else {
                 100
             };
@@ -715,6 +724,26 @@ mod tests {
     }
 
     #[test]
+    fn add_skill_exp_keeps_persisted_exp_finite() {
+        let mut skills = SkillSlots {
+            skills: HashMap::from([(
+                0,
+                SkillEntry {
+                    code: SkillType::Digging.code().to_owned(),
+                    level: 1,
+                    exp: f32::MAX,
+                },
+            )]),
+            total_slots: 20,
+        };
+
+        assert!(add_skill_exp(&mut skills, SkillType::Digging.code(), 1.0));
+        let exp = skills.find(SkillType::Digging.code()).unwrap().exp;
+        assert!(exp.is_finite());
+        assert_eq!(exp.to_bits(), f32::MAX.to_bits());
+    }
+
+    #[test]
     fn skill_progress_payload_truncates_and_does_not_clamp_like_reference() {
         let skills = SkillSlots {
             skills: HashMap::from([
@@ -742,6 +771,26 @@ mod tests {
 
         assert!(payload.contains(&(SkillType::Digging.code().to_owned(), 199)));
         assert!(payload.contains(&(SkillType::Health.code().to_owned(), 150)));
+    }
+
+    #[test]
+    fn skill_progress_payload_saturates_float_overflow() {
+        let skills = SkillSlots {
+            skills: HashMap::from([(
+                0,
+                SkillEntry {
+                    code: SkillType::Digging.code().to_owned(),
+                    level: 1,
+                    exp: f32::MAX,
+                },
+            )]),
+            total_slots: 20,
+        };
+
+        assert_eq!(
+            skill_progress_payload(&skills),
+            vec![(SkillType::Digging.code().to_owned(), i32::MAX)]
+        );
     }
 
     #[test]

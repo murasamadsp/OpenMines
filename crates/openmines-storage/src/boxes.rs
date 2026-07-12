@@ -129,32 +129,7 @@ impl Database {
     pub async fn save_boxes_batch(&self, writes: &[BoxWrite]) -> Result<()> {
         let mut tx = self.pool.begin().await?;
         for write in writes {
-            if let Some(crystals) = write.crystals {
-                sqlx::query(
-                    "INSERT INTO boxes (x, y, ze, cr, si, be, fi, go, cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?3, ?4, ?5, ?6, ?7, ?8)
-                     ON CONFLICT(x,y) DO UPDATE SET ze=excluded.ze, cr=excluded.cr, si=excluded.si,
-                     be=excluded.be, fi=excluded.fi, go=excluded.go, cry_green=excluded.cry_green,
-                     cry_blue=excluded.cry_blue, cry_red=excluded.cry_red, cry_violet=excluded.cry_violet,
-                     cry_white=excluded.cry_white, cry_cyan=excluded.cry_cyan",
-                )
-                .bind(write.x)
-                .bind(write.y)
-                .bind(crystals[0])
-                .bind(crystals[1])
-                .bind(crystals[2])
-                .bind(crystals[3])
-                .bind(crystals[4])
-                .bind(crystals[5])
-                .execute(&mut *tx)
-                .await?;
-            } else {
-                sqlx::query("DELETE FROM boxes WHERE x=?1 AND y=?2")
-                    .bind(write.x)
-                    .bind(write.y)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+            apply_box_write(&mut tx, write).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -166,6 +141,39 @@ impl Database {
         let res = sqlx::query("DELETE FROM boxes").execute(&self.pool).await?;
         Ok(res.rows_affected())
     }
+}
+
+pub(crate) async fn apply_box_write(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    write: &BoxWrite,
+) -> Result<()> {
+    if let Some(crystals) = write.crystals {
+        sqlx::query(
+            "INSERT INTO boxes (x, y, ze, cr, si, be, fi, go, cry_green, cry_blue, cry_red, cry_violet, cry_white, cry_cyan)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(x,y) DO UPDATE SET ze=excluded.ze, cr=excluded.cr, si=excluded.si,
+             be=excluded.be, fi=excluded.fi, go=excluded.go, cry_green=excluded.cry_green,
+             cry_blue=excluded.cry_blue, cry_red=excluded.cry_red, cry_violet=excluded.cry_violet,
+             cry_white=excluded.cry_white, cry_cyan=excluded.cry_cyan",
+        )
+        .bind(write.x)
+        .bind(write.y)
+        .bind(crystals[0])
+        .bind(crystals[1])
+        .bind(crystals[2])
+        .bind(crystals[3])
+        .bind(crystals[4])
+        .bind(crystals[5])
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        sqlx::query("DELETE FROM boxes WHERE x=?1 AND y=?2")
+            .bind(write.x)
+            .bind(write.y)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

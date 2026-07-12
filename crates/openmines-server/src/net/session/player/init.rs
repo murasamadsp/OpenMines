@@ -350,6 +350,9 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
             crate::game::GameEvent::Fanout { recipients, data } => {
                 state.sessions.fanout(&recipients, &data);
             }
+            crate::game::GameEvent::GuiView { .. } => {
+                unreachable!("connect flow cannot produce GUI view events")
+            }
         }
     }
 }
@@ -672,10 +675,8 @@ mod tests {
     use super::*;
     use crate::db::PlayerRow;
     use crate::db::ProgramRow;
+    use crate::test_support::{ServerTestHarness, drain_events};
     use crate::world::cells::cell_type;
-    use bytes::BytesMut;
-    use std::sync::Arc;
-    use tokio::sync::mpsc::Receiver;
 
     fn base_player() -> PlayerRow {
         PlayerRow {
@@ -712,62 +713,8 @@ mod tests {
         }
     }
 
-    async fn make_init_test_state(
-        name: &str,
-    ) -> (
-        Arc<GameState>,
-        std::path::PathBuf,
-        std::path::PathBuf,
-        String,
-    ) {
-        let dir = std::env::temp_dir();
-        let unique = format!("{}_{}", name, std::process::id());
-        let db_path = dir.join(format!("{unique}.db"));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{unique}_world");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-        (state, db_path, dir, world_name)
-    }
-
-    fn cleanup_init_test(db_path: &std::path::Path, dir: &std::path::Path, world_name: &str) {
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_init_test_state(name: &str) -> ServerTestHarness {
+        ServerTestHarness::new(name, "init-test-player").await
     }
 
     fn event_index(events: &[(String, Vec<u8>)], name: &str) -> usize {
@@ -779,8 +726,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_command_returns_initial_sync_without_sending_during_dispatch() {
-        let (state, db_path, dir, world_name) =
-            make_init_test_state("connect_command_effect").await;
+        let test = make_init_test_state("connect_command_effect").await;
+        let state = &test.state;
         let (tx, mut rx) = crate::net::session::outbox::channel();
         let session_id = crate::game::SessionId::new(123);
         let player = base_player();
@@ -788,7 +735,7 @@ mod tests {
         assert!(state.sessions.bind_player(session_id, player.id.into()));
 
         let effects = crate::game::logic::commands::apply_player_command(
-            &state,
+            state,
             crate::game::PlayerCommand::Connect {
                 row: Box::new(player.clone()),
                 session_id,
@@ -837,23 +784,23 @@ mod tests {
                     player_id,
                     packets,
                 } => Some((session_id, player_id, packets)),
-                crate::game::GameEvent::Fanout { .. } => None,
+                crate::game::GameEvent::Fanout { .. } | crate::game::GameEvent::GuiView { .. } => {
+                    None
+                }
             })
             .expect("initial presentation event");
-        let _ = disconnect_in_tick(&state, PlayerId(player.id), session_id);
-        deliver_initial_presentation(&state, presentation_session, presentation_player, packets);
+        let _ = disconnect_in_tick(state, PlayerId(player.id), session_id);
+        deliver_initial_presentation(state, presentation_session, presentation_player, packets);
         assert!(
             rx.try_recv().is_err(),
             "stale initial presentation must not be delivered after disconnect"
         );
-
-        cleanup_init_test(&db_path, &dir, &world_name);
     }
 
     #[tokio::test]
     async fn init_running_selected_program_hydrates_after_status() {
-        let (state, db_path, dir, world_name) =
-            make_init_test_state("init_running_selected_program").await;
+        let test = make_init_test_state("init_running_selected_program").await;
+        let state = &test.state;
         let (tx, mut rx) = crate::net::session::outbox::channel();
         let mut player = base_player();
         let program = ProgramRow {
@@ -866,7 +813,7 @@ mod tests {
         player.selected_program = Some(program);
         player.programmator_running = true;
 
-        connect_in_tick(&state, &tx, &player, 123);
+        connect_in_tick(state, &tx, &player, 123);
 
         let events = drain_events(&mut rx);
         assert!(
@@ -887,38 +834,12 @@ mod tests {
         assert_eq!(update_json["id"], 7);
         assert_eq!(update_json["title"], "main");
         assert_eq!(update_json["source"], "$z");
-
-        cleanup_init_test(&db_path, &dir, &world_name);
     }
 
     #[tokio::test]
     async fn test_spawn_clears_military_block() {
-        let dir = std::env::temp_dir();
-        let db_path = dir.join(format!("test_spawn_clear_db_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-
-        let world_name = format!("test_world_spawn_{}", std::process::id());
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
+        let test = make_init_test_state("test_spawn_clear").await;
+        let state = &test.state;
         // временная система
         let (tx, _rx) = crate::net::session::outbox::channel();
         let player = PlayerRow {
@@ -958,7 +879,7 @@ mod tests {
         state.world.set_cell(5, 5, cell_type::MILITARY_BLOCK);
         assert_eq!(state.world.get_cell(5, 5), cell_type::MILITARY_BLOCK);
 
-        connect_in_tick(&state, &tx, &player, 123);
+        connect_in_tick(state, &tx, &player, 123);
 
         // Verify it was cleared
         assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
@@ -972,41 +893,17 @@ mod tests {
             state.ecs.write().despawn(active.ecs_entity);
         }
         state.unregister_player_entity(1.into());
-        connect_in_tick(&state, &tx, &player, 124);
+        connect_in_tick(state, &tx, &player, 124);
 
         assert_eq!(state.world.get_cell(5, 5), cell_type::EMPTY);
 
         // Cleanup
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
     }
 
     #[tokio::test]
     async fn disconnect_keeps_running_programmator_entity_offline() {
-        let dir = std::env::temp_dir();
-        let db_path = dir.join(format!("test_prog_disconnect_db_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("test_prog_disconnect_world_{}", std::process::id());
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
+        let test = make_init_test_state("test_prog_disconnect").await;
+        let state = &test.state;
         let (tx, _rx) = crate::net::session::outbox::channel();
         let player = PlayerRow {
             id: 1,
@@ -1041,7 +938,7 @@ mod tests {
             last_bonus_at: 0,
         };
 
-        connect_in_tick(&state, &tx, &player, 123);
+        connect_in_tick(state, &tx, &player, 123);
         let pid = PlayerId(1);
         let entity = state.get_player_entity(pid).unwrap();
         state.modify_player(pid, |ecs, entity| {
@@ -1050,7 +947,7 @@ mod tests {
             Some(())
         });
 
-        let effects = disconnect_in_tick(&state, pid, 123);
+        let effects = disconnect_in_tick(state, pid, 123);
 
         assert_eq!(effects.saves.len(), 1);
         assert!(matches!(
@@ -1064,7 +961,7 @@ mod tests {
                 if recipients.is_empty() && !data.is_empty()
         ));
 
-        let stale_effects = disconnect_in_tick(&state, pid, 123);
+        let stale_effects = disconnect_in_tick(state, pid, 123);
         assert!(stale_effects.saves.is_empty());
         assert!(stale_effects.events.is_empty());
 
@@ -1086,7 +983,7 @@ mod tests {
         );
 
         let (tx2, _rx2) = crate::net::session::outbox::channel();
-        connect_in_tick(&state, &tx2, &player, 456);
+        connect_in_tick(state, &tx2, &player, 456);
         assert!(state.is_player_active(pid));
         assert_eq!(state.get_player_entity(pid), Some(entity));
         let has_connection_after_reconnect = {
@@ -1097,39 +994,12 @@ mod tests {
             has_connection_after_reconnect,
             "reconnect must restore PlayerConnection on the offline entity"
         );
-
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
     }
 
     #[tokio::test]
     async fn disconnect_in_tick_can_run_from_plain_game_thread_without_tokio_reactor() {
-        let dir = std::env::temp_dir();
-        let db_path = dir.join(format!("disconnect_plain_thread_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("disconnect_plain_thread_{}", std::process::id());
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
+        let test = make_init_test_state("disconnect_plain_thread").await;
+        let state = test.state.clone();
         let (tx, _rx) = crate::net::session::outbox::channel();
         let player = PlayerRow {
             id: 1,
@@ -1180,42 +1050,12 @@ mod tests {
             0,
             "disconnect command application must not start DB work"
         );
-
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
     }
 
     #[tokio::test]
     async fn test_respawn_clears_military_block() {
-        let dir = std::env::temp_dir();
-        let db_path = dir.join(format!("test_respawn_clear_db_{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-
-        let world_name = format!("test_world_respawn_{}", std::process::id());
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
+        let test = make_init_test_state("test_respawn_clear").await;
+        let state = &test.state;
 
         let (tx, _rx) = crate::net::session::outbox::channel();
         let player = PlayerRow {
@@ -1251,7 +1091,7 @@ mod tests {
             last_bonus_at: 0,
         }; // временная система
 
-        connect_in_tick(&state, &tx, &player, 123);
+        connect_in_tick(state, &tx, &player, 123);
 
         // Place military block at (10, 10) and all possible random offsets from (10, 10)
         state.world.set_cell(10, 10, cell_type::MILITARY_BLOCK);
@@ -1266,7 +1106,7 @@ mod tests {
         let building_entities = state.building_entities_snapshot();
         let mut ecs = state.ecs.write();
         let result = crate::net::session::play::death::apply_player_death_core(
-            &state,
+            state,
             &mut ecs,
             &building_entities,
             crate::game::player::PlayerId(1),
@@ -1285,9 +1125,6 @@ mod tests {
         );
 
         // Cleanup
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
     }
 }
 

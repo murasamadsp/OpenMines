@@ -64,12 +64,51 @@ fn deliver(state: &Arc<GameState>, event: GameEvent) {
         GameEvent::Fanout { recipients, data } => {
             state.sessions.fanout(&recipients, &data);
         }
+        GameEvent::GuiView {
+            session_id,
+            player_id,
+            view,
+        } => deliver_gui_view(state, session_id, player_id, view),
     }
+}
+
+fn deliver_gui_view(
+    state: &GameState,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    view: crate::game::GuiView,
+) {
+    if state.sessions.session_for_player(player_id) != Some(session_id) {
+        return;
+    }
+    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
+        return;
+    };
+    match view {
+        crate::game::GuiView::Close => {
+            let packet = crate::protocol::packets::gu_close();
+            crate::net::session::wire::send_u_packet(&tx, packet.0, &packet.1);
+        }
+        crate::game::GuiView::Teleport(view) => {
+            let payload = crate::net::session::ui::teleport::render(&view);
+            crate::net::session::wire::send_u_packet(&tx, "GU", &payload);
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn deliver_gui_view_for_test(
+    state: &GameState,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    view: crate::game::GuiView,
+) {
+    deliver_gui_view(state, session_id, player_id, view);
 }
 
 fn disconnect_targets(state: &GameState, event: GameEvent) {
     match event {
-        GameEvent::SessionBatch { session_id, .. } => {
+        GameEvent::SessionBatch { session_id, .. } | GameEvent::GuiView { session_id, .. } => {
             state.sessions.kick_session(session_id);
         }
         GameEvent::Fanout { recipients, .. } => {

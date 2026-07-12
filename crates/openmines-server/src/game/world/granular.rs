@@ -836,7 +836,9 @@ mod physics_repro {
             .into_iter()
             .filter_map(|effect| match effect {
                 BroadcastEffect::CellUpdate(pos) => Some(<(i32, i32)>::from(pos)),
-                BroadcastEffect::Nearby { .. } | BroadcastEffect::Direct { .. } => None,
+                BroadcastEffect::Nearby { .. }
+                | BroadcastEffect::Direct { .. }
+                | BroadcastEffect::BlockUpdate(_) => None,
             })
             .collect();
         assert_eq!(positions, vec![(64, 64), (64, 65)]);

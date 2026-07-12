@@ -9,6 +9,7 @@ const QUEUE_CAPACITY: usize = 4_096;
 const BATCH_LIMIT: usize = 128;
 const RETRY_INITIAL_BACKOFF: Duration = Duration::from_millis(25);
 const RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
+const BUILDING_DELETE_MAX_ATTEMPTS: u64 = 8;
 
 struct PersistenceEnvelope {
     command: SaveCommand,
@@ -73,7 +74,7 @@ impl PersistenceHandle {
         &self,
         kind: SaveKind,
     ) -> Result<PersistencePermit, PersistenceAdmissionError> {
-        let completion = if kind == SaveKind::Program {
+        let completion = if matches!(kind, SaveKind::Program | SaveKind::BuildingDelete) {
             match self.completion_tx.clone().try_reserve_owned() {
                 Ok(permit) => Some(permit),
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -122,7 +123,7 @@ impl PersistenceHandle {
     #[cfg(test)]
     pub(crate) fn test_channel(capacity: usize) -> (Self, PersistenceTestReceiver) {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-        let (completion_tx, _completion_rx) = tokio::sync::mpsc::channel(capacity);
+        let (completion_tx, completion_rx) = tokio::sync::mpsc::channel(capacity);
         let status = Arc::new(PersistenceStatus::default());
         (
             Self {
@@ -130,7 +131,7 @@ impl PersistenceHandle {
                 completion_tx,
                 status,
             },
-            PersistenceTestReceiver { rx },
+            PersistenceTestReceiver { rx, completion_rx },
         )
     }
 }
@@ -138,12 +139,17 @@ impl PersistenceHandle {
 #[cfg(test)]
 pub struct PersistenceTestReceiver {
     rx: tokio::sync::mpsc::Receiver<PersistenceEnvelope>,
+    completion_rx: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
 }
 
 #[cfg(test)]
 impl PersistenceTestReceiver {
     pub(crate) fn try_recv(&mut self) -> Option<SaveCommand> {
         self.rx.try_recv().ok().map(|envelope| envelope.command)
+    }
+
+    pub(crate) fn completion_capacity(&self) -> usize {
+        self.completion_rx.capacity()
     }
 }
 
@@ -216,9 +222,9 @@ impl PersistenceRuntime {
         } = self;
         drop(handle);
         drop(completion_rx);
-        if let Err(error) = worker.await {
-            tracing::error!(error = ?error, "Persistence worker failed during shutdown drain");
-        }
+        worker
+            .await
+            .expect("persistence worker failed during shutdown drain");
     }
 }
 
@@ -242,6 +248,11 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         request: &crate::game::ProgramSaveRequest,
     ) -> impl Future<Output = Result<Option<crate::db::ProgramRow>, PersistenceStoreFailure>> + Send;
+
+    fn delete_building(
+        &self,
+        write: &crate::db::BuildingDeleteWrite,
+    ) -> impl Future<Output = Result<crate::db::BuildingDeleteOutcome, PersistenceStoreFailure>> + Send;
 }
 
 #[derive(Debug)]
@@ -290,6 +301,15 @@ impl PersistenceStore for Arc<crate::db::Database> {
             }
         })
     }
+
+    async fn delete_building(
+        &self,
+        write: &crate::db::BuildingDeleteWrite,
+    ) -> Result<crate::db::BuildingDeleteOutcome, PersistenceStoreFailure> {
+        self.apply_building_delete(write)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)
+    }
 }
 
 async fn run_worker<S>(
@@ -327,12 +347,90 @@ where
             .iter()
             .position(|envelope| envelope.command.kind() != kind)
             .map_or(batch.len(), |offset| start + offset);
-        if kind == SaveKind::Program {
-            persist_program_batch(store, &mut batch[start..end]).await;
-        } else {
-            persist_compatible_batch(store, kind, &batch[start..end]).await;
+        match kind {
+            SaveKind::Program => persist_program_batch(store, &mut batch[start..end]).await,
+            SaveKind::BuildingDelete => {
+                persist_building_delete_batch(store, &mut batch[start..end]).await;
+            }
+            SaveKind::Player | SaveKind::Building | SaveKind::Box => {
+                persist_compatible_batch(store, kind, &batch[start..end]).await;
+            }
         }
         start = end;
+    }
+}
+
+async fn persist_building_delete_batch<S>(store: &S, batch: &mut [PersistenceEnvelope])
+where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::BuildingDelete { request } = &envelope.command else {
+            unreachable!("compatible building-delete batch");
+        };
+        let request = request.clone();
+        let write = crate::db::BuildingDeleteWrite {
+            building_id: request.expected.building_id,
+            x: request.expected.x,
+            y: request.expected.y,
+            clear_resp_bindings: request.view.pack_type == crate::game::PackType::Resp,
+            box_write: request.box_write.clone(),
+        };
+        let oldest = envelope.enqueued_at;
+        let mut attempt = 0u64;
+        let mut backoff = RETRY_INITIAL_BACKOFF;
+        let result = loop {
+            crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(oldest.elapsed().as_secs_f64());
+            match store.delete_building(&write).await {
+                Ok(crate::db::BuildingDeleteOutcome::Deleted {
+                    cleared_resp_bindings,
+                }) => {
+                    break crate::game::BuildingDeleteResult::Deleted {
+                        cleared_resp_bindings,
+                    };
+                }
+                Ok(crate::db::BuildingDeleteOutcome::IdentityMismatch) => {
+                    break crate::game::BuildingDeleteResult::IdentityMismatch;
+                }
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::BuildingDeleteResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[SaveKind::BuildingDelete.name(), "retry"])
+                        .inc();
+                    tracing::warn!(
+                        attempt,
+                        ?backoff,
+                        error = ?error,
+                        building_id = request.expected.building_id,
+                        x = request.expected.x,
+                        y = request.expected.y,
+                        "Building delete failed transiently; retrying"
+                    );
+                    if attempt >= BUILDING_DELETE_MAX_ATTEMPTS {
+                        break crate::game::BuildingDeleteResult::PermanentFailure {
+                            message: error.to_string(),
+                        };
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2).min(RETRY_MAX_BACKOFF);
+                }
+            }
+        };
+
+        envelope
+            .completion
+            .take()
+            .expect("building-delete command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::BuildingDeleted { request, result });
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::BuildingDelete.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
     }
 }
 
@@ -410,7 +508,8 @@ where
                         SaveCommand::Player { row } => row.as_ref().clone(),
                         SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
-                        | SaveCommand::Program { .. } => {
+                        | SaveCommand::Program { .. }
+                        | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible player batch")
                         }
                     })
@@ -424,7 +523,8 @@ where
                         SaveCommand::Building { row } => row.as_ref().clone(),
                         SaveCommand::Player { .. }
                         | SaveCommand::Box { .. }
-                        | SaveCommand::Program { .. } => {
+                        | SaveCommand::Program { .. }
+                        | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible building batch")
                         }
                     })
@@ -438,14 +538,17 @@ where
                         SaveCommand::Box { write } => write.clone(),
                         SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
-                        | SaveCommand::Program { .. } => {
+                        | SaveCommand::Program { .. }
+                        | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible box batch")
                         }
                     })
                     .collect::<Vec<_>>();
                 store.save_boxes_batch(&writes).await
             }
-            SaveKind::Program => unreachable!("program persistence has per-request completion"),
+            SaveKind::Program | SaveKind::BuildingDelete => {
+                unreachable!("completion command routed to compatible batch")
+            }
         };
         match result {
             Ok(()) => {
@@ -494,7 +597,8 @@ mod tests {
         started: Arc<tokio::sync::Semaphore>,
         release: Arc<tokio::sync::Semaphore>,
         block_first: bool,
-        permanent_program_failure: Arc<AtomicBool>,
+        permanent_program_failure: Arc<CachePadded<AtomicBool>>,
+        permanent_building_failure: Arc<CachePadded<AtomicBool>>,
         saved: Arc<Mutex<Vec<SavedBatch>>>,
     }
 
@@ -508,6 +612,7 @@ mod tests {
             program_id: i32,
             source: String,
         },
+        BuildingDelete(i32),
     }
 
     impl TestStore {
@@ -518,13 +623,19 @@ mod tests {
                 started: Arc::new(tokio::sync::Semaphore::new(0)),
                 release: Arc::new(tokio::sync::Semaphore::new(0)),
                 block_first,
-                permanent_program_failure: Arc::new(AtomicBool::new(false)),
+                permanent_program_failure: Arc::new(CachePadded::new(AtomicBool::new(false))),
+                permanent_building_failure: Arc::new(CachePadded::new(AtomicBool::new(false))),
                 saved: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
         fn reject_program_permanently(&self) {
             self.permanent_program_failure
+                .store(true, Ordering::Release);
+        }
+
+        fn reject_building_permanently(&self) {
+            self.permanent_building_failure
                 .store(true, Ordering::Release);
         }
 
@@ -613,6 +724,30 @@ mod tests {
                 }))
             }
         }
+
+        fn delete_building(
+            &self,
+            write: &crate::db::BuildingDeleteWrite,
+        ) -> impl Future<Output = Result<crate::db::BuildingDeleteOutcome, PersistenceStoreFailure>> + Send
+        {
+            let store = self.clone();
+            let building_id = write.building_id;
+            async move {
+                if store.permanent_building_failure.load(Ordering::Acquire) {
+                    store.calls.fetch_add(1, Ordering::AcqRel);
+                    return Err(PersistenceStoreFailure::Permanent(anyhow::anyhow!(
+                        "injected permanent building failure"
+                    )));
+                }
+                store
+                    .persist(SavedBatch::BuildingDelete(building_id))
+                    .await
+                    .map_err(PersistenceStoreFailure::Transient)?;
+                Ok(crate::db::BuildingDeleteOutcome::Deleted {
+                    cleared_resp_bindings: 0,
+                })
+            }
+        }
     }
 
     fn player(id: i32) -> crate::db::PlayerRow {
@@ -696,6 +831,40 @@ mod tests {
                     session_id: crate::game::SessionId::new(session_id),
                     program_id,
                     source: "source".to_owned(),
+                },
+            });
+    }
+
+    fn publish_building_delete(handle: &PersistenceHandle, building_id: i32, operation_id: u64) {
+        handle
+            .try_reserve(SaveKind::BuildingDelete)
+            .expect("building-delete persistence capacity")
+            .publish(SaveCommand::BuildingDelete {
+                request: crate::game::BuildingDeleteRequest {
+                    operation_id: crate::game::BuildingDeleteOperationId::new(operation_id),
+                    expected: crate::game::BuildingIdentity {
+                        building_id,
+                        x: 10,
+                        y: 20,
+                    },
+                    view: crate::game::PackView {
+                        id: building_id,
+                        pack_type: crate::game::PackType::Resp,
+                        x: 10,
+                        y: 20,
+                        owner_id: crate::game::PlayerId(1),
+                        clan_id: 0,
+                        charge: 0,
+                        max_charge: 0,
+                        hp: 100,
+                        max_hp: 100,
+                    },
+                    cause: crate::game::BuildingDeleteCause::Damage {
+                        trigger_player_id: None,
+                        origin_session_id: None,
+                    },
+                    box_write: None,
+                    inventory_drop_item: None,
                 },
             });
     }
@@ -910,5 +1079,70 @@ mod tests {
 
         drop(handle);
         runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn building_delete_retries_and_completes_once() {
+        let store = TestStore::new(false, 2);
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 4);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_building_delete(&handle, 41, 7);
+        drop(handle);
+
+        runtime.shutdown().await;
+
+        assert_eq!(store.calls.load(Ordering::Acquire), 3);
+        assert_eq!(
+            *store.saved.lock().expect("saved lock"),
+            vec![SavedBatch::BuildingDelete(41)]
+        );
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::BuildingDeleted {
+                request: crate::game::BuildingDeleteRequest {
+                    operation_id,
+                    expected: crate::game::BuildingIdentity { building_id: 41, .. },
+                    ..
+                },
+                result: crate::game::BuildingDeleteResult::Deleted {
+                    cleared_resp_bindings: 0
+                },
+            }) if operation_id == crate::game::BuildingDeleteOperationId::new(7)
+        ));
+        assert!(matches!(
+            completions.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn permanent_building_delete_failure_completes_without_retry_loop() {
+        let store = TestStore::new(false, 0);
+        store.reject_building_permanently();
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 4);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_building_delete(&handle, 41, 9);
+        drop(handle);
+
+        runtime.shutdown().await;
+
+        assert_eq!(store.calls.load(Ordering::Acquire), 1);
+        assert!(store.saved.lock().expect("saved lock").is_empty());
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::BuildingDeleted {
+                request: crate::game::BuildingDeleteRequest {
+                    operation_id,
+                    ..
+                },
+                result: crate::game::BuildingDeleteResult::PermanentFailure { .. },
+            }) if operation_id == crate::game::BuildingDeleteOperationId::new(9)
+        ));
+        assert!(matches!(
+            completions.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
     }
 }

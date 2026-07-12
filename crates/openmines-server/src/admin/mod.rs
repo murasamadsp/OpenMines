@@ -1,5 +1,9 @@
 //! Единый каталог admin-команд для console, in-game slash и web GUI.
 
+mod command;
+
+pub use command::AdminCommandName;
+
 use crate::game::GameState;
 use crate::game::player::{PlayerConnection, PlayerFlags, PlayerId, PlayerStats};
 use crate::net::session::wire::make_u_packet_bytes;
@@ -8,7 +12,8 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct AdminCommandSpec {
-    pub name: &'static str,
+    #[serde(rename = "name")]
+    pub command: AdminCommandName,
     pub slash: &'static str,
     pub console: Option<&'static str>,
     pub description: &'static str,
@@ -16,115 +21,115 @@ pub struct AdminCommandSpec {
 
 pub const ADMIN_COMMANDS: &[AdminCommandSpec] = &[
     AdminCommandSpec {
-        name: "give",
+        command: AdminCommandName::Give,
         slash: "/give ITEM_ID AMOUNT",
         console: Some("give -p <ID> -i <ITEM_ID> [-a <N>]"),
         description: "выдать предмет",
     },
     AdminCommandSpec {
-        name: "giveall",
+        command: AdminCommandName::GiveAll,
         slash: "/giveall",
         console: None,
         description: "выдать все предметы текущему админу",
     },
     AdminCommandSpec {
-        name: "money",
+        command: AdminCommandName::Money,
         slash: "/money AMOUNT",
         console: Some("money -p <ID> -a <N>"),
         description: "добавить деньги",
     },
     AdminCommandSpec {
-        name: "moneyall",
+        command: AdminCommandName::MoneyAll,
         slash: "/moneyall AMOUNT",
         console: None,
         description: "добавить деньги всем игрокам",
     },
     AdminCommandSpec {
-        name: "tp",
+        command: AdminCommandName::Teleport,
         slash: "/tp X Y",
         console: Some("tp -p <ID> -x <X> -y <Y>"),
         description: "телепортировать",
     },
     AdminCommandSpec {
-        name: "heal",
+        command: AdminCommandName::Heal,
         slash: "/heal",
         console: Some("heal -p <ID>"),
         description: "восстановить HP",
     },
     AdminCommandSpec {
-        name: "kill",
+        command: AdminCommandName::Kill,
         slash: "",
         console: Some("kill -p <ID>"),
         description: "убить игрока",
     },
     AdminCommandSpec {
-        name: "skill",
+        command: AdminCommandName::Skill,
         slash: "/skill ИМЯ|me CODE LEVEL [SLOT] [EXP]",
         console: None,
         description: "установить скилл",
     },
     AdminCommandSpec {
-        name: "kick",
+        command: AdminCommandName::Kick,
         slash: "/kick ИМЯ",
         console: Some("kick -p <ID>"),
         description: "кикнуть игрока",
     },
     AdminCommandSpec {
-        name: "role",
+        command: AdminCommandName::Role,
         slash: "/role ИМЯ admin|mod|player",
         console: Some("role -p <ID> -r admin|mod|player"),
         description: "установить роль",
     },
     AdminCommandSpec {
-        name: "clan",
+        command: AdminCommandName::Clan,
         slash: "/clan create ИМЯ ТЕГ | /clan leave | /clan kick ИМЯ",
         console: None,
         description: "администрировать клан",
     },
     AdminCommandSpec {
-        name: "pack",
+        command: AdminCommandName::Pack,
         slash: "/pack owner|clan|move|type ...",
         console: None,
         description: "администрировать здание",
     },
     AdminCommandSpec {
-        name: "announce",
+        command: AdminCommandName::Announce,
         slash: "",
         console: Some("announce <message>"),
         description: "отправить ST всем онлайн игрокам",
     },
     AdminCommandSpec {
-        name: "online",
+        command: AdminCommandName::Online,
         slash: "",
         console: Some("online"),
         description: "показать онлайн игроков",
     },
     AdminCommandSpec {
-        name: "find",
+        command: AdminCommandName::Find,
         slash: "",
         console: Some("find <name>"),
         description: "найти игрока online + DB",
     },
     AdminCommandSpec {
-        name: "info",
+        command: AdminCommandName::Info,
         slash: "",
         console: Some("info -p <ID>"),
         description: "показать подробности игрока",
     },
     AdminCommandSpec {
-        name: "save",
+        command: AdminCommandName::Save,
         slash: "",
         console: Some("save"),
         description: "сохранить игроков и мир",
     },
     AdminCommandSpec {
-        name: "schedule",
+        command: AdminCommandName::Schedule,
         slash: "",
         console: Some("schedule <name> <ms>"),
         description: "изменить ECS schedule interval",
     },
     AdminCommandSpec {
-        name: "shutdown",
+        command: AdminCommandName::Shutdown,
         slash: "",
         console: Some("stop | shutdown"),
         description: "мягко остановить сервер",
@@ -234,7 +239,7 @@ pub fn heal_player(state: &Arc<GameState>, target_pid: PlayerId) -> AdminCommand
 
 #[cfg(test)]
 mod tests {
-    use super::{ADMIN_COMMANDS, console_help, slash_help};
+    use super::{ADMIN_COMMANDS, AdminCommandName, console_help, slash_help};
 
     #[test]
     fn slash_help_uses_canonical_registry() {
@@ -254,9 +259,21 @@ mod tests {
 
     #[test]
     fn registry_has_stable_command_names_for_web_gui() {
-        let names: Vec<_> = ADMIN_COMMANDS.iter().map(|spec| spec.name).collect();
-        assert!(names.contains(&"give"));
-        assert!(names.contains(&"role"));
-        assert!(names.contains(&"schedule"));
+        let names: Vec<_> = ADMIN_COMMANDS.iter().map(|spec| spec.command).collect();
+        assert!(names.contains(&AdminCommandName::Give));
+        assert!(names.contains(&AdminCommandName::Role));
+        assert!(names.contains(&AdminCommandName::Schedule));
+
+        let json = serde_json::to_value(ADMIN_COMMANDS).expect("serialize admin command registry");
+        let names: Vec<_> = json
+            .as_array()
+            .expect("admin registry array")
+            .iter()
+            .filter_map(|spec| spec.get("name")?.as_str())
+            .collect();
+        assert!(names.contains(&"giveall"));
+        assert!(names.contains(&"moneyall"));
+        assert!(names.contains(&"tp"));
+        assert!(!names.contains(&"teleport"));
     }
 }

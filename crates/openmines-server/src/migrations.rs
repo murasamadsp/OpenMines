@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::env;
 use std::path::{Path, PathBuf};
 
-const DB_FILENAME: &str = "openmines.db";
+use crate::DB_FILENAME;
 
 pub fn resolve_state_dir(config_data_dir: &str, env_data_dir: Option<String>) -> Result<PathBuf> {
     resolve_state_dir_from(env_data_dir, &env::current_dir()?, config_data_dir)

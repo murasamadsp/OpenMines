@@ -1411,6 +1411,16 @@ fn readonly_programmator_value(
     geo_count: usize,
 ) -> Option<i32> {
     let key = label.to_ascii_uppercase();
+    if let Some((kind, percent)) =
+        crate::game::logic::crystals::CrystalKind::from_programmator_variable(&key)
+    {
+        let value = stats.crystals[kind.index()];
+        return Some(clamp_i64_to_i32(if percent {
+            value.saturating_mul(100)
+        } else {
+            value
+        }));
+    }
     let value = match key.as_str() {
         "AUT" => i32::from(settings.auto_dig),
         "AGR" => i32::from(settings.aggression),
@@ -1439,18 +1449,6 @@ fn readonly_programmator_value(
             }
         }
         "TIM" => i32::try_from(prog.started_at.elapsed().as_secs()).unwrap_or(i32::MAX),
-        "G" => clamp_i64_to_i32(stats.crystals[0]),
-        "B" => clamp_i64_to_i32(stats.crystals[1]),
-        "R" => clamp_i64_to_i32(stats.crystals[2]),
-        "V" => clamp_i64_to_i32(stats.crystals[3]),
-        "W" => clamp_i64_to_i32(stats.crystals[4]),
-        "C" => clamp_i64_to_i32(stats.crystals[5]),
-        "GP" => clamp_i64_to_i32(stats.crystals[0].saturating_mul(100)),
-        "BP" => clamp_i64_to_i32(stats.crystals[1].saturating_mul(100)),
-        "RP" => clamp_i64_to_i32(stats.crystals[2].saturating_mul(100)),
-        "VP" => clamp_i64_to_i32(stats.crystals[3].saturating_mul(100)),
-        "WP" => clamp_i64_to_i32(stats.crystals[4].saturating_mul(100)),
-        "CP" => clamp_i64_to_i32(stats.crystals[5].saturating_mul(100)),
         "GEO" => i32::try_from(geo_count).unwrap_or(i32::MAX),
         "GEP" => i32::try_from(geo_count.saturating_mul(100)).unwrap_or(i32::MAX),
         "LOA" => load_percent(stats),
@@ -1628,7 +1626,7 @@ pub fn programmator_system(
     let now = Instant::now();
 
     for (meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo) in &mut query {
-        if !prog.running {
+        if stats.health <= 0 || !prog.running {
             continue;
         }
         if now < prog.delay {

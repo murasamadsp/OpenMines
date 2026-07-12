@@ -435,7 +435,7 @@ pub fn handle_dig(
             net_u16_nonneg(pid),
             net_u16_nonneg(tgt_x),
             net_u16_nonneg(tgt_y),
-            u16::try_from(mined_yield.final_amount).unwrap_or(u16::MAX),
+            mined_yield.final_amount,
             color_remapped,
         );
         // C# `SendDFToBots` шлёт через `vChunksAroundEx()` — 5×5 чанков ВКЛЮЧАЯ
@@ -839,80 +839,12 @@ pub const fn is_truly_empty(cell: crate::world::CellType) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::{ServerTestHarness, drain_events};
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use std::time::Duration;
 
-    struct TestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        world_name: String,
-        db_path: std::path::PathBuf,
-    }
-
-    impl TestState {
-        fn cleanup(&self) {
-            let dir = std::env::temp_dir();
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_test_state(label: &str) -> TestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("build-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        TestState {
-            state,
-            player,
-            world_name,
-            db_path,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(label, "build-user").await
     }
 
     fn basket_green(payload: &[u8]) -> i64 {
@@ -952,8 +884,7 @@ mod tests {
     #[tokio::test]
     async fn crystal_spend_missing_player_stats_is_explicit_error_not_insufficient_resources() {
         let test = make_test_state("crystal_spend_missing_stats").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -971,15 +902,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn crystal_spend_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_test_state("crystal_spend_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1001,15 +929,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_crystal(&test.state, pid, 0), 10);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn crystal_spend_success_marks_player_dirty() {
         let test = make_test_state("crystal_spend_dirty").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1031,15 +956,12 @@ mod tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "@B");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_missing_player_skills_is_explicit_error_not_silent_noop() {
         let test = make_test_state("dig_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1061,15 +983,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn programmatic_dig_ignores_open_gui_but_manual_dig_does_not() {
         let test = make_test_state("programmatic_dig_window").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1109,12 +1028,10 @@ mod tests {
             events.iter().any(|(event, _)| event == "HB"),
             "programmatic Dig must send self HB for programmator visual sync"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
-    async fn crystal_mine_fx_uses_same_final_amount_as_inventory() {
+    async fn crystal_mine_fx_caps_visual_amount_without_capping_inventory() {
         let test = make_test_state("crystal_mine_fx_final_amount").await;
         {
             let now = crate::time::now_unix();
@@ -1123,16 +1040,15 @@ mod tests {
                 .write()
                 .list
                 .push(crate::game::ActiveEvent {
-                    id: "drop_x100".to_string(),
-                    title: "drop_x100".to_string(),
+                    id: "drop_x100000".to_string(),
+                    title: "drop_x100000".to_string(),
                     starts_at: now - 1,
                     ends_at: now + 60,
                     xp_mult: 1.0,
-                    drop_mult: 300.0,
+                    drop_mult: 100_000.0,
                 });
         }
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1166,20 +1082,17 @@ mod tests {
             .find_map(|(_, payload)| directed_mine_fx_amount(payload))
             .expect("mine D FX after crystal mine");
 
-        assert_eq!(fx_amount, basket_amount);
         assert!(
-            basket_amount > 255,
+            basket_amount > i64::from(u16::MAX),
             "test must exercise event/drop multiplier, got {basket_amount}"
         );
-
-        test.cleanup();
+        assert_eq!(fx_amount, 255);
     }
 
     #[tokio::test]
     async fn crystal_mine_sends_skill_progress_before_basket_like_reference() {
         let test = make_test_state("crystal_mine_packet_order").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1215,15 +1128,12 @@ mod tests {
             skill_idx < basket_idx,
             "C# Mine() sends @S before @B, got {events:?}"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn build_turn_marks_player_dirty_even_when_build_does_not_happen() {
         let test = make_test_state("build_turn_dirty").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1258,15 +1168,12 @@ mod tests {
             .unwrap();
         assert_eq!(dir, 1);
         assert!(dirty);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_turn_marks_player_dirty_even_without_crystal_gain() {
         let test = make_test_state("dig_turn_dirty").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1300,15 +1207,12 @@ mod tests {
             .unwrap();
         assert_eq!(dir, 1);
         assert!(dirty);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_missing_player_flags_is_explicit_error_before_world_damage() {
         let test = make_test_state("dig_missing_flags_no_damage").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1339,15 +1243,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_crystal_missing_player_flags_is_explicit_error_without_crystal_gain() {
         let test = make_test_state("dig_crystal_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1381,15 +1282,12 @@ mod tests {
                     .is_ok_and(|message| message.contains("Состояние игрока недоступно."))
         }));
         assert!(!events.iter().any(|(event, _)| event == "@B"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_box_missing_player_flags_keeps_box_and_sends_explicit_error() {
         let test = make_test_state("dig_box_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1423,15 +1321,12 @@ mod tests {
                     .is_ok_and(|message| message.contains("Состояние игрока недоступно."))
         }));
         assert!(!events.iter().any(|(event, _)| event == "@B"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn dig_box_publishes_intent_without_mutating_box_or_crystals() {
         let test = make_test_state("dig_box_intent").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 2);
+        let (tx, mut rx) = test.connect_with_outbox(2);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1468,15 +1363,12 @@ mod tests {
         assert_eq!(player_crystal(&test.state, pid, 0), 0);
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::BOX);
         assert!(!drain_events(&mut rx).iter().any(|(event, _)| event == "@B"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn crystal_spend_insufficient_resources_stays_quiet_false() {
         let test = make_test_state("crystal_spend_insufficient").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1484,15 +1376,12 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn build_missing_player_skills_is_explicit_error_not_blocked_fallback() {
         let test = make_test_state("build_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1518,15 +1407,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn build_yellow_upgrade_missing_skills_does_not_use_default_cost_or_mutate_world() {
         let test = make_test_state("build_yellow_upgrade_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1567,15 +1453,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn build_red_upgrade_missing_skills_does_not_use_default_cost_or_mutate_world() {
         let test = make_test_state("build_red_upgrade_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1616,15 +1499,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn build_cooldown_block_stays_quiet_noop() {
         let test = make_test_state("build_cooldown_quiet").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let bld = XbldClient {
@@ -1635,8 +1515,6 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());
-
-        test.cleanup();
     }
 
     fn player_crystal(state: &Arc<GameState>, pid: PlayerId, idx: usize) -> i64 {

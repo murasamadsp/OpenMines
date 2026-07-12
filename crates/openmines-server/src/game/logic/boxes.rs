@@ -154,71 +154,14 @@ pub fn apply_box_pickup(
 mod tests {
     use super::*;
     use crate::game::PlayerId;
+    use crate::test_support::ServerTestHarness;
     use crate::world::WorldProvider;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    struct BoxTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl BoxTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_box_test_state(label: &str) -> BoxTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("box_{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database.create_player("box-user", "p", "h").await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("box_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
+    async fn make_box_test_state(label: &str) -> ServerTestHarness {
+        let test = ServerTestHarness::new(&format!("box_{label}"), "box-user").await;
+        let mut rx = test.connect(1);
         while rx.try_recv().is_ok() {}
-
-        BoxTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        test
     }
 
     #[tokio::test]
@@ -264,8 +207,6 @@ mod tests {
             test.state.world.get_cell(10, 11),
             crate::world::cells::cell_type::EMPTY
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -313,7 +254,5 @@ mod tests {
             test.state.world.get_cell(10, 11),
             crate::world::cells::cell_type::BOX
         );
-
-        test.cleanup();
     }
 }

@@ -13,68 +13,7 @@ use crate::net::session::ui::gui_buttons::{market_tabs, resolve_market_window};
 use crate::net::session::ui::horb::{Button, Horb, ListRow};
 use crate::tasks::auction::{credit_money, now_unix};
 
-/// C# `MarketSystem.PackName` — имена 51 типа предмета (индекс = `item_id`).
-const PACK_NAMES: [&str; 51] = [
-    "TP",
-    "Resp",
-    "UP",
-    "Market",
-    "Clans",
-    "boom",
-    "prot",
-    "raz",
-    "Cred",
-    "Rembot",
-    "geopack",
-    "CyanAlive",
-    "RedAlive",
-    "VioletAlive",
-    "BlackAlive",
-    "WhiteAlive",
-    "BlueAlive",
-    "VulcRadar",
-    "AliveRadar",
-    "BotRadar",
-    "TPR",
-    "Konstr Bot",
-    "Boy gay",
-    "Zalupa Zalupa",
-    "Crafter",
-    "BoomShop",
-    "Gun",
-    "Gate",
-    "Dizz",
-    "Storage",
-    "PackRadar",
-    "x3 up",
-    "freeup",
-    "mine x4",
-    "Gypno",
-    "poli",
-    "nano bot",
-    "accum",
-    "transgender",
-    "Comp",
-    "c190",
-    "Fed",
-    "BlackRock",
-    "RedRock",
-    "AntiMage",
-    "EMO",
-    "RainbowAlive",
-    "spot",
-    "NC",
-    "Money",
-    "Оперативные Порно Покемоны.",
-];
-
-fn pack_name(i: i32) -> &'static str {
-    usize::try_from(i)
-        .ok()
-        .and_then(|u| PACK_NAMES.get(u))
-        .copied()
-        .unwrap_or("")
-}
+use crate::game::logic::items::item_name as pack_name;
 
 /// Минимальная ставка: `buyer>0 ? ceil(cost*1.01) : cost` (1:1 C#).
 fn min_bid(cost: i64, has_buyer: bool) -> i64 {
@@ -597,87 +536,11 @@ pub async fn place_bet(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::{ServerTestHarness, drain_events};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
 
-    struct AuctionTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl AuctionTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_auction_test_state(label: &str) -> AuctionTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!(
-            "auction_{label}_{}_{}.db",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("auction-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("auction_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        AuctionTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_auction_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("auction_{label}"), "auction-user").await
     }
 
     fn set_item_count(state: &Arc<GameState>, pid: PlayerId, item: i32, count: i32) {
@@ -717,8 +580,7 @@ mod tests {
     #[tokio::test]
     async fn create_order_missing_inventory_is_explicit_error_not_window_close_noop() {
         let test = make_auction_test_state("missing_inventory").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -735,15 +597,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Данные игрока недоступны."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn create_order_missing_flags_is_explicit_error_without_item_deduction() {
         let test = make_auction_test_state("missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -763,15 +622,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Данные игрока недоступны."));
         assert_eq!(item_count(&test.state, pid, 5), before_count);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn place_bet_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_auction_test_state("bet_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -792,7 +648,5 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Не удалось списать деньги за ставку."));
         assert_eq!(player_money(&test.state, pid), before_money);
-
-        test.cleanup();
     }
 }

@@ -553,77 +553,10 @@ fn send_mu_to_users(state: &Arc<GameState>, data: &[u8], user_ids: &[i32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::test_support::{ServerTestHarness, drain_events};
 
-    struct TestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        world_name: String,
-        db_path: std::path::PathBuf,
-    }
-
-    impl TestState {
-        fn cleanup(&self) {
-            let dir = std::env::temp_dir();
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_test_state(label: &str) -> TestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database.create_player("chat-user", "p", "h").await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        TestState {
-            state,
-            player,
-            world_name,
-            db_path,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(label, "chat-user").await
     }
 
     fn single_hb_chat_text(payload: &[u8]) -> &str {
@@ -669,8 +602,7 @@ mod tests {
     #[tokio::test]
     async fn local_chat_missing_position_is_explicit_error_not_silent_drop() {
         let test = make_test_state("local_chat_missing_position").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -688,15 +620,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние чата недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn local_chat_hb_bubble_uses_raw_message_not_name_prefix() {
         let test = make_test_state("local_chat_raw_bubble").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_local_chat(&test.state, &tx, PlayerId(test.player.id), "5:hi").await;
@@ -705,15 +634,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "HB");
         assert_eq!(single_hb_chat_text(&events[0].1), "5:hi");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn local_chat_with_open_window_sends_no_hb_bubble() {
         let test = make_test_state("local_chat_open_window").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -729,15 +655,12 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn local_chat_console_payloads_send_no_hb_bubble() {
         let test = make_test_state("local_chat_console_payloads").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -746,15 +669,12 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn channel_chat_missing_stats_is_explicit_error_not_access_denied_noop() {
         let test = make_test_state("channel_chat_missing_stats").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -772,15 +692,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние чата недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn chin_initial_missing_ui_is_explicit_error_not_fed_fallback() {
         let test = make_test_state("chin_missing_ui").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -798,7 +715,5 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние чата недоступно."));
-
-        test.cleanup();
     }
 }

@@ -47,10 +47,97 @@ pub struct MapStore {
     blocks: Vec<[u8; BLOCK_CELLS]>,
     /// `slot -> изменён с последнего save` (`MapBlock.notSaved`).
     dirty: Vec<bool>,
+    /// Только изменённые slots. Маска `dirty` дедуплицирует повторные записи в
+    /// один блок, поэтому steady-state flush зависит от dirty work.
+    dirty_slots: Vec<usize>,
     /// Index-таблица изменилась с последнего save (`MapModel.updateIndex`).
     index_dirty: bool,
     /// Заголовок ещё не записан (`MapModel.isNewFile`).
     needs_header: bool,
+    /// Монотонный номер detached batch. Нужен для диагностики и проверки
+    /// порядка поколений при повторном flush после ошибки.
+    next_flush_generation: u64,
+}
+
+#[derive(Debug)]
+struct MapFlushSlot {
+    slot: usize,
+    data: [u8; BLOCK_CELLS],
+}
+
+/// Неизменяемый снимок одного поколения map flush.
+///
+/// Batch не заимствует [`MapStore`], поэтому файловый I/O можно выполнять после
+/// освобождения lock живой карты. При ошибке [`MapStore::restore_flush_batch`]
+/// возвращает только dirty-маркеры; данные всегда берутся из актуального store.
+#[derive(Debug)]
+pub(crate) struct MapFlushBatch {
+    generation: u64,
+    header: Option<(i32, i32)>,
+    indexes: Option<Vec<i32>>,
+    index_len: usize,
+    slots: Vec<MapFlushSlot>,
+}
+
+impl MapFlushBatch {
+    pub(crate) fn persist(&self, path: &std::path::Path) -> Result<()> {
+        use std::io::Write as _;
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("open map file {}", path.display()))?;
+        self.write_to(&mut file).with_context(|| {
+            format!(
+                "write map flush generation {} to {}",
+                self.generation,
+                path.display()
+            )
+        })?;
+        file.flush()
+            .with_context(|| format!("flush map file {}", path.display()))?;
+        Ok(())
+    }
+
+    fn write_to<W>(&self, writer: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Seek + std::io::Write,
+    {
+        use std::io::SeekFrom;
+
+        if let Some((width, height)) = self.header {
+            writer.seek(SeekFrom::Start(0))?;
+            writer.write_all(&width.to_le_bytes())?;
+            writer.write_all(&height.to_le_bytes())?;
+        }
+        if let Some(indexes) = &self.indexes {
+            writer.seek(SeekFrom::Start(HEADER_BYTES as u64))?;
+            let mut table = Vec::with_capacity(indexes.len() * 4);
+            for &idx in indexes {
+                table.extend_from_slice(&idx.to_le_bytes());
+            }
+            writer.write_all(&table)?;
+        }
+        let base = (HEADER_BYTES + self.index_len * 4) as u64;
+        for slot in &self.slots {
+            writer.seek(SeekFrom::Start(base + (slot.slot * BLOCK_CELLS) as u64))?;
+            writer.write_all(&slot.data)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[cfg(test)]
+    const fn dirty_slot_count(&self) -> usize {
+        self.slots.len()
+    }
 }
 
 impl MapStore {
@@ -79,8 +166,10 @@ impl MapStore {
             back_index: Vec::new(),
             blocks: Vec::new(),
             dirty: Vec::new(),
+            dirty_slots: Vec::new(),
             index_dirty: true,
             needs_header: true,
+            next_flush_generation: 0,
         })
     }
 
@@ -128,6 +217,13 @@ impl MapStore {
         }
     }
 
+    fn mark_slot_dirty(&mut self, slot: usize) {
+        if !self.dirty[slot] {
+            self.dirty[slot] = true;
+            self.dirty_slots.push(slot);
+        }
+    }
+
     /// Значение клетки. Невыделенный блок или вне границ → `0`
     /// (ядро `MapModel.GetCell`: `_Blocks[num] == null` → `0`).
     #[must_use]
@@ -157,14 +253,14 @@ impl MapStore {
             let new_slot = self.blocks.len();
             self.blocks.push([0u8; BLOCK_CELLS]);
             self.back_index.push(block_id);
-            self.dirty.push(true);
+            self.dirty.push(false);
             self.indexes[block_id] =
                 i32::try_from(new_slot).expect("slot count fits i32 (grid bounded by world size)");
             self.index_dirty = true;
             new_slot
         };
         self.blocks[slot][cell_idx] = cell;
-        self.dirty[slot] = true;
+        self.mark_slot_dirty(slot);
     }
 
     /// Размер сериализованного файла в байтах (для тестов байт-паритета;
@@ -253,6 +349,7 @@ impl MapStore {
         }
         // Загружено с диска — всё уже сохранено.
         store.dirty = vec![false; slots];
+        store.dirty_slots.clear();
         store.index_dirty = false;
         store.needs_header = false;
         Ok(store)
@@ -279,62 +376,96 @@ impl MapStore {
         Self::new(width, height)
     }
 
-    /// Инкрементально записать в `.map` (порт `MapModel.SaveMapV2`):
-    /// заголовок — если новый файл; полная index-таблица — если менялась;
-    /// затем только «грязные» слоты через seek `8 + idxBytes + 1024*slot`.
-    ///
-    /// # Errors
-    /// Ошибки ввода-вывода файла.
+    pub(crate) fn take_flush_batch(&mut self) -> Option<MapFlushBatch> {
+        if !self.is_dirty() {
+            return None;
+        }
+        let slots = self
+            .dirty_slots
+            .iter()
+            .map(|&slot| MapFlushSlot {
+                slot,
+                data: self.blocks[slot],
+            })
+            .collect();
+        let batch = MapFlushBatch {
+            generation: self.next_flush_generation,
+            header: self.needs_header.then_some((self.width, self.height)),
+            indexes: self.index_dirty.then(|| self.indexes.clone()),
+            index_len: self.indexes.len(),
+            slots,
+        };
+        self.next_flush_generation = self
+            .next_flush_generation
+            .checked_add(1)
+            .expect("map flush generation overflow");
+        self.needs_header = false;
+        self.index_dirty = false;
+        for &slot in &self.dirty_slots {
+            self.dirty[slot] = false;
+        }
+        self.dirty_slots.clear();
+        Some(batch)
+    }
+
+    pub(crate) fn restore_flush_batch(&mut self, batch: &MapFlushBatch) {
+        self.needs_header |= batch.header.is_some();
+        self.index_dirty |= batch.indexes.is_some();
+        for flushed in &batch.slots {
+            self.mark_slot_dirty(flushed.slot);
+        }
+    }
+
+    /// Инкрементально записать в `.map` с восстановлением dirty state при
+    /// частичной или полной ошибке файлового I/O.
     pub fn save(&mut self, path: &std::path::Path) -> Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
-
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .with_context(|| format!("open map file {}", path.display()))?;
-
-        let idx_bytes = self.indexes.len() * 4;
-
-        if self.needs_header {
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(&self.width.to_le_bytes())?;
-            file.write_all(&self.height.to_le_bytes())?;
-            self.needs_header = false;
+        let Some(batch) = self.take_flush_batch() else {
+            return Ok(());
+        };
+        if let Err(error) = batch.persist(path) {
+            self.restore_flush_batch(&batch);
+            return Err(error);
         }
-        if self.index_dirty {
-            file.seek(SeekFrom::Start(HEADER_BYTES as u64))?;
-            let mut table = Vec::with_capacity(idx_bytes);
-            for &idx in &self.indexes {
-                table.extend_from_slice(&idx.to_le_bytes());
-            }
-            file.write_all(&table)?;
-            self.index_dirty = false;
-        }
-        let base = (HEADER_BYTES + idx_bytes) as u64;
-        for slot in 0..self.blocks.len() {
-            if self.dirty[slot] {
-                file.seek(SeekFrom::Start(base + (slot * BLOCK_CELLS) as u64))?;
-                file.write_all(&self.blocks[slot])?;
-                self.dirty[slot] = false;
-            }
-        }
-        file.flush()?;
         Ok(())
     }
 
     /// Есть ли несохранённые изменения (для пропуска лишних `save`).
     #[must_use]
-    pub fn is_dirty(&self) -> bool {
-        self.needs_header || self.index_dirty || self.dirty.iter().any(|&d| d)
+    pub const fn is_dirty(&self) -> bool {
+        self.needs_header || self.index_dirty || !self.dirty_slots.is_empty()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FailAfter {
+        inner: std::io::Cursor<Vec<u8>>,
+        remaining: usize,
+    }
+
+    impl std::io::Write for FailAfter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(std::io::Error::other("injected map write failure"));
+            }
+            let len = buf.len().min(self.remaining);
+            let written = self.inner.write(&buf[..len])?;
+            self.remaining -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush()
+        }
+    }
+
+    impl std::io::Seek for FailAfter {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
 
     #[test]
     fn new_computes_block_grid_with_floor() {
@@ -484,6 +615,96 @@ mod tests {
         assert_eq!(fresh.allocated_blocks(), 0);
 
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn detached_flush_collects_only_unique_dirty_slots() {
+        const BLOCKS: i32 = 128;
+        let mut map = MapStore::new(BLOCK_SIZE * BLOCKS, BLOCK_SIZE).unwrap();
+        for block in 0..BLOCKS {
+            map.set_cell(block * BLOCK_SIZE, 0, 1);
+        }
+        let initial = map.take_flush_batch().unwrap();
+        assert_eq!(initial.dirty_slot_count(), BLOCKS as usize);
+        assert!(!map.is_dirty());
+
+        for value in 2..=10 {
+            map.set_cell(0, 0, value);
+        }
+        map.set_cell((BLOCKS - 1) * BLOCK_SIZE, 0, 11);
+        let incremental = map.take_flush_batch().unwrap();
+
+        assert_eq!(incremental.dirty_slot_count(), 2);
+        assert!(incremental.header.is_none());
+        assert!(incremental.indexes.is_none());
+    }
+
+    #[test]
+    fn failed_older_generation_requeues_latest_slot_value_once() {
+        let mut map = MapStore::new(64, 32).unwrap();
+        map.set_cell(5, 5, 10);
+        let first = map.take_flush_batch().unwrap();
+
+        map.set_cell(5, 5, 20);
+        map.restore_flush_batch(&first);
+        assert_eq!(map.dirty_slots.len(), 1);
+
+        let retry = map.take_flush_batch().unwrap();
+        let (block_id, cell_idx) = map.locate(5, 5).unwrap();
+        let slot = map.slot_of(block_id).unwrap();
+        let persisted = retry
+            .slots
+            .iter()
+            .find(|candidate| candidate.slot == slot)
+            .unwrap();
+
+        assert!(retry.generation() > first.generation());
+        assert_eq!(retry.dirty_slot_count(), 1);
+        assert_eq!(persisted.data[cell_idx], 20);
+    }
+
+    #[test]
+    fn partial_batch_write_can_be_restored_and_retried() {
+        let mut map = MapStore::new(64, 32).unwrap();
+        map.set_cell(5, 5, 117);
+        let batch = map.take_flush_batch().unwrap();
+        let mut writer = FailAfter {
+            inner: std::io::Cursor::new(Vec::new()),
+            remaining: HEADER_BYTES + 4,
+        };
+
+        assert!(batch.write_to(&mut writer).is_err());
+        map.restore_flush_batch(&batch);
+        assert!(map.is_dirty());
+
+        let retry = map.take_flush_batch().unwrap();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        retry.write_to(&mut bytes).unwrap();
+        assert_eq!(bytes.into_inner(), map.serialize());
+        assert!(!map.is_dirty());
+    }
+
+    #[test]
+    fn save_open_failure_restores_detached_dirty_state() {
+        let mut map = MapStore::new(64, 32).unwrap();
+        map.set_cell(5, 5, 117);
+        let missing_parent = std::env::temp_dir().join(format!(
+            "om_mapfmt_missing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = missing_parent.join("map.map");
+
+        assert!(map.save(&path).is_err());
+        assert!(map.is_dirty());
+
+        let retry = map.take_flush_batch().unwrap();
+        assert_eq!(retry.dirty_slot_count(), 1);
+        assert!(retry.header.is_some());
+        assert!(retry.indexes.is_some());
     }
 
     #[test]

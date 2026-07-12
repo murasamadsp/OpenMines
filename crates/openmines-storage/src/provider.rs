@@ -17,7 +17,6 @@ pub(crate) trait DatabaseProvider: Send + Sync {
         clan_id: i32,
         extra: &BuildingExtra,
     ) -> Result<i32>;
-    async fn delete_building(&self, building_id: i32) -> Result<()>;
     #[allow(dead_code)]
     async fn delete_all_buildings(&self) -> Result<u64>;
     async fn update_building_extra(&self, id: i32, extra: &BuildingExtra) -> Result<()>;
@@ -109,9 +108,6 @@ impl DatabaseProvider for Database {
     ) -> Result<i32> {
         self.insert_building(type_code, x, y, owner_id, clan_id, extra)
             .await
-    }
-    async fn delete_building(&self, building_id: i32) -> Result<()> {
-        self.delete_building(building_id).await
     }
     async fn delete_all_buildings(&self) -> Result<u64> {
         self.delete_all_buildings().await

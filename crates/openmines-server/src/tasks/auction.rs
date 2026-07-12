@@ -236,91 +236,11 @@ pub async fn credit_inventory(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::{ServerTestHarness, drain_events};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
 
-    struct AuctionCreditTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl AuctionCreditTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_credit_test_state(label: &str) -> AuctionCreditTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!(
-            "auction_credit_{label}_{}_{}.db",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("auction-credit-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!(
-            "auction_credit_world_{label}_{}_{}",
-            std::process::id(),
-            nonce
-        );
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        AuctionCreditTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_credit_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("auction_credit_{label}"), "auction-credit-user").await
     }
 
     fn player_money(state: &Arc<GameState>, pid: PlayerId) -> i64 {
@@ -344,8 +264,7 @@ mod tests {
     #[tokio::test]
     async fn credit_money_missing_flags_errors_without_money_mutation() {
         let test = make_credit_test_state("money_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -361,15 +280,12 @@ mod tests {
         assert!(err.to_string().contains("player state missing"));
         assert_eq!(player_money(&test.state, pid), before_money);
         assert!(drain_events(&mut rx).is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn credit_inventory_missing_flags_errors_without_item_mutation() {
         let test = make_credit_test_state("inventory_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -385,7 +301,5 @@ mod tests {
         assert!(err.to_string().contains("player state missing"));
         assert_eq!(item_count(&test.state, pid, 5), before_count);
         assert!(drain_events(&mut rx).is_empty());
-
-        test.cleanup();
     }
 }

@@ -1,6 +1,8 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
 use crate::db::players::{PlayerRow, Role, SkillEntry};
+use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerSkillsComp, PlayerStats};
+use crate::game::skills::MAX_SKILL_SLOTS;
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
@@ -14,7 +16,6 @@ use crate::net::session::social::buildings::{
 use crate::net::session::social::clans::{
     handle_clan_create, handle_clan_kick_by_name, handle_clan_leave,
 };
-use num_traits::ToPrimitive;
 use strum::IntoEnumIterator;
 
 const CMD_USAGE_GIVE: &str = "Использование: /give ITEM_ID AMOUNT";
@@ -22,6 +23,8 @@ const CMD_USAGE_MONEY: &str = "Использование: /money AMOUNT";
 const CMD_USAGE_MONEY_ALL: &str = "Использование: /moneyall AMOUNT";
 const CMD_USAGE_SKILL: &str =
     "Использование: /skill ИМЯ|me CODE LEVEL [SLOT] [EXP]. Коды: /skill codes";
+// Largest f32 whose `exp * 100` progress value still fits the client's i32 field.
+const MAX_ADMIN_SKILL_EXP: f32 = 21_474_834.0;
 const CMD_USAGE_TP: &str = "Использование: /tp X Y";
 const CMD_USAGE_PACK_OWNER: &str = "Использование: /pack owner X Y OWNER_ID";
 const CMD_USAGE_PACK_CLAN: &str = "Использование: /pack clan X Y CLAN_ID";
@@ -138,30 +141,53 @@ pub async fn handle_chat_command(state: &Arc<GameState>, tx: &Outbox, pid: Playe
         arguments = ?args,
         "Chat command executed"
     );
-    match cmd {
-        "/give" => handle_chat_give_command(state, tx, pid, args),
-        "/giveall" => handle_chat_giveall_command(state, tx, pid),
-        "/money" => handle_chat_money_command(state, tx, pid, args),
-        "/moneyall" => handle_chat_money_all_command(state, tx, pid, args).await,
-        "/skill" => handle_chat_skill_command(state, tx, pid, args).await,
-        "/tp" => handle_chat_teleport_command(state, tx, pid, args),
-        "/heal" => handle_chat_heal_command(state, tx, pid),
-        "/kick" => handle_chat_kick_command(state, tx, pid, args),
-        "/role" => handle_chat_role_command(state, tx, pid, args).await,
-        "/clan" => handle_chat_clan_command(state, tx, pid, args).await,
-        "/pack" => handle_chat_pack_command(state, tx, pid, args),
-        "/admin" | "/adminhelp" => {
+    match crate::admin::AdminCommandName::from_slash(cmd) {
+        Some(crate::admin::AdminCommandName::Give) => {
+            handle_chat_give_command(state, tx, pid, args);
+        }
+        Some(crate::admin::AdminCommandName::GiveAll) => {
+            handle_chat_giveall_command(state, tx, pid);
+        }
+        Some(crate::admin::AdminCommandName::Money) => {
+            handle_chat_money_command(state, tx, pid, args);
+        }
+        Some(crate::admin::AdminCommandName::MoneyAll) => {
+            handle_chat_money_all_command(state, tx, pid, args).await;
+        }
+        Some(crate::admin::AdminCommandName::Skill) => {
+            handle_chat_skill_command(state, tx, pid, args).await;
+        }
+        Some(crate::admin::AdminCommandName::Teleport) => {
+            handle_chat_teleport_command(state, tx, pid, args);
+        }
+        Some(crate::admin::AdminCommandName::Heal) => {
+            handle_chat_heal_command(state, tx, pid);
+        }
+        Some(crate::admin::AdminCommandName::Kick) => {
+            handle_chat_kick_command(state, tx, pid, args);
+        }
+        Some(crate::admin::AdminCommandName::Role) => {
+            handle_chat_role_command(state, tx, pid, args).await;
+        }
+        Some(crate::admin::AdminCommandName::Clan) => {
+            handle_chat_clan_command(state, tx, pid, args).await;
+        }
+        Some(crate::admin::AdminCommandName::Pack) => {
+            handle_chat_pack_command(state, tx, pid, args);
+        }
+        Some(crate::admin::AdminCommandName::Help) => {
             if ensure_admin(tx, state, pid) {
                 send_admin_help(tx);
             }
         }
-        _ => {
+        None => {
             if is_admin_command(state, pid) {
                 send_admin_help(tx);
             } else {
                 send_ok(tx, "Ошибка", &format!("Неизвестная команда: {cmd}"));
             }
         }
+        Some(_) => unreachable!("slash parser returned a console-only admin command"),
     }
 }
 
@@ -359,22 +385,43 @@ async fn handle_chat_skill_command(
         );
         return;
     };
-    let level = match level_arg.parse::<i32>() {
-        Ok(level) if level >= 1 => level,
+    let level = match level_arg.parse::<i64>() {
+        Ok(level) if (1..=i64::from(i32::MAX)).contains(&level) => {
+            i32::try_from(level).expect("validated skill level must fit i32")
+        }
         _ => {
-            send_ok(tx, "Скилл", "LEVEL должен быть целым числом >= 1");
+            send_ok(
+                tx,
+                "Скилл",
+                &format!("LEVEL должен быть целым числом от 1 до {}", i32::MAX),
+            );
             return;
         }
     };
     let slot = match args.get(3).map(|raw| raw.parse::<i32>()) {
-        Some(Ok(slot)) if slot >= 0 => Some(slot),
+        Some(Ok(slot)) if (0..MAX_SKILL_SLOTS).contains(&slot) => Some(slot),
         Some(_) => {
-            send_ok(tx, "Скилл", "SLOT должен быть целым числом >= 0");
+            send_ok(
+                tx,
+                "Скилл",
+                &format!(
+                    "SLOT должен быть целым числом от 0 до {}",
+                    MAX_SKILL_SLOTS - 1
+                ),
+            );
             return;
         }
         None => None,
     };
     let exp = match args.get(4).map(|raw| raw.parse::<f32>()) {
+        Some(Ok(exp)) if exp > MAX_ADMIN_SKILL_EXP => {
+            send_ok(
+                tx,
+                "Скилл",
+                &format!("EXP слишком большое. Максимум: {MAX_ADMIN_SKILL_EXP}"),
+            );
+            return;
+        }
         Some(Ok(exp)) if exp >= 0.0 && exp.is_finite() => exp,
         Some(_) => {
             send_ok(tx, "Скилл", "EXP должен быть конечным числом >= 0");
@@ -474,7 +521,10 @@ fn apply_admin_skill_set(
                 skills.states.skills.retain(|&existing_slot, entry| {
                     existing_slot == chosen_slot || entry.code != skill_type.code()
                 });
-                skills.states.total_slots = skills.states.total_slots.max(chosen_slot + 1);
+                skills.states.total_slots = skills
+                    .states
+                    .total_slots
+                    .clamp(chosen_slot + 1, MAX_SKILL_SLOTS);
                 skills.states.skills.insert(
                     chosen_slot,
                     SkillEntry {
@@ -489,9 +539,10 @@ fn apply_admin_skill_set(
                     let skills = ecs
                         .get::<PlayerSkillsComp>(entity)
                         .expect("PlayerSkillsComp checked before admin health recalc");
-                    get_player_skill_effect(&skills.states, SkillType::Health)
-                        .to_i32()
-                        .unwrap_or(0)
+                    saturating_trunc_f32_to_i32(get_player_skill_effect(
+                        &skills.states,
+                        SkillType::Health,
+                    ))
                 };
                 let mut player_stats = ecs
                     .get_mut::<PlayerStats>(entity)
@@ -535,10 +586,14 @@ fn choose_admin_skill_slot(
     if let Some(slot) = explicit_slot {
         return Some(slot);
     }
-    if let Some((&slot, _)) = skills.skills.iter().find(|(_, entry)| entry.code == code) {
+    if let Some((&slot, _)) = skills
+        .skills
+        .iter()
+        .find(|(slot, entry)| (0..MAX_SKILL_SLOTS).contains(slot) && entry.code == code)
+    {
         return Some(slot);
     }
-    (0..skills.total_slots).find(|slot| !skills.skills.contains_key(slot))
+    (0..skills.total_slots.clamp(0, MAX_SKILL_SLOTS)).find(|slot| !skills.skills.contains_key(slot))
 }
 
 // ─── /tp ────────────────────────────────────────────────────────────────────
@@ -934,86 +989,11 @@ fn parse_pack_pos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::players::PlayerRow;
     use crate::game::player::{PlayerFlags, PlayerPosition};
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::test_support::{ServerTestHarness, drain_events};
 
-    struct CommandTestState {
-        state: Arc<GameState>,
-        player: PlayerRow,
-        db_path: PathBuf,
-        world_name: String,
-        dir: PathBuf,
-    }
-
-    impl CommandTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_command_test_state(label: &str) -> CommandTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!(
-            "commands_{label}_{}_{}.db",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("command-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("commands_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        CommandTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = bytes::BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_command_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("commands_{label}"), "command-user").await
     }
 
     fn make_admin_and_remove_flags(game_state: &Arc<GameState>, pid: PlayerId) {
@@ -1079,8 +1059,7 @@ mod tests {
     #[tokio::test]
     async fn skill_sets_wire_code_slot_and_syncs_player_packets() {
         let test = make_command_test_state("skill_set").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1115,15 +1094,60 @@ mod tests {
         assert!(events.iter().any(|(event, _)| event == "@L"));
         assert!(events.iter().any(|(event, _)| event == "@B"));
         assert_eq!(events.last().unwrap().0, "OK");
+    }
 
-        test.cleanup();
+    #[tokio::test]
+    async fn skill_exp_above_wire_limit_is_rejected_before_mutation() {
+        let test = make_command_test_state("skill_max_exp").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin(&test.state, pid);
+        let command = format!("/skill me U 200 10 {}", f32::MAX);
+
+        handle_chat_command(&test.state, &tx, pid, &command).await;
+
+        assert!(player_skill_entry(&test.state, pid, 10).is_none());
+        let saved = test
+            .state
+            .db
+            .get_player_by_id(test.player.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!saved.skills.skills.contains_key(&10));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("EXP слишком большое"));
+        assert!(message.contains("21474834"));
+    }
+
+    #[tokio::test]
+    async fn skill_rejects_slots_outside_domain_before_mutation() {
+        let test = make_command_test_state("skill_slot_limit").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        make_admin(&test.state, pid);
+        handle_chat_command(&test.state, &tx, pid, "/skill me U 200 34 1").await;
+
+        assert!(player_skill_entry(&test.state, pid, 34).is_none());
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(message.contains("SLOT должен быть целым числом от 0 до 33"));
     }
 
     #[tokio::test]
     async fn skill_unknown_code_is_explicit_wire_error_without_mutation() {
         let test = make_command_test_state("skill_unknown").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1139,15 +1163,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Неизвестный wire/DB-код скилла"));
         assert!(message.contains("U=геология"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn skill_codes_help_is_generated_from_wire_codes() {
         let test = make_command_test_state("skill_codes").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1163,15 +1184,12 @@ mod tests {
         assert!(message.contains("M=Movement"));
         assert!(message.contains("d=Digging"));
         assert!(!message.contains("GEO="));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn skill_missing_flags_is_explicit_error_without_skill_mutation() {
         let test = make_command_test_state("skill_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1185,15 +1203,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn money_missing_flags_is_explicit_error_without_money_mutation() {
         let test = make_command_test_state("money_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1208,15 +1223,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_money(&test.state, pid), before_money);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn teleport_missing_flags_is_explicit_error_without_tp_packet_or_position_mutation() {
         let test = make_command_test_state("tp_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1231,7 +1243,5 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_pos(&test.state, pid), before_pos);
-
-        test.cleanup();
     }
 }

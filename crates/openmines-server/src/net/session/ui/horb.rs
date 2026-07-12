@@ -199,7 +199,7 @@ impl CanvasEl {
     fn push_to(&self, out: &mut Vec<String>) {
         match self {
             Self::Rect { x, y, w, h, color } => {
-                out.push(format!("{x}X{y}Y{w}w{h}h=R%{color}"));
+                out.push(format!("{x}X{y}Y{w}w{h}h=R#{color}"));
             }
             Self::Tp { x, y, action } => {
                 out.push(format!("{x}X{y}Y=t"));
@@ -476,9 +476,13 @@ impl Horb {
         serde_json::Value::Object(obj)
     }
 
+    pub fn payload(&self) -> Vec<u8> {
+        format!("horb:{}", self.to_json()).into_bytes()
+    }
+
     /// Сериализовать в GU-payload (`"horb:{json}"`) и отправить.
     fn emit(&self, tx: &Outbox) {
-        send_u_packet(tx, "GU", format!("horb:{}", self.to_json()).as_bytes());
+        send_u_packet(tx, "GU", &self.payload());
     }
 
     /// Отправить HORB без `PlayerUI.current_window`.
@@ -654,10 +658,18 @@ mod tests {
             .to_json();
         let canvas = arr(&json, "canvas");
         assert_eq!(canvas.len(), 12);
-        assert_eq!(canvas[0], "-18X18Y18w18h=R%008000"); // Empty/Green
-        assert_eq!(canvas[9], "0X0Y18w18h=R%ff3030"); // Center marker
+        assert_eq!(canvas[0], "-18X18Y18w18h=R#008000"); // Empty/Green
+        assert_eq!(canvas[9], "0X0Y18w18h=R#ff3030"); // Center marker
         assert_eq!(canvas[10], "18X-18Y=t");
         assert_eq!(canvas[11], "tp:32:32");
         assert_eq!(json["css"], "canv-w=72;canv-h=72"); // side = (2*1+1)*18+18 = 72
+
+        let (command, color) = canvas[0]
+            .as_str()
+            .expect("canvas command string")
+            .split_once('#')
+            .expect("Unity ShowHORB requires # between canvas command and content");
+        assert_eq!(command.rsplit_once('=').map(|(_, kind)| kind), Some("R"));
+        assert_eq!(color, "008000");
     }
 }

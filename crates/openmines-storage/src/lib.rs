@@ -28,7 +28,7 @@ pub mod programs;
 pub mod provider;
 
 pub use boxes::{BoxWrite, pick_box_coord};
-pub use buildings::{BuildingExtra, BuildingRow};
+pub use buildings::{BuildingDeleteOutcome, BuildingDeleteWrite, BuildingExtra, BuildingRow};
 pub use chats::ChatRow;
 pub use clans::{ClanRank, ClanRow};
 pub use events::EventRow;

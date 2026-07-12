@@ -1,5 +1,5 @@
 use crate::db::SkillSlots;
-use crate::game::skills::{add_skill_exp, skill_progress_payload};
+use crate::game::skills::{SkillType, add_skill_exp, skill_progress_payload};
 use crate::protocol::packets::skills_packet;
 use num_traits::ToPrimitive;
 
@@ -50,6 +50,11 @@ pub struct ExpContext {
     pub drop_mult: f64,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct SkillProgressSnapshot {
+    pub entries: Vec<(String, i32)>,
+}
+
 impl ExpContext {
     /// Вычислить контекст из текущего состояния ивентов.
     pub fn from_state(state: &crate::game::GameState) -> Self {
@@ -75,6 +80,18 @@ impl ExpContext {
         } else {
             None
         }
+    }
+
+    /// Add experience through a domain skill type and return a wire-free snapshot.
+    pub fn add_typed_skill_exp(
+        &self,
+        states: &mut SkillSlots,
+        skill: SkillType,
+        base: f32,
+    ) -> Option<SkillProgressSnapshot> {
+        add_skill_exp(states, skill.code(), base * self.xp_mult).then(|| SkillProgressSnapshot {
+            entries: skill_progress_payload(states),
+        })
     }
 
     /// Применить drop-множитель к базовому количеству кристаллов.

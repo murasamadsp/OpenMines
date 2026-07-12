@@ -29,7 +29,7 @@ mod sectors_gen;
 
 use anyhow::{Context, Result};
 use cells::{CellDefs, cell_type};
-use map_format::MapStore;
+use map_format::{MapFlushBatch, MapStore};
 use memmap2::MmapMut;
 use parking_lot::{Mutex, RwLock};
 use std::fs::{self, OpenOptions};
@@ -309,6 +309,7 @@ pub trait WorldProvider: Send + Sync {
     fn read_world_cell(&self, x: i32, y: i32) -> Option<WorldCell>;
     fn write_world_cell(&self, x: i32, y: i32, cell: WorldCell);
     fn destroy(&self, x: i32, y: i32);
+    fn destroy_cell_and_road(&self, x: i32, y: i32);
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool;
     fn read_chunk_cells(&self, chunk_x: u32, chunk_y: u32) -> Vec<u8>;
     fn flush(&self) -> anyhow::Result<WorldFlushStats>;
@@ -338,6 +339,56 @@ pub struct World {
     /// Счётчик вызовов flush: дорогой `.bak` делаем не каждый flush,
     /// а раз в `BACKUP_EVERY_N_FLUSHES` (msync/save — каждый flush).
     flush_count: std::sync::atomic::AtomicU64,
+}
+
+/// Detached foreground/background generations. Пока value живо и не
+/// зафиксировано, любой early return автоматически возвращает dirty-маркеры.
+struct DetachedMapFlush<'a> {
+    world: &'a World,
+    cells: Option<MapFlushBatch>,
+    road: Option<MapFlushBatch>,
+    committed: bool,
+}
+
+impl<'a> DetachedMapFlush<'a> {
+    fn take(world: &'a World) -> Self {
+        let cells = world.cells.write().take_flush_batch();
+        let road = world.road.write().take_flush_batch();
+        Self {
+            world,
+            cells,
+            road,
+            committed: false,
+        }
+    }
+
+    fn persist(&self) -> Result<()> {
+        if let Some(batch) = &self.cells {
+            batch.persist(&self.world.map_path)?;
+        }
+        if let Some(batch) = &self.road {
+            batch.persist(&self.world.road_path)?;
+        }
+        Ok(())
+    }
+
+    fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for DetachedMapFlush<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Some(batch) = &self.cells {
+            self.world.cells.write().restore_flush_batch(batch);
+        }
+        if let Some(batch) = &self.road {
+            self.world.road.write().restore_flush_batch(batch);
+        }
+    }
 }
 
 /// Значение пустой/выкопанной клетки (как видит клиент по проводу).
@@ -603,6 +654,17 @@ impl WorldProvider for World {
         drop(journal);
     }
 
+    fn destroy_cell_and_road(&self, x: i32, y: i32) {
+        self.write_world_cell(
+            x,
+            y,
+            WorldCell {
+                cell_type: CellType(EMPTY_CELL),
+                durability: 0.0,
+            },
+        );
+    }
+
     fn damage_cell(&self, x: i32, y: i32, dmg: f32) -> bool {
         if !self.valid_coord(x, y) {
             return false;
@@ -700,20 +762,11 @@ impl WorldProvider for World {
             n != 0 && n.is_multiple_of(BACKUP_EVERY_N_FLUSHES)
         };
 
-        // Клетки: инкрементальная запись `.map` (как `MapModel.SaveMapV2` —
-        // только заголовок/индекс/грязные блоки, без перезаписи всего файла).
-        {
-            let mut store = self.cells.write();
-            if store.is_dirty() {
-                store.save(&self.map_path)?;
-            }
-        }
-        {
-            let mut store = self.road.write();
-            if store.is_dirty() {
-                store.save(&self.road_path)?;
-            }
-        }
+        // Под lock живой карты только отделяем immutable dirty generations.
+        // open/seek/write/flush ниже не удерживают cells/road locks. Journal
+        // остаётся барьером мутаций до успешного checkpoint, как и до refactor.
+        let detached_maps = DetachedMapFlush::take(self);
+        detached_maps.persist()?;
         if do_backup && self.map_path.exists() {
             let bak = self.map_path.with_extension("map.bak");
             let tmp = self.map_path.with_extension("map.tmp");
@@ -746,6 +799,7 @@ impl WorldProvider for World {
             let _ = fs::rename(&tmp, &bak);
         }
         journal.checkpoint()?;
+        detached_maps.commit();
         drop(journal);
         Ok(WorldFlushStats {
             durability: durability_stats,
@@ -1034,6 +1088,12 @@ mod tests {
         world.set_cell_typed(11, 10, CellType(cell_type::GREEN));
         assert_eq!(world.get_cell_typed(11, 10), CellType(cell_type::GREEN));
 
+        world.set_cell_typed(12, 10, CellType(cell_type::ROAD));
+        world.set_cell_typed(12, 10, CellType(cell_type::ROCK));
+        world.destroy_cell_and_road(12, 10);
+        assert_eq!(world.get_solid_cell(12, 10), 0);
+        assert_eq!(world.get_road_cell(12, 10), cell_type::EMPTY);
+
         // cleanup temp files if created
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_v2.map"));
         let _ = std::fs::remove_file(temp_dir.join("test_world_facade_road_v2.map"));
@@ -1194,6 +1254,90 @@ mod tests {
             "checkpoint must truncate replay journal"
         );
 
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(journal_path);
+    }
+
+    #[test]
+    fn detached_map_flush_releases_read_locks_and_restores_on_drop() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!(
+            "test_world_detached_flush_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
+        let world = World::new(&name, 1, 1, cell_defs, &temp_dir).unwrap();
+        world.cells.write().set_cell(5, 5, cell_type::GREEN);
+
+        let detached = DetachedMapFlush::take(&world);
+        assert!(world.cells.try_read().is_some());
+        assert!(world.road.try_read().is_some());
+        assert!(!world.cells.read().is_dirty());
+
+        drop(detached);
+        assert!(world.cells.read().is_dirty());
+
+        drop(world);
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));
+        let _ = std::fs::remove_file(temp_dir.join(format!("{name}_world.journal")));
+    }
+
+    #[test]
+    fn failed_world_flush_restores_map_dirty_and_preserves_journal() {
+        let temp_dir = std::env::temp_dir();
+        let name = format!(
+            "test_world_failed_flush_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let journal_path = temp_dir.join(format!("{name}_world.journal"));
+        let cell_defs = CellDefs::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("shared crate must live inside crates/")
+                .parent()
+                .expect("crates/ must live inside workspace root")
+                .join("configs/cells.json"),
+        )
+        .unwrap();
+        let mut world = World::new(&name, 1, 1, cell_defs, &temp_dir).unwrap();
+        world.set_cell_typed(5, 5, CellType(cell_type::GREEN));
+        let journal_len = std::fs::metadata(&journal_path).unwrap().len();
+        assert!(journal_len > 0);
+
+        let map_path = world.map_path.clone();
+        world.map_path = temp_dir
+            .join(format!("{name}_missing_parent"))
+            .join("world.map");
+        assert!(world.flush().is_err());
+        assert!(world.cells.read().is_dirty());
+        assert_eq!(std::fs::metadata(&journal_path).unwrap().len(), journal_len);
+
+        world.map_path = map_path;
+        world.flush().unwrap();
+        assert!(!world.cells.read().is_dirty());
+        assert_eq!(std::fs::metadata(&journal_path).unwrap().len(), 0);
+
+        drop(world);
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_v2.map")));
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_road_v2.map")));
         let _ = std::fs::remove_file(temp_dir.join(format!("{name}_durability.map")));

@@ -25,6 +25,21 @@ pub struct BuildingRow {
     pub clanzone: i32,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BuildingDeleteWrite {
+    pub building_id: i32,
+    pub x: i32,
+    pub y: i32,
+    pub clear_resp_bindings: bool,
+    pub box_write: Option<crate::BoxWrite>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BuildingDeleteOutcome {
+    Deleted { cleared_resp_bindings: u64 },
+    IdentityMismatch,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BuildingExtra {
     #[serde(deserialize_with = "json_int::i32")]
@@ -180,47 +195,53 @@ impl Database {
         i32::try_from(id).map_err(|_| anyhow::anyhow!("building id overflow"))
     }
 
-    pub async fn delete_building(&self, building_id: i32) -> Result<()> {
-        let result = sqlx::query("DELETE FROM buildings WHERE id = ?1")
-            .bind(building_id)
-            .execute(&self.pool)
-            .await?;
-        if result.rows_affected() != 1 {
-            bail!(
-                "building id={building_id}: delete affected {} rows",
-                result.rows_affected()
-            );
-        }
-        Ok(())
-    }
-
-    /// C# `Resp.Destroy`: удаление Resp и сброс привязок игроков должны быть
-    /// одной DB-операцией, иначе можно получить удалённый респ с живыми binding'ами.
-    pub async fn delete_resp_building_and_clear_bindings(
+    pub async fn apply_building_delete(
         &self,
-        building_id: i32,
-        resp_x: i32,
-        resp_y: i32,
-    ) -> Result<u64> {
+        write: &BuildingDeleteWrite,
+    ) -> Result<BuildingDeleteOutcome> {
         let mut tx = self.pool.begin().await?;
-        let cleared = sqlx::query(
-            "UPDATE players SET resp_x = NULL, resp_y = NULL WHERE resp_x = ?1 AND resp_y = ?2",
-        )
-        .bind(resp_x)
-        .bind(resp_y)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        let deleted = sqlx::query("DELETE FROM buildings WHERE id = ?1")
-            .bind(building_id)
+        let deleted = sqlx::query("DELETE FROM buildings WHERE id = ?1 AND x = ?2 AND y = ?3")
+            .bind(write.building_id)
+            .bind(write.x)
+            .bind(write.y)
             .execute(&mut *tx)
             .await?
             .rows_affected();
         if deleted != 1 {
-            bail!("building id={building_id}: delete affected {deleted} rows");
+            let conflicting_identity = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM buildings WHERE id = ?1 OR (x = ?2 AND y = ?3))",
+            )
+            .bind(write.building_id)
+            .bind(write.x)
+            .bind(write.y)
+            .fetch_one(&mut *tx)
+            .await?
+                != 0;
+            if conflicting_identity {
+                tx.rollback().await?;
+                return Ok(BuildingDeleteOutcome::IdentityMismatch);
+            }
+        }
+
+        let cleared_resp_bindings = if write.clear_resp_bindings {
+            sqlx::query(
+                "UPDATE players SET resp_x = NULL, resp_y = NULL WHERE resp_x = ?1 AND resp_y = ?2",
+            )
+            .bind(write.x)
+            .bind(write.y)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+        } else {
+            0
+        };
+        if let Some(box_write) = &write.box_write {
+            crate::boxes::apply_box_write(&mut tx, box_write).await?;
         }
         tx.commit().await?;
-        Ok(cleared)
+        Ok(BuildingDeleteOutcome::Deleted {
+            cleared_resp_bindings,
+        })
     }
 
     /// Полная очистка зданий (при смене мира / `--regen`), чтобы старые якоря не накладывались на новую карту.
@@ -362,7 +383,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::{BuildingExtra, Database};
+    use super::{BuildingDeleteOutcome, BuildingDeleteWrite, BuildingExtra, Database};
     use std::collections::HashMap;
 
     async fn temp_database(name: &str) -> Database {
@@ -470,7 +491,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_and_update_reject_missing_building() {
+    async fn update_rejects_missing_building() {
         let database = temp_database("building_missing_update").await;
         let extra = BuildingExtra {
             charge: 0,
@@ -488,7 +509,6 @@ mod tests {
             clanzone: 0,
         };
 
-        let delete_err = database.delete_building(999_999).await.unwrap_err();
         let extra_err = database
             .update_building_extra(999_999, &extra)
             .await
@@ -498,7 +518,6 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(delete_err.to_string().contains("delete affected 0 rows"));
         assert!(
             extra_err
                 .to_string()
@@ -511,9 +530,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn delete_resp_building_and_clear_bindings_is_atomic() {
-        let database = temp_database("resp_delete_clear_atomic").await;
+    async fn building_delete_fixture(name: &str) -> (Database, BuildingExtra, i32, i32) {
+        let database = temp_database(name).await;
         let extra = BuildingExtra {
             charge: 100,
             max_charge: 1000,
@@ -534,32 +552,118 @@ mod tests {
             .await
             .unwrap();
         let player = database
-            .create_player("resp-delete-bound", "p", "h")
+            .create_player("typed-delete-bound", "p", "h")
             .await
             .unwrap();
         database
             .update_player_resp(player.id, Some(10), Some(20))
             .await
             .unwrap();
+        (database, extra, building_id, player.id)
+    }
 
-        let err = database
-            .delete_resp_building_and_clear_bindings(999_999, 10, 20)
+    fn test_box_write() -> crate::BoxWrite {
+        crate::BoxWrite {
+            x: 10,
+            y: 20,
+            crystals: Some([1, 2, 3, 4, 5, 6]),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_building_delete_rejects_identity_mismatch_without_side_effects() {
+        let (database, _, building_id, player_id) =
+            building_delete_fixture("typed_building_delete_mismatch").await;
+        let mismatch = database
+            .apply_building_delete(&BuildingDeleteWrite {
+                building_id,
+                x: 11,
+                y: 20,
+                clear_resp_bindings: true,
+                box_write: Some(test_box_write()),
+            })
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("delete affected 0 rows"));
-        let still_bound = database.get_player_by_id(player.id).await.unwrap().unwrap();
+            .unwrap();
+        assert_eq!(mismatch, BuildingDeleteOutcome::IdentityMismatch);
+        assert_eq!(database.load_all_buildings().await.unwrap().len(), 1);
+        let still_bound = database.get_player_by_id(player_id).await.unwrap().unwrap();
         assert_eq!(
             (still_bound.resp_x, still_bound.resp_y),
             (Some(10), Some(20))
         );
+        assert!(database.load_all_boxes().await.unwrap().is_empty());
+    }
 
-        let cleared = database
-            .delete_resp_building_and_clear_bindings(building_id, 10, 20)
+    #[tokio::test]
+    async fn typed_building_delete_is_atomic_with_box_and_idempotent() {
+        let (database, _, building_id, player_id) =
+            building_delete_fixture("typed_building_delete_atomic").await;
+        let write = BuildingDeleteWrite {
+            building_id,
+            x: 10,
+            y: 20,
+            clear_resp_bindings: true,
+            box_write: Some(test_box_write()),
+        };
+        let deleted = database.apply_building_delete(&write).await.unwrap();
+        assert_eq!(
+            deleted,
+            BuildingDeleteOutcome::Deleted {
+                cleared_resp_bindings: 1
+            }
+        );
+        assert!(database.load_all_buildings().await.unwrap().is_empty());
+        let cleared = database.get_player_by_id(player_id).await.unwrap().unwrap();
+        assert_eq!((cleared.resp_x, cleared.resp_y), (None, None));
+        assert_eq!(
+            database.load_all_boxes().await.unwrap(),
+            vec![(10, 20, [1, 2, 3, 4, 5, 6])]
+        );
+
+        let replayed = database.apply_building_delete(&write).await.unwrap();
+        assert_eq!(
+            replayed,
+            BuildingDeleteOutcome::Deleted {
+                cleared_resp_bindings: 0
+            }
+        );
+        assert_eq!(
+            database.load_all_boxes().await.unwrap(),
+            vec![(10, 20, [1, 2, 3, 4, 5, 6])]
+        );
+    }
+
+    #[tokio::test]
+    async fn idempotent_delete_replay_rejects_coordinate_replacement() {
+        let (database, extra, building_id, _) =
+            building_delete_fixture("typed_building_delete_replacement").await;
+        let write = BuildingDeleteWrite {
+            building_id,
+            x: 10,
+            y: 20,
+            clear_resp_bindings: true,
+            box_write: None,
+        };
+        assert!(matches!(
+            database.apply_building_delete(&write).await.unwrap(),
+            BuildingDeleteOutcome::Deleted { .. }
+        ));
+        let replacement_id = database
+            .insert_building("R", 10, 20, 2, 0, &extra)
             .await
             .unwrap();
-        assert_eq!(cleared, 1);
-        let cleared_player = database.get_player_by_id(player.id).await.unwrap().unwrap();
-        assert_eq!((cleared_player.resp_x, cleared_player.resp_y), (None, None));
-        assert!(database.load_all_buildings().await.unwrap().is_empty());
+        let replacement_conflict = database.apply_building_delete(&write).await.unwrap();
+        assert_eq!(
+            replacement_conflict,
+            BuildingDeleteOutcome::IdentityMismatch
+        );
+        assert!(
+            database
+                .load_all_buildings()
+                .await
+                .unwrap()
+                .iter()
+                .any(|building| building.id == replacement_id)
+        );
     }
 }

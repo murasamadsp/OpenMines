@@ -409,7 +409,8 @@ pub fn bots_render_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use crate::test_support::ServerTestHarnessBuilder;
+    use std::time::Instant;
 
     // Регрессия: игрок, заспавненный в чанке (0,0), ОБЯЗАН попасть в
     // chunk_players с первого `check_chunk_changed`. Прежний `unwrap_or((0,0))`
@@ -417,110 +418,47 @@ mod tests {
     // же X-broadcast → программаторный ход был невидим.
     #[tokio::test]
     async fn spawn_in_chunk_zero_zero_registers_in_chunk_players() {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("chunkreg_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("chunk-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("chunkreg_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-        let (tx, _rx) = crate::net::session::outbox::channel();
+        let mut builder = ServerTestHarnessBuilder::new("chunkreg", "chunk-user").await;
 
         // Детерминированно спавним в чанке (0,0): клетка (15,8) → (15>>5,8>>5)=(0,0).
         // На СТАРОМ коде (`last_chunk.unwrap_or((0,0))`) коннект→check_chunk_changed
         // видел ncx,ncy==(0,0)==дефолт → «смены нет» → игрок НЕ регистрировался.
-        let mut player = player;
-        player.x = 15;
-        player.y = 8;
-        crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
+        builder.player.x = 15;
+        builder.player.y = 8;
+        let test = builder.build().await;
+        let _receiver = test.connect(1);
 
-        let registered = state
+        let registered = test
+            .state
             .players_in_chunk(0, 0)
-            .contains(&crate::game::player::PlayerId(player.id));
+            .contains(&crate::game::player::PlayerId(test.player.id));
         assert!(
             registered,
             "игрок со спавном в чанке (0,0) обязан попасть в chunk_players на коннекте"
         );
-
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
     }
 
     #[tokio::test]
     async fn bots_render_batch_reuses_snapshot_and_excludes_observer() {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("bots_batch_{}_{}.db", std::process::id(), nonce));
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut first = database.create_player("batch-a", "p", "h").await.unwrap();
-        let mut second = database.create_player("batch-b", "p", "h").await.unwrap();
-        first.x = 10;
-        first.y = 10;
+        let mut builder = ServerTestHarnessBuilder::new("bots_batch", "batch-a").await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        let mut second = builder.create_player("batch-b").await;
         second.x = 11;
         second.y = 10;
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("bots_batch_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-        let (tx1, mut rx1) = crate::net::session::outbox::channel();
-        let (tx2, mut rx2) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&state, &tx1, &first, 1);
-        crate::net::session::player::init::connect_in_tick(&state, &tx2, &second, 2);
+        let test = builder.build().await;
+        let (_tx1, mut rx1) = test.connect_with_outbox(1);
+        let (_tx2, mut rx2) = test.connect_player_with_outbox(&second, 2);
         while rx1.try_recv().is_ok() {}
         while rx2.try_recv().is_ok() {}
 
         let now = Instant::now();
         let result = bots_render_batch(
-            &state,
+            &test.state,
             vec![
                 crate::game::BotsRenderDue {
                     due_at: now,
-                    player_id: first.id.into(),
+                    player_id: test.player.id.into(),
                     session_token: 1,
                 },
                 crate::game::BotsRenderDue {
@@ -545,13 +483,5 @@ mod tests {
             assert_eq!(packet.payload.len(), 12);
             assert_eq!(packet.payload[0], b'X');
         }
-
-        let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
-        let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_road_v2.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_durability.map")));
-        let _ = std::fs::remove_file(dir.join(format!("{world_name}_world.journal")));
     }
 }

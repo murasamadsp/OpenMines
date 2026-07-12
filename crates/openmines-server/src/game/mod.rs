@@ -11,9 +11,10 @@ pub mod world;
 pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
-    CommandEffects, CommandSeq, GameEvent, PersistenceCompletion, PlayerCommand,
-    ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, SaveCommand, SaveKind, SessionId,
-    SimTick,
+    BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
+    BuildingDeleteResult, BuildingIdentity, CommandEffects, CommandSeq, GameEvent, GuiCommand,
+    GuiView, PersistenceCompletion, PlayerCommand, ProgramSaveRequest, ProgramSaveResult,
+    QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
@@ -39,8 +40,8 @@ use std::time::{Duration, Instant};
 pub use actors::player::{ActivePlayer, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats};
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
-    BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec, BuildingStats,
-    GridPosition, PackType, PackView,
+    BuildingDeletePending, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec,
+    BuildingStats, GridPosition, PackType, PackView,
 };
 pub use world::coords::{ChunkPos, WorldPos};
 
@@ -185,12 +186,14 @@ impl Drop for ProfiledEcsWriteGuard<'_> {
     }
 }
 
+#[derive(Debug)]
 pub enum BroadcastEffect {
     Direct {
         session_id: SessionId,
         data: Vec<u8>,
     },
     CellUpdate(WorldPos),
+    BlockUpdate(WorldPos),
     Nearby {
         cx: u32,
         cy: u32,
@@ -1091,6 +1094,9 @@ impl GameState {
         let entity = self.building_entity_at(x, y)?;
         let view = {
             let ecs = self.ecs.read();
+            if ecs.get::<BuildingDeletePending>(entity).is_some() {
+                return None;
+            }
             let meta = ecs.get::<BuildingMetadata>(entity)?;
             let pos = ecs.get::<GridPosition>(entity)?;
             let ownership = ecs.get::<BuildingOwnership>(entity)?;
@@ -1140,6 +1146,12 @@ impl GameState {
             .iter()
             .map(|entry| *entry.value())
             .collect()
+    }
+
+    pub fn building_entities_in_chunk_snapshot(&self, cx: u32, cy: u32) -> Vec<Entity> {
+        self.chunk_buildings
+            .get(&(cx, cy).into())
+            .map_or_else(Vec::new, |entities| entities.value().clone())
     }
 
     fn find_pack_covering_with(
@@ -1239,6 +1251,9 @@ impl GameState {
                     chunk_buildings.get(&(ncx.cast_unsigned(), ncy.cast_unsigned()).into())
                 {
                     for &entity in entities.value() {
+                        if ecs.get::<BuildingDeletePending>(entity).is_some() {
+                            continue;
+                        }
                         let Some(pos) = ecs.get::<GridPosition>(entity) else {
                             continue;
                         };
@@ -1402,6 +1417,12 @@ impl GameState {
             .iter()
             .map(|entry| *entry.key())
             .collect()
+    }
+
+    pub fn active_session_for_player(&self, pid: PlayerId) -> Option<SessionId> {
+        self.active_players
+            .get(&pid)
+            .map(|active| active.session_id)
     }
 
     pub fn nearby_session_ids(
@@ -1593,6 +1614,17 @@ impl GameState {
         Some(entity)
     }
 
+    fn remove_building_entity_if(&self, x: i32, y: i32, expected: Entity) -> Option<Entity> {
+        let (_, entity) = self
+            .building_index
+            .remove_if(&((x, y).into()), |_, entity| *entity == expected)?;
+        let (cx, cy) = World::chunk_pos(x, y);
+        if let Some(mut entities) = self.chunk_buildings.get_mut(&(cx, cy).into()) {
+            entities.retain(|&entity| entity != expected);
+        }
+        Some(entity)
+    }
+
     /// Перенести building entity между координатами в runtime-индексах.
     pub fn move_building_entity(&self, old_x: i32, old_y: i32, new_x: i32, new_y: i32) {
         if let Some(entity) = self.remove_building_entity(old_x, old_y) {
@@ -1647,28 +1679,19 @@ impl GameState {
         Ok((id, entity))
     }
 
-    /// Runtime removal здания: runtime индексы + ECS despawn + mmap footprint.
-    /// DB delete остаётся перед этим шагом, потому что call-sites по-разному
-    /// обрабатывают ошибку БД, дропы и async-контекст.
-    pub fn remove_building_runtime(&self, view: &PackView) -> Option<Entity> {
-        let entity = self.remove_building_entity(view.x, view.y);
-        if entity.is_some() && view.pack_type == PackType::Spot {
+    /// Runtime apply подтверждённого persisted delete.
+    pub fn remove_building_runtime(
+        &self,
+        view: &PackView,
+        expected_entity: Entity,
+    ) -> Option<Vec<WorldPos>> {
+        let entity = self.remove_building_entity_if(view.x, view.y, expected_entity)?;
+        if view.pack_type == PackType::Spot {
             self.remove_botspot_runtime(view.owner_id);
         }
-        if let Some(entity) = entity {
-            self.ecs_write_profiled("game.remove_building_runtime")
-                .despawn(entity);
-        }
-        self.clear_building_footprint(view);
-        entity
-    }
-
-    /// Persisted removal здания: DB delete + runtime cleanup.
-    /// Дропы/возврат предметов остаются у caller'а, потому что зависят от
-    /// конкретной причины сноса.
-    pub async fn delete_building_runtime(&self, view: &PackView) -> anyhow::Result<Option<Entity>> {
-        self.db.delete_building(view.id).await?;
-        Ok(self.remove_building_runtime(view))
+        self.ecs_write_profiled("game.remove_building_runtime")
+            .despawn(entity);
+        Some(self.clear_building_footprint_authoritative(view))
     }
 
     /// Runtime removal `BotSpot`, связанного со Spot-зданием.
@@ -1788,6 +1811,13 @@ impl GameState {
 
     /// Очистить mmap-футпринт здания и разослать HB cell updates.
     pub fn clear_building_footprint(&self, view: &PackView) {
+        for position in self.clear_building_footprint_authoritative(view) {
+            self.broadcast_cell_update(position.0, position.1);
+        }
+    }
+
+    fn clear_building_footprint_authoritative(&self, view: &PackView) -> Vec<WorldPos> {
+        let mut changed_cells = Vec::new();
         for (cdx, cdy, _) in view
             .pack_type
             .building_cells()
@@ -1799,8 +1829,9 @@ impl GameState {
                 y,
                 crate::world::CellType(crate::world::cells::cell_type::EMPTY),
             );
-            self.broadcast_cell_update(x, y);
+            changed_cells.push(WorldPos(x, y));
         }
+        changed_cells
     }
 
     // ─── Боксы: in-memory, без SQLite на hot-path (фикс фриза C-1/C-2/H-1) ──
@@ -1854,7 +1885,12 @@ impl GameState {
                     if Some(pid) == exclude_id {
                         continue;
                     }
-                    self.send_to_player(pid, data.to_vec());
+                    let Some(session_id) = self.active_session_for_player(pid) else {
+                        continue;
+                    };
+                    if let Some(tx) = self.sessions.outbox_for_session(session_id) {
+                        let _ = tx.send(data.to_vec());
+                    }
                 }
             }
         }

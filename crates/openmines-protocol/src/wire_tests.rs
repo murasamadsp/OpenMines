@@ -456,12 +456,20 @@ fn semantic_directed_fx_builders_keep_wire_layout() {
         hb_directed_fx(0, 2, 3, 1, 9, 2)
     );
     assert_eq!(
-        hb_crystal_mine_fx(9, 2, 3, 300, 4),
-        hb_directed_fx(9, 2, 3, 2, 300, 4)
+        hb_crystal_mine_fx(9, 2, 3, 42, 4),
+        hb_directed_fx(9, 2, 3, 2, 42, 4)
     );
     assert_eq!(hb_heal_fx(9), hb_directed_fx(9, 0, 0, 5, 0, 0));
     assert_eq!(hb_hurt_fx(9), hb_directed_fx(9, 0, 0, 6, 0, 0));
     assert_eq!(hb_gun_shot_fx(9, 2, 3), hb_directed_fx(9, 2, 3, 7, 1, 0));
+}
+
+#[test]
+fn hb_crystal_mine_fx_caps_visual_amount_at_255() {
+    assert_eq!(
+        hb_crystal_mine_fx(9, 2, 3, 100_000, 4),
+        vec![b'D', 2, 0xff, 0x00, 4, 2, 0, 3, 0, 9, 0]
+    );
 }
 
 #[test]

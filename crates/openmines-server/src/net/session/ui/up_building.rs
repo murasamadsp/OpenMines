@@ -16,17 +16,14 @@
 use crate::db::{SkillEntry, SkillSlots};
 use crate::game::player::{PlayerSkillsComp, PlayerStats, PlayerUI};
 use crate::game::skills::{
-    self, OnHealth, PlayerSkills as PlayerSkillsHelper, SkillType, can_install_skill, exp_needed,
-    get_skill_requirements, skill_effect,
+    self, MAX_SKILL_SLOTS, OnHealth, PlayerSkills as PlayerSkillsHelper, SkillType,
+    can_install_skill, exp_needed, get_skill_requirements, skill_effect,
 };
 use crate::net::session::outbound::player_sync::{
     send_player_health, send_player_level, send_player_skills, send_player_speed,
 };
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
-
-/// Maximum number of skill slots a player can have.
-const MAX_SLOTS: i32 = 34;
 
 /// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
@@ -168,7 +165,7 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let upgraded = state
         .modify_player(pid, |ecs, entity| {
             // Read skill code, check exp-readiness и считаем цену апгрейда (деньги).
-            let (skill_type, needed, cost) = {
+            let (skill_type, needed, cost, next_level) = {
                 let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up skill upgrade");
                     send_up_state_error(tx);
@@ -176,6 +173,10 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 };
                 let entry = skills.states.skills.get(&selected_slot)?;
                 let stype = SkillType::from_code(&entry.code)?;
+                let Some(next_level) = entry.level.checked_add(1) else {
+                    send_ok(tx, "Апгрейд", "Навык уже достиг максимального уровня.");
+                    return Some(false);
+                };
                 let need = exp_needed(stype, entry.level);
                 if need > 0.0 && entry.exp < need {
                     return Some(false);
@@ -184,7 +185,7 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 // апгрейд бесплатный — намеренная экономик-девиация (DEVIATIONS.md).
                 let cost =
                     state.config.gameplay.skills.upgrade_cost_base * i64::from(entry.level).max(1);
-                (stype, need, cost)
+                (stype, need, cost, next_level)
             };
 
             // Не хватает денег → сообщение и стоп (без апгрейда).
@@ -233,7 +234,7 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 if needed > 0.0 {
                     entry.exp -= needed;
                 }
-                entry.level += 1;
+                entry.level = next_level;
             }
 
             // Send updated skills progress and compute health changes
@@ -464,7 +465,7 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 };
                 let current_slots = get_player_slot_count(skills);
 
-                if pstats.creds <= SLOT_COST || current_slots >= MAX_SLOTS {
+                if pstats.creds <= SLOT_COST || current_slots >= MAX_SKILL_SLOTS {
                     return Some(false);
                 }
                 let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
@@ -644,7 +645,7 @@ fn build_up_page_json(
             serde_json::Value::String("Выберите скилл или пустой слот".into()),
         );
 
-        if total_slots < MAX_SLOTS {
+        if total_slots < MAX_SKILL_SLOTS {
             obj.insert(
                 "b".into(),
                 serde_json::Value::String(format!("Купить слот ({SLOT_COST} кредов)")),
@@ -898,10 +899,9 @@ fn build_up_admin_page_json(view: &PackView) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::drain_events;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     #[test]
     fn up_page_json_has_reference_titles() {
@@ -1031,8 +1031,7 @@ mod tests {
     #[tokio::test]
     async fn buyslot_keeps_creds_and_does_not_send_money_packet() {
         let test = make_up_test_state("buyslot").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let view = PackView {
@@ -1068,8 +1067,6 @@ mod tests {
         assert_eq!(creds, 1001);
         assert_eq!(total_slots, 21);
         assert!(dirty);
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -1078,8 +1075,7 @@ mod tests {
         test.player.money = 1_000;
         test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
         let expected_health = player_health_payload(&test.state, test.player.id.into());
 
@@ -1127,15 +1123,12 @@ mod tests {
                 .iter()
                 .any(|(event, payload)| event == "@L" && payload == expected_health.as_bytes())
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn skill_delete_sends_level_without_skills_packet() {
         let test = make_up_test_state("delete_no_skills_packet").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         open_test_up_gui(&test.state, &tx, test.player.id.into());
@@ -1157,15 +1150,12 @@ mod tests {
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, _)| event == "LV"));
         assert!(events.iter().all(|(event, _)| event != "@S"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn skill_install_sends_level_without_skills_packet() {
         let test = make_up_test_state("install_no_skills_packet").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         open_test_up_gui(&test.state, &tx, test.player.id.into());
@@ -1187,15 +1177,12 @@ mod tests {
         let events = drain_events(&mut rx);
         assert!(events.iter().any(|(event, _)| event == "LV"));
         assert!(events.iter().all(|(event, _)| event != "@S"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn up_button_missing_ui_is_explicit_error_not_unhandled_button() {
         let test = make_up_test_state("up_button_missing_ui").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1212,15 +1199,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние апгрейда недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn buyslot_missing_skills_is_explicit_error_not_not_enough_slots_noop() {
         let test = make_up_test_state("buyslot_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1239,8 +1223,6 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние апгрейда недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -1249,8 +1231,7 @@ mod tests {
         test.player.money = 1_000;
         test.player.skills.skills.get_mut(&1).unwrap().exp = 1.0;
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1271,15 +1252,56 @@ mod tests {
         );
         assert_eq!(player_money(&test.state, pid), 1_000);
         assert_eq!(skill_level_exp(&test.state, pid, 1), (1, 1.0));
+    }
 
-        test.cleanup();
+    #[tokio::test]
+    async fn skill_upgrade_at_i32_max_is_explicit_error_without_partial_mutation() {
+        let test = make_up_test_state("upgrade_max_level").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        open_test_up_gui(&test.state, &tx, pid);
+        assert!(handle_up_button(&test.state, &tx, pid, "skill:1"));
+        drain_events(&mut rx);
+
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test
+                .state
+                .ecs_write_profiled("up_building.max_level_preflight");
+            ecs.get_mut::<PlayerStats>(entity).unwrap().money = i64::MAX;
+            {
+                let mut skills = ecs.get_mut::<PlayerSkillsComp>(entity).unwrap();
+                let entry = skills.states.skills.get_mut(&1).unwrap();
+                entry.level = i32::MAX;
+                entry.exp = 1.0;
+            }
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)
+                .unwrap()
+                .dirty = false;
+        }
+
+        assert!(handle_up_button(&test.state, &tx, pid, "upgrade"));
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        assert_eq!(
+            events[0].1,
+            "Апгрейд#Навык уже достиг максимального уровня.".as_bytes()
+        );
+        assert_eq!(player_money(&test.state, pid), i64::MAX);
+        let (level, exp) = skill_level_exp(&test.state, pid, 1);
+        assert_eq!(level, i32::MAX);
+        assert_eq!(exp.to_bits(), 1.0_f32.to_bits());
+        assert!(!player_creds_slots_and_dirty(&test.state, pid).2);
     }
 
     #[tokio::test]
     async fn skill_delete_missing_flags_is_explicit_error_without_skill_mutation_or_rerender() {
         let test = make_up_test_state("delete_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1294,15 +1316,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         assert!(skill_exists(&test.state, pid, 1));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn skill_install_missing_flags_is_explicit_error_without_skill_mutation() {
         let test = make_up_test_state("install_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1317,15 +1336,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         assert!(!skill_exists(&test.state, pid, 4));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn buyslot_missing_flags_is_explicit_error_without_slot_mutation() {
         let test = make_up_test_state("buyslot_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1339,27 +1355,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         assert_eq!(player_slot_count(&test.state, pid), 20);
-
-        test.cleanup();
-    }
-
-    struct UpTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl UpTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
     }
 
     fn open_test_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
@@ -1378,42 +1373,14 @@ mod tests {
         open_up_gui(state, tx, pid, &view);
     }
 
-    async fn make_up_test_state(label: &str) -> UpTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("up_building_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database.create_player("up-user", "p", "h").await.unwrap();
-        player.creds = 1001;
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("up_building_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        UpTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+    async fn make_up_test_state(label: &str) -> crate::test_support::ServerTestHarness {
+        let mut builder = crate::test_support::ServerTestHarnessBuilder::new(
+            &format!("up_building_{label}"),
+            "up-user",
+        )
+        .await;
+        builder.player.creds = 1001;
+        builder.build().await
     }
 
     fn player_creds_slots_and_dirty(state: &Arc<GameState>, pid: PlayerId) -> (i64, i32, bool) {
@@ -1480,24 +1447,5 @@ mod tests {
                 Some((skill.level, skill.exp))
             })
             .unwrap()
-    }
-
-    fn drain_events(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
-    }
-
-    fn unique_test_nonce() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
     }
 }

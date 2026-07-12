@@ -71,7 +71,15 @@ impl SkillSlots {
     }
     #[must_use]
     pub fn lvl_summary(&self) -> i32 {
-        self.skills.values().map(|e| e.level).sum()
+        let summary = self.skills.values().fold(0_i64, |summary, skill| {
+            summary.saturating_add(i64::from(skill.level))
+        });
+
+        match i32::try_from(summary) {
+            Ok(summary) => summary,
+            Err(_) if summary.is_negative() => i32::MIN,
+            Err(_) => i32::MAX,
+        }
     }
 }
 
@@ -575,7 +583,46 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{Database, SkillEntry, SkillSlots};
+    use std::collections::HashMap;
+
+    fn skill_slots(levels: &[i32]) -> SkillSlots {
+        let skills = levels
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(slot, level)| {
+                (
+                    i32::try_from(slot).unwrap(),
+                    SkillEntry {
+                        code: format!("skill-{slot}"),
+                        level,
+                        exp: 0.0,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        SkillSlots {
+            skills,
+            total_slots: i32::try_from(levels.len()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn level_summary_sums_levels_without_overflow() {
+        assert_eq!(skill_slots(&[12, -3, 7]).lvl_summary(), 16);
+    }
+
+    #[test]
+    fn level_summary_saturates_positive_overflow() {
+        assert_eq!(skill_slots(&[i32::MAX, 1]).lvl_summary(), i32::MAX);
+    }
+
+    #[test]
+    fn level_summary_saturates_negative_overflow() {
+        assert_eq!(skill_slots(&[i32::MIN, -1]).lvl_summary(), i32::MIN);
+    }
 
     async fn temp_database(name: &str) -> Database {
         let path = std::env::temp_dir().join(format!("{name}_{}.db", std::process::id()));

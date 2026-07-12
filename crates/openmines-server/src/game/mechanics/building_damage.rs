@@ -1,8 +1,8 @@
 //! `IDamagable` building ticks: hourly hp decay + `NeedEffect` FX broadcast.
 //! 1:1 с C# `World.cs` (hourly `Damage(2)` + 0.5s `NeedEffect`/`SendBrokenEffect`).
 use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
-    GridPosition, PackType, damage_building, is_damagable, need_effect,
+    BuildingCrafting, BuildingDeletePending, BuildingFlags, BuildingMetadata, BuildingOwnership,
+    BuildingStats, GridPosition, PackType, damage_building, is_damagable, need_effect,
 };
 use crate::game::{BroadcastEffect, BroadcastQueue, PackResendQueue};
 use bevy_ecs::prelude::*;
@@ -20,12 +20,15 @@ pub struct CraftingDueBatch(pub Vec<CraftingDue>);
 /// C# `World.cs:472-486`: each pack that is `IDamagable` → `Damage(2)`; if `NeedEffect` → `SendBrokenEffect`.
 #[allow(clippy::needless_pass_by_value)]
 pub fn building_hourly_damage_system(
-    mut query: Query<(
-        &BuildingMetadata,
-        &GridPosition,
-        &BuildingOwnership,
-        &mut BuildingStats,
-    )>,
+    mut query: Query<
+        (
+            &BuildingMetadata,
+            &GridPosition,
+            &BuildingOwnership,
+            &mut BuildingStats,
+        ),
+        Without<BuildingDeletePending>,
+    >,
     mut bcast_q: ResMut<BroadcastQueue>,
 ) {
     for (meta, bpos, ownership, mut stats) in &mut query {
@@ -43,12 +46,15 @@ pub fn building_hourly_damage_system(
 /// C# `World.cs:489-504`: every 0.5s, `IDamagable` → if `NeedEffect` → `SendBrokenEffect`.
 #[allow(clippy::needless_pass_by_value)]
 pub fn building_effect_tick_system(
-    query: Query<(
-        &BuildingMetadata,
-        &GridPosition,
-        &BuildingOwnership,
-        &BuildingStats,
-    )>,
+    query: Query<
+        (
+            &BuildingMetadata,
+            &GridPosition,
+            &BuildingOwnership,
+            &BuildingStats,
+        ),
+        Without<BuildingDeletePending>,
+    >,
     mut bcast_q: ResMut<BroadcastQueue>,
 ) {
     for (meta, bpos, ownership, stats) in &query {
@@ -113,11 +119,15 @@ fn send_broken_effect_to_queue(bcast_q: &mut BroadcastQueue, x: i32, y: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CraftingDue, CraftingDueBatch, crafter_completion_resend_system};
-    use crate::game::PackResendQueue;
-    use crate::game::buildings::{
-        BuildingCrafting, BuildingFlags, BuildingMetadata, GridPosition, PackType,
+    use super::{
+        CraftingDue, CraftingDueBatch, building_effect_tick_system, building_hourly_damage_system,
+        crafter_completion_resend_system,
     };
+    use crate::game::buildings::{
+        BuildingCrafting, BuildingDeletePending, BuildingFlags, BuildingMetadata,
+        BuildingOwnership, BuildingStats, GridPosition, PackType,
+    };
+    use crate::game::{BroadcastQueue, PackResendQueue};
     use bevy_ecs::prelude::{Schedule, World};
 
     #[test]
@@ -195,5 +205,47 @@ mod tests {
         schedule.run(&mut world);
 
         assert!(world.resource::<PackResendQueue>().0.is_empty());
+    }
+
+    #[test]
+    fn pending_delete_is_frozen_for_damage_and_effect_systems() {
+        let mut world = World::new();
+        world.insert_resource(BroadcastQueue::default());
+        let entity = world
+            .spawn((
+                BuildingMetadata {
+                    id: 1,
+                    pack_type: PackType::Resp,
+                },
+                GridPosition { x: 10, y: 20 },
+                BuildingOwnership {
+                    owner_id: crate::game::PlayerId(1),
+                    clan_id: 0,
+                },
+                BuildingStats {
+                    charge: 100,
+                    max_charge: 100,
+                    cost: 10,
+                    hp: 1,
+                    max_hp: 100,
+                    clanzone: 0,
+                    broken_timer: None,
+                },
+                BuildingDeletePending {
+                    operation_id: crate::game::BuildingDeleteOperationId::new(1),
+                    dirty_before: false,
+                },
+            ))
+            .id();
+
+        let mut damage = Schedule::default();
+        damage.add_systems(building_hourly_damage_system);
+        damage.run(&mut world);
+        let mut effect = Schedule::default();
+        effect.add_systems(building_effect_tick_system);
+        effect.run(&mut world);
+
+        assert_eq!(world.get::<BuildingStats>(entity).unwrap().hp, 1);
+        assert!(world.resource::<BroadcastQueue>().0.is_empty());
     }
 }

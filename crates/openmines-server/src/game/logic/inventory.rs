@@ -68,8 +68,7 @@ pub fn choose_inventory(
 pub fn inventory_packet(inv: &mut crate::game::player::PlayerInventory) -> PacketIntent {
     prefill_miniq_if_needed(inv);
     let all = inventory_nonzero_count(&inv.items);
-    let is_mini = inv.minv;
-    let mut grid: Vec<(i32, i32)> = if is_mini {
+    let mut grid: Vec<(i32, i32)> = if inv.minv {
         inv.miniq
             .iter()
             .filter_map(|&id| inv.items.get(&id).map(|&c| (id, c)))
@@ -85,11 +84,13 @@ pub fn inventory_packet(inv: &mut crate::game::player::PlayerInventory) -> Packe
     // Клиент рендерит сетку строго в порядке payload.
     grid.sort_by_key(|(k, _)| *k);
 
-    if is_mini {
-        crate::protocol::packets::inventory_show(&grid, inv.selected, all)
-    } else {
-        crate::protocol::packets::inventory_full(&grid, inv.selected)
+    if all >= 5 {
+        grid.resize(grid.len().max(5), (-1, 0));
     }
+
+    // НАМЕРЕННАЯ ДЕВИАЦИЯ от C# по ПРЯМОМУ ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ:
+    // Unity отвергает `show:` с непустой `k#v`-сеткой, поэтому оба режима используют `full:`.
+    crate::protocol::packets::inventory_full(&grid, inv.selected)
 }
 
 fn inventory_nonzero_count(items: &std::collections::HashMap<i32, i32>) -> i32 {
@@ -120,8 +121,27 @@ mod tests {
     use crate::game::player::PlayerInventory;
     use std::collections::HashMap;
 
+    fn assert_unity_full_payload(payload: &[u8]) {
+        let payload = std::str::from_utf8(payload).expect("inventory payload must be UTF-8");
+        let mut fields = payload.split(':');
+        assert_eq!(fields.next(), Some("full"));
+        fields
+            .next()
+            .expect("selected field")
+            .parse::<i32>()
+            .expect("Unity parses selected as i32");
+        let grid = fields.next().expect("grid field");
+        assert!(
+            fields.next().is_none(),
+            "full payload has exactly three fields"
+        );
+        let grid_fields: Vec<&str> = grid.split('#').collect();
+        assert_eq!(grid_fields.len() % 2, 0, "grid is key/value pairs");
+        assert!(grid_fields.iter().all(|field| field.parse::<i32>().is_ok()));
+    }
+
     #[test]
-    fn mini_inventory_uses_show_with_total_count() {
+    fn mini_inventory_uses_client_compatible_full_with_toggle_padding() {
         let mut inv = PlayerInventory {
             items: HashMap::from([(1, 5), (2, 3), (3, 1), (4, 2), (5, 9)]),
             selected: 2,
@@ -132,7 +152,8 @@ mod tests {
         let (event, payload) = super::inventory_packet(&mut inv);
 
         assert_eq!(event, "IN");
-        assert_eq!(payload, b"show:5:2:1#5#2#3#3#1#5#9");
+        assert_eq!(payload, b"full:2:1#5#2#3#3#1#5#9#-1#0");
+        assert_unity_full_payload(&payload);
     }
 
     #[test]
@@ -148,6 +169,48 @@ mod tests {
 
         assert_eq!(event, "IN");
         assert_eq!(payload, b"full:-1:1#5#2#3#3#1#4#2");
+        assert_unity_full_payload(&payload);
+    }
+
+    #[tokio::test]
+    async fn inventory_toggle_emits_client_parseable_full_in_both_modes() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "inventory_toggle_wire",
+            "inventory-toggle-user",
+        )
+        .await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        test.state
+            .modify_player(player_id, |ecs, entity| {
+                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                inv.items = HashMap::from([(1, 5), (2, 3), (3, 1), (4, 2), (5, 9)]);
+                inv.selected = 2;
+                inv.minv = true;
+                inv.miniq = vec![2, 5];
+                Some(())
+            })
+            .flatten()
+            .expect("inventory state");
+
+        for expected_minimized in [false, true] {
+            let super::InventoryMutation::Packets(packets) =
+                super::toggle_inventory(&test.state, player_id)
+            else {
+                panic!("inventory toggle must emit packets");
+            };
+            assert_eq!(packets.len(), 1);
+            assert_eq!(packets[0].0, "IN");
+            assert_unity_full_payload(&packets[0].1);
+            let minimized = test
+                .state
+                .query_player_opt(player_id, |ecs, entity| {
+                    ecs.get::<PlayerInventory>(entity).map(|inv| inv.minv)
+                })
+                .expect("inventory state");
+            assert_eq!(minimized, expected_minimized);
+        }
     }
 
     #[test]

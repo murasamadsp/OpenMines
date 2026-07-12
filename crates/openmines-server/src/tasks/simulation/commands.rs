@@ -18,6 +18,7 @@ pub(super) struct CommandPhase {
 pub(super) fn run_command_phase(
     state: &Arc<GameState>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    due_actions: &mut crate::game::logic::due::DueActionQueue,
     pending_work: &mut TickPendingWork,
     services: &TickServices,
     tick_budget: Duration,
@@ -69,7 +70,12 @@ pub(super) fn run_command_phase(
                     .as_secs_f64(),
             );
         let mut command_effects =
-            crate::game::logic::commands::apply_player_command(state, command);
+            crate::game::logic::commands::apply_queued_player_command_with_due(
+                state,
+                command,
+                sequence,
+                due_actions,
+            );
         publish_command_saves(persistence_permit, &mut command_effects.saves, command_name);
         effects.append(command_effects);
         let command_elapsed = apply_started_at.elapsed();

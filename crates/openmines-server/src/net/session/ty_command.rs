@@ -160,9 +160,10 @@ fn decode_ty_command(
             player_id,
             programmatic: false,
         }),
-        "GUI_" => decode_gui_button(&packet.sub_payload).map(|button| PlayerCommand::GuiButton {
+        "GUI_" => decode_gui_button(&packet.sub_payload).map(|button| PlayerCommand::Gui {
+            session_id,
             player_id,
-            button: button.into_owned(),
+            command: crate::game::GuiCommand::parse(button.into_owned()),
         }),
         "Locl" => LoclClient::decode(&packet.sub_payload).map(|locl| PlayerCommand::LocalChat {
             player_id,
@@ -173,7 +174,10 @@ fn decode_ty_command(
             player_id,
             payload: packet.sub_payload.clone(),
         }),
-        "INUS" => Some(PlayerCommand::InventoryUse { player_id }),
+        "INUS" => Some(PlayerCommand::InventoryUse {
+            session_id,
+            player_id,
+        }),
         "TADG" => Some(PlayerCommand::ToggleAutoDig { player_id }),
         "TAGR" => Some(PlayerCommand::ToggleAggression { player_id }),
         "Whoi" => {
@@ -293,6 +297,43 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn gui_open_pack_is_parsed_once_with_session_and_static_label() {
+        let packet = ty(b"GUI_", br#"{"b":"pack_op:open:42:17"}"#);
+
+        let route = route_ty_command(PlayerId(7), SessionId::new(9), &packet);
+
+        let TyRoute::Accepted { command, .. } = route else {
+            panic!("GUI command must be accepted");
+        };
+        assert_eq!(command.name(), "gui.pack.open");
+        assert!(matches!(
+            command,
+            PlayerCommand::Gui {
+                session_id,
+                player_id: PlayerId(7),
+                command: crate::game::GuiCommand::OpenPack { x: 42, y: 17 },
+            } if session_id == SessionId::new(9)
+        ));
+    }
+
+    #[test]
+    fn gui_profiler_labels_are_finite_and_payload_independent() {
+        let cases = [
+            ("tp:10:20", "gui.teleport"),
+            ("craft_start:1:2:3:4", "gui.craft"),
+            ("clan_view:123", "gui.clan"),
+            ("aucbet:99:1000", "gui.auction"),
+            ("unknown:arbitrary-payload", "gui.other"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                crate::game::GuiCommand::parse(raw.to_owned()).label(),
+                expected
+            );
+        }
     }
 
     #[test]

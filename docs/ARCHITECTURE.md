@@ -35,39 +35,47 @@
 - отсутствие `async` overhead в горячем пути;
 - возможность использовать `bevy_ecs` без Send/Sync оговорок.
 
-### Канал команд (`PlayerCommand`)
+### Текущие runtime owners
 
-Сетевые сессии (tokio-задачи) передают события в game-поток через `tokio::sync::mpsc::unbounded_channel`:
-
-```
-TCP session (tokio task)
-    │  PlayerCommand::Connect { .. }
-    │  PlayerCommand::Ty { pid, data }
-    │  PlayerCommand::Disconnect { pid }
-    ▼
-commands_tx (Arc<Sender>) — non-blocking send
-    │
-commands_rx (внутри game thread)
-    ▼
-run_game_tick_sync()  — читает все накопленные команды за 1 тик
+```text
+TCP sessions -> typed PlayerCommand -> SimulationRuntime
+      ^                                  |       |
+      |                           GameEvent    SaveCommand
+      |                                  |       |
+      +---------------- PresentationRuntime  PersistenceRuntime
 ```
 
-Типы команд (`contracts.rs`):
-- `Connect` — новое соединение, передаёт полные данные строки игрока из БД.
-- `Disconnect` — игрок отключился.
-- `Ty { pid, data }` — TY-пакет от клиента (движение, копание, строительство, чат и т.д.).
+- `SessionHub` владеет `SessionId`, player/session mapping и bounded outbox каждого
+  соединения.
+- `SimulationRuntime` владеет command receiver, tick clock, schedule clock и
+  pending backlogs. Authoritative ECS пока находится в `Arc<GameState>` под
+  `RwLock`; это переходное состояние, а не целевая граница.
+- `PresentationRuntime` принимает bounded `GameEvent` и доставляет immutable
+  packet/view data без чтения ECS/world/DB.
+- `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
+  записи, делает retry и публикует typed completion.
 
-### Sync/Async мост
+TY frame разбирается в session adapter до enqueue. `PlayerCommand` содержит
+typed variants (`Move`, `Dig`, `Build`, `Gui`, `InventoryUse`, `ProgramAction` и
+другие), а не сырой `Ty` payload. Перенесённые authenticated flows несут
+`SessionId`; common envelope для всех client actions ещё не завершён.
 
-Game-поток синхронный, но ему нужно писать в БД (async SQLite). Для этого в `GameState` хранится `tokio::runtime::Handle`:
+Основной command channel пока остаётся `unbounded_channel`. У него есть depth и
+high-water metrics, но нет saturation policy, поэтому это зафиксированный debt.
+Целевая очередь обязана быть bounded и не терять уже принятые durable actions.
 
-```rust
-state.tokio_handle.spawn(async move {
-    db.save_player(pid, snapshot).await
-});
-```
+### Переходные обходы
 
-Это позволяет делегировать async-операции в tokio threadpool без блокировки game-потока.
+Не все gameplay flows уже используют owners выше. В коде ещё остаются:
+
+- direct DB tasks для части GUI/program/auction операций;
+- delayed consumables через `tokio_handle.spawn + sleep`;
+- внешние ECS writers из admin/web/session/shutdown;
+- legacy handlers, которые мутируют state и отправляют wire в одном вызове.
+
+Новый код не должен копировать эти paths. Порядок их удаления описан в
+`SIMULATION_KERNEL_PLAN.md`, единая форма feature-кода - в
+`SERVER_CONSISTENCY_PLAN.md`.
 
 ### Конфигурируемые параметры тика
 
@@ -84,7 +92,9 @@ state.tokio_handle.spawn(async move {
 ```
 
 - `game_loop_tick_rate_ms` — целевая длительность одного тика в миллисекундах. Если тик выполнен быстрее — поток засыпает на остаток. Должен быть > 0, иначе старт завершается ошибкой.
-- `game_loop_panic_backoff_ms` — задержка перед следующим тиком после паники (ECS может быть в неконсистентном состоянии). Должен быть > 0.
+- `game_loop_panic_backoff_ms` — legacy-совместимое валидируемое значение. Текущий
+  simulation owner после panic завершает процесс с кодом `101`, потому что
+  продолжение на потенциально повреждённом ECS запрещено; backoff не применяется.
 - `schedule_warn_threshold_ms` — порог warning для одного ECS schedule. Должен быть >= `game_loop_tick_rate_ms`.
 
 ### Диагностика тиков (`target=tickprof`, `target=scheduler`)
@@ -98,7 +108,10 @@ state.tokio_handle.spawn(async move {
 ```
 
 `tickprof` выводит over-budget только при выходе за бюджет
-(`dt_total > game_loop_tick_rate_ms`), не чаще раза в 500ms.
+(`dt_total > game_loop_tick_rate_ms`), не чаще раза в 500ms. Запись содержит
+`thread_cpu`, вычисленный `off_cpu` и `execution_class`: `cpu_bound`, `mixed` или
+`preempted`. Чистая host preemption остаётся throttled `DEBUG`, а CPU-bound и
+mixed stalls остаются `WARN`.
 
 Обычная 5-секундная `tickprof` summary не должна шуметь в prod при `info`.
 Для расследования performance включать явно: `M3R_LOG=tickprof=debug`.

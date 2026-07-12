@@ -19,12 +19,12 @@ impl BackgroundTasks {
             game_tick,
             persistence,
         } = self;
+        persistence.shutdown().await;
         match tokio::task::spawn_blocking(move || game_tick.join()).await {
             Ok(Ok(())) => {}
             Ok(Err(panic)) => std::panic::resume_unwind(panic),
             Err(error) => panic!("failed to join game tick thread: {error}"),
         }
-        persistence.shutdown().await;
     }
 }
 

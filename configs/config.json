@@ -38,6 +38,11 @@
       "direct_action_delay_us": 333333,
       "min_move_delay_ms": 20
     },
+    "simulation": {
+      "due_action_capacity": 65536,
+      "due_action_batch_budget": 256,
+      "due_action_time_budget_us": 2000
+    },
     "schedules": {
       "hazards_ms": 10,
       "physics_ms": 400,

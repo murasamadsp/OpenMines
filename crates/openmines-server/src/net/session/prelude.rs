@@ -20,7 +20,7 @@ pub use crate::protocol::packets::{
     clan_show, config_packet, decode_gui_button, geo, gu_close, hand_mode, hb_bot, hb_bot_del,
     hb_bundle, hb_cell, hb_chat, hb_crystal_mine_fx, hb_dig_fx, hb_fx, hb_gun_shot_fx, hb_hurt_fx,
     hb_map, hb_packs, hb_world_blast_fx, health, level, money, ok_message, programmator_status,
-    settings_default_wire, skills_packet, speed, tp, world_info,
+    settings_default_wire, skills_packet, speed, tp,
 };
 pub use crate::world::cells::cell_type;
 pub use crate::world::{World, WorldProvider};
@@ -30,23 +30,6 @@ pub enum PackAccessError {
     NotAtObject,
     NoRights,
     ConfigMissing,
-}
-
-#[inline]
-pub fn is_pack_owner_or_clan_member(
-    state: &Arc<GameState>,
-    pid: PlayerId,
-    view: &PackView,
-) -> bool {
-    let player_clan = state
-        .query_player_opt(pid, |world, entity| {
-            world
-                .get::<crate::game::PlayerStats>(entity)
-                .and_then(|s| s.clan_id)
-        })
-        .unwrap_or(0);
-
-    view.owner_id == pid || (view.clan_id != 0 && view.clan_id == player_clan)
 }
 
 #[inline]

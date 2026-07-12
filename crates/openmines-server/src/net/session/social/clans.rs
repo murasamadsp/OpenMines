@@ -964,86 +964,17 @@ fn send_clan_ok(tx: &Outbox, title: &str, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::players::PlayerRow;
     use crate::game::{PlayerFlags, PlayerStats};
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::test_support::{ServerTestHarness, drain_events};
 
-    struct ClanTestState {
-        state: Arc<GameState>,
-        player: PlayerRow,
-        db_path: PathBuf,
-        world_name: String,
-        dir: PathBuf,
-    }
-
-    impl ClanTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_clan_test_state(label: &str) -> ClanTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("clans_{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database.create_player("clan-user", "p", "h").await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("clans_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        ClanTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = bytes::BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_clan_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(&format!("clans_{label}"), "clan-user").await
     }
 
     #[tokio::test]
     async fn clan_create_missing_flags_is_explicit_error_without_db_mutation() {
         let test = make_clan_test_state("create_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1063,19 +994,12 @@ mod tests {
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert!(test.state.db.list_clans().await.unwrap().is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn invite_accept_missing_flags_is_explicit_error_without_db_mutation() {
         let test = make_clan_test_state("invite_missing_flags").await;
-        let owner = test
-            .state
-            .db
-            .create_player("clan-owner", "p", "h2")
-            .await
-            .unwrap();
+        let owner = test.create_player("clan-owner").await;
         test.state
             .db
             .create_clan(1, "Owner Clan", "OWN", owner.id)
@@ -1087,8 +1011,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1113,19 +1036,12 @@ mod tests {
                 .unwrap(),
             vec![(1, "Owner Clan".to_string())]
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn leave_missing_flags_is_explicit_error_without_db_mutation() {
         let test = make_clan_test_state("leave_missing_flags").await;
-        let owner = test
-            .state
-            .db
-            .create_player("leave-owner", "p", "h2")
-            .await
-            .unwrap();
+        let owner = test.create_player("leave-owner").await;
         test.state
             .db
             .create_clan(1, "Leave Clan", "LVC", owner.id)
@@ -1149,8 +1065,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &player, 1);
+        let (tx, mut rx) = test.connect_player_with_outbox(&player, 1);
         drain_events(&mut rx);
 
         let pid = PlayerId(player.id);
@@ -1175,19 +1090,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(db_player.clan_id, Some(1));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn owner_cannot_dissolve_populated_clan() {
         let test = make_clan_test_state("owner_populated_leave").await;
-        let member = test
-            .state
-            .db
-            .create_player("clan-member", "p", "h2")
-            .await
-            .unwrap();
+        let member = test.create_player("clan-member").await;
         test.state
             .db
             .create_clan(1, "Populated Clan", "POP", test.player.id)
@@ -1207,8 +1115,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &owner, 1);
+        let (tx, mut rx) = test.connect_player_with_outbox(&owner, 1);
         drain_events(&mut rx);
 
         handle_clan_leave(&test.state, &tx, PlayerId(owner.id)).await;
@@ -1236,7 +1143,5 @@ mod tests {
             .unwrap();
         assert_eq!(db_owner.clan_id, Some(1));
         assert_eq!(db_member.clan_id, Some(1));
-
-        test.cleanup();
     }
 }

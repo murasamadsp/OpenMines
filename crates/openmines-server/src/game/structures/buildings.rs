@@ -185,6 +185,13 @@ pub enum PackType {
     Gate,
 }
 
+#[derive(Clone, Copy)]
+struct PackMetadata {
+    name: &'static str,
+    code: u8,
+    config_key: Option<&'static str>,
+}
+
 impl PackType {
     const fn configured_pack_types() -> [Self; 10] {
         [
@@ -208,19 +215,7 @@ impl PackType {
     }
 
     const fn config_json_key(self) -> Option<&'static str> {
-        match self {
-            Self::Teleport => Some("Teleport"),
-            Self::Resp => Some("Resp"),
-            Self::Gun => Some("Gun"),
-            Self::Market => Some("Market"),
-            Self::Up => Some("Up"),
-            Self::Storage => Some("Storage"),
-            Self::Craft => Some("Craft"),
-            Self::Spot => Some("Spot"),
-            Self::Gate => Some("Gate"),
-            Self::Clans => Some("Clans"),
-            _ => None,
-        }
+        self.metadata().config_key
     }
 
     /// Участвует в HB «O»-подпакете; в C# `if (p.type != PackType.None)`.
@@ -229,41 +224,30 @@ impl PackType {
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::None => "None",
-            Self::Teleport => "Teleport",
-            Self::Resp => "Resp",
-            Self::Gun => "Gun",
-            Self::Market => "Market",
-            Self::Up => "Up",
-            Self::Storage => "Storage",
-            Self::Craft => "Craft",
-            Self::Vulkan => "Vulkan",
-            Self::Spot => "Spot",
-            Self::Levi => "Levi",
-            Self::Jobs => "Jobs",
-            Self::Zalupa => "Zalupa",
-            Self::Clans => "Clans",
-            Self::Gate => "Gate",
-        }
+        self.metadata().name
     }
 
     pub const fn code(self) -> u8 {
+        self.metadata().code
+    }
+
+    const fn metadata(self) -> PackMetadata {
         match self {
-            Self::None | Self::Gate => b' ',
-            Self::Teleport => b'T',
-            Self::Resp => b'R',
-            Self::Gun => b'G',
-            Self::Market => b'M',
-            Self::Up => b'U',
-            Self::Storage => b'L',
-            Self::Craft => b'F',
-            Self::Vulkan => b'Q',
-            Self::Spot => b'O',
-            Self::Levi => b'W',
-            Self::Jobs => b'J',
-            Self::Zalupa => b'Y',
-            Self::Clans => b'D',
+            Self::None => PackMetadata::new("None", b' ', None),
+            Self::Teleport => PackMetadata::new("Teleport", b'T', Some("Teleport")),
+            Self::Resp => PackMetadata::new("Resp", b'R', Some("Resp")),
+            Self::Gun => PackMetadata::new("Gun", b'G', Some("Gun")),
+            Self::Market => PackMetadata::new("Market", b'M', Some("Market")),
+            Self::Up => PackMetadata::new("Up", b'U', Some("Up")),
+            Self::Storage => PackMetadata::new("Storage", b'L', Some("Storage")),
+            Self::Craft => PackMetadata::new("Craft", b'F', Some("Craft")),
+            Self::Vulkan => PackMetadata::new("Vulkan", b'Q', None),
+            Self::Spot => PackMetadata::new("Spot", b'O', Some("Spot")),
+            Self::Levi => PackMetadata::new("Levi", b'W', None),
+            Self::Jobs => PackMetadata::new("Jobs", b'J', None),
+            Self::Zalupa => PackMetadata::new("Zalupa", b'Y', None),
+            Self::Clans => PackMetadata::new("Clans", b'D', Some("Clans")),
+            Self::Gate => PackMetadata::new("Gate", b' ', Some("Gate")),
         }
     }
 
@@ -300,6 +284,16 @@ impl PackType {
             .iter()
             .map(|c| (c.dx, c.dy, c.cell_type))
             .collect())
+    }
+}
+
+impl PackMetadata {
+    const fn new(name: &'static str, code: u8, config_key: Option<&'static str>) -> Self {
+        Self {
+            name,
+            code,
+            config_key,
+        }
     }
 }
 
@@ -413,6 +407,12 @@ pub struct GridPosition {
 #[derive(Component)]
 pub struct BuildingFlags {
     pub dirty: bool,
+}
+
+#[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BuildingDeletePending {
+    pub operation_id: crate::game::logic::contracts::BuildingDeleteOperationId,
+    pub dirty_before: bool,
 }
 
 pub fn spawn_building_from_row(

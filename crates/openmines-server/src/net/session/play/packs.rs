@@ -263,7 +263,8 @@ pub fn open_resp_admin_gui(
 
     // Get player's blue crystals for fill button availability
     let blue_crys = state.query_player_opt(pid, |ecs, entity| {
-        ecs.get::<PlayerStats>(entity).map(|s| s.crystals[1]) // Blue = index 1
+        ecs.get::<PlayerStats>(entity)
+            .map(|s| s.crystals[crate::game::logic::crystals::CrystalKind::Blue.index()])
     });
     let Some(blue_crys) = blue_crys else {
         tracing::error!(player_id = %pid, "Player stats missing for resp admin GUI");
@@ -646,10 +647,10 @@ pub fn open_gun_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, pack_x: 
         return;
     };
 
-    // Cyan = crystals[5] (1:1 CrystalType.Cyan = 5)
     let cyan_crys = state
         .query_player_opt(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).map(|s| s.crystals[5])
+            ecs.get::<PlayerStats>(entity)
+                .map(|s| s.crystals[crate::game::logic::crystals::CrystalKind::Cyan.index()])
         })
         .unwrap_or(0);
 
@@ -781,33 +782,13 @@ pub fn handle_gun_fill_prog(
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
-
     use super::*;
-
-    struct ChargeFillTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        dir: std::path::PathBuf,
-        world_name: String,
-    }
-
-    impl ChargeFillTestState {
-        fn cleanup(self) {
-            let _ = std::fs::remove_file(self.db_path);
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_road_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
+    use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
 
     #[tokio::test]
     async fn resp_fill_missing_player_flags_is_explicit_error_without_charge_or_crystal_mutation() {
         let test = make_charge_fill_test_state("resp_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -829,15 +810,12 @@ mod tests {
             before_crystals
         );
         assert_eq!(building_charge(&test.state, 10, 10), before_charge);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_bind_missing_player_flags_is_explicit_error_without_resp_mutation() {
         let test = make_charge_fill_test_state("resp_bind_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -854,15 +832,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         assert_eq!(events[0].1, "РЕСП#Состояние респа недоступно.".as_bytes());
         assert_eq!(player_resp(&test.state, test.player.id.into()), before_resp);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn gun_fill_missing_player_flags_is_explicit_error_without_charge_or_crystal_mutation() {
         let test = make_charge_fill_test_state("gun_missing_flags", "G", 5, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -884,25 +859,17 @@ mod tests {
             before_crystals
         );
         assert_eq!(building_charge(&test.state, 10, 10), before_charge);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn gun_fill_allows_non_owner_like_reference() {
         let test = make_charge_fill_test_state("gun_non_owner_fill", "G", 5, 0).await;
-        let mut filler = test
-            .state
-            .db
-            .create_player("gun-fill-visitor", "p", "h")
-            .await
-            .unwrap();
+        let mut filler = test.create_player("gun-fill-visitor").await;
         filler.x = 10;
         filler.y = 10;
         filler.crystals[5] = 100;
 
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &filler, 2);
+        let (tx, mut rx) = test.connect_player_with_outbox(&filler, 2);
         drain_events(&mut rx);
 
         handle_gun_fill(&test.state, &tx, filler.id.into(), "100", 10, 10);
@@ -918,15 +885,12 @@ mod tests {
             events.iter().any(|(event, _)| event == "GU"),
             "events: {events:?}"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_profit_missing_player_flags_is_explicit_error_without_money_mutation() {
         let test = make_charge_fill_test_state("resp_profit_missing_flags", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -951,15 +915,12 @@ mod tests {
             before_money
         );
         assert_eq!(building_storage_money(&test.state, 10, 10), 777);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_profit_success_moves_money_and_marks_player_and_building_dirty() {
         let test = make_charge_fill_test_state("resp_profit_success", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let building_entity = test.state.building_entity_at(10, 10).unwrap();
@@ -982,15 +943,12 @@ mod tests {
         assert_eq!(building_storage_money(&test.state, 10, 10), 0);
         assert!(player_dirty(&test.state, test.player.id.into()));
         assert!(building_dirty(&test.state, 10, 10));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_save_rejects_malformed_cost_without_cost_mutation() {
         let test = make_charge_fill_test_state("resp_save_bad_cost", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         set_player_window(&test.state, test.player.id.into(), "resp:10:10");
@@ -1003,15 +961,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         assert_eq!(events[0].1, "РЕСП#Некорректное действие.".as_bytes());
         assert_eq!(building_cost(&test.state, 10, 10), before_cost);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_save_missing_player_stats_is_explicit_error_without_partial_cost_mutation() {
         let test = make_charge_fill_test_state("resp_save_missing_player_stats", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         set_player_window(&test.state, test.player.id.into(), "resp:10:10");
@@ -1029,15 +984,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         assert_eq!(events[0].1, "РЕСП#Состояние респа недоступно.".as_bytes());
         assert_eq!(building_cost(&test.state, 10, 10), before_cost);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn resp_save_updates_clanzone_marks_dirty_and_refreshes_admin_gui() {
         let test = make_charge_fill_test_state("resp_save_clanzone", "R", 1, 100).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         set_player_window(&test.state, test.player.id.into(), "resp:10:10");
@@ -1054,8 +1006,6 @@ mod tests {
             }),
             "admin GUI refresh must include updated clanzone"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -1071,8 +1021,6 @@ mod tests {
         handle_gun_fill_prog(&test.state, &tx, test.player.id.into(), 10, 10);
 
         assert!(!building_dirty(&test.state, 10, 10));
-
-        test.cleanup();
     }
 
     async fn make_charge_fill_test_state(
@@ -1080,20 +1028,13 @@ mod tests {
         building_code: &str,
         crystal_index: usize,
         crystal_amount: i64,
-    ) -> ChargeFillTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("charge_fill_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database
-            .create_player("charge-fill-user", "p", "h")
-            .await
-            .unwrap();
-        player.x = 10;
-        player.y = 10;
-        player.crystals[crystal_index] = crystal_amount;
+    ) -> ServerTestHarness {
+        let mut builder =
+            ServerTestHarnessBuilder::new(&format!("charge_fill_{label}"), "charge-fill-user")
+                .await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.player.crystals[crystal_index] = crystal_amount;
 
         let extra = crate::db::BuildingExtra {
             charge: 0,
@@ -1110,57 +1051,13 @@ mod tests {
             craft_ready: false,
             clanzone: 0,
         };
-        database
-            .insert_building(building_code, 10, 10, player.id, 0, &extra)
+        builder
+            .database()
+            .insert_building(building_code, 10, 10, builder.player.id, 0, &extra)
             .await
             .unwrap();
 
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let repo_root = if manifest_dir.join("configs").is_dir() {
-            manifest_dir.to_path_buf()
-        } else {
-            let parent = manifest_dir
-                .parent()
-                .expect("server crate must live under repo root");
-            if parent.join("configs").is_dir() {
-                parent.to_path_buf()
-            } else {
-                parent
-                    .parent()
-                    .expect("must live under repo root")
-                    .to_path_buf()
-            }
-        };
-        let cells_path = repo_root.join("configs/cells.json");
-        let cell_defs =
-            crate::world::cells::CellDefs::load(cells_path.to_string_lossy().as_ref()).unwrap();
-        let world_name = format!("charge_fill_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let buildings_path = repo_root.join("configs/buildings.json");
-        let _ = crate::game::buildings::load_buildings_config(
-            buildings_path.to_string_lossy().as_ref(),
-        );
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        ChargeFillTestState {
-            state,
-            player,
-            db_path,
-            dir,
-            world_name,
-        }
+        builder.build().await
     }
 
     fn player_crystals(state: &Arc<GameState>, pid: PlayerId) -> [i64; 6] {
@@ -1242,24 +1139,5 @@ mod tests {
             ui.current_window = Some(window.to_string());
             Some(())
         });
-    }
-
-    fn drain_events(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
-    }
-
-    fn unique_test_nonce() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
     }
 }

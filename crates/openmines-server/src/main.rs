@@ -18,6 +18,8 @@ mod net;
 mod persistence;
 mod shutdown;
 mod tasks;
+#[cfg(test)]
+mod test_support;
 
 use crate::world::WorldProvider;
 use anyhow::{Context as _, Result};
@@ -27,7 +29,7 @@ use tokio::sync::broadcast;
 use std::path::{Path, PathBuf};
 
 /// Имя файла `SQLite` в каталоге состояния (`data_dir` / `M3R_DATA_DIR`).
-const DB_FILENAME: &str = "openmines.db";
+pub(crate) const DB_FILENAME: &str = "openmines.db";
 
 #[cfg(test)]
 pub(crate) fn test_config_path(relative: &str) -> PathBuf {
@@ -235,12 +237,9 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod benchmarks {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
     const BENCH_N: u32 = 500;
-    static TEST_DB_SEQ: AtomicU64 = AtomicU64::new(0);
-
     fn create_minimal_state() -> Arc<crate::game::GameState> {
         create_minimal_state_with_gameplay(crate::config::GameplayConfig::runtime_baseline())
     }
@@ -250,33 +249,13 @@ mod benchmarks {
     ) -> Arc<crate::game::GameState> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let dir = std::env::temp_dir();
-            let suffix = TEST_DB_SEQ.fetch_add(1, Ordering::Relaxed);
-            let db_path = dir.join(format!("bench_db_{}_{}", std::process::id(), suffix));
-            let _ = std::fs::remove_file(&db_path);
-            let database = crate::db::Database::open(&db_path).await.unwrap();
-            let cell_defs =
-                crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                    .unwrap();
-            let world_name = format!("bench_world_{}", std::process::id());
-            let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-            let config = crate::config::Config {
-                world_name: world_name.clone(),
-                port: 8090,
-                world_chunks_w: 2,
-                world_chunks_h: 2,
-                data_dir: dir.to_string_lossy().to_string(),
-                logging: crate::config::LoggingConfig::runtime_baseline(),
-                cron: crate::config::CronConfig::runtime_baseline(),
+            let test = crate::test_support::ServerTestHarness::with_gameplay(
+                "bench",
+                "bench-player",
                 gameplay,
-            };
-            let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-                .await
-                .unwrap();
-
-            // Чистим за собой при падении assert
-            let _ = std::fs::remove_file(&db_path);
-            state
+            )
+            .await;
+            test.state.clone()
         })
     }
 

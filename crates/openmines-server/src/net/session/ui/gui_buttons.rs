@@ -1,7 +1,14 @@
 //! Обработка нажатий GUI-кнопок игроком.
+use super::crystal_form::parse_amounts as parse_six_i64_fields;
+use super::pack_command::{
+    send_action_error as send_pack_action_error, send_state_error as send_pack_state_error,
+    withdraw_state_ready as pack_withdraw_state_ready,
+};
+use super::settings::apply as handle_settings_save;
+use super::spot::open as open_spot_gui;
+use super::storage::{apply as handle_storage_transfer, open as open_storage_gui};
 use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingStats,
-    BuildingStorage, GridPosition,
+    BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
 };
 use crate::game::crafting;
 use crate::game::market;
@@ -9,22 +16,6 @@ use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerSt
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{broadcast_pack_update, modify_pack_with_db};
-
-fn parse_six_i64_fields(data: &str) -> Option<[i64; 6]> {
-    let mut out = [0_i64; 6];
-    let mut parts = data.split(':');
-    for slot in &mut out {
-        let part = parts.next()?;
-        if part.is_empty() {
-            return None;
-        }
-        *slot = part.parse().ok()?;
-    }
-    if parts.next().is_some() {
-        return None;
-    }
-    Some(out)
-}
 
 fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
     let mut fields = std::collections::HashMap::new();
@@ -677,8 +668,7 @@ async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         "take_money" => handle_pack_take_money(state, tx, pid, &view),
         "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
         "remove" => {
-            crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y)
-                .await;
+            crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y);
         }
         _ => {}
     }
@@ -1060,178 +1050,6 @@ fn handle_pack_take_crystals(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId,
             Some(())
         });
     }
-}
-
-fn pack_withdraw_state_ready(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i32) -> bool {
-    let player_ready = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).is_some() && ecs.get::<PlayerFlags>(entity).is_some()
-        })
-        .unwrap_or(false);
-    let building_ready = state
-        .query_building_opt(x, y, |ecs, entity| {
-            Some(
-                ecs.get::<BuildingStorage>(entity).is_some()
-                    && ecs.get::<BuildingFlags>(entity).is_some(),
-            )
-        })
-        .unwrap_or(false);
-    player_ready && building_ready
-}
-
-/// Open Storage-specific GUI with crystal sliders (1:1 with C# `Storage.MainPage`).
-fn open_storage_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    // Fetch storage crystals from ECS
-    let storage_crys = state.query_building_opt(view.x, view.y, |ecs, entity| {
-        let s = ecs.get::<BuildingStorage>(entity)?;
-        Some(s.crystals)
-    });
-    let Some(storage_crys) = storage_crys else {
-        tracing::error!(
-            x = view.x,
-            y = view.y,
-            "Building storage missing for storage GUI"
-        );
-        send_pack_action_error(tx);
-        return;
-    };
-
-    // Fetch player crystals
-    let player_crys = state.query_player_opt(pid, |ecs, entity| {
-        ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
-    });
-    let Some(player_crys) = player_crys else {
-        tracing::error!(player_id = %pid, "Player stats missing for storage GUI");
-        send_pack_action_error(tx);
-        return;
-    };
-
-    // Build crys_lines: each line is "LeftMin:RightMin:Denominator:CurrentValue:Label"
-    // C# ref: CrysLine("", 0, 0, p.crys.cry[id] + cry, (int)(cry))
-    // Serialized as: "{LeftMin}:{RightMin}:{Denominator}:{CurrentValue}:{Label}"
-    let crys_lines: Vec<String> = (0..6)
-        .map(|i| {
-            let denominator = player_crys[i] + storage_crys[i];
-            let current_value = storage_crys[i];
-            format!("0:0:{denominator}:{current_value}:")
-        })
-        .collect();
-
-    use super::horb::{Button, Horb};
-    Horb::new("Склад")
-        .crystals(" ", " ", false, crys_lines)
-        .button(Button::new("Передать", "transfer:%M%"))
-        .button(Button::new(
-            "Удалить",
-            format!("pack_op:remove:{}:{}", view.x, view.y),
-        ))
-        .close_button()
-        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
-}
-
-/// Handle `transfer:v0:v1:v2:v3:v4:v5` button from Storage GUI sliders.
-/// `sliders[i]` = desired amount to keep IN the storage.
-/// C# ref: `Storage.StockTransfer`.
-fn handle_storage_transfer(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
-    let Some(sliders) = parse_six_i64_fields(slider_data) else {
-        return;
-    };
-
-    // Resolve storage coordinates from current_window ("pack:{x}:{y}")
-    let coords = state.query_player_opt(pid, |ecs, entity| {
-        let ui = ecs.get::<PlayerUI>(entity)?;
-        let window = ui.current_window.as_deref()?;
-        let parts: Vec<&str> = window.strip_prefix("pack:")?.split(':').collect();
-        if parts.len() == 2 {
-            Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
-        } else {
-            None
-        }
-    });
-
-    let Some((bx, by)) = coords else {
-        return;
-    };
-
-    // Verify it's actually a Storage building
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Storage {
-        return;
-    }
-
-    // Validate player access
-    let p_info = state.query_player_opt(pid, |ecs, entity| {
-        let pos = ecs.get::<PlayerPosition>(entity)?;
-        let pstats = ecs.get::<PlayerStats>(entity)?;
-        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
-    });
-    let Some((px, py, p_clan)) = p_info else {
-        return;
-    };
-    if validate_pack_access(&view, (px, py), p_clan, pid).is_err() {
-        return;
-    }
-
-    // Pre-fetch player entity before acquiring the write lock.
-    let Some(player_entity) = state.get_player_entity(pid) else {
-        return;
-    };
-    if !pack_withdraw_state_ready(state, pid, bx, by) {
-        send_pack_state_error(tx);
-        return;
-    }
-
-    // Atomic read-validate-write: single ecs.write() lock covers both storage and
-    // player — prevents TOCTOU crystal duplication by concurrent clan members.
-    let result = modify_pack_with_db(state, bx, by, |ecs, building_entity| {
-        let storage_crys = ecs
-            .get::<BuildingStorage>(building_entity)
-            .expect("BuildingStorage checked before storage transfer")
-            .crystals;
-        let player_crys = ecs
-            .get::<PlayerStats>(player_entity)
-            .expect("PlayerStats checked before storage transfer")
-            .crystals;
-
-        let mut new_player = [0i64; 6];
-        let mut new_storage = [0i64; 6];
-        for i in 0..6 {
-            let count = player_crys[i] + storage_crys[i];
-            if sliders[i] < 0 || count - sliders[i] < 0 {
-                return None;
-            }
-            new_player[i] = count - sliders[i];
-            new_storage[i] = sliders[i];
-        }
-
-        ecs.get_mut::<BuildingStorage>(building_entity)
-            .expect("BuildingStorage checked before storage transfer")
-            .crystals = new_storage;
-        ecs.get_mut::<PlayerStats>(player_entity)
-            .expect("PlayerStats checked before storage transfer")
-            .crystals = new_player;
-        let mut f = ecs
-            .get_mut::<PlayerFlags>(player_entity)
-            .expect("PlayerFlags checked before storage transfer");
-        f.dirty = true;
-        Some(new_player)
-    });
-
-    let new_player = match result {
-        Ok(Some(new_player)) => new_player,
-        Ok(None) => return,
-        Err(e) => {
-            tracing::error!(x = bx, y = by, error = %e, "Storage transfer failed");
-            send_pack_state_error(tx);
-            return;
-        }
-    };
-
-    send_u_packet(tx, "@B", &basket(&new_player, 1).1);
-    // Re-open Storage GUI with updated values (C# ref: p.win = GUIWin(p))
-    open_storage_gui(state, tx, pid, &view);
 }
 
 // ─── Crafter GUI ──────────────────────────────────────────────────────────
@@ -1702,221 +1520,7 @@ fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: 
     show_crafter_recipes(tx, &view);
 }
 
-/// Build the Teleport GUI showing list of nearby teleports (1:1 with C# `Teleport.GUIWin`).
-fn open_teleport_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    let nearby_tps: Vec<(i32, i32)> = {
-        let building_entities = state.building_entities_snapshot();
-        let ecs = state.ecs.read();
-        building_entities
-            .iter()
-            .copied()
-            .filter_map(|entity| {
-                let meta = ecs.get::<BuildingMetadata>(entity)?;
-                if meta.pack_type != PackType::Teleport {
-                    return None;
-                }
-                let pos = ecs.get::<GridPosition>(entity)?;
-                if pos.x == view.x && pos.y == view.y {
-                    return None;
-                }
-                if (pos.x - view.x).abs() >= 1000 || (pos.y - view.y).abs() >= 1000 {
-                    return None;
-                }
-                let pstats = ecs.get::<BuildingStats>(entity)?;
-                if pstats.charge <= 0 {
-                    return None;
-                }
-                Some((pos.x, pos.y))
-            })
-            .collect()
-    };
-
-    use super::horb::{Button, Horb, ListRow};
-
-    let pstats_info = state.query_building_opt(view.x, view.y, |ecs, entity| {
-        let pstats = ecs.get::<BuildingStats>(entity)?;
-        Some((pstats.hp, pstats.max_hp))
-    });
-    let Some((hp, mhp)) = pstats_info else {
-        tracing::error!(
-            x = view.x,
-            y = view.y,
-            "Building stats missing for teleport GUI"
-        );
-        send_pack_action_error(tx);
-        return;
-    };
-
-    let text = if nearby_tps.is_empty() {
-        format!(
-            "Заряд: {}\nПрочность: {}/{}\n\nНет доступных телепортов поблизости.",
-            view.charge, hp, mhp
-        )
-    } else {
-        format!(
-            "Заряд: {}\nПрочность: {}/{}\n\nДоступные телепорты:",
-            view.charge, hp, mhp
-        )
-    };
-
-    // Мини-карта: rect на чанк вокруг телепорта (цвет по пустоте центральной
-    // клетки, 1:1 C# ConvertMapPart) + кликабельные ТП-точки прямо на канвасе
-    // (markers): клик по точке = телепорт (`tp:x:y`).
-    let markers: Vec<(i32, i32, String)> = nearby_tps
-        .iter()
-        .map(|&(tpx, tpy)| (tpx, tpy, format!("tp:{tpx}:{tpy}")))
-        .collect();
-    let mut win = Horb::new("Тп").text(text).minimap(
-        view.x,
-        view.y,
-        8, // radius in chunks
-        |x, y| {
-            if state.world.valid_coord(x, y) {
-                Some(state.world.is_empty(x, y))
-            } else {
-                None
-            }
-        },
-        &markers,
-    );
-
-    for (tpx, tpy) in &nearby_tps {
-        win = win.list_row(ListRow::new(
-            format!("TP {tpx}:{tpy}"),
-            "ТЕЛЕПОРТ",
-            format!("tp:{tpx}:{tpy}"),
-        ));
-    }
-    win.button(Button::new(
-        "Забрать деньги",
-        format!("pack_op:take_money:{}:{}", view.x, view.y),
-    ))
-    .button(Button::new(
-        "Забрать кристаллы",
-        format!("pack_op:take_crys:{}:{}", view.x, view.y),
-    ))
-    .button(Button::new(
-        "Удалить",
-        format!("pack_op:remove:{}:{}", view.x, view.y),
-    ))
-    .close_button()
-    .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
-}
-
-/// Handle `tp:{x}:{y}` button — teleport player to destination TP.
-fn handle_teleport_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, coords: &str) {
-    let parts: Vec<&str> = coords.split(':').collect();
-    if parts.len() != 2 {
-        return;
-    }
-    let Ok(dest_x) = parts[0].parse::<i32>() else {
-        return;
-    };
-    let Ok(dest_y) = parts[1].parse::<i32>() else {
-        return;
-    };
-
-    let Some(dest_view) = state.get_pack_at(dest_x, dest_y) else {
-        tracing::warn!(
-            player_id = %pid,
-            destination_x = dest_x,
-            destination_y = dest_y,
-            "TP action: destination not found"
-        );
-        return;
-    };
-    if dest_view.pack_type != PackType::Teleport || dest_view.charge <= 0 {
-        tracing::warn!(
-            player_id = %pid,
-            destination_x = dest_x,
-            destination_y = dest_y,
-            "TP action: destination not a valid teleport"
-        );
-        return;
-    }
-
-    let src_coords = state.query_player_opt(pid, |ecs, entity| {
-        let ui = ecs.get::<PlayerUI>(entity)?;
-        let window = ui.current_window.as_deref()?;
-        let rest = window.strip_prefix("pack:")?;
-        let p: Vec<&str> = rest.split(':').collect();
-        if p.len() == 2 {
-            Some((p[0].parse::<i32>().ok()?, p[1].parse::<i32>().ok()?))
-        } else {
-            None
-        }
-    });
-
-    let Some((src_x, src_y)) = src_coords else {
-        tracing::warn!(
-            player_id = %pid,
-            "TP action: player not at a teleport window"
-        );
-        return;
-    };
-
-    let Some(src_view) = state.get_pack_at(src_x, src_y) else {
-        return;
-    };
-    if src_view.pack_type != PackType::Teleport || src_view.charge <= 0 {
-        return;
-    }
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = None;
-        }
-        Some(())
-    });
-    let g = gu_close();
-    send_u_packet(tx, g.0, &g.1);
-
-    let tp_y = dest_y + 3;
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut pos) = ecs.get_mut::<PlayerPosition>(entity) {
-            pos.x = dest_x;
-            pos.y = tp_y;
-        }
-        Some(())
-    });
-
-    let tp_pkt = tp(dest_x, tp_y);
-    send_u_packet(tx, tp_pkt.0, &tp_pkt.1);
-
-    crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);
-
-    tracing::info!(
-        player_id = %pid,
-        from_x = src_x,
-        from_y = src_y,
-        to_x = dest_x,
-        to_y = tp_y,
-        "Teleported player"
-    );
-}
-
-// ─── Spot GUI ────────────────────────────────────────────────────────────────
-
-/// 1:1 with C# `Spot.GUIWin`:
-/// - Non-owner: returns null (no window opens).
-/// - Owner: returns `new Window() { Tabs = [] }` (empty window with programmator controls).
-fn open_spot_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    // C# ref: `if (p.id != ownerid) return null;`
-    if view.owner_id != pid {
-        close_player_window(state, tx, pid);
-        return;
-    }
-
-    use super::horb::{Button, Horb};
-
-    Horb::new("СПОТ")
-        .button(Button::new(
-            "Удалить",
-            format!("pack_op:remove:{}:{}", view.x, view.y),
-        ))
-        .close_button()
-        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
-}
+use super::teleport::{apply as handle_teleport_action, open as open_teleport_gui};
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
 
@@ -2419,118 +2023,6 @@ pub fn open_market_admin_gui(
         .send(state, tx, pid, format!("market:{pack_x}:{pack_y}:admin"));
 }
 
-// ─── Settings save ──────────────────────────────────────────────────────
-
-/// Handle `save:{RichList data}` from Settings GUI.
-/// C# ref: `Settings.Save(p, list)` → updates settings dict → `SendSettings` + `SendSettingsGUI`.
-fn handle_settings_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
-    match crate::game::logic::settings::save_settings(state, pid, data) {
-        Ok(sett_wire) => {
-            send_u_packet(tx, "#S", &sett_wire);
-            open_settings_gui(state, tx, pid);
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::MalformedPayload) => {
-            tracing::warn!(player_id = %pid, payload = data, "Malformed settings payload");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректный формат настроек.").1,
-            );
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("isca")) => {
-            tracing::warn!(player_id = %pid, "Invalid isca setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректный масштаб интерфейса.").1,
-            );
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("tsca")) => {
-            tracing::warn!(player_id = %pid, "Invalid tsca setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректный масштаб территории.").1,
-            );
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger(key)) => {
-            tracing::warn!(player_id = %pid, key, "Invalid integer setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
-            );
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::InvalidBool(key)) => {
-            tracing::warn!(player_id = %pid, key, "Invalid bool setting");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Некорректное значение настройки.").1,
-            );
-        }
-        Err(crate::game::logic::settings::SettingsSaveError::MissingState) => {
-            tracing::error!(player_id = %pid, "Player settings state missing for save");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.").1,
-            );
-        }
-    }
-}
-
-/// TY `Sett` → `Settings.SendSettingsGUI` в `server_reference` — 1:1 с C# `RichList`.
-pub fn open_settings_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::net::session::ui::horb::{Button, Horb, RichRow, Tab};
-
-    let Some(view) = crate::game::logic::settings::settings_view(state, pid) else {
-        return;
-    };
-    let s = view.settings;
-
-    let scale_values = "0:мелко#1:КРУПНО#";
-    let mut win = Horb::new("Настройки")
-        .tab(Tab::active("Настройки"))
-        .rich_row(RichRow::dropdown(
-            "Масштаб интерфейса",
-            scale_values,
-            "isca",
-            i64::from(s.isca),
-        ))
-        .rich_row(RichRow::dropdown(
-            "Масштаб территории",
-            scale_values,
-            "tsca",
-            i64::from(s.tsca),
-        ))
-        .rich_row(RichRow::toggle(
-            "Включить управление мышкой",
-            "mous",
-            s.mous,
-        ))
-        .rich_row(RichRow::toggle("Упрощённый режим графики", "pot", s.pot))
-        .rich_row(RichRow::toggle(
-            "Принудительно обновлять породы (увеличит потр. CPU)",
-            "frc",
-            s.frc,
-        ))
-        .rich_row(RichRow::toggle(
-            "CTRL переключает скорость робота (вместо удерживания)",
-            "ctrl",
-            s.ctrl,
-        ))
-        .rich_row(RichRow::toggle("Отключить ближайшие звуки", "mof", s.mof))
-        .button(Button::new("Сохранить", "save:%R%"));
-
-    if !view.has_clan {
-        win = win.button(Button::new("Создать клан", "clancreate"));
-    }
-
-    win.button(Button::new("Выйти", "exit"))
-        .send(state, tx, pid, "settings");
-}
-
 // ─── Программатор ────────────────────────────────────────────────────────────
 
 fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
@@ -2553,18 +2045,6 @@ fn send_market_state_error(tx: &Outbox) {
         tx,
         "OK",
         &ok_message("МАРКЕТ", "Состояние маркета недоступно.").1,
-    );
-}
-
-fn send_pack_action_error(tx: &Outbox) {
-    send_u_packet(tx, "OK", &ok_message("ЗДАНИЕ", "Некорректное действие.").1);
-}
-
-fn send_pack_state_error(tx: &Outbox) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("ЗДАНИЕ", "Состояние здания недоступно.").1,
     );
 }
 
@@ -2595,50 +2075,6 @@ fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
         }
         Some(())
     });
-}
-
-pub fn apply_program_editor_open(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    prog_id: i32,
-    name: &str,
-    source: &str,
-) {
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ps) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
-            ps.selected_id = Some(prog_id);
-            ps.selected_data = Some(source.to_owned());
-        }
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = None;
-        }
-        Some(())
-    });
-    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
-    send_u_packet(
-        tx,
-        "#P",
-        &crate::protocol::packets::open_programmator(prog_id, name, source).1,
-    );
-    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
-}
-
-pub fn apply_program_editor_rename(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    prog_id: i32,
-    name: &str,
-    source: &str,
-) {
-    clear_programmator_window(state, pid);
-    send_u_packet(
-        tx,
-        "#p",
-        &crate::protocol::packets::open_programmator(prog_id, name, source).1,
-    );
-    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
 }
 
 async fn handle_open_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, prog_id: i32) {
@@ -2781,9 +2217,8 @@ async fn handle_rename_prog(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
     use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     fn test_building_extra(
         charge: i32,
@@ -2806,45 +2241,6 @@ mod tests {
             craft_ready: false,
             clanzone: 0,
         }
-    }
-
-    struct CraftTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl CraftTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    #[test]
-    fn parse_six_i64_fields_accepts_exact_six_values() {
-        assert_eq!(
-            parse_six_i64_fields("1:2:3:4:5:6"),
-            Some([1, 2, 3, 4, 5, 6])
-        );
-        assert_eq!(
-            parse_six_i64_fields("-1:0:10:20:30:40"),
-            Some([-1, 0, 10, 20, 30, 40])
-        );
-    }
-
-    #[test]
-    fn parse_six_i64_fields_rejects_partial_or_malformed_values() {
-        assert_eq!(parse_six_i64_fields("1:2:3:4:5"), None);
-        assert_eq!(parse_six_i64_fields("1:2:3:4:5:6:7"), None);
-        assert_eq!(parse_six_i64_fields("1:x:2:3:4:5:6"), None);
-        assert_eq!(parse_six_i64_fields("1::2:3:4:5"), None);
     }
 
     #[test]
@@ -2886,15 +2282,13 @@ mod tests {
             rx.try_recv().is_err(),
             "sync Clans open must not spawn async GUI work or send fallback packets"
         );
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn clans_pack_operation_open_sends_clan_menu() {
         let test = make_craft_test_state("clans_pack_open", 20, 10).await;
         let pid = PlayerId(test.player.id);
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let extra = test_building_extra(0, 0, 1000, 1000);
@@ -2918,8 +2312,6 @@ mod tests {
         let json = std::str::from_utf8(payload).unwrap();
         assert!(json.contains("КЛАНЫ"), "unexpected clan menu: {json}");
         assert!(json.contains("clan_create"), "unexpected clan menu: {json}");
-
-        test.cleanup();
     }
 
     #[test]
@@ -2934,8 +2326,7 @@ mod tests {
     #[tokio::test]
     async fn programmator_open_button_clears_server_window_state() {
         let test = make_craft_test_state("prog_open_window_state", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -2956,15 +2347,12 @@ mod tests {
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, vec!["Gu", "#P", "Gu"]);
         assert_eq!(current_window(&test.state, pid), None);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn programmator_create_button_clears_server_window_state() {
         let test = make_craft_test_state("prog_create_window_state", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -2979,15 +2367,12 @@ mod tests {
         let names: Vec<&str> = events.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, vec!["Gu", "#P", "Gu"]);
         assert_eq!(current_window(&test.state, pid), None);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn programmator_rename_confirms_with_update_packet_and_closes_horb() {
         let test = make_craft_test_state("prog_rename_window_state", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -3012,15 +2397,12 @@ mod tests {
         assert_eq!(update_json["id"], prog_id);
         assert_eq!(update_json["title"], "new");
         assert_eq!(update_json["source"], "source");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn settings_save_missing_player_flags_is_explicit_error_without_settings_mutation() {
         let test = make_craft_test_state("settings_missing_player_flags", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -3056,15 +2438,12 @@ mod tests {
             "НАСТРОЙКИ#Состояние настроек недоступно.".as_bytes()
         );
         assert!(!events.iter().any(|(event, _)| event == "#S"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_start_rejects_remote_player_without_deducting_resources() {
         let test = make_craft_test_state("remote", 5, 5).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
@@ -3079,15 +2458,12 @@ mod tests {
 
         let crystals = player_crystals(&test.state, test.player.id.into());
         assert_eq!(crystals[0], 100);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_start_rejects_missing_crafting_component_without_deducting_resources() {
         let test = make_craft_test_state("missing_component", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let entity = test.state.building_entity_at(10, 10).unwrap();
@@ -3105,15 +2481,12 @@ mod tests {
 
         let crystals = player_crystals(&test.state, test.player.id.into());
         assert_eq!(crystals[0], 100);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_start_missing_player_flags_is_explicit_error_without_deducting_resources() {
         let test = make_craft_test_state("missing_player_flags", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3133,15 +2506,12 @@ mod tests {
         );
         assert_eq!(player_crystals(&test.state, test.player.id.into())[0], 100);
         assert_eq!(craft_state(&test.state, 10, 10), (None, 0, 0));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_start_on_crafter_origin_deducts_and_starts_recipe() {
         let test = make_craft_test_state("local", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
@@ -3153,15 +2523,12 @@ mod tests {
 
         let crystals = player_crystals(&test.state, test.player.id.into());
         assert_eq!(crystals[0], 50);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_claim_clears_crafter_before_second_claim_can_duplicate_reward() {
         let test = make_craft_test_state("claim_once", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
@@ -3181,15 +2548,12 @@ mod tests {
             1
         );
         assert_eq!(craft_state(&test.state, 10, 10), (None, 0, 0));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn craft_claim_missing_building_flags_is_explicit_error_without_reward_or_clear() {
         let test = make_craft_test_state("claim_missing_flags", 10, 10).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
@@ -3216,16 +2580,13 @@ mod tests {
             0
         );
         assert_eq!(craft_state(&test.state, 10, 10).0, Some(0));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn market_sell_missing_building_flags_is_explicit_error_without_money_or_crystal_mutation()
      {
         let test = make_market_test_state("sell_missing_building_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let building_entity = test.state.building_entity_at(10, 10).unwrap();
@@ -3260,15 +2621,12 @@ mod tests {
             player_crystals(&test.state, test.player.id.into()),
             before_crystals
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn market_buy_missing_player_flags_is_explicit_error_without_money_or_crystal_mutation() {
         let test = make_market_test_state("buy_missing_player_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3298,15 +2656,12 @@ mod tests {
             player_crystals(&test.state, test.player.id.into()),
             before_crystals
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn market_getprofit_missing_building_flags_is_explicit_error_without_profit_mutation() {
         let test = make_market_test_state("getprofit_missing_building_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3335,15 +2690,12 @@ mod tests {
             before_money
         );
         assert_eq!(market_storage_money(&test.state, 10, 10), 777);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pack_take_money_missing_player_flags_is_explicit_error_without_storage_mutation() {
         let test = make_market_test_state("pack_take_money_missing_player_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3371,15 +2723,12 @@ mod tests {
             before_money
         );
         assert_eq!(market_storage_money(&test.state, 10, 10), 777);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pack_take_crystals_missing_player_flags_is_explicit_error_without_storage_mutation() {
         let test = make_market_test_state("pack_take_crystals_missing_player_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3410,15 +2759,12 @@ mod tests {
             market_storage_crystals(&test.state, 10, 10),
             [7, 6, 5, 4, 3, 2]
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn storage_transfer_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_storage_test_state("storage_transfer_missing_player_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -3450,15 +2796,12 @@ mod tests {
             market_storage_crystals(&test.state, 10, 10),
             [10, 0, 0, 0, 0, 0]
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn teleport_gui_uses_list_rows_for_many_destinations_not_horb_buttons() {
         let test = make_teleport_test_state("tp_many_destinations", 8).await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let view = test.state.get_pack_at(10, 10).unwrap();
@@ -3485,221 +2828,253 @@ mod tests {
                 .any(|value| value.starts_with("tp:")),
             "destination actions must stay clickable through list rows"
         );
-
-        test.cleanup();
     }
 
-    async fn make_craft_test_state(label: &str, player_x: i32, player_y: i32) -> CraftTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("craft_start_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
+    #[tokio::test]
+    async fn teleport_gui_command_returns_immutable_view_before_delivery() {
+        let test = make_teleport_test_state("tp_immutable_view", 8).await;
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        set_current_window(&test.state, player_id, Some("blds"));
 
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database
-            .create_player("craft-user", "p", "h")
-            .await
-            .unwrap();
-        player.x = player_x;
-        player.y = player_y;
-        player.crystals[0] = 100;
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Gui {
+                session_id,
+                player_id,
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+
+        assert!(
+            drain_events(&mut rx).is_empty(),
+            "dispatch must not send GUI wire"
+        );
+        assert_eq!(
+            current_window(&test.state, player_id).as_deref(),
+            Some("pack:10:10")
+        );
+        let [
+            crate::game::GameEvent::GuiView {
+                session_id: event_session,
+                player_id: event_player,
+                view: crate::game::GuiView::Teleport(view),
+            },
+        ] = effects.events.as_slice()
+        else {
+            panic!("teleport open must return one immutable GUI view");
+        };
+        assert_eq!(*event_session, session_id);
+        assert_eq!(*event_player, player_id);
+        assert_eq!(view.destinations.len(), 8);
+        assert_eq!(view.map_tiles.len(), 17 * 17);
+        assert!(
+            view.destinations.iter().all(|position| position.0 != 1_200),
+            "far teleport must not enter the bounded spatial snapshot"
+        );
+        assert!(
+            !test
+                .state
+                .building_entities_in_chunk_snapshot(37, 0)
+                .is_empty(),
+            "fixture must contain an unrelated teleport outside the query radius"
+        );
+
+        crate::net::presentation::deliver_gui_view_for_test(
+            &test.state,
+            session_id,
+            player_id,
+            crate::game::GuiView::Teleport(view.clone()),
+        );
+        let delivered = drain_events(&mut rx);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].0, "GU");
+        let payload = std::str::from_utf8(&delivered[0].1).unwrap();
+        assert!(
+            payload.contains("=R#"),
+            "Unity canvas rect delimiter must be #"
+        );
+    }
+
+    #[tokio::test]
+    async fn gui_open_pack_without_window_returns_close_effect() {
+        let test = make_teleport_test_state("tp_without_window", 1).await;
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        assert_eq!(current_window(&test.state, player_id), None);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Gui {
+                session_id,
+                player_id,
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+
+        assert!(drain_events(&mut rx).is_empty());
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::GuiView {
+                session_id: event_session,
+                player_id: event_player,
+                view: crate::game::GuiView::Close,
+            }] if *event_session == session_id && *event_player == player_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_teleport_gui_session_cannot_mutate_current_window() {
+        let test = make_teleport_test_state("tp_stale_session", 1).await;
+        let player_id = PlayerId(test.player.id);
+        let old_session = crate::game::SessionId::new(1);
+        let (_old_tx, mut old_rx) = test.connect_with_outbox(old_session.get());
+        drain_events(&mut old_rx);
+        set_current_window(&test.state, player_id, Some("blds"));
+
+        let new_session = crate::game::SessionId::new(2);
+        let (_new_tx, mut new_rx) = test.connect_with_outbox(new_session.get());
+        drain_events(&mut new_rx);
+        set_current_window(&test.state, player_id, Some("blds"));
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Gui {
+                session_id: old_session,
+                player_id,
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(effects.saves.is_empty());
+        assert_eq!(
+            current_window(&test.state, player_id).as_deref(),
+            Some("blds")
+        );
+        assert!(drain_events(&mut old_rx).is_empty());
+        assert!(drain_events(&mut new_rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn public_teleport_opens_for_non_owner_like_reference() {
+        let test = make_teleport_test_state("tp_public_non_owner", 1).await;
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        set_current_window(&test.state, player_id, Some("blds"));
+        let source = test.state.building_entity_at(10, 10).unwrap();
+        test.state
+            .ecs
+            .write()
+            .get_mut::<BuildingOwnership>(source)
+            .unwrap()
+            .owner_id = PlayerId(999);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            crate::game::PlayerCommand::Gui {
+                session_id,
+                player_id,
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::GuiView {
+                view: crate::game::GuiView::Teleport(_),
+                ..
+            }]
+        ));
+    }
+
+    async fn make_craft_test_state(label: &str, player_x: i32, player_y: i32) -> ServerTestHarness {
+        let mut builder =
+            ServerTestHarnessBuilder::new(&format!("craft_start_{label}"), "craft-user").await;
+        builder.player.x = player_x;
+        builder.player.y = player_y;
+        builder.player.crystals[0] = 100;
 
         let extra = test_building_extra(0, 0, 1000, 1000);
-        let _building_id = database
-            .insert_building("F", 10, 10, player.id, 0, &extra)
+        let player_id = builder.player.id;
+        builder
+            .database()
+            .insert_building("F", 10, 10, player_id, 0, &extra)
             .await
             .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("craft_start_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        CraftTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        builder.build().await
     }
 
-    async fn make_teleport_test_state(label: &str, destination_count: i32) -> CraftTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("teleport_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database.create_player("tp-user", "p", "h").await.unwrap();
-        player.x = 10;
-        player.y = 10;
-        player.money = 10_000;
+    async fn make_teleport_test_state(label: &str, destination_count: i32) -> ServerTestHarness {
+        let mut builder =
+            ServerTestHarnessBuilder::new(&format!("teleport_{label}"), "tp-user").await;
+        builder.world_chunks(40, 2);
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.player.money = 10_000;
 
         let extra = test_building_extra(100, 1000, 1000, 1000);
-        database
-            .insert_building("T", 10, 10, player.id, 0, &extra)
+        let player_id = builder.player.id;
+        builder
+            .database()
+            .insert_building("T", 10, 10, player_id, 0, &extra)
             .await
             .unwrap();
         for i in 0..destination_count {
-            database
-                .insert_building("T", 42 + i * 32, 10, player.id, 0, &extra)
+            builder
+                .database()
+                .insert_building("T", 42 + i * 32, 10, player_id, 0, &extra)
                 .await
                 .unwrap();
         }
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("teleport_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 40, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 40,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
+        builder
+            .database()
+            .insert_building("T", 1_200, 10, player_id, 0, &extra)
             .await
             .unwrap();
-
-        CraftTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        builder.build().await
     }
 
-    async fn make_market_test_state(label: &str) -> CraftTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("market_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database
-            .create_player("market-user", "p", "h")
-            .await
-            .unwrap();
-        player.x = 10;
-        player.y = 10;
-        player.money = 10_000;
-        player.crystals[0] = 100;
+    async fn make_market_test_state(label: &str) -> ServerTestHarness {
+        let mut builder =
+            ServerTestHarnessBuilder::new(&format!("market_{label}"), "market-user").await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.player.money = 10_000;
+        builder.player.crystals[0] = 100;
 
         let extra = test_building_extra(0, 0, 1000, 1000);
-        database
-            .insert_building("M", 10, 10, player.id, 0, &extra)
+        let player_id = builder.player.id;
+        builder
+            .database()
+            .insert_building("M", 10, 10, player_id, 0, &extra)
             .await
             .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("market_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        CraftTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        builder.build().await
     }
 
-    async fn make_storage_test_state(label: &str) -> CraftTestState {
-        let dir = std::env::temp_dir();
-        let nonce = format!("{}_{}_{}", label, std::process::id(), unique_test_nonce());
-        let db_path = dir.join(format!("storage_{nonce}.db"));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let mut player = database
-            .create_player("storage-user", "p", "h")
-            .await
-            .unwrap();
-        player.x = 10;
-        player.y = 10;
-        player.money = 10_000;
-        player.crystals[0] = 100;
+    async fn make_storage_test_state(label: &str) -> ServerTestHarness {
+        let mut builder =
+            ServerTestHarnessBuilder::new(&format!("storage_{label}"), "storage-user").await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.player.money = 10_000;
+        builder.player.crystals[0] = 100;
 
         let extra = test_building_extra(0, 0, 1000, 1000);
-        database
-            .insert_building("L", 10, 10, player.id, 0, &extra)
+        let player_id = builder.player.id;
+        builder
+            .database()
+            .insert_building("L", 10, 10, player_id, 0, &extra)
             .await
             .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("storage_world_{nonce}");
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        CraftTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        builder.build().await
     }
 
     fn craft_state(state: &Arc<GameState>, bx: i32, by: i32) -> (Option<i32>, i32, i64) {
@@ -3757,28 +3132,16 @@ mod tests {
             .unwrap()
     }
 
-    fn drain_events(rx: &mut mpsc::Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
-    }
-
     fn current_window(state: &Arc<GameState>, pid: PlayerId) -> Option<String> {
         state.query_player_opt(pid, |ecs, entity| {
             Some(ecs.get::<PlayerUI>(entity)?.current_window.clone())
         })?
     }
 
-    fn unique_test_nonce() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+    fn set_current_window(state: &Arc<GameState>, pid: PlayerId, window: Option<&str>) {
+        let _ = state.modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<PlayerUI>(entity)?.current_window = window.map(str::to_owned);
+            Some(())
+        });
     }
 }

@@ -1,6 +1,7 @@
 //! Authoritative simulation thread and its tick-local state.
 
 mod commands;
+mod due;
 mod effects;
 mod profiler;
 mod scheduler;
@@ -20,6 +21,20 @@ struct TickServices {
     tick_log_tx: std::sync::mpsc::SyncSender<profiler::TickLogEvent>,
     presentation: crate::net::presentation::PresentationRuntime,
     persistence: crate::persistence::PersistenceHandle,
+}
+
+struct TickProfileState {
+    window: profiler::TickWindowProfile,
+    last_warn: Instant,
+}
+
+impl TickProfileState {
+    fn new(now: Instant) -> Self {
+        Self {
+            window: profiler::TickWindowProfile::new(now),
+            last_warn: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -240,9 +255,9 @@ struct SimulationRuntime {
     commands: tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
     shutdown: broadcast::Receiver<()>,
     services: TickServices,
-    tick_window: profiler::TickWindowProfile,
-    last_warn: Instant,
+    tick_profile: TickProfileState,
     schedule_clock: scheduler::ScheduleClock,
+    due_actions: crate::game::logic::due::DueActionQueue,
     sim_tick: crate::game::SimTick,
     pending_work: TickPendingWork,
     tick_duration: Duration,
@@ -261,14 +276,15 @@ impl SimulationRuntime {
         let now = Instant::now();
         let tick_duration =
             Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
+        let due_action_capacity = state.config.gameplay.simulation.due_action_capacity;
         Self {
             schedule_clock: scheduler::ScheduleClock::new(state.schedules.len(), now),
             state,
             commands,
             shutdown,
             services,
-            tick_window: profiler::TickWindowProfile::new(now),
-            last_warn: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
+            tick_profile: TickProfileState::new(now),
+            due_actions: crate::game::logic::due::DueActionQueue::new(due_action_capacity),
             sim_tick: crate::game::SimTick::default(),
             pending_work: TickPendingWork::new(persistence_completions),
             tick_duration,
@@ -283,7 +299,32 @@ impl SimulationRuntime {
             "ECS Game Thread started"
         );
         while self.run_once() {}
+        self.finish_shutdown();
         tracing::info!("ECS Game Thread shutting down");
+    }
+
+    fn finish_shutdown(self) {
+        let Self {
+            state,
+            mut commands,
+            services,
+            mut pending_work,
+            ..
+        } = self;
+        commands.close();
+        let TickServices {
+            presentation,
+            persistence,
+            ..
+        } = services;
+        drop(persistence);
+
+        let completions = drain_persistence_completions(
+            &state,
+            &presentation,
+            &mut pending_work.persistence_completions,
+        );
+        tracing::info!(completions, "Simulation persistence completions drained");
     }
 
     fn run_once(&mut self) -> bool {
@@ -302,8 +343,13 @@ impl SimulationRuntime {
         self.next_tick_at = started_at + self.tick_duration;
         self.sim_tick = self.sim_tick.next();
         crate::metrics::SIMULATION_TICK.set(i64::try_from(self.sim_tick.get()).unwrap_or(i64::MAX));
-        if self.shutdown.try_recv().is_ok() {
-            return false;
+        match self.shutdown.try_recv() {
+            Ok(())
+            | Err(
+                tokio::sync::broadcast::error::TryRecvError::Closed
+                | tokio::sync::broadcast::error::TryRecvError::Lagged(_),
+            ) => return false,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
         }
 
         let state = self.state.clone();
@@ -311,8 +357,8 @@ impl SimulationRuntime {
             tick::run_game_tick_sync(
                 &state,
                 &mut self.commands,
-                &mut self.tick_window,
-                &mut self.last_warn,
+                &mut self.due_actions,
+                &mut self.tick_profile,
                 &mut self.schedule_clock,
                 &mut self.pending_work,
                 &self.services,
@@ -345,6 +391,20 @@ impl SimulationRuntime {
         }
         true
     }
+}
+
+fn drain_persistence_completions(
+    state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
+    completions: &mut tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
+) -> u64 {
+    let mut applied = 0_u64;
+    while let Some(completion) = completions.blocking_recv() {
+        let effects = crate::game::logic::commands::apply_persistence_completion(state, completion);
+        effects::apply_shutdown_command_effects(state, presentation, effects);
+        applied = applied.saturating_add(1);
+    }
+    applied
 }
 
 const TICK_WATCHDOG_WARN_MULTIPLIER: u64 = 200;
@@ -514,4 +574,140 @@ fn spawn_parking_lot_deadlock_detector(mut shutdown_rx: broadcast::Receiver<()>)
             }
         })
         .expect("spawn parking_lot deadlock detector thread");
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::drain_persistence_completions;
+    use crate::world::WorldProvider as _;
+
+    async fn prepare_delete_completion() -> (
+        crate::test_support::ServerTestHarness,
+        crate::game::PersistenceCompletion,
+    ) {
+        let test = crate::test_support::ServerTestHarness::new(
+            "building_delete_shutdown",
+            "delete-shutdown",
+        )
+        .await;
+        let extra = crate::db::BuildingExtra {
+            charge: 100,
+            max_charge: 100,
+            cost: 10,
+            hp: 100,
+            max_hp: 100,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        let (building_id, _) = test
+            .state
+            .insert_building_runtime(&crate::game::BuildingInsertSpec {
+                type_code: "R",
+                pack_type: crate::game::PackType::Resp,
+                x: 10,
+                y: 10,
+                owner_id: crate::game::PlayerId(test.player.id),
+                clan_id: 0,
+                extra: &extra,
+            })
+            .await
+            .unwrap();
+        test.state
+            .db
+            .update_player_resp(test.player.id, Some(10), Some(10))
+            .await
+            .unwrap();
+        let player_id = crate::game::PlayerId(test.player.id);
+        test.state.modify_player(player_id, |ecs, entity| {
+            let mut metadata = ecs.get_mut::<crate::game::PlayerMetadata>(entity)?;
+            metadata.resp_x = Some(10);
+            metadata.resp_y = Some(10);
+            Some(())
+        });
+        let request = crate::game::logic::building_delete::admit(
+            &test.state,
+            crate::game::RemovePack {
+                x: 10,
+                y: 10,
+                cause: crate::game::BuildingDeleteCause::Damage {
+                    trigger_player_id: None,
+                    origin_session_id: None,
+                },
+            },
+            crate::game::BuildingDeleteOperationId::new(31),
+        )
+        .unwrap();
+        let outcome = test
+            .state
+            .db
+            .apply_building_delete(&crate::db::BuildingDeleteWrite {
+                building_id,
+                x: 10,
+                y: 10,
+                clear_resp_bindings: true,
+                box_write: None,
+            })
+            .await
+            .unwrap();
+        let crate::db::BuildingDeleteOutcome::Deleted {
+            cleared_resp_bindings,
+        } = outcome
+        else {
+            panic!("fixture delete must match persisted identity");
+        };
+        let completion = crate::game::PersistenceCompletion::BuildingDeleted {
+            request,
+            result: crate::game::BuildingDeleteResult::Deleted {
+                cleared_resp_bindings,
+            },
+        };
+        (test, completion)
+    }
+
+    #[tokio::test]
+    async fn delete_completion_is_applied_before_final_shutdown_flush() {
+        let (test, completion) = prepare_delete_completion().await;
+        let (completion_tx, mut completion_rx) = tokio::sync::mpsc::channel(1);
+        completion_tx.send(completion).await.unwrap();
+        let state_for_drain = test.state.clone();
+        let presentation = crate::net::presentation::PresentationRuntime::start(test.state.clone());
+        let drain = tokio::task::spawn_blocking(move || {
+            drain_persistence_completions(&state_for_drain, &presentation, &mut completion_rx)
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while test.state.building_entity_at(10, 10).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown completion was not applied");
+        assert!(
+            !drain.is_finished(),
+            "drain must wait until the persistence completion channel closes"
+        );
+        drop(completion_tx);
+        assert_eq!(drain.await.unwrap(), 1);
+
+        crate::shutdown::shutdown_flush(&test.state).await;
+        let player = test
+            .state
+            .db
+            .get_player_by_id(test.player.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((player.resp_x, player.resp_y), (None, None));
+        assert!(test.state.db.load_all_buildings().await.unwrap().is_empty());
+        assert_eq!(
+            test.state.world.get_cell_typed(10, 10),
+            crate::world::CellType(crate::world::cells::cell_type::EMPTY)
+        );
+    }
 }

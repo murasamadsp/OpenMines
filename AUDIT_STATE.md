@@ -80,14 +80,12 @@
 - Live creation здания (`DB insert + runtime commit`) сведён в
   `GameState::insert_building_runtime`; session paths оставляют у себя только
   возврат денег/предметов при ошибке БД.
-- Runtime removal здания (`runtime индексы + ECS despawn + mmap footprint`) сведён
-  в `GameState::remove_building_runtime`; destroy/protector paths больше не
-  дублируют ручной cleanup runtime-слоёв.
-- Normal destroy здания (`DB delete + runtime cleanup`) сведён в
-  `GameState::delete_building_runtime`; дропы и возврат предметов остаются в
-  caller'е, потому что зависят от причины сноса.
-- Protector gate destroy больше не делает detached DB delete: он await'ит
-  `GameState::delete_building_runtime` внутри своей async detonation task.
+- Удаление здания проходит одним typed flow: `RemovePack` -> bounded persistence
+  admission -> atomic `BuildingDelete` transaction -> guarded runtime completion.
+  `BuildingDeletePending` замораживает объект до completion; legacy direct DB и
+  runtime delete helpers удалены.
+- Protector/Raz destruction уже публикует `RemovePack`, но их собственные Tokio
+  timers ещё переносятся в owner-owned `DueActionQueue` следующим срезом.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в
   `crates/openmines-server/admin/app.js`.

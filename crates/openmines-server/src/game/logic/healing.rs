@@ -1,6 +1,6 @@
+use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::skills::OnHealth;
 use crate::game::{GameState, PlayerId};
-use num_traits::ToPrimitive;
 use std::sync::Arc;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -43,16 +43,16 @@ pub fn apply_heal(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) -> 
                 return Some(HealResult::MissingState("PlayerSkillsComp"));
             };
 
-            let heal_amount = crate::game::skills::PlayerSkills {
+            let heal_amount = saturating_trunc_f32_to_i32(crate::game::skills::PlayerSkills {
                 skills: &skills.states,
             }
-            .on_health_regen(0.0)
-            .to_i32()
-            .expect("heal skill effect must fit i32");
+            .on_health_regen(0.0));
 
             if heal_amount <= 0
                 || player_stats.health >= player_stats.max_health
-                || player_stats.crystals[2] < 1
+                || player_stats.crystals
+                    [crate::game::logic::crystals::CrystalKind::Red.index()]
+                    < 1
             {
                 return Some(HealResult::SilentNoop);
             }
@@ -64,8 +64,12 @@ pub fn apply_heal(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) -> 
                 let mut changed_stats = ecs
                     .get_mut::<crate::game::player::PlayerStats>(entity)
                     .expect("PlayerStats checked before heal mutation");
-                changed_stats.crystals[2] -= 1;
-                changed_stats.health = (changed_stats.health + heal_amount).min(max_health);
+                changed_stats.crystals
+                    [crate::game::logic::crystals::CrystalKind::Red.index()] -= 1;
+                changed_stats.health = changed_stats
+                    .health
+                    .saturating_add(heal_amount)
+                    .min(max_health);
                 (changed_stats.health, changed_stats.crystals)
             };
 

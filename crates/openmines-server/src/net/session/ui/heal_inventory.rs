@@ -19,8 +19,8 @@ use crate::net::session::social::buildings::{
 
 /// Helper: check if an item is exempt from facing-cell placement checks.
 /// C# `Inventory.Use:208`: `selected is 40 or (>=10 and <17) or 34 or 42 or 43 or 46`
-fn is_exempt_item(sel: i32) -> bool {
-    sel == 40 || (10..17).contains(&sel) || sel == 34 || sel == 42 || sel == 43 || sel == 46
+const fn is_exempt_item(sel: i32) -> bool {
+    sel == 40 || is_geopack_item(sel)
 }
 
 fn send_inventory_state_error(tx: &Outbox) {
@@ -102,27 +102,22 @@ pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &Outbox, pid: Play
         }
     }
 
-    let used = match sel {
-        10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, sel),
-        0 => place_building_from_item(state, tx, pid, PackType::Teleport).await,
-        1 => place_building_from_item(state, tx, pid, PackType::Resp).await,
-        2 => place_building_from_item(state, tx, pid, PackType::Up).await,
-        3 => place_building_from_item(state, tx, pid, PackType::Market).await,
-        // Предмет 4 = «пак кланс» (тип D, конфиг "Clans"). В C#-референсе был обрубок
-        // `4 => (p) => true` (потреблялся, ничего не делал → «списывается но не ставится»).
-        // Оригинал ставил здесь пак кланс. Восстановлено по поведению (клиент предмет
-        // локально не списывает → раз «списывается», сервер его потреблял в этой ветке).
-        4 => place_building_from_item(state, tx, pid, PackType::Clans).await,
-        24 => place_building_from_item(state, tx, pid, PackType::Craft).await,
-        26 => place_building_from_item(state, tx, pid, PackType::Gun).await,
-        27 => use_gate_item(state, tx, pid).await,
-        29 => place_building_from_item(state, tx, pid, PackType::Storage).await,
-        5 => use_boom(state, pid),
-        6 => use_protector(state, pid),
-        7 => use_razryadka(state, pid),
-        35 => use_poli(state, pid),
-        40 => use_c190(state, pid),
-        _ => false,
+    let used = if is_geopack_item(sel) {
+        use_geopack(state, tx, pid, sel)
+    } else if let Some(spec) = crate::game::logic::items::building_item(sel) {
+        if spec.pack_type == PackType::Gate {
+            use_gate_item(state, tx, pid).await
+        } else {
+            place_building_from_item(state, tx, pid, spec.pack_type).await
+        }
+    } else {
+        match sel {
+            6 => use_protector(state, pid),
+            7 => use_razryadka(state, pid),
+            35 => use_poli(state, pid),
+            40 => use_c190(state, pid),
+            _ => false,
+        }
     };
 
     if used {
@@ -144,6 +139,9 @@ pub fn handle_inventory_use_sync_nonbuilding(
     state: &Arc<GameState>,
     tx: &Outbox,
     pid: PlayerId,
+    session_id: crate::game::SessionId,
+    due_actions: &mut crate::game::logic::due::DueActionQueue,
+    broadcasts: &mut Vec<crate::game::BroadcastEffect>,
 ) -> bool {
     let selected = state.query_player_opt(pid, |ecs, entity| {
         let inv = ecs.get::<PlayerInventory>(entity)?;
@@ -154,9 +152,21 @@ pub fn handle_inventory_use_sync_nonbuilding(
         send_inventory_state_error(tx);
         return true;
     };
-    if matches!(sel, 0 | 1 | 2 | 3 | 4 | 24 | 26 | 27 | 29) {
+    if crate::game::logic::items::building_item(sel).is_some() {
         return false;
     }
+
+    let mut boom_reservation = if sel == 5 {
+        let Some(reservation) = due_actions.try_reserve() else {
+            crate::metrics::DUE_ACTIONS_TOTAL
+                .with_label_values(&["boom", "saturated"])
+                .inc();
+            return true;
+        };
+        Some(reservation)
+    } else {
+        None
+    };
 
     let now = std::time::Instant::now();
     let gate_passed = state.modify_player(pid, |ecs, entity| {
@@ -200,8 +210,49 @@ pub fn handle_inventory_use_sync_nonbuilding(
     }
 
     let used = match sel {
-        10..=16 | 34 | 42 | 43 | 46 => use_geopack(state, tx, pid, sel),
-        5 => use_boom(state, pid),
+        item if is_geopack_item(item) => use_geopack(state, tx, pid, item),
+        5 => {
+            let Some(cid) = state.query_player_opt(pid, |ecs, entity| {
+                let player_stats = ecs.get::<PlayerStats>(entity)?;
+                Some(player_stats.clan_id.unwrap_or(0))
+            }) else {
+                return true;
+            };
+            if !state.access_gun(fx, fy, cid) {
+                false
+            } else {
+                let Some(inventory_effect) =
+                    consume_inventory_item_effect(state, pid, session_id, sel)
+                else {
+                    send_inventory_state_error(tx);
+                    return true;
+                };
+                let reservation = boom_reservation
+                    .take()
+                    .expect("Boom reservation must exist after successful admission");
+                let sequence = reservation.sequence();
+                let center = crate::game::WorldPos(fx, fy);
+                state.put_consumable_pack(fx, fy, b'B', 0);
+                reservation.publish(
+                    std::time::Instant::now() + std::time::Duration::from_secs(1),
+                    crate::game::logic::due::DueAction::Boom(
+                        crate::game::logic::consumables::BoomDueAction {
+                            center,
+                            rng_seed: sequence,
+                        },
+                    ),
+                );
+                broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(center));
+                broadcasts.push(inventory_effect);
+                crate::metrics::DUE_ACTIONS_TOTAL
+                    .with_label_values(&["boom", "admitted"])
+                    .inc();
+                drop(boom_reservation);
+                crate::metrics::DUE_ACTION_DEPTH
+                    .set(i64::try_from(due_actions.len()).unwrap_or(i64::MAX));
+                return true;
+            }
+        }
         6 => use_protector(state, pid),
         7 => use_razryadka(state, pid),
         35 => use_poli(state, pid),
@@ -252,7 +303,9 @@ pub fn prepare_inventory_building_use(
         return None;
     }
 
-    let (pack_type, offset_cells, clan_override) = inventory_building_item_spec(sel)?;
+    let item_spec = crate::game::logic::items::building_item(sel)?;
+    let pack_type = item_spec.pack_type;
+    let offset_cells = item_spec.placement_offset;
     let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         let s = ecs.get::<PlayerStats>(entity)?;
@@ -277,14 +330,10 @@ pub fn prepare_inventory_building_use(
         return None;
     }
 
-    let building_clan = if pack_type == PackType::Gate {
+    let building_clan = if matches!(pack_type, PackType::Gate | PackType::Gun) {
         player_clan
     } else {
-        clan_override.unwrap_or(if pack_type == PackType::Gun {
-            player_clan
-        } else {
-            0
-        })
+        0
     };
     let (bx, by) = (px + dx * offset_cells, py + dy * offset_cells);
     if pack_type == PackType::Gate {
@@ -306,7 +355,7 @@ pub fn prepare_inventory_building_use(
 
     Some(crate::game::logic::contracts::InventoryBuildingPlacement {
         selected_item: sel,
-        type_code: building_db_code_for_item(pack_type).to_owned(),
+        type_code: item_spec.database_code.to_owned(),
         pack_type,
         x: bx,
         y: by,
@@ -348,21 +397,6 @@ pub fn apply_inventory_building_placed(
     consume_selected_inventory_item(state, tx, placement.owner_id, placement.selected_item);
 }
 
-const fn inventory_building_item_spec(sel: i32) -> Option<(PackType, i32, Option<i32>)> {
-    match sel {
-        0 => Some((PackType::Teleport, 2, None)),
-        1 => Some((PackType::Resp, 2, None)),
-        2 => Some((PackType::Up, 2, None)),
-        3 => Some((PackType::Market, 2, None)),
-        4 => Some((PackType::Clans, 2, None)),
-        24 => Some((PackType::Craft, 2, None)),
-        26 => Some((PackType::Gun, 2, None)),
-        27 => Some((PackType::Gate, 1, None)),
-        29 => Some((PackType::Storage, 2, None)),
-        _ => None,
-    }
-}
-
 fn consume_selected_inventory_item(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -380,6 +414,38 @@ fn consume_selected_inventory_item(
         send_inventory(tx, &mut inv);
         Some(())
     });
+}
+
+fn consume_inventory_item_effect(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    session_id: crate::game::SessionId,
+    selected: i32,
+) -> Option<crate::game::BroadcastEffect> {
+    let packet = state
+        .modify_player(pid, |ecs, entity| {
+            ecs.get::<crate::game::PlayerFlags>(entity)?;
+            let packet = {
+                let mut inventory = ecs.get_mut::<PlayerInventory>(entity)?;
+                let count = inventory.items.get_mut(&selected)?;
+                if *count <= 0 {
+                    return None;
+                }
+                *count -= 1;
+                if *count == 0 {
+                    inventory.items.remove(&selected);
+                    inventory.miniq.retain(|&item| item != selected);
+                }
+                crate::game::logic::inventory::inventory_packet(&mut inventory)
+            };
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
+            Some(packet)
+        })
+        .flatten()?;
+    Some(crate::game::BroadcastEffect::Direct {
+        session_id,
+        data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+    })
 }
 
 /// Item-to-alive-cell mapping for geopack items.
@@ -401,6 +467,10 @@ const fn geopack_item_to_cell(item: i32) -> Option<crate::world::CellType> {
         46 => Some(crate::world::CellType(cell_type::ALIVE_RAINBOW)),
         _ => None,
     }
+}
+
+const fn is_geopack_item(item: i32) -> bool {
+    matches!(item, 10..=16 | 34 | 42 | 43 | 46)
 }
 
 /// D26: Reverse mapping — alive cell to item ID for geopack pickup.
@@ -594,7 +664,10 @@ async fn place_building_from_item_with(
             return false;
         }
     };
-    let code = building_db_code_for_item(pack_type);
+    let Some(item_spec) = crate::game::logic::items::building_item_for_pack(pack_type) else {
+        return false;
+    };
+    let code = item_spec.database_code;
     let insert_spec = crate::game::BuildingInsertSpec {
         type_code: code,
         pack_type,
@@ -622,21 +695,6 @@ async fn place_building_from_item_with(
         true
     } else {
         false
-    }
-}
-
-const fn building_db_code_for_item(pack_type: PackType) -> &'static str {
-    match pack_type {
-        PackType::Gate => "N",
-        PackType::Teleport => "T",
-        PackType::Resp => "R",
-        PackType::Gun => "G",
-        PackType::Market => "M",
-        PackType::Up => "U",
-        PackType::Storage => "L",
-        PackType::Craft => "F",
-        PackType::Clans => "D",
-        _ => pack_type.name(),
     }
 }
 
@@ -752,93 +810,6 @@ fn clear_consumable_pack(state: &Arc<GameState>, x: i32, y: i32) {
     crate::net::session::social::buildings::broadcast_block_at(state, x, y);
 }
 
-/// D14: Boom — C# `ShitClass.Boom` parity.
-/// C#: `AccessGun`-гейт → `SendPack`('B', off=0) → `AsyncAction`(1s) → детонация + `ClearPack`.
-/// Предмет тратится сразу (return true), урон отложен на 1 секунду.
-pub fn use_boom(state: &Arc<GameState>, pid: PlayerId) -> bool {
-    let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-        let p = ecs.get::<PlayerPosition>(entity)?;
-        let s = ecs.get::<PlayerStats>(entity)?;
-        Some((p.x, p.y, p.dir, s.clan_id.unwrap_or(0)))
-    });
-    let Some((px, py, pdir, cid)) = pos else {
-        return false;
-    };
-    let (dx, dy) = dir_offset(pdir);
-    let (cx, cy) = (px + dx, py + dy);
-    if !state.world.valid_coord(cx, cy) {
-        return false;
-    }
-
-    // AccessGun check on facing cell
-    if !state.access_gun(cx, cy, cid) {
-        return false;
-    }
-
-    send_consumable_pack(state, cx, cy, 0);
-    let st = state.clone();
-    state.tokio_handle.spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        boom_detonate(&st, pid, cx, cy);
-        clear_consumable_pack(&st, cx, cy);
-    });
-    true
-}
-
-/// Детонация Boom через 1с (тело C# `AsyncAction`): `AoE` r=3.5 — разрушение клеток
-/// + 40 HP игрокам + FX.
-fn boom_detonate(state: &Arc<GameState>, _pid: PlayerId, cx: i32, cy: i32) {
-    // AoE: radius 3.5 centered on facing cell
-    let cell_defs = state.world.cell_defs();
-    for ddx in -4..=4 {
-        for ddy in -4..=4 {
-            let tgt_x = cx + ddx;
-            let tgt_y = cy + ddy;
-            if !state.world.valid_coord(tgt_x, tgt_y) {
-                continue;
-            }
-            let dist = (ddx as f32).hypot(ddy as f32);
-            if dist > 3.5 {
-                continue;
-            }
-            let c = state.world.get_cell_typed(tgt_x, tgt_y);
-            let prop = cell_defs.get_typed(c);
-            // C# `!World.PackPart(...)`: footprint-aware (не только origin). Иначе
-            // не-origin клетки многоклеточных зданий ошибочно рушатся AoE.
-            if prop.physical.is_destructible && state.find_pack_covering(tgt_x, tgt_y).is_none() {
-                // Special cell conversions
-                if c.is(cell_type::RED_ROCK) && rand::random::<u32>() % 100 >= 98 {
-                    // 2% chance: 117 → 118
-                    state.world.set_cell_typed(
-                        tgt_x,
-                        tgt_y,
-                        crate::world::CellType(cell_type::ACID_ROCK),
-                    );
-                } else if c.is(cell_type::ACID_ROCK) {
-                    // 118 → 103
-                    state.world.set_cell_typed(
-                        tgt_x,
-                        tgt_y,
-                        crate::world::CellType(cell_type::ROCK),
-                    );
-                } else if !c.is(cell_type::RED_ROCK) && !c.is(cell_type::ACID_ROCK) {
-                    state.world.destroy(tgt_x, tgt_y);
-                }
-                broadcast_cell_update(state, tgt_x, tgt_y);
-            }
-        }
-    }
-
-    // Damage: 40 HP to players in radius
-    let killed = aoe_damage_players(state, cx, cy, 4, 3.5, 40);
-    for (opid, _) in killed {
-        request_death(state, opid);
-    }
-
-    let fx = hb_world_blast_fx(net_u16_nonneg(cx), net_u16_nonneg(cy), 3, 0);
-    state.broadcast_hb_at(cx, cy, &[fx], None);
-}
-
 /// D15: Protector (item 6) — C# `ShitClass.Prot` — `AoE` bomb, NOT a shield.
 /// C#: `AccessGun`-гейт → `SendPack`('B', off=1) → `AsyncAction`(2s) → детонация + `ClearPack`.
 pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
@@ -865,7 +836,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let st = state.clone();
     state.tokio_handle.spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        prot_detonate(&st, pid, cx, cy).await;
+        prot_detonate(&st, pid, cx, cy);
         clear_consumable_pack(&st, cx, cy);
     });
     true
@@ -873,7 +844,7 @@ pub fn use_protector(state: &Arc<GameState>, pid: PlayerId) -> bool {
 
 /// Детонация Protector через 2с (тело C# `AsyncAction`): `AoE` 3x3 — снос гейтов +
 /// разрушение клеток + 50 HP игрокам + FX.
-async fn prot_detonate(state: &Arc<GameState>, _pid: PlayerId, cx: i32, cy: i32) {
+fn prot_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // C# iterates -1..=1 with distance check <= 3.5 (always true in that range)
     let cell_defs = state.world.cell_defs();
     for ddx in -1..=1 {
@@ -887,10 +858,8 @@ async fn prot_detonate(state: &Arc<GameState>, _pid: PlayerId, cx: i32, cy: i32)
             let gate = state
                 .get_pack_at(tgt_x, tgt_y)
                 .filter(|view| view.pack_type == PackType::Gate);
-            if let Some(view) = gate {
-                if let Err(e) = state.delete_building_runtime(&view).await {
-                    tracing::error!(error = ?e, "gate delete failed");
-                }
+            if gate.is_some() {
+                destroy_damagable_building(state, Some(pid), tgt_x, tgt_y);
             }
             // Destroy destructible non-building cells
             let c = state.world.get_cell_typed(tgt_x, tgt_y);
@@ -932,7 +901,7 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
     let st = state.clone();
     state.tokio_handle.spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        raz_detonate(&st, pid, cx, cy).await;
+        raz_detonate(&st, pid, cx, cy);
         clear_consumable_pack(&st, cx, cy);
     });
     true
@@ -940,18 +909,19 @@ pub fn use_razryadka(state: &Arc<GameState>, pid: PlayerId) -> bool {
 
 /// Детонация Razryadka через 5с (тело C# `AsyncAction`): `IDamagable`-здания в r=9.5
 /// (Destroy при `CanDestroy`, иначе Damage 10) + 500 HP всем игрокам + FX.
-async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
+fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
     // Collect IDamagable buildings in radius 9.5 and apply damage (C# ShitClass.Raz).
     let mut to_destroy: Vec<(i32, i32)> = Vec::new();
     let mut resend_charge_zero: Vec<(i32, i32)> = Vec::new();
     {
         let mut ecs = state.ecs_write_profiled("inventory.raz_detonate");
-        let mut query = ecs.query::<(
+        let mut query = ecs.query_filtered::<(
             &BuildingMetadata,
             &GridPosition,
             &BuildingOwnership,
             &mut BuildingStats,
-        )>();
+        ), bevy_ecs::prelude::Without<crate::game::BuildingDeletePending>>(
+        );
         for (meta, bpos, ownership, mut pstats) in query.iter_mut(&mut ecs) {
             if !is_damagable(meta.pack_type) || ownership.owner_id == 0 {
                 continue;
@@ -975,7 +945,7 @@ async fn raz_detonate(state: &Arc<GameState>, pid: PlayerId, cx: i32, cy: i32) {
 
     // Destroy buildings that reached CanDestroy (release ECS lock first to avoid deadlock).
     for (bx, by) in to_destroy {
-        destroy_damagable_building(state, Some(pid), bx, by).await;
+        destroy_damagable_building(state, Some(pid), bx, by);
     }
 
     // Resend HB O for buildings whose charge hit 0 from damage.
@@ -1142,83 +1112,12 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
+    use crate::test_support::{ServerTestHarness, drain_events};
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use std::time::{Duration, Instant};
 
-    struct TestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        world_name: String,
-        db_path: std::path::PathBuf,
-    }
-
-    impl TestState {
-        fn cleanup(&self) {
-            let dir = std::env::temp_dir();
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_test_state(label: &str) -> TestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("inventory-user", "p", "h")
-            .await
-            .unwrap();
-        let _ = crate::game::buildings::load_buildings_config(crate::test_config_path(
-            "configs/buildings.json",
-        ));
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        TestState {
-            state,
-            player,
-            world_name,
-            db_path,
-        }
-    }
-
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
+    async fn make_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(label, "inventory-user").await
     }
 
     fn building_at(state: &Arc<GameState>, x: i32, y: i32) -> Option<(PackType, i32)> {
@@ -1248,8 +1147,7 @@ mod tests {
     #[tokio::test]
     async fn heal_missing_stats_is_explicit_error_not_full_health_fallback() {
         let test = make_test_state("heal_missing_stats").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1266,15 +1164,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn heal_missing_skills_is_explicit_error_not_no_repair_fallback() {
         let test = make_test_state("heal_missing_skills").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1295,15 +1190,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn heal_without_repair_skill_stays_quiet_noop() {
         let test = make_test_state("heal_no_repair_skill").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1319,15 +1211,12 @@ mod tests {
         apply_heal_command(&test.state, pid);
 
         assert!(drain_events(&mut rx).is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn inventory_use_missing_cooldowns_is_explicit_error_not_cooldown_fallback() {
         let test = make_test_state("inventory_missing_cooldowns").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1344,15 +1233,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние инвентаря недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn inventory_use_cooldown_gates_before_inventory_lookup() {
         let test = make_test_state("inventory_cooldown_before_inventory").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1377,15 +1263,12 @@ mod tests {
             drain_events(&mut rx).is_empty(),
             "second INUS inside 400ms gate must be ignored before inventory lookup"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn inventory_use_missing_inventory_is_explicit_error_not_unselected_fallback() {
         let test = make_test_state("inventory_missing_inventory").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1404,15 +1287,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние инвентаря недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn inventory_use_missing_position_is_explicit_error_not_skipped_facing_checks() {
         let test = make_test_state("inventory_missing_position").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1434,15 +1314,135 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние инвентаря недоступно."));
+    }
 
-        test.cleanup();
+    #[tokio::test]
+    async fn saturated_due_queue_leaves_boom_admission_state_unchanged() {
+        let test = make_test_state("boom_due_saturation").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        let original_cooldown = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<PlayerCooldowns>(entity)
+                .unwrap()
+                .last_inventory_use = original_cooldown;
+            let mut inventory = ecs.get_mut::<PlayerInventory>(entity).unwrap();
+            inventory.selected = 5;
+            inventory.items.insert(5, 2);
+        }
+        let original_pack_count = test.state.consumable_packs.len();
+        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+        due_actions.try_reserve().unwrap().publish(
+            Instant::now() + Duration::from_mins(1),
+            crate::game::logic::due::DueAction::Boom(
+                crate::game::logic::consumables::BoomDueAction {
+                    center: crate::game::WorldPos(20, 20),
+                    rng_seed: 1,
+                },
+            ),
+        );
+        let mut broadcasts = Vec::new();
+
+        assert!(handle_inventory_use_sync_nonbuilding(
+            &test.state,
+            &tx,
+            pid,
+            crate::game::SessionId::new(1),
+            &mut due_actions,
+            &mut broadcasts,
+        ));
+
+        assert_eq!(due_actions.len(), 1);
+        assert!(broadcasts.is_empty());
+        assert_eq!(test.state.consumable_packs.len(), original_pack_count);
+        let (cooldown, item_count) = test
+            .state
+            .query_player_opt(pid, |ecs, player_entity| {
+                Some((
+                    ecs.get::<PlayerCooldowns>(player_entity)?
+                        .last_inventory_use,
+                    *ecs.get::<PlayerInventory>(player_entity)?.items.get(&5)?,
+                ))
+            })
+            .expect("player admission state");
+        assert_eq!(cooldown, original_cooldown);
+        assert_eq!(item_count, 2);
+        assert!(drain_events(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn boom_effects_stay_on_active_session_during_reconnect_bind_race() {
+        let test = make_test_state("boom_reconnect_generation").await;
+        let (_old_tx, mut old_rx) = test.connect_with_outbox(1);
+        drain_events(&mut old_rx);
+
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut position = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+            position.x = 10;
+            position.y = 10;
+            position.dir = 0;
+            ecs.get_mut::<PlayerCooldowns>(entity)
+                .unwrap()
+                .last_inventory_use = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+            let mut inventory = ecs.get_mut::<PlayerInventory>(entity).unwrap();
+            inventory.selected = 5;
+            inventory.items.insert(5, 2);
+        }
+        test.state.world.destroy(10, 11);
+
+        let new_session = crate::game::SessionId::new(2);
+        let (new_tx, mut new_rx) = crate::net::session::outbox::channel();
+        test.state
+            .sessions
+            .register_test_outbox(new_session, new_tx);
+        assert!(test.state.sessions.bind_player(new_session, pid));
+
+        let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
+        let effects = crate::game::logic::commands::apply_player_command_with_due(
+            &test.state,
+            crate::game::PlayerCommand::InventoryUse {
+                session_id: crate::game::SessionId::new(1),
+                player_id: pid,
+            },
+            &mut due_actions,
+        );
+
+        assert_eq!(due_actions.len(), 1);
+        assert!(effects.broadcasts.iter().any(|effect| matches!(
+            effect,
+            crate::game::BroadcastEffect::Direct { session_id, .. }
+                if *session_id == crate::game::SessionId::new(1)
+        )));
+        assert!(effects.broadcasts.iter().any(|effect| matches!(
+            effect,
+            crate::game::BroadcastEffect::BlockUpdate(position)
+                if *position == crate::game::WorldPos(10, 11)
+        )));
+
+        crate::net::session::social::buildings::broadcast_block_at(&test.state, 10, 11);
+        assert!(
+            drain_events(&mut old_rx)
+                .iter()
+                .any(|(event, _)| event == "HB"),
+            "active session must receive nearby gameplay output"
+        );
+        assert!(
+            drain_events(&mut new_rx).is_empty(),
+            "authenticated but not active reconnect must not receive gameplay output before init"
+        );
     }
 
     #[tokio::test]
     async fn item_building_uses_pack_offset_two_not_three() {
         let test = make_test_state("inventory_build_offset").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1462,15 +1462,12 @@ mod tests {
             Some((PackType::Teleport, 0))
         );
         assert!(building_at(&test.state, 10, 13).is_none());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn gate_item_uses_offset_one_and_player_clan() {
         let test = make_test_state("inventory_gate_offset_clan").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -1490,7 +1487,5 @@ mod tests {
         );
         assert_eq!(building_at(&test.state, 10, 11), Some((PackType::Gate, 7)));
         assert!(building_at(&test.state, 10, 13).is_none());
-
-        test.cleanup();
     }
 }

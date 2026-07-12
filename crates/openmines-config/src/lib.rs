@@ -52,6 +52,7 @@ pub struct GameplayConfig {
     pub skills: SkillsConfig,
     pub spawn: SpawnConfig,
     pub programmator: ProgrammatorConfig,
+    pub simulation: SimulationConfig,
     pub schedules: ScheduleConfig,
     pub rate_limits: RateLimitConfig,
 }
@@ -66,6 +67,7 @@ impl GameplayConfig {
             skills: SkillsConfig::runtime_baseline(),
             spawn: SpawnConfig::runtime_baseline(),
             programmator: ProgrammatorConfig::runtime_baseline(),
+            simulation: SimulationConfig::runtime_baseline(),
             schedules: ScheduleConfig::runtime_baseline(),
             rate_limits: RateLimitConfig::runtime_baseline(),
         }
@@ -126,6 +128,25 @@ impl ProgrammatorConfig {
         Self {
             direct_action_delay_us: 333_333,
             min_move_delay_ms: 20,
+        }
+    }
+}
+
+/// Bounded work limits for the authoritative simulation owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    pub due_action_capacity: usize,
+    pub due_action_batch_budget: usize,
+    pub due_action_time_budget_us: u64,
+}
+
+impl SimulationConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            due_action_capacity: 65_536,
+            due_action_batch_budget: 256,
+            due_action_time_budget_us: 2_000,
         }
     }
 }
@@ -342,6 +363,7 @@ impl GameplayConfig {
         self.bonus.validate()?;
         self.spawn.validate(world_chunks_w, world_chunks_h)?;
         self.programmator.validate()?;
+        self.simulation.validate()?;
         self.schedules.validate()?;
         if self.schedules.programmator_ms == 0 {
             anyhow::bail!("gameplay.schedules.programmator_ms must be greater than 0");
@@ -436,6 +458,21 @@ impl ProgrammatorConfig {
     }
 }
 
+impl SimulationConfig {
+    fn validate(self) -> Result<()> {
+        if self.due_action_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_capacity must be greater than 0");
+        }
+        if self.due_action_batch_budget == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_batch_budget must be greater than 0");
+        }
+        if self.due_action_time_budget_us == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_time_budget_us must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
 impl ScheduleConfig {
     fn validate(self) -> Result<()> {
         if self.game_loop_tick_rate_ms == 0 {
@@ -514,6 +551,11 @@ mod tests {
                        "direct_action_delay_us": 333333,
                        "min_move_delay_ms": 20
                      },
+                     "simulation": {
+                       "due_action_capacity": 65536,
+                       "due_action_batch_budget": 256,
+                       "due_action_time_budget_us": 2000
+                     },
                       "schedules": {
                         "hazards_ms": 10,
                         "physics_ms": 400,
@@ -553,6 +595,9 @@ mod tests {
         assert_eq!(c.gameplay.spawn.y, 13);
         assert_eq!(c.gameplay.programmator.direct_action_delay_us, 333_333);
         assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
+        assert_eq!(c.gameplay.simulation.due_action_capacity, 65_536);
+        assert_eq!(c.gameplay.simulation.due_action_batch_budget, 256);
+        assert_eq!(c.gameplay.simulation.due_action_time_budget_us, 2_000);
         assert_eq!(c.gameplay.schedules.hazards_ms, 10);
         assert_eq!(c.gameplay.schedules.physics_ms, 400);
         assert_eq!(c.gameplay.schedules.programmator_ms, 10);
@@ -618,6 +663,15 @@ mod tests {
         assert!(
             serde_json::from_value::<Config>(no_programmator).is_err(),
             "пропущенный programmator должен быть ошибкой"
+        );
+        let mut no_simulation: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_simulation["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("simulation");
+        assert!(
+            serde_json::from_value::<Config>(no_simulation).is_err(),
+            "пропущенный simulation должен быть ошибкой"
         );
         let mut no_schedules: serde_json::Value = serde_json::from_str(FULL).unwrap();
         no_schedules["gameplay"]
@@ -758,6 +812,20 @@ mod tests {
                 cfg.validate().is_err(),
                 "invalid programmator config must be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn invalid_simulation_values_are_errors() {
+        for key in [
+            "due_action_capacity",
+            "due_action_batch_budget",
+            "due_action_time_budget_us",
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["simulation"][key] = serde_json::json!(0);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
         }
     }
 

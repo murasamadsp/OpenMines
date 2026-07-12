@@ -1,6 +1,41 @@
 use crate::game::{GameState, PlayerId};
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum CrystalKind {
+    Green = 0,
+    Blue = 1,
+    Red = 2,
+    Violet = 3,
+    White = 4,
+    Cyan = 5,
+}
+
+impl CrystalKind {
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub fn from_programmator_variable(code: &str) -> Option<(Self, bool)> {
+        match code {
+            "G" => Some((Self::Green, false)),
+            "B" => Some((Self::Blue, false)),
+            "R" => Some((Self::Red, false)),
+            "V" => Some((Self::Violet, false)),
+            "W" => Some((Self::White, false)),
+            "C" => Some((Self::Cyan, false)),
+            "GP" => Some((Self::Green, true)),
+            "BP" => Some((Self::Blue, true)),
+            "RP" => Some((Self::Red, true)),
+            "VP" => Some((Self::Violet, true)),
+            "WP" => Some((Self::White, true)),
+            "CP" => Some((Self::Cyan, true)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum CrystalSpendResult {
     Spent { crystals: [i64; 6] },
@@ -51,77 +86,13 @@ pub fn spend_crystal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::test_support::ServerTestHarness;
 
-    struct CrystalTestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        db_path: std::path::PathBuf,
-        world_name: String,
-        dir: std::path::PathBuf,
-    }
-
-    impl CrystalTestState {
-        fn cleanup(&self) {
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(self.dir.join(format!("{}_v2.map", self.world_name)));
-            let _ =
-                std::fs::remove_file(self.dir.join(format!("{}_durability.map", self.world_name)));
-        }
-    }
-
-    async fn make_crystal_test_state(label: &str) -> CrystalTestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!(
-            "crystal_{label}_{}_{}.db",
-            std::process::id(),
-            nonce
-        ));
-        let _ = std::fs::remove_file(&db_path);
-
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database
-            .create_player("crystal-user", "p", "h")
-            .await
-            .unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("crystal_world_{label}_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&state, &tx, &player, 1);
+    async fn make_crystal_test_state(label: &str) -> ServerTestHarness {
+        let test = ServerTestHarness::new(&format!("crystal_{label}"), "crystal-user").await;
+        let mut rx = test.connect(1);
         while rx.try_recv().is_ok() {}
-
-        CrystalTestState {
-            state,
-            player,
-            db_path,
-            world_name,
-            dir,
-        }
+        test
     }
 
     #[tokio::test]
@@ -152,8 +123,6 @@ mod tests {
             .unwrap();
         assert_eq!(crystals[0], 1);
         assert!(dirty);
-
-        test.cleanup();
     }
 
     #[tokio::test]
@@ -170,7 +139,5 @@ mod tests {
             })
             .unwrap();
         assert!(!dirty);
-
-        test.cleanup();
     }
 }

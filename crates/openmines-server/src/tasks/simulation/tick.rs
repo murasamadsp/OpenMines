@@ -1,13 +1,14 @@
 //! One authoritative simulation tick.
 
 use super::commands::{CommandPhase, run_command_phase};
+use super::due::{DuePhase, run_due_action_phase};
 use super::effects::{EffectSources, PreparedEffects, apply_side_effects, collect_pending_effects};
 use super::profiler::{
     ProgrammatorActionProfile, QueueProfile, ScheduleRunProfile, ScheduleTailProfile, SideProfile,
-    SimProfile, TickSample, TickWindowProfile, record_tick_profile,
+    SimProfile, TickSample, record_tick_profile,
 };
 use super::scheduler::{ScheduleClock, ScheduleTickResult, run_schedule_phase};
-use super::{TickPendingWork, TickServices, TickStage};
+use super::{TickPendingWork, TickProfileState, TickServices, TickStage};
 use crate::game::GameState;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,11 +32,16 @@ struct SimulationPhase {
     has_work: bool,
 }
 
+struct TickEffects {
+    command: crate::game::CommandEffects,
+    due: Vec<super::due::DueEffect>,
+}
+
 pub(super) fn run_game_tick_sync(
     state: &Arc<GameState>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
-    tick_window: &mut TickWindowProfile,
-    last_warn: &mut Instant,
+    due_actions: &mut crate::game::logic::due::DueActionQueue,
+    tick_profile: &mut TickProfileState,
     schedule_clock: &mut ScheduleClock,
     pending_work: &mut TickPendingWork,
     services: &TickServices,
@@ -52,18 +58,40 @@ pub(super) fn run_game_tick_sync(
     let CommandPhase {
         effects: command_effects,
         started_at: dispatch_started_at,
-        elapsed: dispatch,
-        actions,
+        elapsed: command_elapsed,
+        actions: command_actions,
         deferred_commands,
-        top_command_name,
-        top_command_elapsed,
-    } = run_command_phase(state, rx, pending_work, services, tick_budget);
+        mut top_command_name,
+        mut top_command_elapsed,
+    } = run_command_phase(state, rx, due_actions, pending_work, services, tick_budget);
+    let DuePhase {
+        effects: due_effects,
+        elapsed: due_elapsed,
+        executed: due_actions_executed,
+    } = run_due_action_phase(state, due_actions);
+    pending_work.deaths.extend(
+        due_effects
+            .iter()
+            .flat_map(super::due::DueEffect::deaths)
+            .copied()
+            .collect(),
+    );
+    if due_elapsed > top_command_elapsed {
+        top_command_name = "due_actions";
+        top_command_elapsed = due_elapsed;
+    }
+    let dispatch = dispatch_started_at.elapsed();
+    debug_assert!(dispatch >= command_elapsed.saturating_add(due_elapsed));
+    let actions = command_actions.saturating_add(due_actions_executed);
     let simulation = run_simulation_phase(
         state,
         schedule_clock,
         pending_work,
         services,
-        command_effects.events,
+        TickEffects {
+            command: command_effects,
+            due: due_effects,
+        },
         tick_budget,
         schedule_warn_threshold,
     );
@@ -73,8 +101,8 @@ pub(super) fn run_game_tick_sync(
         .saturating_duration_since(dispatch_started_at)
         .saturating_sub(dispatch);
     record_tick_profile(
-        tick_window,
-        last_warn,
+        &mut tick_profile.window,
+        &mut tick_profile.last_warn,
         &services.tick_log_tx,
         TickSample {
             total,
@@ -116,14 +144,14 @@ fn run_simulation_phase(
     schedule_clock: &mut ScheduleClock,
     pending_work: &mut TickPendingWork,
     services: &TickServices,
-    command_events: Vec<crate::game::GameEvent>,
+    tick_effects: TickEffects,
     tick_budget: Duration,
     schedule_warn_threshold: Duration,
 ) -> SimulationPhase {
     let schedule_started_at = Instant::now();
     let online_count = state.online_count();
     let ScheduleTickResult {
-        broadcasts,
+        broadcasts: schedule_broadcasts,
         programmator_actions,
         cell_conversions,
         pack_resends,
@@ -161,8 +189,10 @@ fn run_simulation_phase(
         services,
         pending_work,
         EffectSources {
-            command_events,
-            broadcasts,
+            command_events: tick_effects.command.events,
+            command_broadcasts: tick_effects.command.broadcasts,
+            due_effects: tick_effects.due,
+            schedule_broadcasts,
             pack_resends,
             cell_conversions,
             programmator_actions,

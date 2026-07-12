@@ -426,65 +426,10 @@ pub async fn handle_whoi(state: &Arc<GameState>, tx: &Outbox, ids: &[i32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::BytesMut;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use tokio::sync::mpsc::Receiver;
+    use crate::test_support::{ServerTestHarness, drain_events};
 
-    struct TestState {
-        state: Arc<GameState>,
-        player: crate::db::PlayerRow,
-        world_name: String,
-        db_path: std::path::PathBuf,
-    }
-
-    async fn make_test_state(label: &str) -> TestState {
-        let dir = std::env::temp_dir();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let db_path = dir.join(format!("{label}_{}_{}.db", std::process::id(), nonce));
-        let _ = std::fs::remove_file(&db_path);
-        let database = crate::db::Database::open(&db_path).await.unwrap();
-        let player = database.create_player("prog-user", "p", "h").await.unwrap();
-
-        let cell_defs =
-            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
-                .unwrap();
-        let world_name = format!("{label}_world_{}_{}", std::process::id(), nonce);
-        let world = crate::world::World::new(&world_name, 2, 2, cell_defs, &dir).unwrap();
-        let config = crate::config::Config {
-            world_name: world_name.clone(),
-            port: 8090,
-            world_chunks_w: 2,
-            world_chunks_h: 2,
-            data_dir: dir.to_string_lossy().to_string(),
-            logging: crate::config::LoggingConfig::runtime_baseline(),
-            cron: crate::config::CronConfig::runtime_baseline(),
-            gameplay: crate::config::GameplayConfig::runtime_baseline(),
-        };
-
-        let state = crate::game::GameState::new(Arc::new(world), Arc::new(database), config)
-            .await
-            .unwrap();
-        TestState {
-            state,
-            player,
-            world_name,
-            db_path,
-        }
-    }
-
-    impl TestState {
-        fn cleanup(&self) {
-            let dir = std::env::temp_dir();
-            let _ = std::fs::remove_file(&self.db_path);
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-wal"));
-            let _ = std::fs::remove_file(self.db_path.with_extension("db-shm"));
-            let _ = std::fs::remove_file(dir.join(format!("{}_v2.map", self.world_name)));
-            let _ = std::fs::remove_file(dir.join(format!("{}_durability.map", self.world_name)));
-        }
+    async fn make_test_state(label: &str) -> ServerTestHarness {
+        ServerTestHarness::new(label, "prog-user").await
     }
 
     fn prog_payload(compiled_len: i32, prog_id: i32, compiled: &[u8], source: &str) -> Vec<u8> {
@@ -496,23 +441,10 @@ mod tests {
         payload
     }
 
-    fn drain_events(rx: &mut Receiver<Vec<u8>>) -> Vec<(String, Vec<u8>)> {
-        let mut events = Vec::new();
-        while let Ok(frame) = rx.try_recv() {
-            let mut buf = BytesMut::from(&frame[..]);
-            let packet = crate::protocol::Packet::try_decode(&mut buf)
-                .expect("valid packet")
-                .expect("decoded packet");
-            events.push((packet.event_str().to_owned(), packet.payload.to_vec()));
-        }
-        events
-    }
-
     #[tokio::test]
     async fn prog_valid_payload_saves_updates_and_reports_failed_run() {
         let test = make_test_state("prog_state_machine").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -557,15 +489,12 @@ mod tests {
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prog_running_start_syncs_authoritative_position_before_status() {
         let test = make_test_state("prog_start_position_sync").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -598,15 +527,12 @@ mod tests {
         assert_eq!(update_json["id"], prog_id);
         assert_eq!(update_json["title"], "main");
         assert_eq!(update_json["source"], "$z");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prog_rejects_missing_positive_program_id_without_creating_default_program() {
         let test = make_test_state("prog_missing_positive_id").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let missing_prog_id = 99_999;
@@ -628,15 +554,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Не удалось сохранить программу."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prog_zero_id_opens_program_list_even_when_server_has_stale_selected_program() {
         let test = make_test_state("prog_zero_id_opens_list").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -677,15 +600,12 @@ mod tests {
 
         let saved = test.state.db.get_program(prog_id).await.unwrap().unwrap();
         assert_eq!(saved.code, "$z");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn auto_dig_toggle_missing_flags_is_explicit_error_without_settings_mutation() {
         let test = make_test_state("auto_dig_toggle_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -720,15 +640,12 @@ mod tests {
         assert!(!events.iter().any(|(event, _)| event == "BD"));
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние настроек недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn auto_dig_set_missing_flags_is_explicit_error_without_settings_mutation() {
         let test = make_test_state("auto_dig_set_missing_flags").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -760,15 +677,12 @@ mod tests {
         assert!(!events.iter().any(|(event, _)| event == "BD"));
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние настроек недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn aggression_toggle_updates_state_and_sends_ba() {
         let test = make_test_state("aggression_toggle").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -790,15 +704,12 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert_eq!(events, vec![("BA".to_string(), b"1".to_vec())]);
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn aggression_set_unchanged_is_silent() {
         let test = make_test_state("aggression_set_unchanged").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -810,15 +721,12 @@ mod tests {
         );
 
         assert!(drain_events(&mut rx).is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prst_from_open_program_list_does_not_reopen_selected_stopped_program() {
         let test = make_test_state("prst_state_machine").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -854,15 +762,12 @@ mod tests {
             events.is_empty(),
             "stopped pRST must not emit #P or @P; client may send it as pre-open reset"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prst_preopen_signal_for_hydrated_editor_sends_no_packets() {
         let test = make_test_state("prst_preopen_no_packets").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -889,15 +794,12 @@ mod tests {
             events.is_empty(),
             "stopped pre-open pRST must not emit @P 0"
         );
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prst_stops_running_program_and_clears_hand_mode_wire_state() {
         let test = make_test_state("prst_stop_clears_hand_mode").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -922,15 +824,12 @@ mod tests {
         assert_eq!(events[0].1, b"_");
         assert_eq!(events[1].1, b"0");
         assert_eq!(events[2].1, b"0");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prog_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
         let test = make_test_state("prog_missing_component").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -956,15 +855,12 @@ mod tests {
         assert_eq!(events[0].1, b"0");
         let message = std::str::from_utf8(&events[1].1).unwrap();
         assert!(message.contains("Состояние программатора недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prst_missing_programmator_state_is_explicit_error_not_stopped_fallback() {
         let test = make_test_state("prst_missing_component").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
@@ -983,15 +879,12 @@ mod tests {
         assert_eq!(events[0].1, b"0");
         let message = std::str::from_utf8(&events[1].1).unwrap();
         assert!(message.contains("Состояние программатора недоступно."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pcop_copies_owned_program_and_refreshes_list() {
         let test = make_test_state("pcop_state_machine").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -1025,21 +918,13 @@ mod tests {
         assert!(payload.starts_with("horb:"));
         assert!(payload.contains("main"));
         assert!(payload.contains("main (copy)"));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pcop_rejects_foreign_program_without_copying() {
         let test = make_test_state("pcop_foreign_state_machine").await;
-        let foreign = test
-            .state
-            .db
-            .create_player("foreign", "p", "h2")
-            .await
-            .unwrap();
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let foreign = test.create_player("foreign").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let foreign_prog_id = test
@@ -1075,15 +960,12 @@ mod tests {
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Программа недоступна."));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pdel_deletes_owned_selected_program_without_wire_response() {
         let test = make_test_state("pdel_state_machine").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -1120,21 +1002,13 @@ mod tests {
             .unwrap();
         assert_eq!(state_after, (None, None, false));
         assert!(drain_events(&mut rx).is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pdel_rejects_foreign_program_without_clearing_selected_state() {
         let test = make_test_state("pdel_foreign_state_machine").await;
-        let foreign = test
-            .state
-            .db
-            .create_player("foreign-pdel", "p", "h2")
-            .await
-            .unwrap();
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let foreign = test.create_player("foreign-pdel").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let own_prog_id = test
@@ -1187,15 +1061,12 @@ mod tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn pren_opens_typed_rename_dialog() {
         let test = make_test_state("pren_state_machine").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
         let prog_id = test
@@ -1220,15 +1091,12 @@ mod tests {
         assert!(payload.starts_with("horb:"));
         assert!(payload.contains("ПЕРЕИМЕНОВАТЬ"));
         assert!(payload.contains(&format!("rename:{prog_id}:%I%")));
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn stale_program_persistence_completion_does_not_mutate_reconnected_player() {
         let test = make_test_state("program_completion_stale_session").await;
-        let (old_tx, mut old_rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &old_tx, &test.player, 1);
+        let (_old_tx, mut old_rx) = test.connect_with_outbox(1);
         drain_events(&mut old_rx);
 
         let (new_tx, mut new_rx) = crate::net::session::outbox::channel();
@@ -1261,15 +1129,12 @@ mod tests {
         assert_eq!(selected, Some(None));
         assert!(drain_events(&mut old_rx).is_empty());
         assert!(drain_events(&mut new_rx).is_empty());
-
-        test.cleanup();
     }
 
     #[tokio::test]
     async fn prog_command_produces_typed_save_without_direct_database_mutation() {
         let test = make_test_state("program_command_persistence_request").await;
-        let (tx, mut rx) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(&test.state, &tx, &test.player, 1);
+        let (_tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
         let program_id = test
             .state
@@ -1313,7 +1178,5 @@ mod tests {
                 .code,
             "old"
         );
-
-        test.cleanup();
     }
 }
