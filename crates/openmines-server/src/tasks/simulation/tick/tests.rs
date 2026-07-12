@@ -2,6 +2,7 @@ use super::*;
 use crate::game::ScheduleActivity;
 use crate::tasks::simulation::commands::{
     AdmittedCommand, publish_command_saves, take_admitted_command,
+    take_admitted_internal_building_delete,
 };
 use crate::tasks::simulation::profiler::{
     SideProfile, TickExecutionClass, classify_tick_execution,
@@ -14,6 +15,7 @@ use crate::tasks::simulation::{
     BoxPickupBacklog, DeathBacklog, apply_pending_box_pickups, apply_pending_deaths,
 };
 use crate::world::WorldProvider as _;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 fn candidate(
@@ -399,7 +401,7 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
 }
 
 #[tokio::test]
-async fn building_delete_saturation_preserves_runtime_state_until_admission() {
+async fn internal_building_delete_saturation_preserves_head_and_runtime_state() {
     let test = make_persistence_test_state("building_delete_saturation").await;
     let building_entity = insert_persistence_test_building(&test).await;
     let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
@@ -413,9 +415,8 @@ async fn building_delete_saturation_preserves_runtime_state_until_admission() {
                 crystals: None,
             },
         });
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let now = Instant::now();
-    tx.send(crate::game::QueuedPlayerCommand {
+    let mut pending = VecDeque::from([crate::game::QueuedPlayerCommand {
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,
@@ -428,16 +429,13 @@ async fn building_delete_saturation_preserves_runtime_state_until_admission() {
                 },
             },
         },
-    })
-    .expect("queue building removal");
-    drop(tx);
-    let mut pending = None;
+    }]);
 
     assert!(matches!(
-        take_admitted_command(&mut rx, &mut pending, &persistence),
+        take_admitted_internal_building_delete(&mut pending, &persistence),
         Err("remove_pack")
     ));
-    assert!(pending.is_some());
+    assert_eq!(pending.len(), 1);
     {
         let ecs = test.state.ecs.read();
         assert!(
@@ -453,11 +451,11 @@ async fn building_delete_saturation_preserves_runtime_state_until_admission() {
     assert!(test.state.get_pack_at(10, 10).is_some());
     assert!(persisted.try_recv().is_some());
     let Ok(Some(AdmittedCommand { queued, permit })) =
-        take_admitted_command(&mut rx, &mut pending, &persistence)
+        take_admitted_internal_building_delete(&mut pending, &persistence)
     else {
         panic!("building delete must be admitted after capacity is released");
     };
-    assert!(pending.is_none());
+    assert!(pending.is_empty());
     let command_name = queued.command.name();
     let mut due_actions = crate::game::logic::due::DueActionQueue::new(4);
     let mut effects = crate::game::logic::commands::apply_queued_player_command_with_due(

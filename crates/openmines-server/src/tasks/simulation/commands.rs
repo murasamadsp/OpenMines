@@ -37,18 +37,28 @@ pub(super) fn run_command_phase(
     let mut top_command_name = "-";
     let mut top_command_elapsed = Duration::ZERO;
     loop {
-        let (queued, persistence_permit) =
-            match take_admitted_command(rx, &mut pending_work.command, &services.persistence) {
-                Ok(Some(admitted)) => (admitted.queued, admitted.permit),
-                Ok(None) => break,
-                Err(command_name) => {
-                    deferred_commands = rx.len().saturating_add(1);
-                    crate::metrics::COMMANDS_TOTAL
-                        .with_label_values(&[command_name, "persistence_saturated"])
-                        .inc();
-                    break;
-                }
-            };
+        let admission = if pending_work.building_deletes.is_empty() {
+            take_admitted_command(rx, &mut pending_work.command, &services.persistence)
+        } else {
+            take_admitted_internal_building_delete(
+                &mut pending_work.building_deletes,
+                &services.persistence,
+            )
+        };
+        let (queued, persistence_permit) = match admission {
+            Ok(Some(admitted)) => (admitted.queued, admitted.permit),
+            Ok(None) => break,
+            Err(command_name) => {
+                deferred_commands = rx
+                    .len()
+                    .saturating_add(pending_work.building_deletes.len())
+                    .saturating_add(1);
+                crate::metrics::COMMANDS_TOTAL
+                    .with_label_values(&[command_name, "persistence_saturated"])
+                    .inc();
+                break;
+            }
+        };
         state.record_command_dequeued();
         actions += 1;
         let apply_started_at = Instant::now();
@@ -90,9 +100,12 @@ pub(super) fn run_command_phase(
             top_command_name = command_name;
             top_command_elapsed = command_elapsed;
         }
-        if started_at.elapsed() >= tick_budget && !rx.is_empty() {
+        if started_at.elapsed() >= tick_budget
+            && (!rx.is_empty() || !pending_work.building_deletes.is_empty())
+        {
             deferred_commands = rx
                 .len()
+                .saturating_add(pending_work.building_deletes.len())
                 .saturating_add(usize::from(pending_work.command.is_some()));
             break;
         }
@@ -106,6 +119,31 @@ pub(super) fn run_command_phase(
         deferred_commands,
         top_command_name,
         top_command_elapsed,
+    }
+}
+
+pub(super) fn take_admitted_internal_building_delete(
+    pending: &mut std::collections::VecDeque<crate::game::QueuedPlayerCommand>,
+    persistence: &crate::persistence::PersistenceHandle,
+) -> Result<Option<AdmittedCommand>, &'static str> {
+    let Some(queued) = pending.front() else {
+        return Ok(None);
+    };
+    let kind = queued
+        .command
+        .persistence_kind()
+        .expect("internal building delete must be durable");
+    match persistence.try_reserve(kind) {
+        Ok(permit) => Ok(Some(AdmittedCommand {
+            queued: pending
+                .pop_front()
+                .expect("internal building delete front disappeared"),
+            permit: Some(permit),
+        })),
+        Err(crate::persistence::PersistenceAdmissionError::Full) => Err(queued.command.name()),
+        Err(crate::persistence::PersistenceAdmissionError::Closed) => {
+            panic!("persistence worker closed before internal building delete admission");
+        }
     }
 }
 

@@ -128,6 +128,25 @@ pub(super) fn run_game_tick_sync(
     );
 }
 
+pub(super) fn run_quiescing_cycle(
+    state: &Arc<GameState>,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    due_actions: &mut crate::game::logic::due::DueActionQueue,
+    pending_work: &mut TickPendingWork,
+    services: &TickServices,
+    tick_budget: Duration,
+) {
+    let command = run_command_phase(state, rx, due_actions, pending_work, services, tick_budget);
+    let due = run_due_action_phase(state, due_actions);
+    super::effects::apply_quiescing_effects(
+        state,
+        services,
+        pending_work,
+        command.effects,
+        due.effects,
+    );
+}
+
 fn run_simulation_phase(
     state: &Arc<GameState>,
     schedule_clock: &mut ScheduleClock,

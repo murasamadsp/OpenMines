@@ -26,6 +26,7 @@ check_forbidden "gameplay delay timer in UI adapter" "crates/openmines-server/sr
 check_forbidden "wire or async capability in delayed consumable apply" "crates/openmines-server/src/game/logic/consumables.rs" 'crate::net|tokio::spawn|tokio::time|tokio_handle|state\.db'
 check_forbidden "legacy delayed consumable path" "crates/openmines-server/src" 'use_protector|use_razryadka|prot_detonate|raz_detonate'
 check_forbidden "async task spawn inside simulation owner" "crates/openmines-server/src/tasks/simulation" 'tokio::spawn|spawn_blocking'
+check_forbidden "external command enqueue from simulation effects" "crates/openmines-server/src/tasks/simulation/effects.rs" 'enqueue_command'
 check_forbidden "direct database access inside simulation owner" "crates/openmines-server/src/tasks/simulation" 'state\.db|\.db\.(insert|update|delete|save|add|finalize|list|get|load|create)'
 check_forbidden "authoritative state access from presentation owner" "crates/openmines-server/src/net/presentation.rs" 'state\.(ecs|world|db)|state\.(query|modify)_[a-z_]+'
 check_forbidden "legacy building-delete contract" "crates/openmines-server/src" 'BuildingRemoval|ApplyRemovedBuilding|delete_building_runtime|snapshot_building_removal|apply_removed_building|spawn_building_remove_task|prepare_building_removal|delete_destroyed_building_db'

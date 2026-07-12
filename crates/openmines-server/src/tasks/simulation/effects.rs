@@ -67,7 +67,7 @@ pub(super) fn collect_pending_effects(
 
     let started_at = Instant::now();
     let mut broadcasts = sources.command_broadcasts;
-    adapt_due_effects(state, sources.due_effects, &mut broadcasts);
+    adapt_due_effects(state, pending_work, sources.due_effects, &mut broadcasts);
     broadcasts.extend(sources.schedule_broadcasts);
     side_profile.broadcasts = started_at.elapsed();
 
@@ -193,6 +193,46 @@ pub(super) fn apply_shutdown_command_effects(
     broadcast_world_effects(state, effects.broadcasts);
 }
 
+pub(super) fn apply_quiescing_effects(
+    state: &Arc<GameState>,
+    services: &TickServices,
+    pending_work: &mut TickPendingWork,
+    command_effects: crate::game::CommandEffects,
+    due_effects: Vec<DueEffect>,
+) {
+    let mut broadcasts = command_effects.broadcasts;
+    adapt_due_effects(state, pending_work, due_effects, &mut broadcasts);
+
+    pending_work.deaths.extend(state.drain_player_deaths());
+    let deaths = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
+    pending_work.box_pickups.extend(state.drain_box_pickups());
+    apply_pending_box_pickups(
+        state,
+        &services.persistence,
+        &mut pending_work.box_pickups,
+        &mut broadcasts,
+    );
+
+    let mut side_profile = SideProfile::default();
+    let mut queue_profile = QueueProfile::default();
+    apply_side_effects(
+        state,
+        services,
+        PendingEffects {
+            command_events: command_effects.events,
+            broadcasts,
+            pack_resends: Vec::new(),
+            cell_conversions: Vec::new(),
+            programmator_actions: Vec::new(),
+            deaths,
+            bots_render: Vec::new(),
+        },
+        Duration::ZERO,
+        &mut side_profile,
+        &mut queue_profile,
+    );
+}
+
 fn publish_command_events(
     presentation: &crate::net::presentation::PresentationRuntime,
     events: Vec<crate::game::GameEvent>,
@@ -204,6 +244,7 @@ fn publish_command_events(
 
 fn adapt_due_effects(
     state: &Arc<GameState>,
+    pending_work: &mut TickPendingWork,
     effects: Vec<DueEffect>,
     broadcasts: &mut Vec<crate::game::BroadcastEffect>,
 ) {
@@ -214,7 +255,7 @@ fn adapt_due_effects(
         match effect {
             DueEffect::Boom(effect) => adapt_boom_effects(state, effect, broadcasts),
             DueEffect::Protector(effect) | DueEffect::Raz(effect) => {
-                adapt_area_consumable_effects(state, effect, broadcasts);
+                adapt_area_consumable_effects(state, pending_work, effect, broadcasts);
             }
         }
     }
@@ -287,6 +328,7 @@ fn adapt_consumable_health(
 
 fn adapt_area_consumable_effects(
     state: &Arc<GameState>,
+    pending_work: &mut TickPendingWork,
     effects: crate::game::logic::consumables::AreaConsumableApplyEffects,
     broadcasts: &mut Vec<crate::game::BroadcastEffect>,
 ) {
@@ -319,13 +361,15 @@ fn adapt_area_consumable_effects(
     );
     broadcasts.push(nearby_hb_effect(effects.cleared_pack, blast));
     for remove in effects.building_removals {
-        if !state.enqueue_command(crate::game::PlayerCommand::RemovePack { remove }) {
-            tracing::error!(
-                x = remove.x,
-                y = remove.y,
-                "Simulation command queue closed before consumable building delete"
-            );
-        }
+        let now = Instant::now();
+        pending_work
+            .building_deletes
+            .push_back(crate::game::QueuedPlayerCommand {
+                sequence: state.allocate_command_sequence(),
+                received_at: now,
+                enqueued_at: now,
+                command: crate::game::PlayerCommand::RemovePack { remove },
+            });
     }
     broadcasts.extend(
         effects
@@ -753,7 +797,9 @@ mod tests {
         assert_eq!(due.effects.len(), 1);
         assert_eq!(due.effects[0].deaths(), &[player_id]);
         let mut broadcasts = Vec::new();
-        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        let (_, completions) = tokio::sync::mpsc::channel(1);
+        let mut pending_work = TickPendingWork::new(completions);
+        adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
         broadcast_world_effects(&test.state, broadcasts);
 
         let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
@@ -829,7 +875,9 @@ mod tests {
                 if effect.deaths.is_empty() && effect.cleared_pack == center
         ));
         let mut broadcasts = Vec::new();
-        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        let (_, completions) = tokio::sync::mpsc::channel(1);
+        let mut pending_work = TickPendingWork::new(completions);
+        adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
         broadcast_world_effects(&test.state, broadcasts);
 
         let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
@@ -899,7 +947,9 @@ mod tests {
         ));
         assert!(test.state.drain_player_deaths().is_empty());
         let mut broadcasts = Vec::new();
-        adapt_due_effects(&test.state, due.effects, &mut broadcasts);
+        let (_, completions) = tokio::sync::mpsc::channel(1);
+        let mut pending_work = TickPendingWork::new(completions);
+        adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
         assert_eq!(test.state.drain_player_deaths(), [player_id]);
         broadcast_world_effects(&test.state, broadcasts);
 

@@ -919,7 +919,7 @@ impl GameState {
 
         let kind = command.name();
         let enqueued_at = Instant::now();
-        let sequence = CommandSeq::new(self.command_seq.fetch_add(1, Ordering::Relaxed));
+        let sequence = self.allocate_command_sequence();
         let queued = QueuedPlayerCommand {
             sequence,
             received_at,
@@ -956,6 +956,13 @@ impl GameState {
         crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
         self.simulation_waker.wake();
         true
+    }
+
+    pub(crate) fn allocate_command_sequence(&self) -> CommandSeq {
+        CommandSeq::new(
+            self.command_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     pub(crate) fn simulation_waker(&self) -> crate::simulation_waker::SimulationWaker {

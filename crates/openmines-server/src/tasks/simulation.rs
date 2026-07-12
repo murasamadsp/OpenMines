@@ -46,6 +46,7 @@ struct BoxPickupBacklog {
 
 struct TickPendingWork {
     command: Option<crate::game::QueuedPlayerCommand>,
+    building_deletes: VecDeque<crate::game::QueuedPlayerCommand>,
     box_pickups: BoxPickupBacklog,
     deaths: DeathBacklog,
     persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
@@ -60,6 +61,7 @@ impl TickPendingWork {
         let now = Instant::now();
         Self {
             command: None,
+            building_deletes: VecDeque::new(),
             box_pickups: BoxPickupBacklog::default(),
             deaths: DeathBacklog::default(),
             persistence_completions,
@@ -307,28 +309,78 @@ impl SimulationRuntime {
         tracing::info!("ECS Game Thread shutting down");
     }
 
-    fn finish_shutdown(self) {
-        let Self {
-            state,
-            mut commands,
-            services,
-            mut pending_work,
-            ..
-        } = self;
-        commands.close();
+    fn finish_shutdown(mut self) {
+        self.commands.close();
+        while !self.quiescing_is_drained() {
+            tick::run_quiescing_cycle(
+                &self.state,
+                &mut self.commands,
+                &mut self.due_actions,
+                &mut self.pending_work,
+                &self.services,
+                self.tick_budget,
+            );
+            if !self.quiescing_is_drained() && !self.quiescing_work_is_ready() {
+                if let Some(deadline) = self.due_actions.next_due_at() {
+                    std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
+                } else {
+                    std::thread::park();
+                }
+            }
+        }
+
         let TickServices {
             presentation,
             persistence,
             ..
-        } = services;
+        } = self.services;
         drop(persistence);
 
         let completions = drain_persistence_completions(
-            &state,
+            &self.state,
             &presentation,
-            &mut pending_work.persistence_completions,
+            &mut self.pending_work.persistence_completions,
         );
         tracing::info!(completions, "Simulation persistence completions drained");
+    }
+
+    fn quiescing_is_drained(&self) -> bool {
+        self.commands.is_empty()
+            && self.pending_work.command.is_none()
+            && self.pending_work.building_deletes.is_empty()
+            && self.due_actions.is_empty()
+            && self.pending_work.box_pickups.queue.is_empty()
+            && self.pending_work.deaths.queue.is_empty()
+            && !self.state.has_pending_box_pickups()
+            && !self.state.has_pending_player_deaths()
+    }
+
+    fn quiescing_work_is_ready(&self) -> bool {
+        if !self.pending_work.persistence_completions.is_empty()
+            || self
+                .due_actions
+                .next_due_at()
+                .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            return true;
+        }
+        if !self.commands.is_empty() && self.pending_work.command.is_none() {
+            return true;
+        }
+        let pending_kind = self
+            .pending_work
+            .building_deletes
+            .front()
+            .or(self.pending_work.command.as_ref())
+            .and_then(|queued| queued.command.persistence_kind());
+        if let Some(kind) = pending_kind {
+            return self.persistence_capacity_available(kind);
+        }
+        let backlog_pending = !self.pending_work.box_pickups.queue.is_empty()
+            || !self.pending_work.deaths.queue.is_empty()
+            || self.state.has_pending_box_pickups()
+            || self.state.has_pending_player_deaths();
+        backlog_pending && self.persistence_capacity_available(crate::game::SaveKind::Box)
     }
 
     fn wait_until_runnable(&mut self) -> bool {

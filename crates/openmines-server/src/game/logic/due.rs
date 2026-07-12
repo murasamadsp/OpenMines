@@ -93,6 +93,11 @@ impl DueActionQueue {
     pub fn len(&self) -> usize {
         self.actions.len()
     }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
 }
 
 impl DueActionReservation<'_> {
