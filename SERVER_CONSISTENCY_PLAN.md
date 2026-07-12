@@ -6,6 +6,9 @@
 владение состоянием и путь к multicore. Этот документ фиксирует форму кода,
 чтобы после миграции сервер не остался набором несовместимых локальных стилей.
 
+Текущую готовность и порядок срезов этот файл не определяет. Единственный
+операционный checkpoint - `SERVER_MIGRATION_STATUS.md`.
+
 Цель не в одинаковой раскладке файлов и не в уменьшении строк любой ценой.
 Цель: один gameplay flow читается в одном направлении, а запрещённый обход
 невозможно случайно добавить обратно.
@@ -17,7 +20,7 @@
 - `CommandEffects` и bounded owner runtimes;
 - прямой вызов session-handler с `Outbox`;
 - Bevy resource queues и отдельный side-effect flush;
-- `tokio_handle.spawn + sleep` для delayed gameplay;
+- legacy async tasks и direct DB/wire work в chat/GUI/auction paths;
 - async DB-first task с возвратом через `Apply*` player command.
 
 Большой файл неприятен, но сам по себе не является архитектурным дефектом.
@@ -198,14 +201,20 @@ feature boundary, только если исключают реальный не
 `programmator.rs` не распиливается механически до due-actor этапа simulation
 plan: иначе новая структура почти наверняка будет переделана второй раз.
 
-## Ближайший порядок
+## Consistency-инварианты ближайших срезов
 
-1. Исправить architecture truth и ввести zone-based guard.
-2. Сделать Boom эталонным delayed feature через bounded `DueActionQueue`.
-3. Перенести typed building completion, Protector/Raz и auction completion.
-4. Удалить external ECS writers и mutable `GameState` capabilities.
-5. Мигрировать GUI по одному feature, удаляя legacy path сразу.
-6. Объединить admin execution и типизировать protocol vocabulary.
+Фактический порядок берётся только из `SERVER_MIGRATION_STATUS.md`. На текущем
+checkpoint Boom/Protector/Raz, typed building completion и event-driven wait уже
+перенесены. Consistency-обязанности ближайших simulation slices:
+
+- Graceful DueAction drain использует тот же command/apply/effects путь и
+  owner-local FIFO, а не новый shutdown-only handler.
+- Bounded ingress получает typed workload classes и явную overload policy, а не
+  общий `try_send` с silent drop.
+- Dirty registries закрывают старые scan-all capabilities типами и guards.
+- External ECS writers удаляются до spatial ownership.
+- GUI/chat/admin мигрируются по одному vertical feature с немедленным удалением
+  старого path.
 
 Consistency track не задерживает native multithreading декоративным cleanup.
 Он закрывает prerequisites: один owner, один effect path, bounded queues и

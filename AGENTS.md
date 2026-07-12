@@ -2,6 +2,23 @@
 
 Руководство для Codex при работе с этим репозиторием.
 
+## Обязательный старт
+
+Перед любой серверной архитектурной работой прочитать
+`SERVER_MIGRATION_STATUS.md`. Это единственный актуальный checkpoint: там
+зафиксированы проверенный commit, реальные результаты, незакрытые риски, ровно
+один следующий срез, acceptance tests и запрещённые решения.
+
+Иерархия документации:
+
+1. `AGENTS.md` - ограничения и процесс работы.
+2. `SERVER_MIGRATION_STATUS.md` - текущий handoff и следующий шаг.
+3. `docs/ARCHITECTURE.md` - фактическая архитектура текущего кода.
+4. `SIMULATION_KERNEL_PLAN.md` - целевая ownership/performance модель.
+5. `SERVER_CONSISTENCY_PLAN.md` - форма feature-кода и capability guards.
+6. `TODO.md` и `AUDIT_STATE.md` - product backlog и исторический аудит; они не
+   задают порядок simulation migration.
+
 ## Принципы работы
 
 1. **Думай перед кодом.** Озвучь допущения. Если неясно — спроси, не угадывай. Если есть несколько интерпретаций — покажи варианты, не выбирай молча.
@@ -24,7 +41,9 @@
 - **НЕ ТРОГАТЬ ЛИНТЕРЫ** — не менять настройки clippy/rustfmt, не подавлять warnings.
 - **НЕ ОБХОДИТЬ ХУКИ** — никогда не использовать `--no-verify`.
 - **ЛОКАЛЬНОСТЬ** — Rust код только в `crates/`, C# только в `client/`.
-- **ПОВЕДЕНИЕ КЛИЕНТА — ЭТАЛОН ДЛЯ СЕРВЕРА.** При работе над `crates/openmines-server/` клиент считается корректным: запрещено объяснять баг (коннект, логин, геймплей) «проблемой на стороне клиента» — причина ВСЕГДА на сервере, искать и чинить в `crates/openmines-server/`. Эталон наблюдаемого поведения — wire-протокол (`docs/PROTOCOL.md`), а не конкретный код клиента.
+- **СЕРВЕР ПОДСТРАИВАЕТСЯ ПОД LEGACY-КЛИЕНТ.** При работе над
+  `crates/openmines-server/` запрещено списывать connect/login/gameplay баг на
+  клиента: сервер обязан воспроизвести ожидаемый wire и поведение.
 - **ИСХОДНИК КЛИЕНТА НЕ ЗАМОРОЖЕН.** `client/` — декомпилированный Unity-проект под собственным вложенным git-репо (без remote, на origin не уходит). Его МОЖНО рефакторить по явному запросу. Wire-формат при этом неизменен (клиент legacy). Любое изменение `client/` верифицируется компиляцией: Roslyn против Unity 6000.3.17f1 DLL, 0 ошибок — обязательное условие.
 - **НЕ ТРОГАТЬ** `bin`, `obj`. `target/` — Cargo build cache: исходники туда не
   класть, но чистить можно через `scripts/target-cache.sh --prune` или `--clean`.
@@ -32,13 +51,19 @@
 - **ЗАПРЕЩАЮ СПИХИВАТЬ НА НЕ ЗАДЕПЛОЕН** — все фичи, доработки и баги должны реализовываться и фикситься локально в кодовой базе. Запрещено оправдывать неработающий функционал или отказы фразами в духе «это ещё не задеплоено на сервер» или «на проде это не проверить».
 - **КОММИТИТЬ ВСЁ.** Перед коммитом — `git status`. Если есть untracked или modified файлы относящиеся к задаче (включая `.Codex/`, конфиги, документацию) — включить в тот же коммит. Не оставлять ничего незакоммиченным после завершения задачи.
 - **СПРАШИВАТЬ ПЕРЕД УДАЛЕНИЕМ** — не удалять файлы массово без подтверждения, особенно untracked (невосстановимы).
-- **ИЕРАРХИЯ ИСТОЧНИКОВ ПРИ ПОРТИРОВАНИИ:** `docs/reference/js_reference/` > Поведение клиента > `docs/reference/server_reference/` (локальный C# референс) > Rust-сервер. Если C# референс расходится с `js_reference`, `js_reference` является эталоном.
+- **ЕДИНАЯ ИЕРАРХИЯ BEHAVIOR EVIDENCE:**
+  `docs/reference/js_reference/` > наблюдаемое поведение клиента >
+  `docs/reference/server_reference/` > текущий Rust-сервер. `docs/PROTOCOL.md` -
+  нормализованная спецификация по этим evidence; при конфликте проверить
+  источники выше и обновить спецификацию вместе с сервером.
 - **МАРКИРОВКА ДЕВИАЦИЙ:** Любые намеренные отступления от референса по требованию пользователя помечать в коде комментарием `// НАМЕРЕННАЯ ДЕВИАЦИЯ от C# по ПРЯМОМУ ТРЕБОВАНИЮ ПОЛЬЗОВАТЕЛЯ`.
 - **НЕ МЕНЯТЬ СЕТЕВОЙ КОД КЛИЕНТА:** Изменение парсинга/отправки пакетов на клиенте строго запрещено. Изменения клиента должны быть точечными, хирургическими и 100% необходимыми.
 - **НЕ КОММИТИТЬ СЛУЖЕБНЫЙ ИСХОДНЫЙ КОД:** Запрещено добавлять в коммиты каталоги `client/` и `docs/reference/server_reference/`.
 - Код должен проходить strict clippy и rustfmt перед коммитом.
 - Изменения мира должны помечать чанки dirty для flush-цикла.
-- При работе с протоколом — всегда сверяться с `docs/reference/server_reference/` (C# референс).
+- При работе с протоколом сверяться с `docs/PROTOCOL.md`, `js_reference`,
+  поведением клиента и C#-референсом в указанном выше порядке. Частичное чтение
+  одного источника не является доказательством.
 
 ## Lessons Learned
 
@@ -97,11 +122,28 @@
 
 **Правило:** при прямой команде "смотри клиент" запрещено менять сервер до полной карты клиентского сценария: UI-кнопка → метод → состояние объектов → wire handler → побочные флаги движения/окон. В ответе сначала назвать просмотренные клиентские файлы и подтверждённую цепочку поведения, затем только предлагать или делать серверный фикс.
 
+### Урок 10: Не тестировать Thread::unpark через промежуточный mpsc
+
+Тест lost-wake делал `wake()`, затем пропускал worker через
+`sync_channel::recv()`, а потом вызывал проверяемый `park()`. Внутренний mpsc сам
+использует `Thread::park` и съедал unpark-token. Полный suite флапал, а первая
+попытка исправления ещё и зависла на rendezvous-send после timeout.
+
+**Правило:** между проверяемыми `unpark` и `park` у target thread допускаются
+только atomics/spin. Completion ack отправлять через обычный non-rendezvous
+channel; timeout использовать только как deadlock guard, не как latency assert.
+
 ## Документация
 
-- **`docs/PROTOCOL.md`** — полная спецификация сетевого протокола (актуальная)
+- **`SERVER_MIGRATION_STATUS.md`** — единственный актуальный checkpoint/handoff
+  серверной миграции
+- **`docs/ARCHITECTURE.md`** — фактическая runtime topology
+- **`SIMULATION_KERNEL_PLAN.md`** — целевая ownership/performance модель
+- **`SERVER_CONSISTENCY_PLAN.md`** — module grammar и capability guards
+- **`docs/PROTOCOL.md`** — нормализованная актуальная спецификация wire-контракта
 - **`ROADMAP.md`** — только deprecated-навигация. Чекбоксы из старого roadmap удалены, потому что завышали статус.
-- **`docs/reference/server_reference/`** — локальные C# исходники оригинального сервера, источник правды по поведению; каталог не добавлять в Git
+- **`docs/reference/server_reference/`** — обязательный, но нижестоящий C#
+  reference; каталог не добавлять в Git
 
 ## Обзор проекта
 
@@ -360,45 +402,40 @@ cargo fmt --all
     - `ui/` — внутриигровой интерфейс HORB (`auction_gui.rs`, `gui_buttons.rs`, `heal_inventory.rs`, `horb.rs`, `up_building.rs`).
 - **`tasks/`** — фоновые асинхронные задачи Bevy/Tokio:
   - `auction.rs` — фоновый планировщик аукционов и покупок.
-  - `lifecycle.rs` — фоновые циклы: world flush, player/building save,
-    command dispatch и 10ms game tick с независимыми ECS schedules.
+  - `lifecycle.rs` — cron/background lifecycle вне authoritative simulation.
+  - `simulation.rs` и `simulation/` — event-driven authoritative owner,
+    command/due phases, scheduler, effects, snapshots, profiler и wait planner.
+    `10ms` — budget active cycle, а не частота пустых тиков.
 - **`cli.rs`**, **`console.rs`**, **`migrations.rs`**, **`shutdown.rs`** — системные модули инициализации и завершения работы.
 
-### GameState — центральный объект
+### Runtime ownership — переходное состояние
 
-```rust
-GameState {
-    world: Arc<World>                         // .map-слои мира + journal/checkpoint
-    db: Arc<Database>                         // SQLite
-    config: Config
-    active_players: DashMap<PlayerId, ActivePlayer>    // онлайн игроки
-    player_entities: DashMap<PlayerId, Entity>          // игроки в ECS
-    chunk_players: DashMap<ChunkPos, Vec<PlayerId>>    // пространственный индекс
-    building_index: DashMap<WorldPos, Entity>          // здания по координатам
-    botspot_index: DashMap<PlayerId, Entity>           // боты по ID
-    chunk_botspots: DashMap<ChunkPos, Vec<Entity>>     // боты по чанкам
-    chunk_buildings: DashMap<ChunkPos, Vec<Entity>>    // здания по чанкам
-    chat_channels: RwLock<Vec<ChatChannel>>            // FED, DNO, CLAN, LOC
-    active_events: RwLock<ActiveEvents>                // активные ивенты (множители)
-    ecs: RwLock<EcsWorld>                              // Bevy ECS
-    schedules: Vec<GameSchedule>                       // ECS-системы
-    auth_failures: DashMap<IpAddr, (u32, Instant)>     // rate limiting
-    commands_tx / commands_rx                          // command bus в game-thread
-    tokio_handle: tokio::runtime::Handle               // async-мост для DB задач
-    player_tx: DashMap<PlayerId, UnboundedSender>      // каналы отправки клиентам
-    box_index: Arc<DashMap<WorldPos, [i64; 6]>>        // боксы (клетка 90) в памяти
-    box_persist_q: Arc<Mutex<Vec<BoxPersist>>>         // очередь сохранения боксов
-    crystal_economy: Mutex<CrystalEconomy>             // динамическое ценообразование кристаллов
-    consumable_packs: DashMap<WorldPos, (u8, u8)>      // transient HB O overlays
-    db_pending_tasks: AtomicUsize                      // shutdown ждёт фоновые DB writes
-    rate_limiters: DashMap<PlayerId, PlayerLimiters>   // per-player GCRA
-}
+```text
+TCP Session -> PlayerCommand -> SimulationRuntime -> CommandEffects
+                                    |                    |
+                                    |              GameEvent / SaveCommand
+                                    v                    v
+                              Bevy ECS/RwLock     Presentation/Persistence
 ```
+
+- `SessionHub` владеет session identity и bounded per-session outbox.
+- `SimulationRuntime` владеет receiver, clocks, `DueActionQueue` и backlogs.
+- `PersistenceRuntime` владеет перенесёнными durable writes и completions.
+- `PresentationRuntime` доставляет перенесённые immutable effects.
+- `GameState` всё ещё содержит ECS под global `RwLock`, world/indexes и
+  transitional capabilities. Это зафиксированный долг, а не API-шаблон.
+
+Точный список полей быстро устаревает; смотреть определения в `game/mod.rs` и
+актуальную карту в `docs/ARCHITECTURE.md`. Новые public capabilities в
+`GameState` не добавлять.
 
 ### Критические паттерны
 
 - **Wire протокол неизменяем** — клиент legacy, менять нельзя.
-- **ECS-системы не модифицируют мир напрямую** — используют `BroadcastQueue` и `ProgrammatorQueue` чтобы избежать deadlock.
+- **Authoritative ECS schedules пока могут менять ECS/world** через resources;
+  granular, hazards и alive являются живыми примерами. `BroadcastQueue` и
+  `ProgrammatorQueue` выносят только часть effects/actions. Не считать это
+  финальной ownership boundary: она исчезает после owned simulation migration.
 - **Все здания загружаются в ECS при старте** из SQLite.
 - **Dirty flag tracking** — периодические flush-циклы сохраняют помеченных игроков/здания в БД.
 - **`.map` мир** — foreground/background/durability слои + journal/checkpoint;
@@ -456,7 +493,7 @@ GameState {
 | Система | Файлы | Реально |
 | - | - | - |
 | Протокол (кодек) | `crates/openmines-protocol/` | Билдеры/декодеры, golden-тесты байт-в-байт |
-| БД (схема) | `db/` | Схема + миграции, SQLite WAL |
+| БД (схема) | `crates/openmines-storage/` | Схема + миграции, SQLite WAL |
 | Аутентификация | `auth/login.rs` | MD5/SHA256 токены, rate-limit |
 | Движение | `play/movement.rs` | Ходит, гейты, дистанция |
 | Спавн игрока | `player/init.rs` | Порядок пакетов в основном 1:1, вход работает |
@@ -471,7 +508,7 @@ GameState {
 | Система | Состояние |
 | - | - |
 | Копание/Стройка | Недоделано — не доверять |
-| Чат | Барахлит И на клиенте, И на сервере |
+| Чат | Серверный flow не завершён; `channel_chat` остаётся transitional active-path hotspot |
 | Чанки/Видимость | Неправильная структура прорисовки (HB refresh) |
 | Мир/Ячейки | Модель/физика по сути не та |
 | Бой | Далёкая тема, не приоритет |
@@ -480,11 +517,14 @@ GameState {
 | GUI-регистрация | `auth/gui_flow.rs`: `newakk` → ник → пароль, затем `AH`, `cf`, `Gu`, init |
 | Песок/Боулдеры | Падение вниз/диагональ есть; нет прохода через Gate |
 | Программатор | Ядро работает частично: ход/копка/автокопа/петли/окно/стоп, build-opcodes 162-165 и hand mode 179/180 подключены. Не считать готовым: нужна полная проверка If/Loop, DebugMessage/DebugPause, runtime variables и offline-state |
-| Alive-клетки | 7 типов поведения (AliveCyan flood, AliveBlack colony, …) — нет ECS-системы |
+| Alive-клетки | ECS-система и объединённый active frontier есть; due-only activation и дешёвый idle ещё не завершены |
 
 ---
 
-## Клиент (Unity) — источник правды
+## Клиент (Unity) — behavior evidence
+
+Наблюдаемое поведение клиента выше C#-референса, но ниже
+`docs/reference/js_reference/` в общей evidence hierarchy.
 
 Клиент **может быть изменён** по явному запросу (см. «Обязательные ограничения»). Ключевые файлы:
 
@@ -541,11 +581,15 @@ GameState {
 
 ## Архитектура и Технический долг
 
-Полный реестр архитектурных проблем и зацеплений кода, унаследованный из аудита `.desloppify`, задокументирован в отдельном файле:
-👉 **[docs/TECH_DEBT.md](file:///Users/murasama/Projects/games/OpenMines/docs/TECH_DEBT.md)**
+Текущий реестр архитектурных проблем находится в
+`SERVER_MIGRATION_STATUS.md`. Целевая модель и consistency gates находятся в
+`SIMULATION_KERNEL_PLAN.md` и `SERVER_CONSISTENCY_PLAN.md`. Не создавать новый
+общий tech-debt файл: он быстро станет конкурирующим источником правды.
 
 ### Основные архитектурные правила при разработке:
 1. **Избегать раздувания GameState:** Не добавляйте новые публичные поля напрямую в `GameState`. Любая новая подсистема/состояние должны инкапсулироваться в отдельные структуры/ECS ресурсы, а не висеть raw-полями.
 2. **Отказываться от примитивных алиасов для ID и координат:** При рефакторинге отдавайте предпочтение паттерну newtype (`struct PlayerId(pub i32);`, `struct WorldPos(pub i32, pub i32)`) вместо сырых `i32` и кортежей `(i32, i32)`.
 3. **Эксплицитный порядок инициализации:** Не создавайте скрытых OnceLock-зависимостей при запуске. Все конфигурации и глобальные ресурсы должны передаваться через сигнатуры функций явно.
-4. **Контроль размеров файлов:** Не допускайте разрастания отдельных модулей свыше 1000 строк. Крупные файлы (такие как `programmator.rs` или `gui_buttons.rs`) должны быть разбиты на логические подмодули.
+4. **Размер файла — сигнал, не правило:** Делить модуль только по feature,
+   ownership или capability boundary из checkpoint. Механический распил по
+   числу строк запрещён; `programmator.rs` не трогать до due-actor этапа.

@@ -4,6 +4,20 @@
 
 Короткое описание проекта и запуск.
 
+## С чего начать
+
+- [SERVER_MIGRATION_STATUS.md](SERVER_MIGRATION_STATUS.md) - текущий checkpoint,
+  проверенные результаты и ровно один следующий серверный срез.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - фактическая runtime topology.
+- [SIMULATION_KERNEL_PLAN.md](SIMULATION_KERNEL_PLAN.md) - целевая модель
+  ownership, active work и spatial multicore.
+- [SERVER_CONSISTENCY_PLAN.md](SERVER_CONSISTENCY_PLAN.md) - форма feature-кода и
+  architecture guards.
+- [docs/PROTOCOL.md](docs/PROTOCOL.md) - неизменяемый wire-контракт клиента.
+
+`TODO.md` и `AUDIT_STATE.md` содержат product backlog и исторический аудит. Они
+не являются handoff или порядком simulation migration.
+
 ## Быстрый старт
 
 ### 1. Подготовка
@@ -28,7 +42,8 @@ cargo build --release
 
 По умолчанию сервер слушает `0.0.0.0:8090`.
 
-Подробнее о режимах запуска, отладке и использовании встроенной консоли читайте в **[docs/DEBUG.md](file:///Users/murasama/Projects/games/OpenMines/docs/DEBUG.md)**.
+Подробнее о режимах запуска, отладке и использовании встроенной консоли читайте
+в [docs/DEBUG.md](docs/DEBUG.md).
 
 ### 2.1. Локальная dev-сессия без VPS
 

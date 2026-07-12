@@ -1,6 +1,6 @@
 # Rust Tooling
 
-Дата актуализации: 2026-07-07.
+Дата актуализации: 2026-07-12.
 
 Цель: держать Rust-инструментарий практичным. Добавлять в обязательный контур
 только то, что ловит реальные ошибки или заметно ускоряет локальную проверку.
@@ -8,12 +8,17 @@
 ## Fast gate
 
 ```bash
-cargo fmt --all --check
+cargo fmt --all -- --check
 cargo run -- --doctor
 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 cargo test --all-targets --all-features
 scripts/dev-smoke.sh
 ```
+
+На checkpoint `8e572b89` tracked pre-commit прошёл doctor, architecture guard,
+strict clippy, dependency/security checks, `585/585` nextest и wire smoke.
+Текущий архитектурный статус и следующий targeted gate находятся в
+`SERVER_MIGRATION_STATUS.md`.
 
 Не запускать `cargo test` и `cargo clippy` параллельно на dev-машине. Это не
 ускоряет цикл линейно, зато легко съедает RAM из-за одновременной компиляции

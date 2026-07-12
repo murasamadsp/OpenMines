@@ -1,14 +1,16 @@
 # OpenMines Audit State
 
-Дата актуализации: 2026-07-07.
+Исторический snapshot: 2026-07-07.
 
-Цель файла: фиксировать, что уже проверено и закрыто, чтобы следующие проходы не
-повторяли аудит и не принимали устаревшие хендоффы за факт.
+Цель файла: сохранить evidence старого аудита. Это **не текущий handoff и не
+порядок работ**. Актуальные ownership boundaries, проценты, runtime evidence и
+следующий срез находятся только в `SERVER_MIGRATION_STATUS.md`.
 
 ## Закрыто и проверено
 
-- Game tick panic isolation: supervisor рестартит tick-task, TY panic изолируется
-  spawned task, Bevy schedules обёрнуты в `catch_unwind`.
+- Panic policy изменена после этого аудита: текущий authoritative simulation
+  owner завершает процесс с кодом `101`, потому что продолжать работу с
+  потенциально повреждённым ECS запрещено.
 - Реген мира сбрасывает игроков на `gameplay.spawn`; стартовые здания используют ту
   же typed-координату.
 - `cells.json` fail-fast валидируется: нет дыр `0..125`, неизвестный id не
@@ -84,8 +86,9 @@
   admission -> atomic `BuildingDelete` transaction -> guarded runtime completion.
   `BuildingDeletePending` замораживает объект до completion; legacy direct DB и
   runtime delete helpers удалены.
-- Protector/Raz destruction уже публикует `RemovePack`, но их собственные Tokio
-  timers ещё переносятся в owner-owned `DueActionQueue` следующим срезом.
+- Protector/Raz/Boom уже используют owner-owned bounded `DueActionQueue` и
+  реальные deadlines. Незакрыт graceful shutdown drain: accepted future action
+  пока может быть отброшен после списания item.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в
   `crates/openmines-server/admin/app.js`.
@@ -125,9 +128,11 @@
   mmap footprint, live creation, destroy и runtime removal зданий сведены в
   helper boundary. Rollback/compensation после runtime failure ещё не включён в
   эту authoritative операцию из-за разных сценариев возврата ресурсов/ошибок.
-- Однопоточный 10ms tick остаётся архитектурным потолком. Не трогать без метрик
-  нагрузки или конкретного hot path.
-- Tickprof `side` hot path не закрыт: нужен живой лог с per-section timings.
+- Fixed `10ms` idle tick удалён; `10ms` теперь budget active cycle. Global ECS
+  `RwLock`, external writers и отсутствие spatial ownership остаются потолком.
+- Tickprof детализация готова. Последний подтверждённый active hotspot -
+  `channel_chat` с `201ms` CPU-bound dispatch; порядок работы всё равно задаёт
+  checkpoint, а не одиночный trace.
 - Программатор не считать “готовым” без полного ручного wire/GUI сценария по
   клиенту и референсу; закрыт только частный PROG-start регресс редактора.
 - Скиллы не считать “готовыми” как систему: текущий runtime coverage зафиксирован
@@ -142,13 +147,9 @@
 - Ускорение разработки не закрыто: нужен отдельный срез `sccache`/fast linker/
   `cargo nextest`/разделение быстрых и полных gates.
 
-## Следующий правильный порядок
+## Актуальный порядок
 
-1. Дальше расширять boundary к `WorldCell { type, durability, pack }`: следующий
-   слой — операции зданий с DB insert/delete и rollback/compensation, не
-   переписывая весь мир одним махом.
-2. По tickprof сначала собрать лог, потом оптимизировать конкретную секцию.
-3. Любую намеренную девиацию от C#/JS reference сразу записывать в
-   `docs/DEVIATIONS.md`.
-4. `allow(dead_code)` чистить по системам: сначала подключать реально понятный
-   runtime path, потом снимать allow и гонять `cargo check/clippy/test`.
+Не поддерживается в этом историческом файле. Следовать разделам `Следующий
+кодовый срез` и `Следующий обязательный порядок` в
+`SERVER_MIGRATION_STATUS.md`. Любую намеренную девиацию от C#/JS reference
+по-прежнему сразу записывать в `docs/DEVIATIONS.md`.

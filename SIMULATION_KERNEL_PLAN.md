@@ -6,6 +6,10 @@
 RFC, в котором были смешаны диагноз, benchmark-журнал, V1/V2 и детали отдельных
 оптимизаций.
 
+Текущий commit, проценты, runtime evidence и следующий исполняемый срез находятся
+только в `SERVER_MIGRATION_STATUS.md`. Этот файл задаёт целевую модель и gates;
+исторический журнал ниже не должен переопределять checkpoint.
+
 Форма feature-модулей, error/effect contracts и capability guards вынесены в
 `SERVER_CONSISTENCY_PLAN.md`. Эти планы имеют общие gates, но не смешивают
 runtime ownership с механической организацией файлов.
@@ -141,6 +145,9 @@ Admin, metrics и initial presentation читают versioned immutable snapshot
 15. Simulation kernel является внутренним ядром OpenMines, не универсальным
     framework: generic abstraction появляется только после двух доказанных
     одинаковых contracts.
+16. Time-scale invariance: одинаковые snapshot, logical-time inputs/deadlines и
+    RNG seed дают одинаковый authoritative digest независимо от скорости
+    wall-clock replay. Presentation timing может отличаться, state result - нет.
 
 ## Что сохраняется
 
@@ -169,7 +176,11 @@ Admin, metrics и initial presentation читают versioned immutable snapshot
 Каждый этап является законченным вертикальным срезом. Нельзя начинать spatial
 sharding, пока simulation всё ещё доступна внешним writers.
 
-### Текущее состояние, 2026-07-11
+### История завершённых срезов до checkpoint 2026-07-12
+
+Этот раздел сохраняет evidence и последовательность миграции. Формулировки
+`следующий` внутри исторических записей относятся к моменту измерения. Текущий
+порядок всегда брать из `SERVER_MIGRATION_STATUS.md`.
 
 Этап 1 выполнен первым вертикальным срезом:
 
@@ -255,9 +266,9 @@ Move/chunk visibility slice перенесён на command/effect boundary:
 - воспроизводимый CPU-bound burst найден на массовом disconnect: dispatch
   использовал явный `10ms` budget и перенёс остаток команд на следующий tick.
 
-Это доказывает отсутствие потерь и устойчивый throughput на данном сценарии,
-но не завершает цель большой MMORPG. Fixed-rate `10ms` command admission всё
-ещё добавляет ожидание до simulation tick и ограничивает latency снизу.
+Это доказало отсутствие потерь и устойчивый throughput на том сценарии, но не
+завершило цель большой MMORPG. На том checkpoint fixed-rate `10ms` admission ещё
+ограничивал latency; позднее fixed idle loop был удалён event-driven срезом.
 
 Этап 3 начат первым bounded persistence slice:
 
@@ -327,14 +338,14 @@ Box persistence slice завершён полностью:
 - saturation, transient retry, permanent rejection, atomic transaction,
   отсутствие direct DB mutation и stale-session completion покрыты тестами.
 
-Свежий runtime trace уточнил следующий Stage 2 slice:
+Runtime trace на том checkpoint определил тогдашний Stage 2 GUI slice:
 
 - одна `GuiButton` command заняла `202.3ms wall / 195.4ms thread CPU`, то есть
   это доказанный CPU-bound server stall, а не host preemption;
 - текущий string dispatcher объединяет authoritative craft/market/teleport
   mutations и read-only window rendering под одним именем `gui_button`;
-- следующий срез типизирует GUI commands: mutation остаётся в simulation, а
-  immutable view/render work уходит в presentation owner;
+- запланированный срез типизировал GUI commands: mutation оставалась в
+  simulation, а immutable view/render work уходила в presentation owner;
 - granular spike `42.5ms wall` содержал только `2.6ms thread CPU` и `40.9ms
   off-CPU`, поэтому он не является основанием для локального cell/Rayon fix;
   spatial ownership остаётся отдельным этапом после устранения external writers.
@@ -358,8 +369,9 @@ Box persistence slice завершён полностью:
   удаляются следующими срезами;
 - это пока не полный Stage 4: runtime всё ещё держит `Arc<GameState>`, а полный
   production audit нашёл внешние ECS access paths и direct DB mutations;
-- первый обязательный writer-removal slice — delayed consumables: их Tokio timers
-  сейчас после sleep мутируют ECS/world вне simulation; затем auction completion;
+- первым обязательным writer-removal slice были delayed consumables с Tokio
+  timers; этот путь позднее заменён owner-owned `DueActionQueue`. Auction и
+  другие external writers остаются отдельным долгом;
 - только после удаления external writers Bevy `World` переносится в runtime по
   значению и `RwLock<EcsWorld>` удаляется физически.
 
@@ -392,7 +404,8 @@ World flush contention закрыт первым snapshot/persist slice:
   ещё используют legacy adapters, а одинаковый release trace до/после пока не
   выполнен, поэтому `gui_button=202ms` нельзя объявлять полностью устранённым.
 
-Temporal semantics для будущего `DueActionQueue` подтверждена по reference:
+Temporal semantics будущего на тот момент `DueActionQueue` была подтверждена по
+reference и затем реализована:
 
 - Unity `TY.time` является неубывающим planned client timestamp, но C# server
   только декодировал его и не использовал для reorder, latency compensation или
@@ -452,17 +465,9 @@ simulation capacity:
 | 7. Interest/read model | pilot | immutable per-chunk snapshots и bounded fanout |
 | 8. Spatial multicore | не начат как ownership model | deterministic 1/2/4-worker digest и speedup |
 
-Ближайший обязательный порядок:
-
-1. graceful `Quiescing` drain для accepted due actions и owner-local follow-ups;
-2. bounded typed ingress и lifecycle/gameplay starvation budgets;
-3. explicit player/building dirty registries вместо periodic scan-all;
-4. auction/program/chat/GUI completions через persistence owner;
-5. generation journal;
-6. admin/web/session/shutdown через command/read snapshots;
-7. передать ECS и indexes в `SimulationRuntime` по значению, удалить внешний
-   mutable `GameState` и `RwLock<EcsWorld>`;
-8. active/due registries, immutable chunk snapshots, затем spatial workers.
+Исполняемый порядок здесь намеренно не дублируется. Текущий единственный
+следующий срез, его файлы, acceptance tests и anti-solutions находятся в
+`SERVER_MIGRATION_STATUS.md`.
 
 Typed building-delete gate закрыт 2026-07-12:
 
@@ -589,9 +594,9 @@ Latency gate `<50ms` пройден, потерь нет. Это не ускор
 на `2-3ms`, поэтому первый persistence slice оценивается как ownership/durability
 улучшение без доказанного performance gain.
 
-После закрытия persistence bypass `bots_render` переносится на immutable chunk
-snapshots, а command admission отделяется от fixed-rate schedules без второго
-simulation owner.
+На persistence checkpoint планировался перенос `bots_render` на immutable chunk
+snapshots и отделение command admission от fixed-rate schedules. Event-driven
+admission позже выполнен; `bots_render` read model всё ещё не завершён.
 
 Strict clippy всего server tree зелёный. `apply_player_command` разделён на
 typed command families, schedule tail и program-save вынесены в именованные
@@ -797,6 +802,7 @@ Gate:
 | Один active shard | не более 5% overhead от configured worker pool |
 | Persistence saturation | bounded backlog, видимая admission policy, no loss |
 | Due burst | bounded work per tick, stable carry-over, measured lateness |
+| Offline fast-forward | digest совпадает для real-time, accelerated и resumed replay |
 
 Legacy HB использует `u16` coordinates. Без изменения wire адресуемый предел
 равен `0..=65535` клеток по каждой оси. Huge world поэтому требует sparse/lazy
@@ -827,6 +833,8 @@ scripts/dev-smoke.sh
 - queues bounded, saturation видима и протестирована;
 - lifecycle storm не может вытеснить gameplay или создать unbounded backlog;
 - idle runtime ждёт событие/deadline, а не выполняет фиксированные пустые ticks;
+- real-time, accelerated и resumed replay одной logical timeline дают одинаковый
+  authoritative state/event digest;
 - multicore достигается spatial ownership без общего gameplay lock;
 - capability gates из `SERVER_CONSISTENCY_PLAN.md` равны zero;
 - новый gameplay flow добавляется в одном domain module и не требует правок

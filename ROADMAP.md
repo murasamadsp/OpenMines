@@ -7,10 +7,14 @@
 
 ## Где смотреть актуальный статус
 
-- `AGENTS.md` — честный high-level статус реализации и правила работы.
+- `SERVER_MIGRATION_STATUS.md` — единственный текущий checkpoint, проверенные
+  результаты и следующий server migration slice.
+- `AGENTS.md` — ограничения, источники правды и правила работы.
+- `docs/ARCHITECTURE.md` — фактическая runtime topology текущего кода.
 - `SIMULATION_KERNEL_PLAN.md` — ownership, latency, active work и spatial multicore.
 - `SERVER_CONSISTENCY_PLAN.md` — единая форма feature-модулей и capability gates.
-- `TODO.md` — текущие задачи и критерии готовности.
+- `TODO.md` — product/parity/tooling backlog, не порядок simulation migration.
+- `AUDIT_STATE.md` — исторический аудит 2026-07-07, не текущий handoff.
 - `docs/backlog/` — непортированные или недоделанные подсистемы.
 - `docs/reference/PARITY_AUDIT.md` — подробный parity-аудит. Использовать только
   как evidence-карту, а не как product-roadmap.
@@ -19,5 +23,6 @@
 
 ## Правило обновления
 
-Новые пункты не добавлять сюда. Если нужен план работ, добавляй его в `TODO.md`
-или отдельный файл в `docs/backlog/` с проверяемыми критериями готовности.
+Новые пункты не добавлять сюда. Текущий server status обновлять в
+`SERVER_MIGRATION_STATUS.md`; отдельный product backlog - в `TODO.md` или
+`docs/backlog/` с проверяемыми критериями готовности.

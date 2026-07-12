@@ -1,5 +1,11 @@
 # TODO
 
+> [!WARNING]
+> Это product/parity/tooling backlog, а не текущий server migration handoff.
+> Порядок архитектурной работы и следующий обязательный срез находятся только в
+> `SERVER_MIGRATION_STATUS.md`. Датированные разделы ниже сохраняют историю и не
+> могут переопределять checkpoint.
+
 ## Dev-сахар / локальная проверка
 
 Закрыто:
@@ -56,7 +62,7 @@
 
 ## Входящие баги от ручной проверки 2026-07-07
 
-Порядок работы: сначала скиллы, затем программатор GUI, затем shutdown/HORB.
+Исторический product triage. Он не задаёт текущий порядок simulation migration.
 
 - `/skill`: закрыто коммитом `35f935f`. Команда принимает только wire/DB-код
   (`/skill me U 200 10 900000`), `/skill codes` показывает список из `SkillType`,
@@ -89,35 +95,21 @@
 
 ---
 
-## Tickprof: оптимизировать найденный `side` hot path
+## Исторический tickprof-трек
 
-Статус: первичная детализация сделана. `crates/openmines-server/src/tasks/lifecycle.rs` теперь
-пишет в `tickprof` per-section timings для `side`-стадии: `broadcasts`,
-`pack_resends`, `box_persist`, `cell_conversions`, `programmator_actions`, `death`,
-`bots_render`.
-Для `hazards` добавлен отдельный slow-log внутри
-`standing_cell_hazard_system`: `players_scanned`, `active_cells`,
-`fall_damage_hits`, `boxes_seen/taken`, `destructible_cells` и coarse timings
-`lookup_time/fall_damage_time/box_time/destroy_time`. В `hazards` и `sand`
-hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` внутри частых
-циклов; `CellDefs` теперь берётся один раз на запуск системы.
+Первичная детализация `dispatch/schedule/side/unprofiled`, thread CPU/off-CPU,
+schedule runs и side sections завершена и теперь находится в
+`tasks/simulation/profiler.rs`. Fixed idle loop удалён.
 
-Исходная проблема: лог вида
-`OVER-BUDGET tick: total=32.760416ms dispatch=2.25µs schedule=1.002791ms side=31.7485ms actions=0`
-показывает, что тик вышел за бюджет 10ms не из-за входящих TY-пакетов и не из-за ECS schedule, а из-за post-ECS side-effects.
-
-Осталось:
-- собрать реальные `tickprof`-логи с новым разбиением;
-- если снова всплывает `SLOW hazards system`, чинить конкретную секцию из
-  нового лога, а не менять общий tick budget;
-- подтвердить или исключить `bots_render` как источник пиков;
-- оптимизировать конкретный hot path, а не увеличивать tick budget.
-
-Критерий готовности: после живого лога есть конкретная секция-виновник и отдельный фикс этой секции.
+Последние активные runtime-наблюдения и их интерпретация зафиксированы в
+`SERVER_MIGRATION_STATUS.md`: `channel_chat` показал настоящий `201ms` CPU-bound
+dispatch, а отдельный `SLOW hazards` имел микросекундный lookup и десятки
+миллисекунд unaccounted/lock hold. Не выбирать следующий фикс по этому
+историческому разделу и не увеличивать tick budget.
 
 ---
 
-# Программатор: текущий статус и следующий аудит
+## Программатор: текущий статус и следующий аудит
 
 Текущая серверная реализация: `crates/openmines-server/src/game/actors/programmator.rs`.
 
@@ -140,9 +132,9 @@ hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` 
 
 ---
 
-## Assessment 2026-07-07
+## Исторический assessment 2026-07-07
 
-Самое больное сейчас:
+На тот момент самым больным считалось:
 
 - **Скиллы**: самый большой доменный долг. Есть команда `/skill`, но нужен
   полный audit matrix `SkillType -> action hook -> exp hook -> UI sync`.
@@ -151,10 +143,10 @@ hot path убраны повторные `world.cell_defs()`/`CellDef::clone()` 
   reference. Не считать готовым.
 - **HORB/admin окна**: Codex начат, но не полный. Любой `IndexOutOfRange` в
   Unity popup почти наверняка означает неверную cardinality payload на сервере.
-- **Tickprof side path**: есть per-section логи, но нет реального виновника.
-  Следующее действие — собрать живой over-budget лог и чинить конкретную секцию.
+- **Tickprof side path**: исторический диагноз до event-driven owner и новых
+  active-path логов; текущие evidence и приоритеты находятся в checkpoint.
 - **Implicit defaults**: чистить только runtime defaults, которые маскируют
   повреждение config/DB/game state. Массовый grep по `unwrap_or` без доменной
   проверки запрещён.
-- **Архитектура ECS**: пока не трогать крупно. Реальная боль не в потоках, а в
-  отсутствии единого владельца cell/building/durability/DB/cache state.
+- **Архитектура ECS**: отсутствие единого владельца остаётся реальным долгом, но
+  порядок его миграции теперь задан `SERVER_MIGRATION_STATUS.md`.

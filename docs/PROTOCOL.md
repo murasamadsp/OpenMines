@@ -5,7 +5,7 @@
 
 ## Базовый wire-формат
 
-Сетевая шина построена вокруг структуры `crates/openmines-protocol/src/mod.rs::Packet`:
+Сетевая шина построена вокруг структуры `crates/openmines-protocol/src/lib.rs::Packet`:
 
 ```text
 [4B length LE][1B data_type][2B event_name][payload...]

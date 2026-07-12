@@ -4,6 +4,13 @@
 
 ## Не выпущено
 
+- Simulation owner переведён с fixed `100 Hz` idle loop на event-driven wait по
+  command, persistence progress и domain deadlines; `10ms` остался budget active
+  cycle.
+- Boom, Protector и Raz переведены на bounded `DueActionQueue` с typed effects;
+  building delete и persistence completions получили guarded owner flow.
+- Добавлен канонический checkpoint `SERVER_MIGRATION_STATUS.md` с проверенными
+  gates, runtime evidence и следующим migration slice.
 - Добавлен CI/CD на GitHub Actions: проверки (`fmt`/`clippy`/тесты) на PR и push, сборка Docker-образа с публикацией в GHCR и автоматический деплой.
 - `ops/Dockerfile`: рабочий каталог `/app` (том состояния больше не затеняет запечённые конфиги), публикация порта метрик `8091`.
 - Обновлена "сетевая" документация для репозитория и добавлены базовые метаданные проекта.
