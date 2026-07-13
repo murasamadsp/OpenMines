@@ -6,7 +6,7 @@ use crate::game::{
     ProgrammatorAction, ProgrammatorConfigResource, ProgrammatorQueue, WorldResource,
 };
 use crate::world::WorldProvider;
-use bevy_ecs::prelude::{Component, Query, Res, ResMut};
+use bevy_ecs::prelude::{Component, Entity, Query, Res, ResMut};
 use num_traits::ToPrimitive;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -1600,6 +1600,7 @@ type ProgrammatorQuery<'w, 's> = Query<
     'w,
     's,
     (
+        Entity,
         &'static PlayerMetadata,
         &'static PlayerPosition,
         Option<&'static PlayerConnection>,
@@ -1621,11 +1622,12 @@ pub fn programmator_system(
     world_res: Res<WorldResource>,
     timing_res: Res<ProgrammatorConfigResource>,
     mut prog_q: ResMut<ProgrammatorQueue>,
+    mut dirty_players: ResMut<crate::game::DirtyPlayers>,
     mut query: ProgrammatorQuery<'_, '_>,
 ) {
     let now = Instant::now();
 
-    for (meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo) in &mut query {
+    for (entity, meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo) in &mut query {
         if stats.health <= 0 || !prog.running {
             continue;
         }
@@ -1711,6 +1713,7 @@ pub fn programmator_system(
             prog.delay = now + delay;
         }
         flags.dirty = true;
+        dirty_players.0.insert(entity);
     }
 }
 

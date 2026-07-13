@@ -67,6 +67,7 @@ type HazardQuery<'world, 'state> = Query<
     'world,
     'state,
     (
+        Entity,
         &'static PlayerMetadata,
         &'static PlayerPosition,
         &'static mut PlayerStats,
@@ -147,13 +148,15 @@ pub fn standing_cell_hazard_system(
     box_pickups: Res<BoxPickupQueue>,
     death_q: Res<DeathQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
+    mut dirty_players: ResMut<crate::game::DirtyPlayers>,
     mut q: HazardQuery<'_, '_>,
 ) {
     let mut profile = HazardProfile::start();
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
 
-    for (p_meta, pos, mut stats, conn, prog, mut flags, mut skills, mut cooldowns) in &mut q {
+    for (entity, p_meta, pos, mut stats, conn, prog, mut flags, mut skills, mut cooldowns) in &mut q
+    {
         if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
             continue;
         }
@@ -200,6 +203,7 @@ pub fn standing_cell_hazard_system(
                 death_q.push(p_meta.id);
             }
             flags.dirty = true;
+            dirty_players.0.insert(entity);
             if let Some(conn) = conn {
                 send_direct(
                     &mut bcast_q,
@@ -316,7 +320,7 @@ fn is_same_gun_clan(player_clan_id: Option<i32>, gun_clan_id: i32) -> bool {
 pub fn gun_firing_system(
     combat_cfg: Res<CombatConfigResource>,
     death_q: Res<DeathQueue>,
-    mut bcast_q: ResMut<BroadcastQueue>,
+    output: (ResMut<BroadcastQueue>, ResMut<crate::game::DirtyPlayers>),
     mut pack_resend_q: ResMut<PackResendQueue>,
     mut fire_timer: ResMut<GunTickTimer>,
     mut guns_query: Query<
@@ -339,6 +343,7 @@ pub fn gun_firing_system(
         &mut PlayerFlags,
     )>,
 ) {
+    let (mut bcast_q, mut dirty_players) = output;
     let now = std::time::Instant::now();
     let combat = combat_cfg.0;
     // Залп раз в `gameplay.combat.gun_fire_interval_ms`
@@ -357,7 +362,7 @@ pub fn gun_firing_system(
         // одного. Charge списывается per-hit; C# НЕ прерывает цикл при обнулении
         // charge (оставшиеся жертвы всё равно получают урон в этот тик) — top-guard
         // `charge <= 0` лишь пропускает пушку на СЛЕДУЮЩЕМ тике.
-        for (_p_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
+        for (player_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
             &mut players_query
         {
             if stats.health <= 0 {
@@ -402,12 +407,14 @@ pub fn gun_firing_system(
                 if stats.health > dmg {
                     stats.health -= dmg;
                     flags.dirty = true;
+                    dirty_players.0.insert(player_entity);
                     bcast_q
                         .0
                         .push(hurt_fx_broadcast(p_meta.id, p_pos.x, p_pos.y, None));
                 } else {
                     stats.health = 0;
                     flags.dirty = true;
+                    dirty_players.0.insert(player_entity);
                     death_q.push(p_meta.id);
                 }
             }

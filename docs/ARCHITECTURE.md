@@ -91,8 +91,8 @@ flush. Crash durability это не заменяет.
 - direct DB tasks для части GUI/program/auction операций;
 - `channel_chat` всё ещё использует transitional session/async path и в ручном
   trace дал `201ms` CPU-bound dispatch;
-- periodic player dirty flush всё ещё использует scan-all; buildings используют
-  owner-local deduplicated `DirtyBuildings` registry и не сканируются;
+- periodic dirty flush использует owner-local deduplicated entity registries и
+  не сканирует players/buildings;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 

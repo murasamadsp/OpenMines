@@ -811,6 +811,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_disconnect_cannot_remove_or_save_reconnected_incarnation() {
+        let test = make_init_test_state("stale_disconnect_after_reconnect").await;
+        let state = &test.state;
+        let player = base_player();
+        let pid = PlayerId(player.id);
+        let (old_tx, _old_rx) = crate::net::session::outbox::channel();
+        let (new_tx, _new_rx) = crate::net::session::outbox::channel();
+
+        connect_in_tick(state, &old_tx, &player, 123);
+        let old_entity = state.get_player_entity(pid).expect("old active entity");
+        connect_in_tick(state, &new_tx, &player, 456);
+        let new_entity = state.get_player_entity(pid).expect("new active entity");
+
+        assert_ne!(old_entity, new_entity);
+        assert_eq!(
+            state.active_session_for_player(pid),
+            Some(crate::game::SessionId::new(456))
+        );
+
+        let stale_effects = disconnect_in_tick(state, pid, 123);
+
+        assert!(stale_effects.saves.is_empty());
+        assert!(stale_effects.events.is_empty());
+        assert_eq!(state.get_player_entity(pid), Some(new_entity));
+        assert_eq!(
+            state.active_session_for_player(pid),
+            Some(crate::game::SessionId::new(456))
+        );
+        let session_id = state
+            .ecs
+            .read()
+            .get::<PlayerConnection>(new_entity)
+            .map(|connection| connection.session_id);
+        assert_eq!(session_id, Some(crate::game::SessionId::new(456)));
+    }
+
+    #[tokio::test]
     async fn init_running_selected_program_hydrates_after_status() {
         let test = make_init_test_state("init_running_selected_program").await;
         let state = &test.state;

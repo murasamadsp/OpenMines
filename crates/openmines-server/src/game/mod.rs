@@ -39,7 +39,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-pub use actors::player::{ActivePlayer, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats};
+pub use actors::player::{
+    ActivePlayer, DirtyPlayers, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
+};
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
     BuildingDeletePending, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec,
@@ -937,6 +939,7 @@ impl GameState {
             ecs.insert_resource(PackResendQueue::default());
             ecs.insert_resource(building_damage::CraftingDueBatch::default());
             ecs.insert_resource(DirtyBuildings::default());
+            ecs.insert_resource(DirtyPlayers::default());
         }
 
         Self::load_buildings_into_ecs(&state).await?;
@@ -1336,8 +1339,44 @@ impl GameState {
             return None;
         }
         let res = f(&mut ecs, entity);
+        if ecs
+            .get::<PlayerFlags>(entity)
+            .is_some_and(|flags| flags.dirty)
+        {
+            ecs.resource_mut::<DirtyPlayers>().0.insert(entity);
+        }
         drop(ecs);
         Some(res)
+    }
+
+    pub fn take_dirty_player_entities(&self) -> Vec<Entity> {
+        let mut ecs = self.ecs_write_profiled("game.take_dirty_players");
+        std::mem::take(&mut ecs.resource_mut::<DirtyPlayers>().0)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn requeue_dirty_player_entities(&self, entities: impl IntoIterator<Item = Entity>) {
+        self.ecs_write_profiled("game.requeue_dirty_players")
+            .resource_mut::<DirtyPlayers>()
+            .0
+            .extend(entities);
+    }
+
+    pub fn snapshot_dirty_player(&self, entity: Entity) -> Option<crate::db::PlayerRow> {
+        let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_player");
+        let player_id = ecs.get::<PlayerMetadata>(entity)?.id;
+        if self.get_player_entity(player_id) != Some(entity)
+            || !ecs
+                .get::<PlayerFlags>(entity)
+                .is_some_and(|flags| flags.dirty)
+        {
+            return None;
+        }
+        let row = crate::game::player::extract_player_row(&ecs, entity)?;
+        ecs.get_mut::<PlayerFlags>(entity)?.dirty = false;
+        drop(ecs);
+        Some(row)
     }
 
     pub fn set_schedule_interval(&self, name: &str, interval_ms: u64) -> bool {

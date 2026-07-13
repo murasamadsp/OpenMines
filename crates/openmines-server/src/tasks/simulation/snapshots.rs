@@ -37,39 +37,21 @@ pub(super) fn flush_dirty_players_once(
     state: &Arc<GameState>,
     persistence: &crate::persistence::PersistenceHandle,
 ) -> usize {
+    let mut dirty_entities = state.take_dirty_player_entities();
     let mut accepted = 0usize;
-    for player_id in state.player_entity_ids() {
-        let dirty = state
-            .query_player_opt(player_id, |ecs, entity| {
-                Some(
-                    ecs.get::<crate::game::PlayerFlags>(entity)
-                        .is_some_and(|flags| flags.dirty),
-                )
-            })
-            .unwrap_or(false);
-        if !dirty {
-            continue;
-        }
+    while let Some(entity) = dirty_entities.pop() {
         let permit = match persistence.try_reserve(crate::game::SaveKind::Player) {
             Ok(permit) => permit,
-            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => {
+                dirty_entities.push(entity);
+                state.requeue_dirty_player_entities(dirty_entities);
+                break;
+            }
             Err(crate::persistence::PersistenceAdmissionError::Closed) => {
                 panic!("persistence worker closed during periodic player flush");
             }
         };
-        let row = state
-            .modify_player(player_id, |ecs, entity| {
-                if !ecs
-                    .get::<crate::game::PlayerFlags>(entity)
-                    .is_some_and(|flags| flags.dirty)
-                {
-                    return None;
-                }
-                let row = crate::game::player::extract_player_row(ecs, entity)?;
-                ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = false;
-                Some(row)
-            })
-            .flatten();
+        let row = state.snapshot_dirty_player(entity);
         if let Some(row) = row {
             permit.publish(crate::game::SaveCommand::Player { row: Box::new(row) });
             accepted = accepted.saturating_add(1);

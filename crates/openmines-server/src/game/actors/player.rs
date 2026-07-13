@@ -1,7 +1,8 @@
 use crate::db::{PlayerRow, SkillSlots};
-use bevy_ecs::prelude::Component;
+use bevy_ecs::prelude::{Component, Entity, Resource};
 pub use openmines_core::PlayerId;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::time::Instant;
 
 #[derive(Component)]
@@ -128,6 +129,13 @@ impl Default for PlayerSettings {
 pub struct PlayerFlags {
     pub dirty: bool,
 }
+
+/// Owner-local set of player snapshots awaiting persistence.
+///
+/// `Entity` includes its Bevy generation, so a stale entry from a disconnected
+/// incarnation cannot target an entity created for a later reconnect.
+#[derive(Resource, Default)]
+pub struct DirtyPlayers(pub HashSet<Entity>);
 
 #[derive(Component)]
 pub struct PlayerConnection {

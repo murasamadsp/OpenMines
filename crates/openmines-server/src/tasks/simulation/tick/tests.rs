@@ -9,7 +9,8 @@ use crate::tasks::simulation::profiler::{
 };
 use crate::tasks::simulation::scheduler::{ScheduleCandidate, ScheduleWorkload};
 use crate::tasks::simulation::snapshots::{
-    PLAYER_DIRTY_FLUSH_INTERVAL, flush_dirty_buildings_once, flush_due_dirty_snapshots,
+    PLAYER_DIRTY_FLUSH_INTERVAL, flush_dirty_buildings_once, flush_dirty_players_once,
+    flush_due_dirty_snapshots,
 };
 use crate::tasks::simulation::{
     BoxPickupBacklog, DeathBacklog, apply_pending_box_pickups, apply_pending_deaths,
@@ -898,6 +899,28 @@ async fn periodic_player_snapshot_preserves_dirty_on_saturation_and_new_mutation
             if row.id == player.id && row.money == 123
     ));
     assert!(persisted.try_recv().is_none());
+}
+
+#[tokio::test]
+async fn dirty_player_registry_drops_stale_entity_after_reconnect() {
+    let test = make_persistence_test_state("dirty_player_reconnect_aba").await;
+    let state = test.state.clone();
+    let pid = crate::game::PlayerId(test.player.id);
+    let (_old_outbox, _old_rx) = test.connect_with_outbox(42);
+    let old_entity = state.get_player_entity(pid).expect("old entity");
+    state.modify_player(pid, |ecs, entity| {
+        ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
+        Some(())
+    });
+
+    let (_new_outbox, _new_rx) = test.connect_with_outbox(43);
+    let new_entity = state.get_player_entity(pid).expect("new entity");
+    assert_ne!(old_entity, new_entity);
+
+    let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+    assert_eq!(flush_dirty_players_once(&state, &persistence), 0);
+    assert!(persisted.try_recv().is_none());
+    assert!(!player_is_dirty(&state, pid));
 }
 
 #[tokio::test]

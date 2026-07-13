@@ -243,6 +243,7 @@ fn apply_boom_damage(
     let mut ecs = state.ecs_write_profiled("boom.apply.players");
     let mut player_health = Vec::new();
     let mut deaths = Vec::new();
+    let mut dirty_entities = Vec::new();
 
     for player_id in candidates {
         let Some(entity) = state.get_player_entity(player_id) else {
@@ -286,6 +287,7 @@ fn apply_boom_damage(
         ecs.get_mut::<PlayerFlags>(entity)
             .expect("PlayerFlags checked before Boom damage")
             .dirty = true;
+        dirty_entities.push(entity);
 
         player_health.push(ConsumablePlayerHealthEffect {
             player_id,
@@ -298,6 +300,9 @@ fn apply_boom_damage(
             deaths.push(player_id);
         }
     }
+    ecs.resource_mut::<crate::game::DirtyPlayers>()
+        .0
+        .extend(dirty_entities);
     drop(ecs);
     (player_health, deaths)
 }
@@ -321,6 +326,7 @@ fn apply_area_player_damage(
     let mut ecs = state.ecs_write_profiled("consumable.apply.players");
     let mut player_health = Vec::new();
     let mut deaths = Vec::new();
+    let mut dirty_entities = Vec::new();
 
     for player_id in candidates {
         if state.active_session_for_player(player_id).is_none() {
@@ -367,6 +373,7 @@ fn apply_area_player_damage(
         ecs.get_mut::<PlayerFlags>(entity)
             .expect("PlayerFlags checked before consumable damage")
             .dirty = true;
+        dirty_entities.push(entity);
 
         player_health.push(ConsumablePlayerHealthEffect {
             player_id,
@@ -379,6 +386,9 @@ fn apply_area_player_damage(
             deaths.push(player_id);
         }
     }
+    ecs.resource_mut::<crate::game::DirtyPlayers>()
+        .0
+        .extend(dirty_entities);
     drop(ecs);
     (player_health, deaths)
 }
