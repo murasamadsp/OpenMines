@@ -102,6 +102,8 @@ flush. Crash durability это не заменяет.
   не запускает ECS schedule, непустая клетка повторно планирует только себя;
 - granular physics запускается только по pending/active frontier: position
   transition seed-ит region, cell transition будит локальную область;
+- scheduler берёт ECS write-lock на один runnable schedule и отдельный короткий
+  tail, чтобы preemption одного job не блокировал всю schedule phase;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 

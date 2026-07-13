@@ -2,7 +2,7 @@
 
 use super::profiler::{ScheduleRunProfile, ScheduleTailProfile, SimProfile, empty_sim_profile};
 use super::{TickHeartbeat, TickStage};
-use crate::game::{GameState, ScheduleActivity};
+use crate::game::{GameSchedule, GameState, ScheduleActivity};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -290,6 +290,38 @@ fn record_schedule_run(
     lock_wait + run
 }
 
+fn prepare_schedule_batch(
+    state: &GameState,
+    schedule: &GameSchedule,
+    now: Instant,
+    now_ts: i64,
+    ecs: &mut bevy_ecs::prelude::World,
+) -> bool {
+    let crafting_due_remaining = if schedule.activity == ScheduleActivity::DueCrafting {
+        let (due, due_remaining, depth) = state.take_due_crafting(now_ts);
+        crate::metrics::CRAFTING_DUE_BATCH_TOTAL
+            .inc_by(u64::try_from(due.len()).unwrap_or(u64::MAX));
+        crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        ecs.resource_mut::<crate::game::building_damage::CraftingDueBatch>()
+            .0 = due;
+        due_remaining
+    } else {
+        false
+    };
+    if schedule.activity == ScheduleActivity::DueProgrammator {
+        ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 =
+            state.take_due_programmators(now);
+    }
+    if schedule.activity == ScheduleActivity::DueHazards {
+        ecs.resource_mut::<crate::game::HazardDueBatch>().0 = state.take_due_hazards(now);
+    }
+    if schedule.activity == ScheduleActivity::DueGuns {
+        *ecs.resource_mut::<crate::game::combat::GunCandidateBatch>() =
+            state.fill_gun_candidate_batch(ecs);
+    }
+    crafting_due_remaining
+}
+
 pub(super) fn run_schedule_phase(
     state: &Arc<GameState>,
     heartbeat: &TickHeartbeat,
@@ -328,39 +360,21 @@ pub(super) fn run_schedule_phase(
         );
     }
 
-    heartbeat.mark(TickStage::EcsLockWait);
-    let lock_t0 = Instant::now();
-    let mut ecs = state.ecs_write_profiled("tick.schedule");
-    let lw = lock_t0.elapsed();
+    let mut ecs_lock_wait_total = Duration::ZERO;
     let mut schedule_run_total = Duration::ZERO;
 
     for idx in due_schedules {
         let Some(gs) = state.schedules.get(idx) else {
             continue;
         };
+        // Do not let an OS preemption during one schedule monopolize ECS for
+        // every later schedule or presentation snapshot in the same cycle.
+        heartbeat.mark(TickStage::EcsLockWait);
+        let ecs_lock_t0 = Instant::now();
+        let mut ecs = state.ecs_write_profiled("tick.schedule");
+        ecs_lock_wait_total += ecs_lock_t0.elapsed();
         heartbeat.mark_schedule(TickStage::ScheduleRun, idx.try_into().unwrap_or(u64::MAX));
-        let crafting_due_remaining = if gs.activity == ScheduleActivity::DueCrafting {
-            let (due, due_remaining, depth) = state.take_due_crafting(now_ts);
-            crate::metrics::CRAFTING_DUE_BATCH_TOTAL
-                .inc_by(u64::try_from(due.len()).unwrap_or(u64::MAX));
-            crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-            ecs.resource_mut::<crate::game::building_damage::CraftingDueBatch>()
-                .0 = due;
-            due_remaining
-        } else {
-            false
-        };
-        if gs.activity == ScheduleActivity::DueProgrammator {
-            ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 =
-                state.take_due_programmators(now);
-        }
-        if gs.activity == ScheduleActivity::DueHazards {
-            ecs.resource_mut::<crate::game::HazardDueBatch>().0 = state.take_due_hazards(now);
-        }
-        if gs.activity == ScheduleActivity::DueGuns {
-            *ecs.resource_mut::<crate::game::combat::GunCandidateBatch>() =
-                state.fill_gun_candidate_batch(&ecs);
-        }
+        let crafting_due_remaining = prepare_schedule_batch(state, gs, now, now_ts, &mut ecs);
         let (schedule_lock_wait, schedule_run) = {
             let schedule_lock_t0 = Instant::now();
             let mut schedule = gs.schedule.write();
@@ -379,11 +393,16 @@ pub(super) fn run_schedule_phase(
             schedule_warn_threshold,
         );
         schedule_run_total += total;
+        drop(ecs);
         if !crafting_due_remaining {
             *schedule_clock.last_run_mut(idx, now) = now;
         }
     }
 
+    heartbeat.mark(TickStage::EcsLockWait);
+    let ecs_lock_t0 = Instant::now();
+    let mut ecs = state.ecs_write_profiled("tick.schedule_tail");
+    ecs_lock_wait_total += ecs_lock_t0.elapsed();
     let tail = drain_schedule_tail(heartbeat, &mut ecs, player_entity_count, online_count);
 
     let tail_t0 = Instant::now();
@@ -396,7 +415,7 @@ pub(super) fn run_schedule_phase(
         cell_conversions: tail.cell_conversions,
         pack_resends: tail.pack_resends,
         sched_select,
-        sched_lock_wait: lw,
+        sched_lock_wait: ecs_lock_wait_total,
         sched_run: schedule_run_total,
         schedule_tail_profile: tail_profile,
         schedule_runs,

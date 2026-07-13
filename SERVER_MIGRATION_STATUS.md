@@ -210,6 +210,9 @@ event/due model и не появился injected simulation clock. Просты
 ECS находится под общим `RwLock`, а session/admin/web/background paths всё ещё
 могут читать или мутировать authoritative state. Поэтому preemption owner-а
 превращается в latency других подсистем, а invariants нельзя доказать типами.
+Scheduler уже отпускает write-lock между runnable schedules и перед tail, поэтому
+preemption одного schedule не удерживает соседние jobs. Это mitigation, а не
+замена owned ECS runtime.
 
 ### P2: connect delivery и global lock
 
