@@ -461,7 +461,7 @@ simulation capacity:
 | 3. Persistence owner | частично; building delete закрыт | zero direct gameplay DB writes |
 | 4. Admission/isolation | event-driven wait, due queue и bounded QoS ingress закрыты | удерживать starvation/overload gates при новых flows |
 | 5. Owned simulation | только structural foundation | zero external ECS writers, удалить `RwLock<EcsWorld>` |
-| 6. Active/due work | programmator/guns/hazards/granular/alive/bots render закрыты | channel chat typed pipeline |
+| 6. Active/due work | programmator/guns/hazards/granular/alive/bots render закрыты | chat navigation/slash paths убрать из session async pipeline |
 | 7. Interest/read model | pilot: bots render + initial map/BotSpot snapshots + bounded movement fanout | immutable per-chunk building snapshots и changed/visible-chunk model |
 | 8. Spatial multicore | не начат как ownership model | deterministic 1/2/4-worker digest и speedup |
 

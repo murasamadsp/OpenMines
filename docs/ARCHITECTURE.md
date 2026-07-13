@@ -96,8 +96,10 @@ flush. Crash durability это не заменяет.
 
 - direct DB tasks для части GUI/auction операций; создание программы идёт через
   `SaveCommand::ProgramCreate` и typed completion;
-- `channel_chat` всё ещё использует transitional session/async path и в ручном
-  trace дал `201ms` CPU-bound dispatch;
+- обычный `Chat` использует `ChatAppend + ChatFanout` и bounded persistence;
+  transitional session/async paths остаются в `Chin`/`Cmen`/`Choo`/`Cset`/
+  `Cpri` и slash-command fallback. Старый trace `channel_chat=201ms` получен
+  до этого переноса и не является evidence текущего normal-message path;
 - periodic dirty flush использует owner-local deduplicated entity registries и
   не сканирует players/buildings;
 - `PlayerInit` chunk snapshot, wire encode и delivery принадлежат presentation

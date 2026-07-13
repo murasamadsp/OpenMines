@@ -18,16 +18,17 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `0b7436e7` (`Сканировать alive cells по краю при
-ходе`) в `main`. Документационный checkpoint может быть более новым.
+Ожидаемый code checkpoint: `bfce9d21` (`Исправить requeue шагов
+программатора`) в `main`. Документационный checkpoint может быть более новым.
 
 Дальше:
 
 1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые
    решения` ниже.
-2. Следующий vertical slice - перевести `channel_chat` на typed
-   command/apply/effects и bounded persistence, не меняя legacy wire. Не
-   смешивать его с ECS ownership или multicore.
+2. Следующий vertical slice - перевести navigation/slash ветки chat на typed
+   command/apply/effects и bounded persistence там, где они ещё запускают
+   session tasks. Обычный `Chat` уже использует `ChatAppend + ChatFanout`.
+   Не смешивать этот срез с ECS ownership или multicore.
 3. Перед правкой проверить указанные функции в текущем коде: номера строк могут
    сдвинуться, имена и invariants важнее номера.
 4. После среза обновить этот файл в том же commit. Не создавать новый handoff.
@@ -74,16 +75,18 @@ read model и spatial multicore - ещё впереди.
 
 - connect: `18.31ms wall`, `4.98ms thread CPU`, `13.33ms off-CPU`, command
   `16.00ms`; это реальная latency, но не `16ms` чистых вычислений;
-- `channel_chat`: `201.75ms` command, tick `188.30ms thread CPU`; это настоящий
-  CPU-bound active-path hotspot, а не host preemption;
+- исторический `channel_chat`: `201.75ms` command, tick `188.30ms thread CPU`.
+  Он снят до commit `506e8ffc`: обычный `Chat` с тех пор использует typed
+  `ChatAppend + ChatFanout`, поэтому этот trace нельзя приписывать текущему
+  normal-message path без нового воспроизведения;
 - `hazards`: полезный lookup занял `17.46us`, но `36.74ms` остались
   unaccounted; одновременно ECS write lock удерживался до `53.86ms`. Этот лог не
   доказывает дорогой hazard lookup, зато снова показывает цену global lock.
 
 Вывод: M1 закрыл только нулевой idle. Active command paths, один idle player и
-lock isolation не закрыты. `channel_chat` должен позже пройти тот же typed
-command/apply/persistence/effects boundary, а не получить слепой локальный
-микрофикс по одному trace.
+lock isolation не закрыты. Chat navigation и slash-command fallback всё ещё
+должны пройти тот же typed command/apply/persistence/effects boundary, но
+обычный `Chat` переносить повторно запрещено.
 
 ### Последний воспроизведённый movement stress
 
@@ -518,9 +521,10 @@ guard, wire smoke и release movement stress `100/2 000`, `300/6 000` без los
 
 ## Следующий vertical slice
 
-`channel_chat`: ручной trace показал `201.75ms` CPU-bound command. Перевести
-chat на typed command/apply/effects и bounded persistence/fanout, не маскируя
-проблему локальным micro-optimization.
+Chat navigation/slash-command fallback: обычный `Chat` уже использует typed
+`ChatAppend + ChatFanout`; `Chin`/`Cmen`/`Choo`/`Cset`/`Cpri` и slash-команды
+ещё запускают session async tasks. Перенести их по одному vertical feature,
+не маскируя старый исторический trace локальным micro-optimization.
 
 ### P0, закрытый перед следующим срезом: programmator due requeue
 
