@@ -343,7 +343,9 @@ fn apply_move(
     if let Some(entity) = state.get_player_entity(pid) {
         state.schedule_hazard(entity, std::time::Instant::now());
     }
-    state.seed_granular_region(nx, ny);
+    // Full region seed is required at connect/teleport. A normal one-cell move
+    // only needs to wake the local falling neighborhood, not rescan 33x33.
+    state.wake_granular_neighborhood(nx, ny);
     state.seed_alive_region(nx, ny);
 
     let (cx, cy) = World::chunk_pos(nx, ny);
