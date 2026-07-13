@@ -281,22 +281,17 @@ pub struct BotsRenderBatchResult {
     pub snapshot_chunks: usize,
 }
 
-/// Один immutable ECS/chunk snapshot на весь due batch. Для hotspot все
-/// observers переиспользуют одни и те же encoded `X` sub-packets.
+/// Один immutable spatial snapshot на весь due batch. ECS был синхронизирован
+/// перед batch; здесь lock не берётся, а все observers переиспользуют `X` packets.
 pub fn bots_render_batch(
     state: &Arc<GameState>,
     due: Vec<crate::game::BotsRenderDue>,
     byte_budget: usize,
 ) -> BotsRenderBatchResult {
-    let ecs = state.ecs_read_profiled("bots_render.snapshot");
     let mut observers = Vec::with_capacity(due.len());
     let mut unresolved = Vec::new();
     for due in due {
-        let Some(entity) = state.get_player_entity(due.player_id) else {
-            unresolved.push(due);
-            continue;
-        };
-        let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
+        let Some(player) = state.bots_render_player(due.player_id) else {
             unresolved.push(due);
             continue;
         };
@@ -307,7 +302,7 @@ pub fn bots_render_batch(
         observers.push(BotsRenderObserver {
             due,
             tx,
-            center: (pos.chunk_x(), pos.chunk_y()),
+            center: crate::world::World::chunk_pos(player.x, player.y),
         });
     }
 
@@ -321,32 +316,23 @@ pub fn bots_render_batch(
         let (cx, cy) = chunk;
         let mut items = Vec::new();
         for player_id in state.players_in_chunk(cx, cy) {
-            let Some(entity) = state.get_player_entity(player_id) else {
+            let Some(player) = state.bots_render_player(player_id) else {
                 continue;
             };
-            let (Some(pos), Some(player_stats)) = (
-                ecs.get::<crate::game::player::PlayerPosition>(entity),
-                ecs.get::<crate::game::player::PlayerStats>(entity),
-            ) else {
-                continue;
-            };
-            let tail = ecs
-                .get::<crate::game::programmator::ProgrammatorState>(entity)
-                .map_or(0, |program| u8::from(program.running));
             items.push(BotsRenderSnapshotItem {
                 player_id: Some(player_id),
                 packet: hb_bot(
                     net_u16_nonneg(player_id),
-                    net_u16_nonneg(pos.x),
-                    net_u16_nonneg(pos.y),
-                    net_u8_clamped(pos.dir, 3),
-                    net_u8_clamped(player_stats.skin, 255),
-                    net_u16_nonneg(player_stats.clan_id.unwrap_or(0)),
-                    tail,
+                    net_u16_nonneg(player.x),
+                    net_u16_nonneg(player.y),
+                    net_u8_clamped(player.dir, 3),
+                    net_u8_clamped(player.skin, 255),
+                    net_u16_nonneg(player.clan_id),
+                    player.tail,
                 ),
             });
         }
-        for botspot in state.botspots_in_chunk_with_ecs(&ecs, cx, cy) {
+        for botspot in state.bots_render_botspots_in_chunk(cx, cy) {
             items.push(BotsRenderSnapshotItem {
                 player_id: None,
                 packet: hb_bot(
@@ -362,7 +348,6 @@ pub fn bots_render_batch(
         }
         chunk_cache.insert(chunk, items);
     }
-    drop(ecs);
 
     let mut result = BotsRenderBatchResult {
         deferred: unresolved,
@@ -453,6 +438,9 @@ mod tests {
         while rx2.try_recv().is_ok() {}
 
         let now = Instant::now();
+        // Renderer must use its immutable cache; taking ECS here would deadlock
+        // against this writer and reintroduce the global-lock presentation path.
+        let ecs = test.state.ecs.write();
         let result = bots_render_batch(
             &test.state,
             vec![
@@ -469,6 +457,7 @@ mod tests {
             ],
             usize::MAX,
         );
+        drop(ecs);
 
         assert_eq!(result.completed.len(), 2);
         assert!(result.deferred.is_empty());

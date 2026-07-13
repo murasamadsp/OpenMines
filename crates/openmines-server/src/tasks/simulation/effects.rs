@@ -653,6 +653,7 @@ fn render_bots(
     due: Vec<crate::game::BotsRenderDue>,
     tick_budget: Duration,
 ) {
+    state.refresh_active_bots_render_players();
     let result = crate::net::session::play::chunks::bots_render_batch(
         state,
         due,

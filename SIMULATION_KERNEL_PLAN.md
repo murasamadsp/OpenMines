@@ -439,10 +439,10 @@ simulation capacity:
   `1893` завершённых login и `89827` connect errors; server process не падал;
 - локальный ephemeral range был `49152..=65535`, а accept backlog `128`, поэтому
   этот прогон не измеряет предел concurrent sessions сервера;
-- при примерно `1241` одновременно видимых игроках `bots_render.snapshot`
-  удерживал глобальный ECS read-lock до `63.33ms`, а `hazards` занимал до
-  `12.19ms`; это подтверждает presentation/global-scan bottleneck независимо
-  от внешнего connect limit;
+- при примерно `1241` одновременно видимых игроках прежний
+  `bots_render.snapshot` удерживал глобальный ECS read-lock до `63.33ms`, а
+  `hazards` занимал до `12.19ms`; renderer перенесён на immutable player/BotSpot
+  cache, поэтому visibility walk и `HB/X` encode больше не держат ECS lock;
 - loadtest обязан разделять connect errors по OS error, auth timeout, server
   close и outbox overflow. Агрегированное `connect errors` не является
   архитектурным доказательством;
@@ -461,8 +461,8 @@ simulation capacity:
 | 3. Persistence owner | частично; building delete закрыт | zero direct gameplay DB writes |
 | 4. Admission/isolation | event-driven wait, due queue и bounded QoS ingress закрыты | удерживать starvation/overload gates при новых flows |
 | 5. Owned simulation | только structural foundation | zero external ECS writers, удалить `RwLock<EcsWorld>` |
-| 6. Active/due work | programmator/guns/hazards/granular/alive закрыты | bots render вне ECS lock |
-| 7. Interest/read model | pilot | immutable per-chunk snapshots и bounded fanout |
+| 6. Active/due work | programmator/guns/hazards/granular/alive/bots render закрыты | connect presentation snapshot |
+| 7. Interest/read model | pilot: bots render cache | immutable per-chunk snapshots и bounded fanout |
 | 8. Spatial multicore | не начат как ownership model | deterministic 1/2/4-worker digest и speedup |
 
 Исполняемый порядок здесь намеренно не дублируется. Текущий единственный
@@ -720,7 +720,7 @@ Gate:
 - crafting/building damage: due queues;
 - granular: active frontier by region/cell transition;
 - alive: active registry by cell/position transition;
-- bots render: presentation scheduler outside gameplay systems;
+- bots render: immutable player/BotSpot spatial cache, без ECS lock в batch;
 - persistence: explicit dirty actors/buildings.
 
 Gate:

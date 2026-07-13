@@ -104,6 +104,9 @@ flush. Crash durability это не заменяет.
   transition seed-ит region, cell transition будит локальную область;
 - alive cells используют exact active registry: player window scan выполняется
   только на position transition, а пустой batch останавливает schedule;
+- periodic `bots_render` использует immutable player/BotSpot spatial cache:
+  короткая active-player сверка отделена от visibility walk и `HB/X` encode,
+  поэтому renderer не берёт ECS lock;
 - scheduler берёт ECS write-lock на один runnable schedule и отдельный короткий
   tail, чтобы preemption одного job не блокировал всю schedule phase;
 - внешние ECS writers из admin/web/session/shutdown;
@@ -173,6 +176,9 @@ Game loop watchdog работает из отдельного OS-потока и
 `5s summary`: обычный slow-log срабатывает только после возврата управления.
 Indefinite idle park не является зависанием; timed park становится ошибкой
 watchdog только после пропущенного deadline и того же tolerance.
+Стадия `idle` означает, что owner не вернулся из timed park к deadline; без
+отдельного deadlock detector это evidence off-CPU stall, а не доказательство
+циклической блокировки.
 Если стадия оканчивается на `_ecs_lock_wait`, тик стоит не внутри работы этой
 секции, а на ожидании ECS write-lock. Это может быть обычный contention или
 preemption владельца lock. Deadlock backtrace релевантен только если detector

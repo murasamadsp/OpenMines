@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 pub use actors::player::{
-    ActivePlayer, DirtyPlayers, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats,
+    ActivePlayer, DirtyPlayers, PlayerFlags, PlayerId, PlayerMetadata, PlayerPosition, PlayerStats,
 };
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
@@ -595,6 +595,18 @@ pub struct BotSpotView {
     pub clan_id: i32,
 }
 
+/// Immutable attributes required for the legacy `HB/X` player packet.
+/// This read model keeps periodic presentation outside the authoritative ECS lock.
+#[derive(Clone, Copy, Debug)]
+pub struct BotsRenderPlayer {
+    pub x: i32,
+    pub y: i32,
+    pub dir: i32,
+    pub skin: i32,
+    pub clan_id: i32,
+    pub tail: u8,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BotsRenderDue {
     pub due_at: Instant,
@@ -832,9 +844,11 @@ pub struct GameState {
     active_players: DashMap<PlayerId, ActivePlayer>,
     player_entities: DashMap<PlayerId, Entity>,
     chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
+    bots_render_players: DashMap<PlayerId, BotsRenderPlayer>,
     building_index: DashMap<WorldPos, Entity>,
     botspot_index: DashMap<PlayerId, Entity>,
     chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
+    bots_render_botspots: DashMap<ChunkPos, Vec<BotSpotView>>,
     chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     /// Активные игровые ивенты (множители опыта, дропа и т.д.).
@@ -1070,9 +1084,11 @@ impl GameState {
             active_players: DashMap::new(),
             player_entities: DashMap::new(),
             chunk_players: DashMap::new(),
+            bots_render_players: DashMap::new(),
             building_index: DashMap::new(),
             botspot_index: DashMap::new(),
             chunk_botspots: DashMap::new(),
+            bots_render_botspots: DashMap::new(),
             chunk_buildings: DashMap::new(),
             chat_channels: RwLock::new(default_channels),
             active_events: RwLock::new(ActiveEvents::default()),
@@ -1239,7 +1255,13 @@ impl GameState {
                         programmator::ProgrammatorState::new(),
                     ))
                     .id();
-                state.register_botspot_entity(row.owner_id.into(), row.x, row.y, botspot_entity);
+                state.register_botspot_entity(
+                    row.owner_id.into(),
+                    row.x,
+                    row.y,
+                    row.clan_id,
+                    botspot_entity,
+                );
                 spot_count += 1;
             }
         }
@@ -1670,8 +1692,60 @@ impl GameState {
                 .0
                 .insert((entity, incarnation));
         }
+        self.refresh_bots_render_player_in_ecs(pid, entity, &ecs);
         drop(ecs);
         Some(res)
+    }
+
+    fn refresh_bots_render_player_in_ecs(&self, pid: PlayerId, entity: Entity, ecs: &EcsWorld) {
+        let Some(position) = ecs.get::<PlayerPosition>(entity) else {
+            self.bots_render_players.remove(&pid);
+            return;
+        };
+        let Some(stats) = ecs.get::<PlayerStats>(entity) else {
+            self.bots_render_players.remove(&pid);
+            return;
+        };
+        let tail = ecs
+            .get::<programmator::ProgrammatorState>(entity)
+            .map_or(0, |program| u8::from(program.running));
+        self.bots_render_players.insert(
+            pid,
+            BotsRenderPlayer {
+                x: position.x,
+                y: position.y,
+                dir: position.dir,
+                skin: stats.skin,
+                clan_id: stats.clan_id.unwrap_or(0),
+                tail,
+            },
+        );
+    }
+
+    /// Synchronize active players after ECS schedules before a renderer due batch.
+    /// The lock covers only component copies; visibility walk and wire encoding use
+    /// the immutable cache below without touching ECS.
+    pub fn refresh_active_bots_render_players(&self) {
+        let active = self
+            .active_players
+            .iter()
+            .map(|entry| (*entry.key(), entry.ecs_entity))
+            .collect::<Vec<_>>();
+        let ecs = self.ecs_read_profiled("bots_render.cache_refresh");
+        for (player_id, entity) in active {
+            self.refresh_bots_render_player_in_ecs(player_id, entity, &ecs);
+        }
+    }
+
+    pub fn bots_render_player(&self, pid: PlayerId) -> Option<BotsRenderPlayer> {
+        self.bots_render_players.get(&pid).map(|entry| *entry)
+    }
+
+    pub fn bots_render_botspots_in_chunk(&self, cx: u32, cy: u32) -> Vec<BotSpotView> {
+        self.bots_render_botspots
+            .get(&(cx, cy).into())
+            .map(|spots| spots.clone())
+            .unwrap_or_default()
     }
 
     pub fn take_dirty_player_entities(&self) -> Vec<(Entity, crate::game::SessionId)> {
@@ -2251,6 +2325,9 @@ impl GameState {
                 session_id,
             },
         );
+        let ecs = self.ecs_read_profiled("bots_render.player_register");
+        self.refresh_bots_render_player_in_ecs(pid, entity, &ecs);
+        drop(ecs);
         let tick_ms = self.config.gameplay.schedules.game_loop_tick_rate_ms.max(1);
         let interval_ms = u64::try_from(Self::BOTS_RENDER_INTERVAL.as_millis()).unwrap_or(u64::MAX);
         let slots = interval_ms.checked_div(tick_ms).unwrap_or(1).max(1);
@@ -2268,6 +2345,7 @@ impl GameState {
     }
 
     pub fn remove_active_player(&self, pid: PlayerId) -> Option<ActivePlayer> {
+        self.bots_render_players.remove(&pid);
         self.active_players.remove(&pid).map(|(_, active)| active)
     }
 
@@ -2485,6 +2563,11 @@ impl GameState {
         self.chunk_botspots
             .iter_mut()
             .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
+        self.bots_render_botspots.iter_mut().for_each(|mut spots| {
+            spots
+                .value_mut()
+                .retain(|spot| spot.bot_id != -i32::from(owner_id));
+        });
         self.ecs_write_profiled("game.remove_botspot_runtime")
             .despawn(entity);
         Some(entity)
@@ -2516,18 +2599,35 @@ impl GameState {
                 programmator::ProgrammatorState::new(),
             ))
             .id();
-        self.register_botspot_entity(owner_id, x, y, botspot_entity);
+        self.register_botspot_entity(owner_id, x, y, clan_id, botspot_entity);
         tracing::info!(owner_id = %owner_id, x, y, "Spawned BotSpot entity for Spot building");
         botspot_entity
     }
 
-    fn register_botspot_entity(&self, owner_id: PlayerId, x: i32, y: i32, entity: Entity) {
+    fn register_botspot_entity(
+        &self,
+        owner_id: PlayerId,
+        x: i32,
+        y: i32,
+        clan_id: i32,
+        entity: Entity,
+    ) {
         self.botspot_index.insert(owner_id, entity);
         let (cx, cy) = World::chunk_pos(x, y);
         self.chunk_botspots
             .entry((cx, cy).into())
             .or_default()
             .push(entity);
+        self.bots_render_botspots
+            .entry((cx, cy).into())
+            .or_default()
+            .push(BotSpotView {
+                bot_id: -i32::from(owner_id),
+                x,
+                y,
+                dir: 0,
+                clan_id,
+            });
     }
 
     pub fn botspots_in_chunk_with_ecs(&self, ecs: &EcsWorld, cx: u32, cy: u32) -> Vec<BotSpotView> {

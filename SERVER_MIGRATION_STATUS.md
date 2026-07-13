@@ -18,17 +18,16 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `d6570b19` (`Перевести команды и создание программ
-на simulation pipeline`) в `main`. Документационный checkpoint может быть
-более новым.
+Ожидаемый code checkpoint: `ae0bc78c` (`Перевести alive cells на active
+registry`) в `main`. Документационный checkpoint может быть более новым.
 
 Дальше:
 
 1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые
    решения` ниже.
-2. Текущий срез - убрать periodic `PlayerEntities` work для sleeping
-   alive/granular actors через explicit active frontier. Не смешивать его с ECS
-   ownership, chat optimization или multicore.
+2. Текущий срез - перенести CPU-bound connect snapshot из command dispatch в
+   immutable presentation read model. Не смешивать его с ECS ownership, chat
+   optimization или multicore.
 3. Перед правкой проверить указанные функции в текущем коде: номера строк могут
    сдвинуться, имена и invariants важнее номера.
 4. После среза обновить этот файл в том же commit. Не создавать новый handoff.
@@ -51,7 +50,7 @@ git diff --check
 
 ## Состояние на одном экране
 
-Ориентировочно выполнено **35-40% архитектурной миграции**. Это не процент строк
+Ориентировочно выполнено **40-45% архитектурной миграции**. Это не процент строк
 кода и не обещание срока. Главные ownership boundaries уже появились, но самые
 тяжёлые этапы - удаление внешних ECS writers, active/due registries, interest
 read model и spatial multicore - ещё впереди.
@@ -239,6 +238,11 @@ auth hydrate outside owner
     -> encode/send in presentation owner
 ```
 
+Новый trace `2026-07-13 19:56` после active registries: connect dispatch
+`8.48ms wall` / `5.90ms CPU`, из них сам command `8.07ms`. Это уже не проблема
+hazards и не только host preemption: следующий подтверждённый CPU slice -
+chunk/presentation snapshot, оставшийся внутри connect apply.
+
 ### P2: periodic dirty scan
 
 Dirty registries закрыты: periodic player/building flush работают только по
@@ -255,9 +259,13 @@ transition, cell transition обновляет локальный frontier; slee
 
 ### P2: presentation/read paths
 
-`bots_render.snapshot`, admin map и часть initial presentation читают общий
-ECS/world. На hotspot это даёт global snapshots и lock hold, а не работу по
-изменившимся chunks.
+`bots_render` больше не читает ECS во время visibility walk и HB encode:
+короткая сверка active-player атрибутов создаёт immutable cache, а BotSpot
+cache обновляется на load/spawn/remove. Регрессия удерживает ECS write-lock во
+время renderer batch, поэтому возврат к global ECS read запрещён тестом.
+
+Admin map и часть initial presentation всё ещё читают общий ECS/world. На
+hotspot это даёт global snapshots, а не работу по изменившимся chunks.
 
 ## Завершённый кодовый срез
 
@@ -446,9 +454,19 @@ architecture guard и `scripts/dev-smoke.sh`.
 
 ## Текущий кодовый срез
 
-**Следующий vertical slice: bots render snapshot.** Вынести immutable snapshot
-и encode из общего ECS read-lock, сохранив observer/byte budgets и legacy HB
-order. Это следующий подтверждённый источник lock contention из runtime trace.
+**Bots render immutable read model закрыт.** Renderer сверяет только active
+player attributes в коротком ECS read section, затем обходит spatial cache и
+кодирует `HB/X` без ECS lock. Observer/byte budgets и legacy HB order сохранены;
+тест вызывает batch при удерживаемом ECS write-lock.
+
+Проверка: renderer cache/deadlock regression, strict clippy для server,
+architecture guard и wire smoke.
+
+## Текущий кодовый срез
+
+**Следующий vertical slice: connect presentation snapshot.** Убрать chunk/world
+snapshot из CPU-bound `Connect` dispatch, сохранив Player.Init order и current
+session guard. Это следующий подтверждённый CPU hotspot из runtime trace.
 
 ## Видимые milestones
 

@@ -142,6 +142,16 @@ channel; timeout использовать только как deadlock guard, н
 **Правило:** новый durable `SaveKind` одновременно проходит `kind()`, admission,
 completion capacity/permit, worker dispatch, completion apply и saturation test.
 
+### Урок 12: Read-model не должен тайно возвращаться к global ECS lock
+
+`bots_render` выглядел как side phase, но snapshot обходил видимые чанки и
+кодировал wire под `ecs.read()`. При OS preemption это удерживало lock десятки
+миллисекунд и блокировало writers.
+
+**Правило:** immutable renderer/read-model строится короткой extraction-сверкой;
+visibility walk и encode не берут ECS. Для каждого такого переноса нужен тест,
+выполняющий consumer при удерживаемом ECS write-lock.
+
 ## Документация
 
 - **`SERVER_MIGRATION_STATUS.md`** — единственный актуальный checkpoint/handoff
@@ -153,6 +163,10 @@ completion capacity/permit, worker dispatch, completion apply и saturation test
 - **`ROADMAP.md`** — только deprecated-навигация. Чекбоксы из старого roadmap удалены, потому что завышали статус.
 - **`docs/reference/server_reference/`** — обязательный, но нижестоящий C#
   reference; каталог не добавлять в Git
+- **`docs/backlog/`**, `TODO.md`, `AUDIT_STATE.md` — product backlog и
+  исторические аудиты; не выбирать по ним следующий migration slice.
+- **`docs/reference/telegram_history.md`** и `docs/archive/` — evidence/archive;
+  читать только по прямому вопросу, не как текущий план.
 
 ## Обзор проекта
 
