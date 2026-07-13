@@ -576,6 +576,11 @@ pub enum GameEvent {
         recipients: Vec<SessionId>,
         data: Vec<u8>,
     },
+    MovementFanout {
+        player_id: PlayerId,
+        recipients: Vec<SessionId>,
+        data: Vec<u8>,
+    },
     ChatFanout {
         route: crate::net::session::social::chat::ChannelChatRoute,
         message: openmines_protocol::chat::ChatMessage,
@@ -593,6 +598,7 @@ impl GameEvent {
             Self::PlayerInit { .. } => "player_init",
             Self::SessionBatch { .. } => "session_batch",
             Self::Fanout { .. } => "fanout",
+            Self::MovementFanout { .. } => "movement_fanout",
             Self::ChatFanout { .. } => "chat_fanout",
             Self::GuiView { .. } => "gui_view",
         }

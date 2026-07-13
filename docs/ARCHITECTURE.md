@@ -64,6 +64,9 @@ TCP sessions -> QueuedGameCommand -> SimulationRuntime
   packet/view data. Initial chunk map/BotSpot snapshot уже строится там после
   owner-side visibility commit; building overlay временно читает ECS только как
   read-only snapshot по одному чанку до следующего per-chunk read-model slice.
+  Непрерывные `MovementFanout` схлопываются до последнего `HB/X` на player;
+  первый иной effect остаётся delivery barrier, а порядок последних updates
+  сохраняется.
 - `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
   записи, делает retry и публикует typed completion.
 

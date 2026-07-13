@@ -41,7 +41,32 @@ impl PresentationRuntime {
 }
 
 async fn run_delivery(state: Arc<GameState>, mut rx: tokio::sync::mpsc::Receiver<GameEvent>) {
-    while let Some(event) = rx.recv().await {
+    let mut pending = None;
+    loop {
+        let event = match pending.take() {
+            Some(event) => event,
+            None => match rx.recv().await {
+                Some(event) => event,
+                None => break,
+            },
+        };
+        if let GameEvent::MovementFanout {
+            player_id,
+            recipients,
+            data,
+        } = event
+        {
+            let (fanouts, barrier) =
+                coalesce_movement_burst((player_id, recipients, data), &mut rx);
+            pending = barrier;
+            for (recipients, data) in fanouts {
+                state.sessions.fanout(&recipients, &data);
+                crate::metrics::PRESENTATION_EVENTS_TOTAL
+                    .with_label_values(&["movement_fanout", "coalesced_delivered"])
+                    .inc();
+            }
+            continue;
+        }
         let kind = event.kind();
         crate::metrics::PRESENTATION_QUEUE_DEPTH.set(i64::try_from(rx.len()).unwrap_or(i64::MAX));
         deliver(&state, event);
@@ -50,6 +75,45 @@ async fn run_delivery(state: Arc<GameState>, mut rx: tokio::sync::mpsc::Receiver
             .inc();
     }
     crate::metrics::PRESENTATION_QUEUE_DEPTH.set(0);
+}
+
+type MovementFanout = (crate::game::PlayerId, Vec<crate::game::SessionId>, Vec<u8>);
+type CoalescedMovementFanouts = Vec<(Vec<crate::game::SessionId>, Vec<u8>)>;
+
+/// Collapses only an uninterrupted movement burst. A non-movement event stays a
+/// delivery barrier, while the final packet order follows the last update seen
+/// for each player instead of their numeric id.
+fn coalesce_movement_burst(
+    first: MovementFanout,
+    rx: &mut tokio::sync::mpsc::Receiver<GameEvent>,
+) -> (CoalescedMovementFanouts, Option<GameEvent>) {
+    let mut latest = std::collections::BTreeMap::new();
+    latest.insert(first.0, (0_usize, first.1, first.2));
+    let mut sequence = 1;
+    let mut barrier = None;
+
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            GameEvent::MovementFanout {
+                player_id,
+                recipients,
+                data,
+            } => {
+                latest.insert(player_id, (sequence, recipients, data));
+                sequence += 1;
+            }
+            event => {
+                barrier = Some(event);
+                break;
+            }
+        }
+    }
+
+    let mut ordered = std::collections::BTreeMap::new();
+    for (_, (sequence, recipients, data)) in latest {
+        ordered.insert(sequence, (recipients, data));
+    }
+    (ordered.into_values().collect(), barrier)
 }
 
 fn deliver(state: &Arc<GameState>, event: GameEvent) {
@@ -64,7 +128,10 @@ fn deliver(state: &Arc<GameState>, event: GameEvent) {
         } => crate::net::session::player::init::deliver_initial_presentation(
             state, session_id, player_id, packets,
         ),
-        GameEvent::Fanout { recipients, data } => {
+        GameEvent::Fanout { recipients, data }
+        | GameEvent::MovementFanout {
+            recipients, data, ..
+        } => {
             state.sessions.fanout(&recipients, &data);
         }
         GameEvent::ChatFanout { route, message } => {
@@ -119,7 +186,7 @@ fn disconnect_targets(state: &GameState, event: GameEvent) {
         | GameEvent::GuiView { session_id, .. } => {
             state.sessions.kick_session(session_id);
         }
-        GameEvent::Fanout { recipients, .. } => {
+        GameEvent::Fanout { recipients, .. } | GameEvent::MovementFanout { recipients, .. } => {
             for session_id in recipients {
                 state.sessions.kick_session(session_id);
             }
@@ -133,4 +200,78 @@ fn disconnect_targets(state: &GameState, event: GameEvent) {
 fn update_depth(tx: &tokio::sync::mpsc::Sender<GameEvent>) {
     let depth = tx.max_capacity().saturating_sub(tx.capacity());
     crate::metrics::PRESENTATION_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{PlayerId, SessionId};
+
+    fn movement(player_id: i32, byte: u8) -> GameEvent {
+        GameEvent::MovementFanout {
+            player_id: PlayerId(player_id),
+            recipients: vec![SessionId::new(u64::try_from(player_id).unwrap())],
+            data: vec![byte],
+        }
+    }
+
+    #[tokio::test]
+    async fn movement_burst_keeps_latest_packet_in_last_update_order() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(movement(2, 20)).await.unwrap();
+        tx.send(movement(1, 10)).await.unwrap();
+        tx.send(movement(2, 21)).await.unwrap();
+
+        let GameEvent::MovementFanout {
+            player_id,
+            recipients,
+            data,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected movement fanout");
+        };
+        let (fanouts, barrier) = coalesce_movement_burst((player_id, recipients, data), &mut rx);
+
+        assert_eq!(
+            fanouts,
+            vec![
+                (vec![SessionId::new(1)], vec![10]),
+                (vec![SessionId::new(2)], vec![21])
+            ]
+        );
+        assert!(barrier.is_none());
+    }
+
+    #[tokio::test]
+    async fn movement_burst_does_not_cross_a_delivery_barrier() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.send(movement(1, 10)).await.unwrap();
+        tx.send(GameEvent::Fanout {
+            recipients: vec![SessionId::new(7)],
+            data: vec![70],
+        })
+        .await
+        .unwrap();
+        tx.send(movement(1, 11)).await.unwrap();
+
+        let GameEvent::MovementFanout {
+            player_id,
+            recipients,
+            data,
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected movement fanout");
+        };
+        let (fanouts, barrier) = coalesce_movement_burst((player_id, recipients, data), &mut rx);
+
+        assert_eq!(fanouts, vec![(vec![SessionId::new(1)], vec![10])]);
+        assert!(matches!(
+            barrier,
+            Some(GameEvent::Fanout { recipients, data })
+                if recipients == vec![SessionId::new(7)] && data == vec![70]
+        ));
+        assert!(
+            matches!(rx.recv().await, Some(GameEvent::MovementFanout { data, .. }) if data == vec![11])
+        );
+    }
 }

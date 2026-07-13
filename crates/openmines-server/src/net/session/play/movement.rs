@@ -474,7 +474,8 @@ pub fn apply_move_command(
         });
     }
     if let Some(fanout) = application.movement_fanout {
-        effects.events.push(crate::game::GameEvent::Fanout {
+        effects.events.push(crate::game::GameEvent::MovementFanout {
+            player_id: pid,
             recipients: fanout.recipients,
             data: fanout.data,
         });
@@ -613,7 +614,10 @@ mod tests {
                     player_id,
                     packets,
                 ),
-                crate::game::GameEvent::Fanout { recipients, data } => {
+                crate::game::GameEvent::Fanout { recipients, data }
+                | crate::game::GameEvent::MovementFanout {
+                    recipients, data, ..
+                } => {
                     test.state.sessions.fanout(&recipients, &data);
                 }
                 crate::game::GameEvent::GuiView { .. }

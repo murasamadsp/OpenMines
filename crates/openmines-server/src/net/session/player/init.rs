@@ -484,7 +484,10 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
                 player_id,
                 packets,
             } => deliver_initial_presentation(state, session_id, player_id, packets),
-            crate::game::GameEvent::Fanout { recipients, data } => {
+            crate::game::GameEvent::Fanout { recipients, data }
+            | crate::game::GameEvent::MovementFanout {
+                recipients, data, ..
+            } => {
                 state.sessions.fanout(&recipients, &data);
             }
             crate::game::GameEvent::GuiView { .. } | crate::game::GameEvent::ChatFanout { .. } => {
@@ -561,6 +564,7 @@ pub fn deliver_player_init(
                 state.sessions.fanout(&recipients, &data);
             }
             crate::game::GameEvent::PlayerInit { .. }
+            | crate::game::GameEvent::MovementFanout { .. }
             | crate::game::GameEvent::GuiView { .. }
             | crate::game::GameEvent::ChatFanout { .. } => {
                 unreachable!("Player.Init builder only produces packet/fanout effects")
@@ -913,6 +917,7 @@ mod tests {
                 crate::game::GameEvent::PlayerInit { session_id, view } => Some((session_id, view)),
                 crate::game::GameEvent::SessionBatch { .. }
                 | crate::game::GameEvent::Fanout { .. }
+                | crate::game::GameEvent::MovementFanout { .. }
                 | crate::game::GameEvent::GuiView { .. }
                 | crate::game::GameEvent::ChatFanout { .. } => None,
             })

@@ -462,7 +462,7 @@ simulation capacity:
 | 4. Admission/isolation | event-driven wait, due queue и bounded QoS ingress закрыты | удерживать starvation/overload gates при новых flows |
 | 5. Owned simulation | только structural foundation | zero external ECS writers, удалить `RwLock<EcsWorld>` |
 | 6. Active/due work | programmator/guns/hazards/granular/alive/bots render закрыты | channel chat typed pipeline |
-| 7. Interest/read model | pilot: bots render + initial map/BotSpot snapshots | immutable per-chunk building snapshots и bounded fanout |
+| 7. Interest/read model | pilot: bots render + initial map/BotSpot snapshots + bounded movement fanout | immutable per-chunk building snapshots и changed/visible-chunk model |
 | 8. Spatial multicore | не начат как ownership model | deterministic 1/2/4-worker digest и speedup |
 
 Исполняемый порядок здесь намеренно не дублируется. Текущий единственный
@@ -739,6 +739,9 @@ Gate:
   map/BotSpot packets из immutable `PlayerInitView` в presentation; building
   overlay остаётся временным read-only ECS snapshot до per-chunk cache;
 - hotspot fanout имеет явный gameplay/presentation cap;
+- presentation coalescing применяется только к непрерывному `MovementFanout`
+  burst, оставляет последний packet каждого player и не проходит через иной
+  effect ordering barrier;
 - output coalescing не меняет authoritative state.
 
 Gate:
