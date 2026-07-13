@@ -16,6 +16,7 @@ enum MoveOutcome {
         ndir: i32,
         skin: i32,
         clan: i32,
+        tail: u8,
         chunk_changed: bool,
     },
     Autodig(i32),
@@ -91,7 +92,7 @@ fn apply_move(
     let result = state
         .modify_player(pid, |ecs, entity| {
             // 1. Immutable data gathering
-            let (px, py, skin, clan, window_open, manual_control_allowed, auto_dig) = {
+            let (px, py, skin, clan, tail, window_open, manual_control_allowed, auto_dig) = {
                 let Some(pos) = ecs.get::<PlayerPosition>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for movement");
                     send_move_state_error(tx);
@@ -123,6 +124,7 @@ fn apply_move(
                     pos.y,
                     player_stats.skin,
                     player_stats.clan_id.unwrap_or(0),
+                    u8::from(prog.running),
                     ui.current_window.is_some(),
                     prog.is_manual_control_allowed(),
                     settings.auto_dig,
@@ -313,20 +315,22 @@ fn apply_move(
                 ndir: actual_dir,
                 skin,
                 clan,
+                tail,
                 chunk_changed: World::chunk_pos(px, py) != World::chunk_pos(target_x, target_y),
             })
         })
         .flatten();
 
-    let (nx, ny, ndir, skin, clan, chunk_changed) = match result {
+    let (nx, ny, ndir, skin, clan, tail, chunk_changed) = match result {
         Some(MoveOutcome::Moved {
             nx,
             ny,
             ndir,
             skin,
             clan,
+            tail,
             chunk_changed,
-        }) => (nx, ny, ndir, skin, clan, chunk_changed),
+        }) => (nx, ny, ndir, skin, clan, tail, chunk_changed),
         Some(MoveOutcome::Autodig(dig_dir)) => {
             return MoveApplication {
                 followup: Some(MoveFollowup::Autodig(dig_dir)),
@@ -342,12 +346,6 @@ fn apply_move(
     state.seed_granular_region(nx, ny);
     state.seed_alive_region(nx, ny);
 
-    let tail = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
-                .map_or(0, |ps| u8::from(ps.running))
-        })
-        .unwrap_or(0);
     let (cx, cy) = World::chunk_pos(nx, ny);
     let bot = hb_bot(
         net_u16_nonneg(pid),
