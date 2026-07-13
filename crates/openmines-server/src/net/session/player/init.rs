@@ -210,6 +210,13 @@ fn connect_entity_in_tick_inner(
             row.selected_program_id = player.selected_program_id;
             row.selected_program = player.selected_program.clone();
             state.register_active_player(pid, entity, session_id);
+            if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
+                ecs.get::<ProgrammatorState>(entity)
+                    .filter(|prog| prog.running)
+                    .map(|prog| prog.delay)
+            }) {
+                state.schedule_programmator(entity, due_at);
+            }
             profile.reuse_existing = section_t0.elapsed();
             tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
             log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);
@@ -328,6 +335,13 @@ fn connect_entity_in_tick_inner(
     let section_t0 = Instant::now();
     state.register_active_player(pid, entity, session_id);
     state.register_player_entity(pid, entity);
+    if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
+        ecs.get::<ProgrammatorState>(entity)
+            .filter(|prog| prog.running)
+            .map(|prog| prog.delay)
+    }) {
+        state.schedule_programmator(entity, due_at);
+    }
     profile.register = section_t0.elapsed();
 
     log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);

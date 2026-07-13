@@ -521,6 +521,7 @@ impl SimulationRuntime {
                 online_count,
                 player_entity_count: self.state.player_entity_count(),
                 crafting_due: self.state.has_due_crafting(now_ts),
+                programmator_due: self.state.has_due_programmator(now),
             },
             |index| scheduler::configured_candidate(&self.state, index),
         );
@@ -532,6 +533,15 @@ impl SimulationRuntime {
             let crafting_deadline = unix_timestamp_to_instant(now, crafting_ts);
             schedule_deadline = Some(schedule_deadline.map_or(crafting_deadline, |deadline| {
                 deadline.min(crafting_deadline)
+            }));
+        }
+        if let Some(programmator_deadline) = self
+            .state
+            .next_programmator_due_at()
+            .filter(|deadline| *deadline > now)
+        {
+            schedule_deadline = Some(schedule_deadline.map_or(programmator_deadline, |deadline| {
+                deadline.min(programmator_deadline)
             }));
         }
 

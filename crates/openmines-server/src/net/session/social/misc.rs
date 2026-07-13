@@ -296,6 +296,16 @@ pub fn apply_saved_program_to_tick_state(
         return;
     };
 
+    if running
+        && let Some((entity, due_at)) = state.query_player_opt(pid, |ecs, entity| {
+            ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                .filter(|program| program.running)
+                .map(|program| (entity, program.delay))
+        })
+    {
+        state.schedule_programmator(entity, due_at);
+    }
+
     tracing::info!(
         player_id = %pid,
         program_id = prog_id,

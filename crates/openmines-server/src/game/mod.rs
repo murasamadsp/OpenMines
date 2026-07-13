@@ -513,6 +513,7 @@ pub enum ScheduleActivity {
     OnlinePlayers,
     PlayerEntities,
     DueCrafting,
+    DueProgrammator,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -563,6 +564,54 @@ impl BotsRenderSchedule {
 #[derive(Default)]
 struct CraftingDueSchedule {
     due: BinaryHeap<Reverse<(i64, Entity)>>,
+}
+
+#[derive(Resource, Clone)]
+pub struct ProgrammatorDueQueue(Arc<Mutex<ProgrammatorDueSchedule>>);
+
+impl ProgrammatorDueQueue {
+    pub fn schedule(&self, entity: Entity, due_at: Instant) {
+        self.0.lock().schedule(entity, due_at);
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct ProgrammatorDueBatch(pub Vec<(Entity, Instant)>);
+
+#[derive(Default)]
+struct ProgrammatorDueSchedule {
+    due: BinaryHeap<Reverse<(Instant, Entity)>>,
+}
+
+impl ProgrammatorDueSchedule {
+    fn schedule(&mut self, entity: Entity, due_at: Instant) {
+        self.due.push(Reverse((due_at, entity)));
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        self.due
+            .peek()
+            .is_some_and(|Reverse((due_at, _))| *due_at <= now)
+    }
+
+    fn next_due_at(&self) -> Option<Instant> {
+        self.due.peek().map(|Reverse((due_at, _))| *due_at)
+    }
+
+    fn pop_due(&mut self, now: Instant, limit: usize) -> Vec<(Entity, Instant)> {
+        let mut due = Vec::with_capacity(limit.min(self.due.len()));
+        while due.len() < limit {
+            let Some(&Reverse((due_at, entity))) = self.due.peek() else {
+                break;
+            };
+            if due_at > now {
+                break;
+            }
+            self.due.pop();
+            due.push((entity, due_at));
+        }
+        due
+    }
 }
 
 impl CraftingDueSchedule {
@@ -632,6 +681,7 @@ pub struct GameState {
     command_ingress_ages: [Mutex<VecDeque<Instant>>; 3],
     simulation_waker: crate::simulation_waker::SimulationWaker,
     crafting_due_schedule: Mutex<CraftingDueSchedule>,
+    programmator_due_schedule: Arc<Mutex<ProgrammatorDueSchedule>>,
     bots_render_schedule: Mutex<BotsRenderSchedule>,
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
@@ -662,6 +712,7 @@ impl GameState {
     pub const BOTS_RENDER_OBSERVER_BUDGET: usize = 32;
     pub const BOTS_RENDER_BYTE_BUDGET: usize = 1024 * 1024;
     pub const CRAFTING_DUE_BATCH_BUDGET: usize = 256;
+    pub const PROGRAMMATOR_DUE_BATCH_BUDGET: usize = 256;
 
     pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
         let wait_started_at = Instant::now();
@@ -789,7 +840,7 @@ impl GameState {
             },
             GameSchedule {
                 name: "programmator".to_string(),
-                activity: ScheduleActivity::PlayerEntities,
+                activity: ScheduleActivity::DueProgrammator,
                 schedule: RwLock::new(schedule_programmator),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.programmator_ms),
             },
@@ -824,6 +875,7 @@ impl GameState {
         ];
 
         let ingress = config.gameplay.simulation;
+        let programmator_due_schedule = Arc::new(Mutex::new(ProgrammatorDueSchedule::default()));
         let (lifecycle_tx, lifecycle_rx) = mpsc::channel(ingress.lifecycle_ingress_capacity);
         let (gameplay_tx, gameplay_rx) = mpsc::channel(ingress.gameplay_ingress_capacity);
         let (internal_tx, internal_rx) = mpsc::channel(ingress.internal_ingress_capacity);
@@ -862,6 +914,7 @@ impl GameState {
             command_ingress_ages: std::array::from_fn(|_| Mutex::new(VecDeque::new())),
             simulation_waker: crate::simulation_waker::SimulationWaker::default(),
             crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
+            programmator_due_schedule,
             bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
             bots_render_slot_seq: std::sync::atomic::AtomicU64::new(0),
             tokio_handle: tokio::runtime::Handle::current(),
@@ -934,6 +987,10 @@ impl GameState {
             ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
+            ecs.insert_resource(ProgrammatorDueQueue(
+                state.programmator_due_schedule.clone(),
+            ));
+            ecs.insert_resource(ProgrammatorDueBatch::default());
             ecs.insert_resource(combat::GunTickTimer::default());
             ecs.insert_resource(PendingCellConversions::default());
             ecs.insert_resource(PackResendQueue::default());
@@ -1011,6 +1068,27 @@ impl GameState {
 
     pub fn has_due_crafting(&self, now_ts: i64) -> bool {
         self.crafting_due_schedule.lock().is_due(now_ts)
+    }
+
+    pub fn schedule_programmator(&self, entity: Entity, due_at: Instant) {
+        self.programmator_due_schedule
+            .lock()
+            .schedule(entity, due_at);
+        self.simulation_waker.wake();
+    }
+
+    pub fn next_programmator_due_at(&self) -> Option<Instant> {
+        self.programmator_due_schedule.lock().next_due_at()
+    }
+
+    pub fn has_due_programmator(&self, now: Instant) -> bool {
+        self.programmator_due_schedule.lock().is_due(now)
+    }
+
+    pub fn take_due_programmators(&self, now: Instant) -> Vec<(Entity, Instant)> {
+        self.programmator_due_schedule
+            .lock()
+            .pop_due(now, Self::PROGRAMMATOR_DUE_BATCH_BUDGET)
     }
 
     pub fn take_due_crafting(

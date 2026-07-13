@@ -1623,12 +1623,19 @@ pub fn programmator_system(
     timing_res: Res<ProgrammatorConfigResource>,
     mut prog_q: ResMut<ProgrammatorQueue>,
     mut dirty_players: ResMut<crate::game::DirtyPlayers>,
+    due_queue: Res<crate::game::ProgrammatorDueQueue>,
+    mut due_batch: ResMut<crate::game::ProgrammatorDueBatch>,
     mut query: ProgrammatorQuery<'_, '_>,
 ) {
     let now = Instant::now();
 
-    for (entity, meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo) in &mut query {
-        if stats.health <= 0 || !prog.running {
+    for (entity, due_at) in std::mem::take(&mut due_batch.0) {
+        let Ok((_, meta, pos, conn, stats, skills, settings, mut flags, mut prog, geo)) =
+            query.get_mut(entity)
+        else {
+            continue;
+        };
+        if stats.health <= 0 || !prog.running || prog.delay != due_at {
             continue;
         }
         if now < prog.delay {
@@ -1700,8 +1707,8 @@ pub fn programmator_system(
             ExecResult::Label(label) => {
                 handle_label_result(&action, &label, &mut prog);
             }
-            ExecResult::BoolResult(state) => {
-                handle_bool_result(&action, state, &mut prog);
+            ExecResult::BoolResult(result_state) => {
+                handle_bool_result(&action, result_state, &mut prog);
             }
             ExecResult::None => {
                 handle_none_result(&action, &mut prog);
@@ -1711,6 +1718,7 @@ pub fn programmator_system(
         // Set delay
         if let Some(delay) = delay {
             prog.delay = now + delay;
+            due_queue.schedule(entity, prog.delay);
         }
         flags.dirty = true;
         dirty_players.0.insert(entity);

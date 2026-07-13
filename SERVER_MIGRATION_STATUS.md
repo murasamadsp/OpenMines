@@ -145,7 +145,7 @@ event/due model и не появился injected simulation clock. Просты
 | 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
 | 4. Admission/isolation | 55% | event-driven wait, bounded due queue, typed bounded ingress и thin connect готовы |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
-| 6. Active/due work | 30% | granular frontier, crafting/consumable due queues и dirty registries есть; actor systems ещё частично scan-all |
+| 6. Active/due work | 35% | granular frontier, crafting/consumable/programmator due queues и dirty registries есть; actor systems ещё частично scan-all |
 | 7. Interest/read model | 10% | teleport DTO и часть immutable presentation готовы; bots render и admin всё ещё читают общий state |
 | 8. Spatial multicore | 0% | Rayon analysis не является ownership sharding; deterministic 1/2/4-worker model ещё не начат |
 
@@ -261,8 +261,10 @@ incarnation после reconnect не может сохранить новую.
 
 ### P2: один idle player всё ещё запускает periodic systems
 
-Hazards, guns, programmator, physics/alive и bots render пока не все выражены
-через explicit due/active registries. Поэтому `0 players` уже дешёвый, а
+Programmator уже использует entity-aware due heap: stale start/stop entries
+отбрасываются по `running/delay`, а batch ограничен `256` entities. Hazards,
+guns, physics/alive и bots render пока не все выражены через explicit due/active
+registries. Поэтому `0 players` уже дешёвый, а
 `1 idle player` - ещё нет.
 
 ### P2: presentation/read paths
@@ -391,8 +393,8 @@ Release runtime gate на одном `8x8` local fixture:
 
 ## Следующий кодовый срез
 
-**Active/due registries.** Перевести programmator, guns, hazards,
-alive/granular с periodic entity scans на explicit due/active work.
+**Active/due registries.** Перевести guns, hazards, alive/granular с periodic
+entity scans на explicit due/active work.
 
 ## Следующий обязательный порядок
 

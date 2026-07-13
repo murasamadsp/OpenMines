@@ -46,6 +46,7 @@ fn schedule_clock_skips_idle_world_without_catchup() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -58,6 +59,7 @@ fn schedule_clock_skips_idle_world_without_catchup() {
             online_count: 1,
             player_entity_count: 1,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -73,6 +75,7 @@ fn schedule_clock_skips_idle_world_without_catchup() {
             online_count: 1,
             player_entity_count: 1,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -97,6 +100,7 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
             online_count: 0,
             player_entity_count: 1,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -110,6 +114,7 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -123,6 +128,7 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: true,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -150,6 +156,7 @@ fn schedule_clock_preserves_disabled_schedule_slots() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: true,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied().flatten(),
     );
@@ -171,6 +178,7 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -184,6 +192,7 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -196,6 +205,7 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -219,6 +229,7 @@ fn schedule_clock_deadline_skips_idle_work_without_catchup() {
             online_count: 0,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |index| schedules.get(index).copied(),
     );
@@ -232,6 +243,7 @@ fn schedule_clock_deadline_skips_idle_work_without_catchup() {
             online_count: 1,
             player_entity_count: 0,
             crafting_due: false,
+            programmator_due: false,
         },
         |index| schedules.get(index).copied(),
     );
@@ -251,6 +263,7 @@ fn due_crafting_uses_its_domain_deadline_not_the_periodic_interval() {
         online_count: 0,
         player_entity_count: 0,
         crafting_due: true,
+        programmator_due: false,
     };
     let mut clock = ScheduleClock::new(schedules.len(), base);
 
@@ -262,6 +275,43 @@ fn due_crafting_uses_its_domain_deadline_not_the_periodic_interval() {
     );
     assert_eq!(
         clock.select_due(schedules.len(), now, workload, |index| {
+            schedules.get(index).copied()
+        }),
+        vec![0]
+    );
+}
+
+#[test]
+fn due_programmator_uses_its_domain_deadline_not_player_entity_scan() {
+    let base = Instant::now();
+    let now = base + Duration::from_millis(1);
+    let schedules = [candidate(
+        "programmator",
+        ScheduleActivity::DueProgrammator,
+        500,
+    )];
+    let mut clock = ScheduleClock::new(schedules.len(), base);
+
+    let idle = ScheduleWorkload {
+        online_count: 1,
+        player_entity_count: 100,
+        crafting_due: false,
+        programmator_due: false,
+    };
+    assert!(
+        clock
+            .select_due(schedules.len(), now, idle, |index| schedules
+                .get(index)
+                .copied())
+            .is_empty()
+    );
+
+    let due = ScheduleWorkload {
+        programmator_due: true,
+        ..idle
+    };
+    assert_eq!(
+        clock.select_due(schedules.len(), now, due, |index| {
             schedules.get(index).copied()
         }),
         vec![0]

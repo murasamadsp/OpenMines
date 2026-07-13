@@ -95,6 +95,7 @@ flush. Crash durability это не заменяет.
   не сканирует players/buildings;
 - `PlayerInit` chunk snapshot, wire encode и delivery принадлежат presentation
   owner; simulation `Connect` делает только entity/index apply;
+- programmator исполняется через entity-aware due heap, не periodic player scan;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 

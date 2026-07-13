@@ -59,6 +59,7 @@ pub(super) struct ScheduleWorkload {
     pub(super) online_count: usize,
     pub(super) player_entity_count: usize,
     pub(super) crafting_due: bool,
+    pub(super) programmator_due: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -112,8 +113,14 @@ impl ScheduleClock {
             let Some(schedule) = candidate_at(idx) else {
                 continue;
             };
-            if schedule.activity == ScheduleActivity::DueCrafting {
-                if workload.crafting_due {
+            if matches!(
+                schedule.activity,
+                ScheduleActivity::DueCrafting | ScheduleActivity::DueProgrammator
+            ) {
+                if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
+                    || (schedule.activity == ScheduleActivity::DueProgrammator
+                        && workload.programmator_due)
+                {
                     due_schedules.push(idx);
                 }
                 continue;
@@ -147,8 +154,14 @@ impl ScheduleClock {
             let Some(schedule) = candidate_at(idx) else {
                 continue;
             };
-            if schedule.activity == ScheduleActivity::DueCrafting {
-                if workload.crafting_due {
+            if matches!(
+                schedule.activity,
+                ScheduleActivity::DueCrafting | ScheduleActivity::DueProgrammator
+            ) {
+                if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
+                    || (schedule.activity == ScheduleActivity::DueProgrammator
+                        && workload.programmator_due)
+                {
                     return Some(now);
                 }
                 continue;
@@ -171,6 +184,7 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
         ScheduleActivity::OnlinePlayers => workload.online_count == 0,
         ScheduleActivity::PlayerEntities => workload.player_entity_count == 0,
         ScheduleActivity::DueCrafting => !workload.crafting_due,
+        ScheduleActivity::DueProgrammator => !workload.programmator_due,
     }
 }
 
@@ -266,6 +280,7 @@ pub(super) fn run_schedule_phase(
             online_count,
             player_entity_count,
             crafting_due: state.has_due_crafting(now_ts),
+            programmator_due: state.has_due_programmator(now),
         },
         |idx| configured_candidate(state, idx),
     );
@@ -302,6 +317,10 @@ pub(super) fn run_schedule_phase(
         } else {
             false
         };
+        if gs.activity == ScheduleActivity::DueProgrammator {
+            ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 =
+                state.take_due_programmators(now);
+        }
         let (schedule_lock_wait, schedule_run) = {
             let schedule_lock_t0 = Instant::now();
             let mut schedule = gs.schedule.write();
