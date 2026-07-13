@@ -438,6 +438,7 @@ fn apply_local_chat_command(
     effects
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn apply_channel_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,

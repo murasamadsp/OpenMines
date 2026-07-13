@@ -575,6 +575,7 @@ async fn persist_program_batch<S>(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn persist_compatible_batch<S>(store: &S, kind: SaveKind, batch: &[PersistenceEnvelope])
 where
     S: PersistenceStore,

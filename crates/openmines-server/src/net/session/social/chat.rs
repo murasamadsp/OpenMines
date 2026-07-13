@@ -4,7 +4,6 @@ use crate::net::session::outbound::chat_sync::{
     chat_access, parse_private_tag, send_channel_list, send_enter_channel,
 };
 use crate::net::session::prelude::*;
-use crate::net::session::social::commands::handle_chat_command;
 
 fn send_chat_state_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("ЧАТ", "Состояние чата недоступно.").1);
@@ -12,6 +11,7 @@ fn send_chat_state_error(tx: &Outbox) {
 
 pub struct PreparedChannelChat {
     pub db_tag: String,
+    #[allow(dead_code)]
     pub wire_tag: String,
     pub text: String,
     pub nickname: String,
@@ -247,15 +247,17 @@ pub fn deliver_chat_fanout(
                     }
                 }
             }
-            let pkt = crate::protocol::packets::chat_messages(wire_tag, &[msg.clone()]).1;
+            let pkt =
+                crate::protocol::packets::chat_messages(wire_tag, std::slice::from_ref(msg)).1;
             crate::net::session::social::chat::send_mu_to_all(state, &pkt);
         }
         ChannelChatRoute::Clan(clan_id) => {
-            let pkt = crate::protocol::packets::chat_messages("CLAN", &[msg.clone()]).1;
+            let pkt = crate::protocol::packets::chat_messages("CLAN", std::slice::from_ref(msg)).1;
             crate::net::session::social::chat::send_mu_to_clan(state, &pkt, *clan_id);
         }
         ChannelChatRoute::Private(wire_tag, users) => {
-            let pkt = crate::protocol::packets::chat_messages(wire_tag, &[msg.clone()]).1;
+            let pkt =
+                crate::protocol::packets::chat_messages(wire_tag, std::slice::from_ref(msg)).1;
             crate::net::session::social::chat::send_mu_to_users(state, &pkt, users);
         }
     }
@@ -483,12 +485,6 @@ mod tests {
 
     async fn make_test_state(label: &str) -> ServerTestHarness {
         ServerTestHarness::new(label, "chat-user").await
-    }
-
-    fn single_hb_chat_text(payload: &[u8]) -> &str {
-        assert_eq!(payload[0], b'C');
-        let len = u16::from_le_bytes([payload[7], payload[8]]) as usize;
-        std::str::from_utf8(&payload[9..9 + len]).unwrap()
     }
 
     #[test]

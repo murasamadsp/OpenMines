@@ -121,6 +121,7 @@ mod tests {
         Database::open(path).await.unwrap()
     }
 
+    #[tokio::test]
     async fn add_chat_message_test() {
         let db = temp_database("empty_db").await;
         db.add_chat_message(10, "FED", "ghost", "msg", 12345, 50)
