@@ -355,6 +355,9 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
     assert!(effects.saves.is_empty());
     for event in effects.events {
         match event {
+            crate::game::GameEvent::PlayerInit { session_id, player } => {
+                deliver_player_init(state, session_id, &player);
+            }
             crate::game::GameEvent::SessionBatch {
                 session_id,
                 player_id,
@@ -416,6 +419,31 @@ pub fn prepare_initial_presentation(
         effects.events.push(nearby);
     }
     effects
+}
+
+/// Presentation owner: builds and emits Player.Init after authoritative connect
+/// apply has made this session current.
+pub fn deliver_player_init(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player: &PlayerRow,
+) {
+    let effects = prepare_initial_presentation(state, player, session_id);
+    for event in effects.events {
+        match event {
+            crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            } => deliver_initial_presentation(state, session_id, player_id, packets),
+            crate::game::GameEvent::Fanout { recipients, data } => {
+                state.sessions.fanout(&recipients, &data);
+            }
+            crate::game::GameEvent::PlayerInit { .. } | crate::game::GameEvent::GuiView { .. } => {
+                unreachable!("Player.Init builder only produces packet/fanout effects")
+            }
+        }
+    }
 }
 
 pub fn deliver_initial_presentation(
@@ -756,54 +784,42 @@ mod tests {
         );
 
         assert!(effects.saves.is_empty());
-        assert_eq!(effects.events.len(), 2);
+        assert_eq!(effects.events.len(), 1);
         assert_eq!(
             effects
                 .events
                 .iter()
-                .filter(|event| matches!(event, crate::game::GameEvent::SessionBatch { .. }))
+                .filter(|event| matches!(event, crate::game::GameEvent::PlayerInit { .. }))
                 .count(),
             1
         );
         assert!(effects.events.iter().any(|event| matches!(
             event,
-            crate::game::GameEvent::SessionBatch {
+            crate::game::GameEvent::PlayerInit {
                 session_id: actual_session_id,
-                player_id,
-                packets,
+                player: row,
             } if *actual_session_id == session_id
-                && *player_id == PlayerId(player.id)
-                && !packets.is_empty()
+                && row.id == player.id
         )));
-        assert_eq!(
-            effects
-                .events
-                .iter()
-                .filter(|event| matches!(event, crate::game::GameEvent::Fanout { .. }))
-                .count(),
-            1
-        );
         assert!(
             rx.try_recv().is_err(),
             "command dispatch must not deliver initial presentation"
         );
 
-        let (presentation_session, presentation_player, packets) = effects
+        let (presentation_session, row) = effects
             .events
             .into_iter()
             .find_map(|event| match event {
-                crate::game::GameEvent::SessionBatch {
-                    session_id,
-                    player_id,
-                    packets,
-                } => Some((session_id, player_id, packets)),
-                crate::game::GameEvent::Fanout { .. } | crate::game::GameEvent::GuiView { .. } => {
-                    None
+                crate::game::GameEvent::PlayerInit { session_id, player } => {
+                    Some((session_id, player))
                 }
+                crate::game::GameEvent::SessionBatch { .. }
+                | crate::game::GameEvent::Fanout { .. }
+                | crate::game::GameEvent::GuiView { .. } => None,
             })
             .expect("initial presentation event");
         let _ = disconnect_in_tick(state, PlayerId(player.id), session_id);
-        deliver_initial_presentation(state, presentation_session, presentation_player, packets);
+        deliver_player_init(state, presentation_session, &row);
         assert!(
             rx.try_recv().is_err(),
             "stale initial presentation must not be delivered after disconnect"

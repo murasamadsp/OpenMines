@@ -93,6 +93,8 @@ flush. Crash durability это не заменяет.
   trace дал `201ms` CPU-bound dispatch;
 - periodic dirty flush использует owner-local deduplicated entity registries и
   не сканирует players/buildings;
+- `PlayerInit` chunk snapshot, wire encode и delivery принадлежат presentation
+  owner; simulation `Connect` делает только entity/index apply;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 

@@ -18,8 +18,8 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `979f51a0` (`Ограничить ingress симуляции по
-классам`) в `main`. Документационный checkpoint может быть более новым.
+Ожидаемый code checkpoint: `fd4523c8` (`Убрать scan-all flush игроков`) в
+`main`. Документационный checkpoint может быть более новым.
 
 Дальше:
 
@@ -140,10 +140,10 @@ event/due model и не появился injected simulation clock. Просты
 | Этап | Готовность | Фактическое состояние |
 | --- | ---: | --- |
 | 0. Evidence и guards | 75% | release traces, CPU/off-CPU classification, strict clippy, architecture guard; одинаковый benchmark обязателен не для каждого среза |
-| 1. Session/output owner | 65% | `SessionId`, bounded outbox, `SessionHub`, presentation owner есть; common authenticated envelope не завершён |
-| 2. Command/effects boundary | 35% | connect/disconnect, move, teleport-open, delayed consumables и building delete перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
+| 1. Session/output owner | 70% | `SessionId`, bounded outbox, `SessionHub`, presentation-owned PlayerInit есть; common authenticated envelope не завершён |
+| 2. Command/effects boundary | 40% | connect/disconnect, move, teleport-open, delayed consumables и building delete перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
 | 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
-| 4. Admission/isolation | 50% | event-driven wait, bounded due queue и typed bounded ingress готовы; thin connect остаётся |
+| 4. Admission/isolation | 55% | event-driven wait, bounded due queue, typed bounded ingress и thin connect готовы |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
 | 6. Active/due work | 30% | granular frontier, crafting/consumable due queues и dirty registries есть; actor systems ещё частично scan-all |
 | 7. Interest/read model | 10% | teleport DTO и часть immutable presentation готовы; bots render и admin всё ещё читают общий state |
@@ -227,7 +227,7 @@ ECS находится под общим `RwLock`, а session/admin/web/backgrou
 могут читать или мутировать authoritative state. Поэтому preemption owner-а
 превращается в latency других подсистем, а invariants нельзя доказать типами.
 
-### P2: connect остаётся широким synchronous flow
+### P2: connect delivery и global lock
 
 Предыдущий подтверждающий trace одного connect (новейший trace указан выше):
 
@@ -238,7 +238,11 @@ ECS находится под общим `RwLock`, а session/admin/web/backgrou
 - initial presentation build: `10.69ms`;
 - schedule после connect: `4.30ms`.
 
-Это не `43ms` вычислений, но пользовательская latency реальна. Целевой flow:
+Это не `43ms` вычислений, но пользовательская latency реальна. Auth hydrate
+уже вне owner-а; `Connect` теперь выполняет entity/index apply и публикует
+immutable `PlayerInit` effect. Chunk snapshot, wire encode и delivery выполняет
+presentation owner после повторной session guard. Global ECS lock и off-CPU
+latency этим не устранены.
 
 ```text
 auth hydrate outside owner
@@ -387,8 +391,8 @@ Release runtime gate на одном `8x8` local fixture:
 
 ## Следующий кодовый срез
 
-**Thin connect.** Вынести auth hydrate и PlayerInit encode/send из owner-а;
-оставить в active cycle только короткий entity/index apply.
+**Active/due registries.** Перевести programmator, guns, hazards,
+alive/granular с periodic entity scans на explicit due/active work.
 
 ## Следующий обязательный порядок
 

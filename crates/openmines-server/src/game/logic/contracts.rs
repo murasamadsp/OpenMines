@@ -565,6 +565,11 @@ impl CommandEffects {
 /// Outbound work produced by authoritative command application.
 #[derive(Debug, Clone)]
 pub enum GameEvent {
+    /// Hydrated login row for presentation-owned Player.Init encoding.
+    PlayerInit {
+        session_id: SessionId,
+        player: Box<PlayerRow>,
+    },
     SessionBatch {
         session_id: SessionId,
         player_id: PlayerId,
@@ -584,6 +589,7 @@ pub enum GameEvent {
 impl GameEvent {
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::PlayerInit { .. } => "player_init",
             Self::SessionBatch { .. } => "session_batch",
             Self::Fanout { .. } => "fanout",
             Self::GuiView { .. } => "gui_view",

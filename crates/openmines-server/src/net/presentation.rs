@@ -54,6 +54,9 @@ async fn run_delivery(state: Arc<GameState>, mut rx: tokio::sync::mpsc::Receiver
 
 fn deliver(state: &Arc<GameState>, event: GameEvent) {
     match event {
+        GameEvent::PlayerInit { session_id, player } => {
+            crate::net::session::player::init::deliver_player_init(state, session_id, &player);
+        }
         GameEvent::SessionBatch {
             session_id,
             player_id,
@@ -108,7 +111,9 @@ pub fn deliver_gui_view_for_test(
 
 fn disconnect_targets(state: &GameState, event: GameEvent) {
     match event {
-        GameEvent::SessionBatch { session_id, .. } | GameEvent::GuiView { session_id, .. } => {
+        GameEvent::PlayerInit { session_id, .. }
+        | GameEvent::SessionBatch { session_id, .. }
+        | GameEvent::GuiView { session_id, .. } => {
             state.sessions.kick_session(session_id);
         }
         GameEvent::Fanout { recipients, .. } => {

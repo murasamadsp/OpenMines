@@ -582,6 +582,9 @@ mod tests {
 
         for event in effects.events {
             match event {
+                crate::game::GameEvent::PlayerInit { .. } => {
+                    panic!("ordinary move cannot produce player init")
+                }
                 crate::game::GameEvent::SessionBatch {
                     session_id,
                     player_id,
