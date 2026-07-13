@@ -280,6 +280,15 @@ Programmator, guns, standing-cell hazards, granular physics и alive cells
 transition, cell transition обновляет локальный frontier; sleeping player не
 запускает их schedules. Из заметных periodic read paths остаётся bots render.
 
+Исправлен реальный hotspot `alive` при массовом login: несколько seed-окон
+радиуса `33x33` раньше сканировались независимо и повторно обходили общие
+клетки. `ActiveFrontier` теперь строит точное объединение row-интервалов и
+сканирует каждую клетку spatial union ровно один раз. На release `4x4`
+login-only burst `1000` клиентов p99 снизился с `218.815ms` до `36.729ms`,
+unexpected disconnects -- с `327` до `178`; предупреждения `alive` исчезли.
+Оставшиеся `178` -- readiness timeout loadtest, их причина пока не установлена:
+перед изменением admission/outbox нужны сохранённые session/presentation логи.
+
 ### P2: presentation/read paths
 
 `bots_render` больше не читает ECS во время visibility walk и HB encode:
@@ -476,9 +485,13 @@ guard и `scripts/dev-smoke.sh`.
 `GameState::broadcast_cell_update`, поэтому placement/transform не обходит
 registry. Пустой filtered batch выключает schedule до следующего seed/wake.
 
-Проверка: alive/granular coupled fixture, scheduler test safe idle/active
-registry, полный server suite (`368 passed`, `1 ignored`), strict clippy,
-architecture guard и `scripts/dev-smoke.sh`.
+Перекрывающиеся position-transition окна объединяются в `ActiveFrontier` до
+чтения мира: стоимость seed зависит от площади их точного spatial union, а не
+от `players * 33 * 33`.
+
+Проверка: `active_frontier_matches_exact_union_of_overlapping_windows`, полный
+server suite (`381 passed`, `1 ignored`), strict clippy, architecture guard и
+`scripts/dev-smoke.sh`.
 
 ## Завершённый кодовый срез
 

@@ -13,7 +13,6 @@ use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
 use parking_lot::Mutex;
 use rand::Rng;
-#[cfg(test)]
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -102,12 +101,10 @@ impl PlayerPositions {
     }
 }
 
-#[cfg(test)]
 struct ActiveFrontier {
     rows: Vec<(i32, Vec<(i32, i32)>)>,
 }
 
-#[cfg(test)]
 impl ActiveFrontier {
     fn around(players: &PlayerPositions) -> Self {
         let mut rows: BTreeMap<i32, Vec<(i32, i32)>> = BTreeMap::new();
@@ -163,11 +160,14 @@ fn seed_alive_regions(queue: &AliveWorkQueue, world: &crate::world::World) -> (u
         (y, x)
     });
     seeds.dedup();
+    let players = PlayerPositions {
+        positions: seeds.iter().copied().map(Into::into).collect(),
+    };
+    let frontier = ActiveFrontier::around(&players);
     let mut scanned = 0usize;
-    for seed in seeds.iter().copied() {
-        let (px, py): (i32, i32) = seed.into();
-        for y in py.saturating_sub(ACTIVE_RADIUS)..=py.saturating_add(ACTIVE_RADIUS) {
-            for x in px.saturating_sub(ACTIVE_RADIUS)..=px.saturating_add(ACTIVE_RADIUS) {
+    for (y, intervals) in frontier.rows {
+        for (start_x, end_x) in intervals {
+            for x in start_x..=end_x {
                 scanned += 1;
                 if world.valid_coord(x, y) {
                     queue.note_cell(x, y, world.get_cell_typed(x, y));

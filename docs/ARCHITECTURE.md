@@ -111,8 +111,9 @@ flush. Crash durability это не заменяет.
   не запускает ECS schedule, непустая клетка повторно планирует только себя;
 - granular physics запускается только по pending/active frontier: position
   transition seed-ит region, cell transition будит локальную область;
-- alive cells используют exact active registry: player window scan выполняется
-  только на position transition, а пустой batch останавливает schedule;
+- alive cells используют exact active registry: position-transition seeds
+  объединяются в scanline union до чтения мира, поэтому перекрывающиеся окна не
+  сканируют общие клетки повторно; пустой batch останавливает schedule;
 - periodic `bots_render` использует immutable player/BotSpot spatial cache:
   короткая active-player сверка отделена от visibility walk и `HB/X` encode,
   поэтому renderer не берёт ECS lock;
