@@ -2436,6 +2436,36 @@ impl GameState {
         self.simulation_waker.wake();
     }
 
+    /// Incrementally discover only the strip newly entering an alive-cell view.
+    pub fn wake_alive_movement(&self, from_x: i32, from_y: i32, to_x: i32, to_y: i32) {
+        const RADIUS: i32 = 16;
+        let dx = to_x - from_x;
+        let dy = to_y - from_y;
+        if dx.unsigned_abs() > 1 || dy.unsigned_abs() > 1 {
+            self.seed_alive_region(to_x, to_y);
+            return;
+        }
+        if dx != 0 {
+            let x = to_x + dx.signum() * RADIUS;
+            for y in to_y - RADIUS..=to_y + RADIUS {
+                if self.world.valid_coord(x, y) {
+                    self.alive_work_q
+                        .note_cell(x, y, self.world.get_cell_typed(x, y));
+                }
+            }
+        }
+        if dy != 0 {
+            let y = to_y + dy.signum() * RADIUS;
+            for x in to_x - RADIUS..=to_x + RADIUS {
+                if self.world.valid_coord(x, y) {
+                    self.alive_work_q
+                        .note_cell(x, y, self.world.get_cell_typed(x, y));
+                }
+            }
+        }
+        self.simulation_waker.wake();
+    }
+
     pub fn has_alive_work(&self) -> bool {
         self.alive_work_q.has_work()
     }

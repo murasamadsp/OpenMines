@@ -13,6 +13,8 @@ enum MoveOutcome {
     Moved {
         nx: i32,
         ny: i32,
+        px: i32,
+        py: i32,
         ndir: i32,
         skin: i32,
         clan: i32,
@@ -312,6 +314,8 @@ fn apply_move(
             Some(MoveOutcome::Moved {
                 nx: target_x,
                 ny: target_y,
+                px,
+                py,
                 ndir: actual_dir,
                 skin,
                 clan,
@@ -321,16 +325,18 @@ fn apply_move(
         })
         .flatten();
 
-    let (nx, ny, ndir, skin, clan, tail, chunk_changed) = match result {
+    let (nx, ny, px, py, ndir, skin, clan, tail, chunk_changed) = match result {
         Some(MoveOutcome::Moved {
             nx,
             ny,
+            px,
+            py,
             ndir,
             skin,
             clan,
             tail,
             chunk_changed,
-        }) => (nx, ny, ndir, skin, clan, tail, chunk_changed),
+        }) => (nx, ny, px, py, ndir, skin, clan, tail, chunk_changed),
         Some(MoveOutcome::Autodig(dig_dir)) => {
             return MoveApplication {
                 followup: Some(MoveFollowup::Autodig(dig_dir)),
@@ -346,7 +352,7 @@ fn apply_move(
     // Full region seed is required at connect/teleport. A normal one-cell move
     // only needs to wake the local falling neighborhood, not rescan 33x33.
     state.wake_granular_neighborhood(nx, ny);
-    state.seed_alive_region(nx, ny);
+    state.wake_alive_movement(px, py, nx, ny);
 
     let (cx, cy) = World::chunk_pos(nx, ny);
     let bot = hb_bot(
