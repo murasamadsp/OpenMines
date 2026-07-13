@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use rstml::node::{Node, NodeAttribute, NodeElement};
+use rstml::node::{Node, NodeAttribute, NodeElement, NodeName};
 use rstml::parse2;
 use syn::spanned::Spanned;
 
@@ -8,443 +8,552 @@ use syn::spanned::Spanned;
 pub fn gui(input: TokenStream) -> TokenStream {
     let tokens = proc_macro2::TokenStream::from(input);
     match parse2(tokens) {
-        Ok(nodes) => {
-            if nodes.is_empty() {
-                return syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    "Expected a single root element <window>",
-                )
-                .to_compile_error()
-                .into();
-            }
-            let root = &nodes[0];
-            match expand_node(root) {
-                Ok(expanded) => expanded.into(),
-                Err(err) => err.to_compile_error().into(),
-            }
-        }
-        Err(err) => err.to_compile_error().into(),
+        Ok(nodes) if nodes.len() == 1 => match expand_root(&nodes[0]) {
+            Ok(expanded) => expanded.into(),
+            Err(error) => error.to_compile_error().into(),
+        },
+        Ok(_) => syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "Expected exactly one root element <window>",
+        )
+        .to_compile_error()
+        .into(),
+        Err(error) => error.to_compile_error().into(),
     }
 }
 
-fn get_attr_expr(node: &NodeElement, name: &str) -> Option<syn::Expr> {
-    node.attributes().iter().find_map(|attr| match attr {
-        NodeAttribute::Attribute(keyed) if keyed.key.to_string() == name => {
-            keyed.value().map(|val| match val {
-                syn::Expr::Block(expr_block) => match expr_block.block.stmts.as_slice() {
-                    [syn::Stmt::Expr(expr, _)] => expr.clone(),
-                    _ => val.clone(),
-                },
-                _ => val.clone(),
-            })
+fn name_is(name: &NodeName, expected: &str) -> bool {
+    match name {
+        NodeName::Path(path) => path.path.is_ident(expected),
+        NodeName::Punctuated(_) => expected.contains('-') && name.to_string() == expected,
+        NodeName::Block(_) => false,
+    }
+}
+
+fn validate_attributes(el: &NodeElement, allowed: &[&str]) -> Result<(), syn::Error> {
+    let attributes = el.attributes();
+    for (index, attribute) in attributes.iter().enumerate() {
+        match attribute {
+            NodeAttribute::Attribute(keyed) => {
+                let Some(name) = allowed
+                    .iter()
+                    .copied()
+                    .find(|name| name_is(&keyed.key, name))
+                else {
+                    return Err(syn::Error::new(
+                        keyed.key.span(),
+                        format!("Unsupported attribute '{}' for <{}>", keyed.key, el.name()),
+                    ));
+                };
+                if attributes[..index].iter().any(|previous| {
+                    matches!(previous, NodeAttribute::Attribute(previous) if name_is(&previous.key, name))
+                }) {
+                    return Err(syn::Error::new(
+                        keyed.key.span(),
+                        format!("Duplicate attribute '{name}' for <{}>", el.name()),
+                    ));
+                }
+            }
+            NodeAttribute::Block(_) => {
+                return Err(syn::Error::new(
+                    attribute.span(),
+                    format!("Unsupported attribute syntax for <{}>", el.name()),
+                ));
+            }
         }
-        _ => None,
+    }
+    Ok(())
+}
+
+fn get_attr_expr(el: &NodeElement, name: &str) -> Option<proc_macro2::TokenStream> {
+    el.attributes()
+        .iter()
+        .find_map(|attribute| match attribute {
+            NodeAttribute::Attribute(keyed) if name_is(&keyed.key, name) => {
+                keyed.value().map(|value| quote! { #value })
+            }
+            _ => None,
+        })
+}
+
+fn required_attr(el: &NodeElement, name: &str) -> Result<proc_macro2::TokenStream, syn::Error> {
+    get_attr_expr(el, name).ok_or_else(|| {
+        syn::Error::new(
+            el.name().span(),
+            format!("Attribute '{name}' is required for <{}>", el.name()),
+        )
     })
 }
 
-fn get_single_child_or_value(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    if el.children.is_empty() {
-        return Ok(quote! { "" });
+fn literal_attr(el: &NodeElement, name: &str) -> Option<String> {
+    let expression = el
+        .attributes()
+        .iter()
+        .find_map(|attribute| match attribute {
+            NodeAttribute::Attribute(keyed) if name_is(&keyed.key, name) => keyed.value(),
+            _ => None,
+        })?;
+    let syn::Expr::Lit(literal) = expression else {
+        return None;
+    };
+    match &literal.lit {
+        syn::Lit::Str(value) => Some(value.value()),
+        syn::Lit::Int(value) => Some(value.base10_digits().to_owned()),
+        syn::Lit::Float(value) => Some(value.base10_digits().to_owned()),
+        syn::Lit::Bool(value) => Some(value.value.to_string()),
+        syn::Lit::Char(value) => Some(value.value().to_string()),
+        syn::Lit::Byte(value) => Some(value.value().to_string()),
+        _ => None,
     }
-    if el.children.len() == 1 {
-        match &el.children[0] {
-            Node::Text(t) => {
-                let s = t.value_string();
-                Ok(quote! { #s })
-            }
-            Node::Block(b) => Ok(quote! { #b }),
-            _ => Err(syn::Error::new(
-                el.name().span(),
-                "Expected text or expression inside element",
-            )),
+}
+
+fn get_single_child_or_value(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
+    match el.children.as_slice() {
+        [] => Ok(quote! { "" }),
+        [Node::Text(text)] => {
+            let value = text.value_string();
+            Ok(quote! { #value })
         }
-    } else {
-        let mut format_str = String::new();
-        let mut format_exprs = Vec::new();
-        for child in &el.children {
-            match child {
-                Node::Text(t) => {
-                    format_str.push_str("{}");
-                    let s = t.value_string();
-                    format_exprs.push(quote! { #s });
+        [Node::Block(block)] => Ok(quote! { #block }),
+        children => {
+            let mut format_string = String::new();
+            let mut expressions = Vec::with_capacity(children.len());
+            for child in children {
+                match child {
+                    Node::Text(text) => {
+                        format_string.push_str("{}");
+                        let value = text.value_string();
+                        expressions.push(quote! { #value });
+                    }
+                    Node::Block(block) => {
+                        format_string.push_str("{}");
+                        expressions.push(quote! { #block });
+                    }
+                    _ => {
+                        return Err(syn::Error::new(
+                            child.span(),
+                            "Expected text or expression inside element",
+                        ));
+                    }
                 }
-                Node::Block(b) => {
-                    format_str.push_str("{}");
-                    format_exprs.push(quote! { #b });
-                }
-                _ => return Err(syn::Error::new(child.span(), "Expected text or expression")),
             }
+            Ok(quote! { format!(#format_string, #(#expressions),*) })
         }
-        Ok(quote! {
-            format!(#format_str, #(#format_exprs),*)
-        })
     }
 }
 
 fn expand_window(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let title = get_attr_expr(el, "title").ok_or_else(|| {
-        syn::Error::new(
-            el.name().span(),
-            "Attribute 'title' is required for <window>",
-        )
-    })?;
-
-    let mut child_tokens = Vec::new();
-    for child in &el.children {
-        child_tokens.push(expand_node(child)?);
-    }
-
-    let css_setup = get_attr_expr(el, "style")
-        .map_or_else(|| quote! {}, |style| quote! { _horb = _horb.css(#style); });
+    validate_attributes(el, &["title", "style"])?;
+    let title = required_attr(el, "title")?;
+    let css = get_attr_expr(el, "style").map(|style| quote! { .css(#style) });
+    let children = el
+        .children
+        .iter()
+        .map(expand_node)
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(quote! {
         {
-            let mut _horb = crate::net::session::ui::horb::Horb::new(#title);
-            #css_setup
-            #(#child_tokens)*
-            _horb
+            crate::net::session::ui::horb::Horb::new(#title)
+            #css
+            #(#children)*
         }
     })
 }
 
 fn expand_tabs(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
+    validate_attributes(el, &[])?;
     let mut tabs = Vec::new();
-    let tab_nodes = el.children.iter().filter_map(|child| match child {
-        Node::Element(t_el) if t_el.name().to_string() == "tab" => Some(t_el),
-        _ => None,
-    });
-
-    for t_el in tab_nodes {
-        let label = get_attr_expr(t_el, "label").ok_or_else(|| {
-            syn::Error::new(
-                t_el.name().span(),
-                "Attribute 'label' is required for <tab>",
-            )
-        })?;
-        let action =
-            get_attr_expr(t_el, "action").unwrap_or_else(|| syn::Expr::Verbatim(quote! { "" }));
-        let active =
-            get_attr_expr(t_el, "active").unwrap_or_else(|| syn::Expr::Verbatim(quote! { false }));
-        tabs.push(quote! {
-            _horb = _horb.tab(if #active {
-                crate::net::session::ui::horb::Tab::active(#label)
-            } else {
-                crate::net::session::ui::horb::Tab::new(#label, #action)
-            });
-        });
+    for child in &el.children {
+        match child {
+            Node::Element(tab) if name_is(tab.name(), "tab") => {
+                validate_attributes(tab, &["label", "action", "active"])?;
+                let label = required_attr(tab, "label")?;
+                let action = get_attr_expr(tab, "action").unwrap_or_else(|| quote! { "" });
+                let active = get_attr_expr(tab, "active").unwrap_or_else(|| quote! { false });
+                tabs.push(quote! {
+                    .tab(if #active {
+                        crate::net::session::ui::horb::Tab::active(#label)
+                    } else {
+                        crate::net::session::ui::horb::Tab::new(#label, #action)
+                    })
+                });
+            }
+            Node::Element(other) => {
+                return Err(syn::Error::new(
+                    other.name().span(),
+                    format!(
+                        "Only <tab> is allowed inside <tabs>, found <{}>",
+                        other.name()
+                    ),
+                ));
+            }
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
+            _ => {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "Only <tab> elements are allowed inside <tabs>",
+                ));
+            }
+        }
     }
-    Ok(quote! {
-        #(#tabs)*
-    })
+    Ok(quote! { #(#tabs)* })
 }
 
 fn expand_buttons(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
+    validate_attributes(el, &[])?;
     let mut buttons = Vec::new();
-    let btn_nodes = el.children.iter().filter_map(|child| match child {
-        Node::Element(b_el) if b_el.name().to_string() == "button" => Some(b_el),
-        _ => None,
-    });
-
-    for b_el in btn_nodes {
-        let label = get_attr_expr(b_el, "label").ok_or_else(|| {
-            syn::Error::new(
-                b_el.name().span(),
-                "Attribute 'label' is required for <button>",
-            )
-        })?;
-        let action = get_attr_expr(b_el, "action").ok_or_else(|| {
-            syn::Error::new(
-                b_el.name().span(),
-                "Attribute 'action' is required for <button>",
-            )
-        })?;
-        buttons.push(quote! {
-            _horb = _horb.button(crate::net::session::ui::horb::Button::new(#label, #action));
-        });
+    for child in &el.children {
+        match child {
+            Node::Element(button) if name_is(button.name(), "button") => {
+                validate_attributes(button, &["label", "action"])?;
+                let label = required_attr(button, "label")?;
+                let action = required_attr(button, "action")?;
+                buttons.push(quote! {
+                    .button(crate::net::session::ui::horb::Button::new(#label, #action))
+                });
+            }
+            Node::Element(other) => {
+                return Err(syn::Error::new(
+                    other.name().span(),
+                    format!(
+                        "Only <button> is allowed inside <buttons>, found <{}>",
+                        other.name()
+                    ),
+                ));
+            }
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
+            _ => {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "Only <button> elements are allowed inside <buttons>",
+                ));
+            }
+        }
     }
-    Ok(quote! {
-        #(#buttons)*
-    })
+    Ok(quote! { #(#buttons)* })
 }
 
 fn expand_list(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let mut list_rows = Vec::new();
-    let row_nodes = el.children.iter().filter_map(|child| match child {
-        Node::Element(r_el) if r_el.name().to_string() == "row" => Some(r_el),
-        _ => None,
-    });
-
-    for r_el in row_nodes {
-        let title = get_attr_expr(r_el, "title").ok_or_else(|| {
-            syn::Error::new(
-                r_el.name().span(),
-                "Attribute 'title' is required for <row>",
-            )
-        })?;
-        let subtitle =
-            get_attr_expr(r_el, "subtitle").unwrap_or_else(|| syn::Expr::Verbatim(quote! { "" }));
-        let action =
-            get_attr_expr(r_el, "action").unwrap_or_else(|| syn::Expr::Verbatim(quote! { "" }));
-        list_rows.push(quote! {
-            _horb = _horb.list_row(crate::net::session::ui::ListRow::new(#title, #subtitle, #action));
-        });
-    }
-    Ok(quote! {
-        #(#list_rows)*
-    })
-}
-
-fn expand_text_row(label: &syn::Expr) -> proc_macro2::TokenStream {
-    quote! {
-        _horb = _horb.rich_row(crate::net::session::ui::horb::RichRow::text(#label));
-    }
-}
-
-fn expand_toggle_row(
-    r_el: &NodeElement,
-    label: &syn::Expr,
-) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let key = get_attr_expr(r_el, "key").ok_or_else(|| {
-        syn::Error::new(
-            r_el.name().span(),
-            "Attribute 'key' is required for <toggle-row>",
-        )
-    })?;
-    let active =
-        get_attr_expr(r_el, "active").unwrap_or_else(|| syn::Expr::Verbatim(quote! { false }));
-    Ok(quote! {
-        _horb = _horb.rich_row(crate::net::session::ui::horb::RichRow::toggle(#label, #key, #active));
-    })
-}
-
-fn expand_uint_row(
-    r_el: &NodeElement,
-    label: &syn::Expr,
-) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let key = get_attr_expr(r_el, "key").ok_or_else(|| {
-        syn::Error::new(
-            r_el.name().span(),
-            "Attribute 'key' is required for <uint-row>",
-        )
-    })?;
-    let value = get_attr_expr(r_el, "value").unwrap_or_else(|| syn::Expr::Verbatim(quote! { 0 }));
-    Ok(quote! {
-        _horb = _horb.rich_row(crate::net::session::ui::horb::RichRow::uint(#label, #key, #value));
-    })
-}
-
-fn expand_button_row(
-    r_el: &NodeElement,
-    label: &syn::Expr,
-) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let btn_label = get_attr_expr(r_el, "btn-label").ok_or_else(|| {
-        syn::Error::new(
-            r_el.name().span(),
-            "Attribute 'btn-label' is required for <button-row>",
-        )
-    })?;
-    let action = get_attr_expr(r_el, "action").ok_or_else(|| {
-        syn::Error::new(
-            r_el.name().span(),
-            "Attribute 'action' is required for <button-row>",
-        )
-    })?;
-    Ok(quote! {
-        _horb = _horb.rich_row(crate::net::session::ui::horb::RichRow::button(#label, #btn_label, #action));
-    })
-}
-
-fn expand_dropdown_row(
-    r_el: &NodeElement,
-    label: &syn::Expr,
-) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let key = get_attr_expr(r_el, "key").ok_or_else(|| {
-        syn::Error::new(
-            r_el.name().span(),
-            "Attribute 'key' is required for <dropdown-row>",
-        )
-    })?;
-    let selected =
-        get_attr_expr(r_el, "selected").unwrap_or_else(|| syn::Expr::Verbatim(quote! { 0 }));
-
-    let mut option_exprs = Vec::new();
-    let opt_nodes = r_el.children.iter().filter_map(|opt| match opt {
-        Node::Element(opt_el) if opt_el.name().to_string() == "option" => Some(opt_el),
-        _ => None,
-    });
-
-    for opt_el in opt_nodes {
-        let val = get_attr_expr(opt_el, "value").ok_or_else(|| {
-            syn::Error::new(
-                opt_el.name().span(),
-                "Attribute 'value' is required for <option>",
-            )
-        })?;
-        let lbl = get_attr_expr(opt_el, "label").ok_or_else(|| {
-            syn::Error::new(
-                opt_el.name().span(),
-                "Attribute 'label' is required for <option>",
-            )
-        })?;
-        option_exprs.push(quote! {
-            format!("{}:{}", #val, #lbl)
-        });
-    }
-
-    let options_format = if option_exprs.is_empty() {
-        quote! { String::new() }
-    } else {
-        quote! {
-            vec![#(#option_exprs),*].join("#") + "#"
+    validate_attributes(el, &[])?;
+    let mut rows = Vec::new();
+    for child in &el.children {
+        match child {
+            Node::Element(row) if name_is(row.name(), "row") => {
+                validate_attributes(row, &["title", "subtitle", "action"])?;
+                let title = required_attr(row, "title")?;
+                let subtitle = get_attr_expr(row, "subtitle").unwrap_or_else(|| quote! { "" });
+                let action = get_attr_expr(row, "action").unwrap_or_else(|| quote! { "" });
+                rows.push(quote! {
+                    .list_row(crate::net::session::ui::ListRow::new(#title, #subtitle, #action))
+                });
+            }
+            Node::Element(other) => {
+                return Err(syn::Error::new(
+                    other.name().span(),
+                    format!(
+                        "Only <row> is allowed inside <list>, found <{}>",
+                        other.name()
+                    ),
+                ));
+            }
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
+            _ => {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "Only <row> elements are allowed inside <list>",
+                ));
+            }
         }
+    }
+    Ok(quote! { #(#rows)* })
+}
+
+fn expand_form_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
+    match row.name().to_string().as_str() {
+        "text-row" => {
+            validate_attributes(row, &["label"])?;
+            let label = required_attr(row, "label")?;
+            Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::text(#label)) })
+        }
+        "toggle-row" => {
+            validate_attributes(row, &["label", "key", "active"])?;
+            let label = required_attr(row, "label")?;
+            let key = required_attr(row, "key")?;
+            let active = get_attr_expr(row, "active").unwrap_or_else(|| quote! { false });
+            Ok(
+                quote! { .rich_row(crate::net::session::ui::horb::RichRow::toggle(#label, #key, #active)) },
+            )
+        }
+        "uint-row" => {
+            validate_attributes(row, &["label", "key", "value"])?;
+            let label = required_attr(row, "label")?;
+            let key = required_attr(row, "key")?;
+            let value = get_attr_expr(row, "value").unwrap_or_else(|| quote! { 0 });
+            Ok(
+                quote! { .rich_row(crate::net::session::ui::horb::RichRow::uint(#label, #key, #value)) },
+            )
+        }
+        "button-row" => {
+            validate_attributes(row, &["label", "btn-label", "action"])?;
+            let label = required_attr(row, "label")?;
+            let button_label = required_attr(row, "btn-label")?;
+            let action = required_attr(row, "action")?;
+            Ok(
+                quote! { .rich_row(crate::net::session::ui::horb::RichRow::button(#label, #button_label, #action)) },
+            )
+        }
+        "dropdown-row" => expand_dropdown_row(row),
+        _ => Err(syn::Error::new(
+            row.name().span(),
+            format!("Unknown form element <{}>", row.name()),
+        )),
+    }
+}
+
+fn expand_dropdown_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
+    validate_attributes(row, &["label", "key", "selected"])?;
+    let label = required_attr(row, "label")?;
+    let key = required_attr(row, "key")?;
+    let selected = get_attr_expr(row, "selected").unwrap_or_else(|| quote! { 0 });
+    let mut options = Vec::new();
+    let mut literal_options = Vec::new();
+    let mut all_options_are_literal = true;
+
+    for child in &row.children {
+        match child {
+            Node::Element(option) if name_is(option.name(), "option") => {
+                validate_attributes(option, &["value", "label"])?;
+                options.push((
+                    required_attr(option, "value")?,
+                    required_attr(option, "label")?,
+                ));
+                match (literal_attr(option, "value"), literal_attr(option, "label")) {
+                    (Some(value), Some(label)) => literal_options.push((value, label)),
+                    _ => all_options_are_literal = false,
+                }
+            }
+            Node::Element(other) => {
+                return Err(syn::Error::new(
+                    other.name().span(),
+                    format!(
+                        "Only <option> is allowed inside <dropdown-row>, found <{}>",
+                        other.name()
+                    ),
+                ));
+            }
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
+            _ => {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "Only <option> elements are allowed inside <dropdown-row>",
+                ));
+            }
+        }
+    }
+
+    let options = if all_options_are_literal {
+        let value = literal_options
+            .into_iter()
+            .map(|(value, label)| format!("{value}:{label}"))
+            .collect::<Vec<_>>()
+            .join("#");
+        let value = if value.is_empty() {
+            value
+        } else {
+            format!("{value}#")
+        };
+        quote! { #value }
+    } else {
+        let format_string = "{}:{}#".repeat(options.len());
+        let expressions = options
+            .iter()
+            .flat_map(|(value, label)| [quote! { #value }, quote! { #label }]);
+        quote! { format!(#format_string, #(#expressions),*) }
     };
 
     Ok(quote! {
-        _horb = _horb.rich_row(crate::net::session::ui::horb::RichRow::dropdown(#label, #options_format, #key, #selected));
+        .rich_row(crate::net::session::ui::horb::RichRow::dropdown(#label, #options, #key, #selected))
     })
 }
 
 fn expand_form(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let mut rich_rows = Vec::new();
-    let row_nodes = el.children.iter().filter_map(|child| match child {
-        Node::Element(r_el) => Some(r_el),
-        _ => None,
-    });
-
-    for r_el in row_nodes {
-        let r_tag = r_el.name().to_string();
-        let label = get_attr_expr(r_el, "label").ok_or_else(|| {
-            syn::Error::new(
-                r_el.name().span(),
-                "Attribute 'label' is required for form elements",
-            )
-        })?;
-
-        match r_tag.as_str() {
-            "text-row" => rich_rows.push(expand_text_row(&label)),
-            "toggle-row" => rich_rows.push(expand_toggle_row(r_el, &label)?),
-            "uint-row" => rich_rows.push(expand_uint_row(r_el, &label)?),
-            "button-row" => rich_rows.push(expand_button_row(r_el, &label)?),
-            "dropdown-row" => rich_rows.push(expand_dropdown_row(r_el, &label)?),
+    validate_attributes(el, &[])?;
+    let mut rows = Vec::new();
+    for child in &el.children {
+        match child {
+            Node::Element(row) => rows.push(expand_form_row(row)?),
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
             _ => {
                 return Err(syn::Error::new(
-                    r_el.name().span(),
-                    format!("Unknown form element <{r_tag}>"),
+                    child.span(),
+                    "Only form row elements are allowed inside <form>",
                 ));
             }
         }
     }
-    Ok(quote! {
-        #(#rich_rows)*
-    })
+    Ok(quote! { #(#rows)* })
 }
 
 fn expand_canvas(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    let mut geom_tokens = Vec::new();
-    if let Some(style) = get_attr_expr(el, "style") {
-        geom_tokens.push(quote! {
-            _horb = _horb.css(#style);
-        });
-    }
-    let geom_nodes = el.children.iter().filter_map(|geom| match geom {
-        Node::Element(g_el) => Some(g_el),
-        _ => None,
-    });
-
-    for g_el in geom_nodes {
-        let g_tag = g_el.name().to_string();
-        match g_tag.as_str() {
-            "rect" => {
-                let x = get_attr_expr(g_el, "x").ok_or_else(|| {
-                    syn::Error::new(g_el.name().span(), "Attribute 'x' is required for <rect>")
-                })?;
-                let y = get_attr_expr(g_el, "y").ok_or_else(|| {
-                    syn::Error::new(g_el.name().span(), "Attribute 'y' is required for <rect>")
-                })?;
-                let w = get_attr_expr(g_el, "w").ok_or_else(|| {
-                    syn::Error::new(g_el.name().span(), "Attribute 'w' is required for <rect>")
-                })?;
-                let h = get_attr_expr(g_el, "h").ok_or_else(|| {
-                    syn::Error::new(g_el.name().span(), "Attribute 'h' is required for <rect>")
-                })?;
-                let color = get_attr_expr(g_el, "color").ok_or_else(|| {
-                    syn::Error::new(
-                        g_el.name().span(),
-                        "Attribute 'color' is required for <rect>",
-                    )
-                })?;
-                geom_tokens.push(quote! {
-                    _horb = _horb.rect(#x, #y, #w, #h, #color);
-                });
+    validate_attributes(el, &["style"])?;
+    let css = get_attr_expr(el, "style").map(|style| quote! { .css(#style) });
+    let mut geometry = Vec::new();
+    for child in &el.children {
+        match child {
+            Node::Element(rect) if name_is(rect.name(), "rect") => {
+                validate_attributes(rect, &["x", "y", "w", "h", "color"])?;
+                let x = required_attr(rect, "x")?;
+                let y = required_attr(rect, "y")?;
+                let width = required_attr(rect, "w")?;
+                let height = required_attr(rect, "h")?;
+                let color = required_attr(rect, "color")?;
+                geometry.push(quote! { .rect(#x, #y, #width, #height, #color) });
             }
-            "teleport-point" => {
-                let x = get_attr_expr(g_el, "x").ok_or_else(|| {
-                    syn::Error::new(
-                        g_el.name().span(),
-                        "Attribute 'x' is required for <teleport-point>",
-                    )
-                })?;
-                let y = get_attr_expr(g_el, "y").ok_or_else(|| {
-                    syn::Error::new(
-                        g_el.name().span(),
-                        "Attribute 'y' is required for <teleport-point>",
-                    )
-                })?;
-                let action = get_attr_expr(g_el, "action").ok_or_else(|| {
-                    syn::Error::new(
-                        g_el.name().span(),
-                        "Attribute 'action' is required for <teleport-point>",
-                    )
-                })?;
-                geom_tokens.push(quote! {
-                    _horb = _horb.teleport_point(#x, #y, #action);
-                });
+            Node::Element(point) if name_is(point.name(), "teleport-point") => {
+                validate_attributes(point, &["x", "y", "action"])?;
+                let x = required_attr(point, "x")?;
+                let y = required_attr(point, "y")?;
+                let action = required_attr(point, "action")?;
+                geometry.push(quote! { .teleport_point(#x, #y, #action) });
             }
+            Node::Element(other) => {
+                return Err(syn::Error::new(
+                    other.name().span(),
+                    format!("Unknown canvas element <{}>", other.name()),
+                ));
+            }
+            Node::Text(text) if text.value_string().trim().is_empty() => {}
             _ => {
                 return Err(syn::Error::new(
-                    g_el.name().span(),
-                    format!("Unknown canvas element <{g_tag}>"),
+                    child.span(),
+                    "Only canvas elements (<rect>, <teleport-point>) are allowed inside <canvas>",
                 ));
             }
         }
     }
-    Ok(quote! {
-        #(#geom_tokens)*
-    })
+    Ok(quote! { #css #(#geometry)* })
+}
+
+fn expand_root(node: &Node) -> Result<proc_macro2::TokenStream, syn::Error> {
+    match node {
+        Node::Element(element) if name_is(element.name(), "window") => expand_window(element),
+        Node::Element(element) => Err(syn::Error::new(
+            element.name().span(),
+            "Expected root element <window>",
+        )),
+        _ => Err(syn::Error::new(
+            node.span(),
+            "Expected root element <window>",
+        )),
+    }
 }
 
 fn expand_node(node: &Node) -> Result<proc_macro2::TokenStream, syn::Error> {
     match node {
-        Node::Element(el) => {
-            let tag_name = el.name().to_string();
-            match tag_name.as_str() {
-                "window" => expand_window(el),
-                "text" => {
-                    let val = get_single_child_or_value(el)?;
-                    Ok(quote! {
-                        _horb = _horb.text(#val);
-                    })
-                }
-                "tabs" => expand_tabs(el),
-                "buttons" => expand_buttons(el),
-                "list" => expand_list(el),
-                "form" => expand_form(el),
-                "canvas" => expand_canvas(el),
-                _ => Err(syn::Error::new(
-                    el.name().span(),
-                    format!("Unknown element <{tag_name}>"),
-                )),
-            }
+        Node::Element(element) if name_is(element.name(), "text") => {
+            validate_attributes(element, &[])?;
+            let value = get_single_child_or_value(element)?;
+            Ok(quote! { .text(#value) })
         }
-        Node::Text(t) => {
-            let s = t.value_string();
-            Ok(quote! {
-                _horb = _horb.text(#s);
-            })
+        Node::Element(element) if name_is(element.name(), "tabs") => expand_tabs(element),
+        Node::Element(element) if name_is(element.name(), "buttons") => expand_buttons(element),
+        Node::Element(element) if name_is(element.name(), "list") => expand_list(element),
+        Node::Element(element) if name_is(element.name(), "form") => expand_form(element),
+        Node::Element(element) if name_is(element.name(), "canvas") => expand_canvas(element),
+        Node::Element(element) => Err(syn::Error::new(
+            element.name().span(),
+            format!("Unknown element <{}>", element.name()),
+        )),
+        Node::Text(text) => {
+            let value = text.value_string();
+            Ok(quote! { .text(#value) })
         }
-        Node::Block(b) => Ok(quote! {
-            _horb = _horb.text(#b);
-        }),
+        Node::Block(block) => Ok(quote! { .text(#block) }),
         _ => Ok(quote! {}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: proc_macro2::TokenStream) -> NodeElement {
+        let nodes = parse2(input).expect("valid markup");
+        match nodes.into_iter().next() {
+            Some(Node::Element(element)) => element,
+            _ => panic!("expected element"),
+        }
+    }
+
+    #[test]
+    fn builds_hygienic_chain_without_internal_binding() {
+        let window = parse(quote! {
+            <window title="Title"><buttons><button label="OK" action="ok" /></buttons></window>
+        });
+        let generated = expand_window(&window).expect("expands").to_string();
+        assert!(generated.contains("Horb :: new"));
+        assert!(generated.contains(". button"));
+        assert!(!generated.contains("_horb"));
+    }
+
+    #[test]
+    fn folds_literal_dropdown_options_at_compile_time() {
+        let row = parse(quote! {
+            <dropdown-row label="Rank" key="rank"><option value=0 label="Member" /><option value=1 label="Leader" /></dropdown-row>
+        });
+        let generated = expand_form_row(&row).expect("expands").to_string();
+        assert!(generated.contains("0:Member#1:Leader#"));
+        assert!(!generated.contains("vec !"));
+        assert!(!generated.contains("join"));
+    }
+
+    #[test]
+    fn dynamic_dropdown_uses_one_format_call() {
+        let row = parse(quote! {
+            <dropdown-row label="Rank" key="rank"><option value=rank label=name /></dropdown-row>
+        });
+        let generated = expand_form_row(&row).expect("expands").to_string();
+        assert!(generated.contains("format !"));
+        assert!(!generated.contains("vec !"));
+        assert!(!generated.contains("join"));
+    }
+
+    #[test]
+    fn rejects_unknown_attribute_and_invalid_form_content() {
+        let window = parse(quote! { <window title="Title" typo="x" /> });
+        assert!(
+            expand_window(&window)
+                .expect_err("must reject typo")
+                .to_string()
+                .contains("Unsupported attribute 'typo'")
+        );
+
+        let form = parse(quote! { <form>unexpected</form> });
+        assert!(
+            expand_form(&form)
+                .expect_err("must reject text")
+                .to_string()
+                .contains("Only form row elements")
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_attributes_and_non_window_roots() {
+        let window = parse(quote! { <window title="One" title="Two" /> });
+        assert!(
+            expand_window(&window)
+                .expect_err("must reject duplicate")
+                .to_string()
+                .contains("Duplicate attribute 'title'")
+        );
+
+        let tabs = parse(quote! { <tabs /> });
+        assert!(
+            expand_root(&Node::Element(tabs))
+                .expect_err("must require window root")
+                .to_string()
+                .contains("Expected root element <window>")
+        );
     }
 }

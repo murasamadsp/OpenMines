@@ -93,6 +93,13 @@ struct ConnectProfile {
     health_recalc: Duration,
 }
 
+struct ConnectEntityResult {
+    effects: crate::game::CommandEffects,
+    entity: bevy_ecs::entity::Entity,
+    center_chunk: (u32, u32),
+    visible_chunks: Vec<(u32, u32)>,
+}
+
 fn log_connect_profile_if_slow(
     player_id: PlayerId,
     total: Duration,
@@ -124,7 +131,7 @@ fn connect_entity_in_tick_inner(
     state: &Arc<GameState>,
     player: &PlayerRow,
     session_id: crate::game::SessionId,
-) -> crate::game::CommandEffects {
+) -> ConnectEntityResult {
     let started_at = Instant::now();
     let threshold = Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
     let mut profile = ConnectProfile::default();
@@ -169,18 +176,21 @@ fn connect_entity_in_tick_inner(
 
     let section_t0 = Instant::now();
     if let Some(entity) = state.get_player_entity(pid) {
-        let mut sync_row = {
+        let mut reconnect = (|| {
             let mut ecs = state.ecs_write_profiled("player.connect.reuse_entity");
             if !ecs.entities().contains(entity) {
                 drop(ecs);
                 state.unregister_player_entity(pid);
                 None
             } else {
+                let position = ecs.get::<PlayerPosition>(entity)?;
+                let center_chunk = (position.chunk_x(), position.chunk_y());
+                let visible_chunks = state.visible_chunks_around(center_chunk.0, center_chunk.1);
                 ecs.entity_mut(entity)
                     .insert(PlayerConnection { session_id });
                 if let Some(mut view) = ecs.get_mut::<PlayerView>(entity) {
-                    view.last_chunk = None;
-                    view.visible_chunks.clear();
+                    view.last_chunk = Some(center_chunk);
+                    view.visible_chunks = visible_chunks.clone();
                 }
                 if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
                     flags.incarnation = session_id;
@@ -190,9 +200,10 @@ fn connect_entity_in_tick_inner(
                     stats.role = player.role;
                 }
                 crate::game::player::extract_player_row(&ecs, entity)
+                    .map(|row| (row, center_chunk, visible_chunks))
             }
-        };
-        if let Some(mut row) = sync_row.take() {
+        })();
+        if let Some((mut row, center_chunk, visible_chunks)) = reconnect.take() {
             row.selected_program_id = player.selected_program_id;
             row.selected_program = player.selected_program.clone();
             state.register_active_player(pid, entity, session_id);
@@ -209,7 +220,12 @@ fn connect_entity_in_tick_inner(
             profile.reuse_existing = section_t0.elapsed();
             tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
             log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);
-            return effects;
+            return ConnectEntityResult {
+                effects,
+                entity,
+                center_chunk,
+                visible_chunks,
+            };
         }
     }
     profile.reuse_existing = section_t0.elapsed();
@@ -254,6 +270,8 @@ fn connect_entity_in_tick_inner(
     {
         programmator.run_program(&program.code);
     }
+    let center_chunk = crate::world::World::chunk_pos(player.x, player.y);
+    let visible_chunks = state.visible_chunks_around(center_chunk.0, center_chunk.1);
     let components = (
         PlayerMetadata {
             id: pid,
@@ -289,8 +307,8 @@ fn connect_entity_in_tick_inner(
         },
         skills,
         PlayerView {
-            last_chunk: None,
-            visible_chunks: Vec::new(),
+            last_chunk: Some(center_chunk),
+            visible_chunks: visible_chunks.clone(),
         },
         PlayerUI {
             current_window: None,
@@ -340,7 +358,12 @@ fn connect_entity_in_tick_inner(
     profile.register = section_t0.elapsed();
 
     log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);
-    effects
+    ConnectEntityResult {
+        effects,
+        entity,
+        center_chunk,
+        visible_chunks,
+    }
 }
 
 pub fn connect_entity_in_tick(
@@ -351,20 +374,17 @@ pub fn connect_entity_in_tick(
     if state.sessions.outbox_for_session(session_id).is_none() {
         return crate::game::CommandEffects::default();
     }
-    let mut effects = connect_entity_in_tick_inner(state, player, session_id);
+    let connected = connect_entity_in_tick_inner(state, player, session_id);
+    let mut effects = connected.effects;
 
     let pid: PlayerId = player.id.into();
-    if let Some(entity) = state.active_player_entity_for_session(pid, session_id)
-        && let Some(initial_visible_chunks) =
-            crate::net::session::play::chunks::initialize_chunk_visibility(state, pid, session_id)
-    {
-        if let Some(mut view) = extract_init_view(state, pid, entity, player) {
-            view.initial_visible_chunks = initial_visible_chunks;
-            effects.events.push(crate::game::GameEvent::PlayerInit {
-                session_id,
-                view: Box::new(view),
-            });
-        }
+    state.register_player_chunk(pid, connected.center_chunk.0, connected.center_chunk.1);
+    if let Some(mut view) = extract_init_view(state, pid, connected.entity, player) {
+        view.initial_visible_chunks = connected.visible_chunks;
+        effects.events.push(crate::game::GameEvent::PlayerInit {
+            session_id,
+            view: Box::new(view),
+        });
     }
     effects
 }

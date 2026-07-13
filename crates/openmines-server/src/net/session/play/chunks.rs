@@ -8,33 +8,6 @@ pub struct ChunkFanout {
     pub data: Vec<u8>,
 }
 
-/// Owner-side visibility commit for the first Player.Init. Expensive map/HB
-/// snapshotting happens later in the presentation owner from this immutable list.
-pub fn initialize_chunk_visibility(
-    state: &Arc<GameState>,
-    pid: PlayerId,
-    session_id: crate::game::SessionId,
-) -> Option<Vec<(u32, u32)>> {
-    state.active_player_entity_for_session(pid, session_id)?;
-    let update = state
-        .modify_player(pid, |ecs, entity| {
-            let connection = ecs.get::<crate::game::player::PlayerConnection>(entity)?;
-            if connection.session_id != session_id {
-                return None;
-            }
-            let position = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
-            let center = (position.chunk_x(), position.chunk_y());
-            let visible = state.visible_chunks_around(center.0, center.1);
-            let mut view = ecs.get_mut::<crate::game::player::PlayerView>(entity)?;
-            view.last_chunk = Some(center);
-            view.visible_chunks = visible.clone();
-            Some((center, visible))
-        })
-        .flatten()?;
-    state.register_player_chunk(pid, update.0.0, update.0.1);
-    Some(update.1)
-}
-
 /// Builds the first chunk payload after authoritative visibility is committed.
 /// Unlike movement sync there are no old chunks to clear and no ECS mutation.
 pub fn build_initial_chunk_packets(

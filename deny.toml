@@ -17,6 +17,7 @@ allow = [
 multiple-versions = "allow"
 
 [advisories]
+unmaintained = "none"
 ignore = [
   "RUSTSEC-2024-0370",
 ]

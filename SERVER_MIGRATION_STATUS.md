@@ -1,6 +1,6 @@
 # OpenMines Server Migration Status
 
-Обновлено: 2026-07-13.
+Обновлено: 2026-07-14.
 
 Это **единственный актуальный checkpoint и handoff** по миграции сервера.
 Подробная целевая модель находится в `SIMULATION_KERNEL_PLAN.md`; правила формы
@@ -25,9 +25,10 @@ git diff --check
 
 1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые
    решения` ниже.
-2. Следующий vertical slice - перевести navigation/slash ветки chat на typed
-   command/apply/effects и bounded persistence там, где они ещё запускают
-   session tasks. Обычный `Chat` уже использует `ChatAppend + ChatFanout`.
+2. Следующий vertical slice - перевести `Chin`/`Cmen`/`Choo`/`Cpri` и
+   slash-ветки chat на typed command/apply/effects. Обычный `Chat` уже
+   использует `ChatAppend + ChatFanout`; `Cset` уже использует bounded
+   `ChatColorCycle` persistence completion.
    Не смешивать этот срез с ECS ownership или multicore.
 3. Перед правкой проверить указанные функции в текущем коде: номера строк могут
    сдвинуться, имена и invariants важнее номера.
@@ -256,9 +257,14 @@ auth hydrate outside owner
 ```
 
 Новый trace `2026-07-13 19:56` после active registries: connect dispatch
-`8.48ms wall` / `5.90ms CPU`, из них сам command `8.07ms`. Это уже не проблема
-hazards и не только host preemption: следующий подтверждённый CPU slice -
-chunk/presentation snapshot, оставшийся внутри connect apply.
+`8.48ms wall` / `5.90ms CPU`, из них сам command `8.07ms`. Visibility commit
+теперь выполняется в исходном entity write: отдельный post-spawn ECS write
+удалён, затем owner регистрирует уже зафиксированный chunk index. Локальный
+release login-only burst `2026-07-14` на `4x4` fixture: `100/100`, p95
+`5.992ms`, p99 `6.082ms`; `300/300`, p95 `6.244ms`, p99 `6.383ms`, без
+unexpected disconnect, drain timeout и tickprof warnings. Это fixture gate,
+не замена world-sized benchmark; per-chunk building overlay cache остаётся
+следующим read-model debt.
 
 ### P2: periodic dirty scan
 
@@ -494,6 +500,10 @@ Player.Init order и повторный session guard сохранены. Initia
 lock на весь 5x5 view. Полный per-chunk cache остаётся следующим read-model debt,
 но command dispatch его больше не выполняет.
 
+Начальный `PlayerView` и visible chunk list заполняются в том же entity write,
+что и spawn/reconnect; старый второй `initialize_chunk_visibility` write удалён.
+Проверка release login-only burst `100`/`300` clients приведена в P2 выше.
+
 **Intra-chunk movement fast path закрыт.** `Xmov` больше не вызывает
 `prepare_chunk_changed` и ECS snapshot, пока source/target остаются в одном
 чанке. Chunk sync, clears и index update остаются только при реальном crossing.
@@ -522,9 +532,12 @@ guard, wire smoke и release movement stress `100/2 000`, `300/6 000` без los
 ## Следующий vertical slice
 
 Chat navigation/slash-command fallback: обычный `Chat` уже использует typed
-`ChatAppend + ChatFanout`; `Chin`/`Cmen`/`Choo`/`Cset`/`Cpri` и slash-команды
-ещё запускают session async tasks. Перенести их по одному vertical feature,
-не маскируя старый исторический trace локальным micro-optimization.
+`ChatAppend + ChatFanout`. `Cset` переведён на `ChatColorCycle`: admission
+резервирует completion до mutation, worker атомарно обновляет цвет с retry для
+transient SQLite failure, completion шлёт `mC` только current session.
+`Chin`/`Cmen`/`Choo`/`Cpri` и slash-команды ещё запускают session async tasks.
+Переносить их по одному vertical feature, не маскируя старый исторический trace
+локальным micro-optimization.
 
 ### P0, закрытый перед следующим срезом: programmator due requeue
 
