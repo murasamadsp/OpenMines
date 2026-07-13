@@ -213,6 +213,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
                                         );
                                         enqueue_ty_command(
                                             &state,
+                                            &tx,
                                             session_id,
                                             id,
                                             &ty,
@@ -261,7 +262,7 @@ pub async fn handle(state: Arc<GameState>, mut stream: TcpStream, addr: SocketAd
     }
 
     if let Some(id) = auth_state.player_id() {
-        on_disconnect(&state, id, session_id);
+        on_disconnect(&state, id, session_id).await;
     }
     state.sessions.close(session_id);
     Ok(())

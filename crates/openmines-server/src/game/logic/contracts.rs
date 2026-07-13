@@ -443,6 +443,33 @@ pub enum PlayerCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandIngressClass {
+    Lifecycle,
+    Gameplay,
+    Internal,
+}
+
+impl CommandIngressClass {
+    #[must_use]
+    pub const fn metric_name(self) -> &'static str {
+        match self {
+            Self::Lifecycle => "lifecycle",
+            Self::Gameplay => "gameplay",
+            Self::Internal => "internal",
+        }
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Lifecycle => 0,
+            Self::Gameplay => 1,
+            Self::Internal => 2,
+        }
+    }
+}
+
 impl PlayerCommand {
     pub const fn name(&self) -> &'static str {
         match self {
@@ -495,10 +522,25 @@ impl PlayerCommand {
             _ => None,
         }
     }
+
+    #[must_use]
+    pub const fn ingress_class(&self) -> CommandIngressClass {
+        match self {
+            Self::Connect { .. } | Self::Disconnect { .. } => CommandIngressClass::Lifecycle,
+            Self::ApplyDeletedProgram { .. }
+            | Self::ApplyInventoryBuildingPlaced { .. }
+            | Self::ApplyPaidBuildingPlaced { .. }
+            | Self::RefundPaidBuildingPlacement { .. }
+            | Self::ApplyProgramEditorOpen { .. }
+            | Self::ApplyProgramEditorRename { .. } => CommandIngressClass::Internal,
+            _ => CommandIngressClass::Gameplay,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct QueuedPlayerCommand {
+    pub ingress_class: Option<CommandIngressClass>,
     pub sequence: CommandSeq,
     pub received_at: Instant,
     pub enqueued_at: Instant,

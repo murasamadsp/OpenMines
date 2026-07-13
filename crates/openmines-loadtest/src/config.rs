@@ -10,6 +10,7 @@ pub struct Config {
     pub ramp_ms: u64,
     pub drain_secs: u64,
     pub db: String,
+    pub player_prefix: String,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -38,6 +39,9 @@ struct Args {
 
     #[arg(long, default_value = "data/openmines.db")]
     db: String,
+
+    #[arg(long, default_value = "loadtest")]
+    player_prefix: String,
 }
 
 impl From<Args> for Config {
@@ -51,6 +55,7 @@ impl From<Args> for Config {
             ramp_ms: args.ramp_ms,
             drain_secs: args.drain_secs,
             db: args.db,
+            player_prefix: args.player_prefix,
         }
     }
 }

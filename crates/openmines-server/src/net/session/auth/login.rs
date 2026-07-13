@@ -86,7 +86,7 @@ pub async fn handle_auth(
         send_u_packet(tx, gu.0, &gu.1);
 
         // 3. Player.Init() — в `server_reference/Auth.TryToAuth` при токене `AH` не шлётся (только после GUI-пароля / регистрации).
-        let pid = init_player(state, &player, session_id);
+        let pid = init_player(state, &player, session_id).await;
         *auth_state = crate::net::session::connection::AuthState::Authenticated { player_id: pid };
 
         return Ok(Some(pid));

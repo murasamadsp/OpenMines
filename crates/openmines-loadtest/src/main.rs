@@ -66,7 +66,7 @@ async fn main() {
 
     // Пред-засев игроков в БД сервера; (user_id, hash) для Regular-auth.
     print!("  пред-засев {} игроков в {} ... ", cfg.clients, cfg.db);
-    let creds = match seed_players(&cfg.db, cfg.clients).await {
+    let creds = match seed_players(&cfg.db, cfg.clients, &cfg.player_prefix).await {
         Ok(c) => {
             println!("ok ({} строк)", c.len());
             c
@@ -162,6 +162,7 @@ mod tests {
         assert_eq!(cfg.ramp_ms, 3);
         assert_eq!(cfg.drain_secs, 5);
         assert_eq!(cfg.db, "data/openmines.db");
+        assert_eq!(cfg.player_prefix, "loadtest");
     }
 
     #[test]
@@ -183,6 +184,8 @@ mod tests {
             "7",
             "--db",
             "custom.db",
+            "--player-prefix",
+            "storm",
         ];
         let cfg = parse_args_from(args).unwrap();
         assert_eq!(cfg.host, "10.0.0.2");
@@ -193,6 +196,7 @@ mod tests {
         assert_eq!(cfg.ramp_ms, 12);
         assert_eq!(cfg.drain_secs, 7);
         assert_eq!(cfg.db, "custom.db");
+        assert_eq!(cfg.player_prefix, "storm");
     }
 
     #[test]

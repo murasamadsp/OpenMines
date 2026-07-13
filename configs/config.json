@@ -41,7 +41,13 @@
     "simulation": {
       "due_action_capacity": 65536,
       "due_action_batch_budget": 256,
-      "due_action_time_budget_us": 2000
+      "due_action_time_budget_us": 2000,
+      "lifecycle_ingress_capacity": 1024,
+      "gameplay_ingress_capacity": 8192,
+      "internal_ingress_capacity": 1024,
+      "lifecycle_ingress_batch_budget": 64,
+      "gameplay_ingress_batch_budget": 256,
+      "internal_ingress_batch_budget": 64
     },
     "schedules": {
       "hazards_ms": 10,

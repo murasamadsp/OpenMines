@@ -1,6 +1,6 @@
 use prometheus::{
-    Encoder, Gauge, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
-    Opts, Registry, TextEncoder,
+    Encoder, Gauge, GaugeVec, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec,
+    IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
 };
 use std::sync::LazyLock;
 
@@ -262,6 +262,51 @@ pub static COMMAND_QUEUE_HIGH_WATER: LazyLock<IntGauge> = LazyLock::new(|| {
         "openmines_command_queue_high_water",
         "Highest observed simulation input command queue depth since process start",
     ))
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static COMMAND_INGRESS_DEPTH: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    let gauge = IntGaugeVec::new(
+        Opts::new(
+            "openmines_command_ingress_depth",
+            "Current queued simulation commands by workload class",
+        ),
+        &["class"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("register");
+    gauge
+});
+
+pub static COMMAND_INGRESS_RESIDENCE_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
+    let histogram = HistogramVec::new(
+        HistogramOpts::new(
+            "openmines_command_ingress_residence_duration_seconds",
+            "Time each command spent queued before simulation apply, by workload class",
+        ),
+        &["class"],
+    )
+    .expect("metric");
+    REGISTRY
+        .register(Box::new(histogram.clone()))
+        .expect("register");
+    histogram
+});
+
+pub static COMMAND_INGRESS_OLDEST_AGE_SECONDS: LazyLock<GaugeVec> = LazyLock::new(|| {
+    let gauge = GaugeVec::new(
+        Opts::new(
+            "openmines_command_ingress_oldest_age_seconds",
+            "Age of the oldest queued simulation command by workload class",
+        ),
+        &["class"],
+    )
     .expect("metric");
     REGISTRY
         .register(Box::new(gauge.clone()))

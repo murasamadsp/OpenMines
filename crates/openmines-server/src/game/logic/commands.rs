@@ -641,7 +641,7 @@ fn apply_gui_button_command(
         return;
     }
     if let Some((x, y)) = parse_pack_remove_button(&button) {
-        state.enqueue_command(crate::game::PlayerCommand::RemovePack {
+        if !state.enqueue_command(crate::game::PlayerCommand::RemovePack {
             remove: crate::game::RemovePack {
                 x,
                 y,
@@ -652,7 +652,17 @@ fn apply_gui_button_command(
                     },
                 ),
             },
-        });
+        }) {
+            crate::net::session::wire::send_u_packet(
+                tx,
+                "OK",
+                &crate::protocol::packets::ok_message(
+                    "СЕРВЕР",
+                    "Сервер перегружен, повторите действие.",
+                )
+                .1,
+            );
+        }
         return;
     }
     if let Some(program_id) = button
@@ -1535,13 +1545,13 @@ fn spawn_inventory_building_insert_task(
             .await;
         match inserted {
             Ok(db_id) => {
-                task_state.enqueue_command(
-                    crate::game::PlayerCommand::ApplyInventoryBuildingPlaced {
+                task_state
+                    .enqueue_internal(crate::game::PlayerCommand::ApplyInventoryBuildingPlaced {
                         session_id,
                         placement,
                         db_id,
-                    },
-                );
+                    })
+                    .await;
             }
             Err(e) => {
                 tracing::error!(
@@ -1585,11 +1595,13 @@ fn spawn_paid_building_insert_task(
             .await;
         match inserted {
             Ok(db_id) => {
-                task_state.enqueue_command(crate::game::PlayerCommand::ApplyPaidBuildingPlaced {
-                    session_id,
-                    placement,
-                    db_id,
-                });
+                task_state
+                    .enqueue_internal(crate::game::PlayerCommand::ApplyPaidBuildingPlaced {
+                        session_id,
+                        placement,
+                        db_id,
+                    })
+                    .await;
             }
             Err(e) => {
                 tracing::error!(
@@ -1600,13 +1612,13 @@ fn spawn_paid_building_insert_task(
                     error = ?e,
                     "DB insert failed for paid building placement"
                 );
-                task_state.enqueue_command(
-                    crate::game::PlayerCommand::RefundPaidBuildingPlacement {
+                task_state
+                    .enqueue_internal(crate::game::PlayerCommand::RefundPaidBuildingPlacement {
                         session_id,
                         player_id: placement.owner_id,
                         cost: placement.cost,
-                    },
-                );
+                    })
+                    .await;
             }
         }
     });
@@ -1677,13 +1689,15 @@ fn spawn_program_editor_open_task(
             );
             return;
         }
-        task_state.enqueue_command(crate::game::PlayerCommand::ApplyProgramEditorOpen {
-            session_id,
-            player_id,
-            program_id: program.id,
-            program_name: program.name,
-            source: program.code,
-        });
+        task_state
+            .enqueue_internal(crate::game::PlayerCommand::ApplyProgramEditorOpen {
+                session_id,
+                player_id,
+                program_id: program.id,
+                program_name: program.name,
+                source: program.code,
+            })
+            .await;
     });
 }
 
@@ -1729,13 +1743,15 @@ fn spawn_program_editor_create_task(
             );
             return;
         }
-        task_state.enqueue_command(crate::game::PlayerCommand::ApplyProgramEditorOpen {
-            session_id,
-            player_id,
-            program_id,
-            program_name: name,
-            source: String::new(),
-        });
+        task_state
+            .enqueue_internal(crate::game::PlayerCommand::ApplyProgramEditorOpen {
+                session_id,
+                player_id,
+                program_id,
+                program_name: name,
+                source: String::new(),
+            })
+            .await;
     });
 }
 
@@ -1794,13 +1810,15 @@ fn spawn_program_editor_rename_task(
             );
             return;
         }
-        task_state.enqueue_command(crate::game::PlayerCommand::ApplyProgramEditorRename {
-            session_id,
-            player_id,
-            program_id,
-            program_name: name,
-            source: program.code,
-        });
+        task_state
+            .enqueue_internal(crate::game::PlayerCommand::ApplyProgramEditorRename {
+                session_id,
+                player_id,
+                program_id,
+                program_name: name,
+                source: program.code,
+            })
+            .await;
     });
 }
 
@@ -1825,10 +1843,12 @@ fn spawn_program_delete_task(
             .await
         {
             Ok(true) => {
-                task_state.enqueue_command(crate::game::PlayerCommand::ApplyDeletedProgram {
-                    player_id,
-                    program_id,
-                });
+                task_state
+                    .enqueue_internal(crate::game::PlayerCommand::ApplyDeletedProgram {
+                        player_id,
+                        program_id,
+                    })
+                    .await;
             }
             Ok(false) => {
                 tracing::warn!(

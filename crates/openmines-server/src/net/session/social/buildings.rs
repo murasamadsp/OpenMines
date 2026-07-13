@@ -470,7 +470,7 @@ pub fn handle_remove_building(
         send_building_error(tx, "Сессия устарела");
         return;
     };
-    state.enqueue_command(crate::game::PlayerCommand::RemovePack {
+    if !state.enqueue_command(crate::game::PlayerCommand::RemovePack {
         remove: crate::game::RemovePack {
             x: bx,
             y: by,
@@ -481,7 +481,9 @@ pub fn handle_remove_building(
                 },
             ),
         },
-    });
+    }) {
+        send_building_error(tx, "Сервер перегружен, повторите действие.");
+    }
 }
 
 pub fn building_extra_for_pack_type(pack_type: PackType) -> anyhow::Result<BuildingExtra> {

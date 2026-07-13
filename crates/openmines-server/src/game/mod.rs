@@ -12,9 +12,10 @@ pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
     BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
-    BuildingDeleteResult, BuildingIdentity, CommandEffects, CommandSeq, GameEvent, GuiCommand,
-    GuiView, PersistenceCompletion, PlayerCommand, ProgramSaveRequest, ProgramSaveResult,
-    QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
+    BuildingDeleteResult, BuildingIdentity, CommandEffects, CommandIngressClass, CommandSeq,
+    GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, ProgramSaveRequest,
+    ProgramSaveResult, QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
+    TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
@@ -36,6 +37,7 @@ use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 pub use actors::player::{ActivePlayer, PlayerFlags, PlayerId, PlayerMetadata, PlayerStats};
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
@@ -335,21 +337,165 @@ pub struct BuildingInsertSpec<'a> {
     pub extra: &'a BuildingExtra,
 }
 
-// ─── Lifecycle Queue ─────────────────────────────────────────────────────────
+struct CommandSenders {
+    lifecycle: mpsc::Sender<QueuedPlayerCommand>,
+    gameplay: mpsc::Sender<QueuedPlayerCommand>,
+    internal: mpsc::Sender<QueuedPlayerCommand>,
+}
 
-/// Команда жизненного цикла сессии — исполняется в game-tick (НЕ через TY).
-/// Переносит ecs-доступ login/disconnect из conn-тасков в единый tick-таск,
-/// чтобы `ecs`-`RwLock` не контендился между conn-тасками и тиком.
-/// `token` идентифицирует конкретный сеанс (guard от reconnect-гонки).
-pub enum LifeCmd {
-    Connect {
-        row: Box<crate::db::players::PlayerRow>,
-        session_id: SessionId,
-    },
-    Disconnect {
-        pid: PlayerId,
-        session_id: SessionId,
-    },
+pub struct CommandReceivers {
+    lifecycle: mpsc::Receiver<QueuedPlayerCommand>,
+    gameplay: mpsc::Receiver<QueuedPlayerCommand>,
+    internal: mpsc::Receiver<QueuedPlayerCommand>,
+    #[cfg(test)]
+    next_class: usize,
+}
+
+#[cfg(test)]
+mod command_ingress_tests {
+    use super::*;
+
+    fn queued(sequence: u64) -> QueuedPlayerCommand {
+        let now = Instant::now();
+        QueuedPlayerCommand {
+            ingress_class: Some(CommandIngressClass::Gameplay),
+            sequence: CommandSeq::new(sequence),
+            received_at: now,
+            enqueued_at: now,
+            command: PlayerCommand::KnownNoopTy {
+                player_id: PlayerId(1),
+                event: "test".to_owned(),
+                payload: bytes::Bytes::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn command_receivers_rotate_ready_workload_classes() {
+        let (lifecycle_tx, lifecycle) = mpsc::channel(2);
+        let (gameplay_tx, gameplay) = mpsc::channel(2);
+        let (internal_tx, internal) = mpsc::channel(2);
+        lifecycle_tx.try_send(queued(1)).unwrap();
+        gameplay_tx.try_send(queued(2)).unwrap();
+        internal_tx.try_send(queued(3)).unwrap();
+        let mut receivers = CommandReceivers {
+            lifecycle,
+            gameplay,
+            internal,
+            next_class: 0,
+        };
+
+        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 1);
+        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 2);
+        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn full_gameplay_ingress_rejects_without_consuming_lifecycle_reserve() {
+        let mut gameplay = crate::config::GameplayConfig::runtime_baseline();
+        gameplay.simulation.gameplay_ingress_capacity = 1;
+        gameplay.simulation.lifecycle_ingress_capacity = 1;
+        let test = crate::test_support::ServerTestHarness::with_gameplay(
+            "bounded_ingress",
+            "bounded-ingress-user",
+            gameplay,
+        )
+        .await;
+        let gameplay_command = || PlayerCommand::KnownNoopTy {
+            player_id: PlayerId(test.player.id),
+            event: "test".to_owned(),
+            payload: bytes::Bytes::new(),
+        };
+
+        assert!(test.state.enqueue_command(gameplay_command()));
+        assert!(!test.state.enqueue_command(gameplay_command()));
+        assert!(
+            test.state
+                .enqueue_lifecycle(PlayerCommand::Disconnect {
+                    player_id: PlayerId(test.player.id),
+                    session_id: SessionId::new(1),
+                })
+                .await
+        );
+    }
+}
+
+impl CommandReceivers {
+    pub fn try_recv_class(
+        &mut self,
+        class: CommandIngressClass,
+    ) -> Result<QueuedPlayerCommand, mpsc::error::TryRecvError> {
+        match class {
+            CommandIngressClass::Lifecycle => self.lifecycle.try_recv(),
+            CommandIngressClass::Gameplay => self.gameplay.try_recv(),
+            CommandIngressClass::Internal => self.internal.try_recv(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn try_recv(&mut self) -> Result<QueuedPlayerCommand, mpsc::error::TryRecvError> {
+        for offset in 0..3 {
+            let class = (self.next_class + offset) % 3;
+            let result = self.try_recv_class(match class {
+                0 => CommandIngressClass::Lifecycle,
+                1 => CommandIngressClass::Gameplay,
+                2 => CommandIngressClass::Internal,
+                _ => unreachable!(),
+            });
+            if let Ok(command) = result {
+                self.next_class = (class + 1) % 3;
+                return Ok(command);
+            }
+        }
+        Err(mpsc::error::TryRecvError::Empty)
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lifecycle
+            .len()
+            .saturating_add(self.gameplay.len())
+            .saturating_add(self.internal.len())
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn close(&mut self) {
+        self.lifecycle.close();
+        self.gameplay.close();
+        self.internal.close();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_gameplay(gameplay: mpsc::Receiver<QueuedPlayerCommand>) -> Self {
+        let (lifecycle_tx, lifecycle) = mpsc::channel(1);
+        let (internal_tx, internal) = mpsc::channel(1);
+        drop(lifecycle_tx);
+        drop(internal_tx);
+        Self {
+            lifecycle,
+            gameplay,
+            internal,
+            next_class: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test_with_ingress(
+        lifecycle: mpsc::Receiver<QueuedPlayerCommand>,
+        gameplay: mpsc::Receiver<QueuedPlayerCommand>,
+        internal: mpsc::Receiver<QueuedPlayerCommand>,
+    ) -> Self {
+        Self {
+            lifecycle,
+            gameplay,
+            internal,
+            next_class: 0,
+        }
+    }
 }
 
 pub struct GameSchedule {
@@ -475,11 +621,13 @@ pub struct GameState {
     pub ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
-    commands_tx: tokio::sync::mpsc::UnboundedSender<QueuedPlayerCommand>,
-    pub commands_rx: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<QueuedPlayerCommand>>>,
+    commands_tx: CommandSenders,
+    pub commands_rx: Mutex<Option<CommandReceivers>>,
     command_seq: std::sync::atomic::AtomicU64,
     command_queue_depth: std::sync::atomic::AtomicUsize,
     command_queue_high_water: std::sync::atomic::AtomicUsize,
+    command_ingress_depth: [std::sync::atomic::AtomicUsize; 3],
+    command_ingress_ages: [Mutex<VecDeque<Instant>>; 3],
     simulation_waker: crate::simulation_waker::SimulationWaker,
     crafting_due_schedule: Mutex<CraftingDueSchedule>,
     bots_render_schedule: Mutex<BotsRenderSchedule>,
@@ -673,7 +821,10 @@ impl GameState {
             },
         ];
 
-        let state_rx;
+        let ingress = config.gameplay.simulation;
+        let (lifecycle_tx, lifecycle_rx) = mpsc::channel(ingress.lifecycle_ingress_capacity);
+        let (gameplay_tx, gameplay_rx) = mpsc::channel(ingress.gameplay_ingress_capacity);
+        let (internal_tx, internal_rx) = mpsc::channel(ingress.internal_ingress_capacity);
         let state = Arc::new(Self {
             world,
             db: database,
@@ -690,15 +841,23 @@ impl GameState {
             ecs: RwLock::new(EcsWorld::new()),
             schedules,
             auth_failures: DashMap::new(),
-            commands_tx: {
-                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-                state_rx = Some(rx);
-                tx
+            commands_tx: CommandSenders {
+                lifecycle: lifecycle_tx,
+                gameplay: gameplay_tx,
+                internal: internal_tx,
             },
-            commands_rx: Mutex::new(state_rx),
+            commands_rx: Mutex::new(Some(CommandReceivers {
+                lifecycle: lifecycle_rx,
+                gameplay: gameplay_rx,
+                internal: internal_rx,
+                #[cfg(test)]
+                next_class: 0,
+            })),
             command_seq: std::sync::atomic::AtomicU64::new(1),
             command_queue_depth: std::sync::atomic::AtomicUsize::new(0),
             command_queue_high_water: std::sync::atomic::AtomicUsize::new(0),
+            command_ingress_depth: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)),
+            command_ingress_ages: std::array::from_fn(|_| Mutex::new(VecDeque::new())),
             simulation_waker: crate::simulation_waker::SimulationWaker::default(),
             crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
             bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
@@ -895,32 +1054,118 @@ impl GameState {
         self.rate_limiters.remove(&pid);
     }
 
-    /// Поставить команду жизненного цикла в очередь (из conn-таска).
-    pub fn enqueue_life(&self, cmd: LifeCmd) {
-        match cmd {
-            LifeCmd::Connect { row, session_id } => {
-                self.enqueue_command(PlayerCommand::Connect { row, session_id });
-            }
-            LifeCmd::Disconnect { pid, session_id } => {
-                self.enqueue_command(PlayerCommand::Disconnect {
-                    player_id: pid,
-                    session_id,
-                });
-            }
-        }
+    pub async fn enqueue_lifecycle(&self, command: PlayerCommand) -> bool {
+        use std::sync::atomic::Ordering;
+
+        debug_assert_eq!(command.ingress_class(), CommandIngressClass::Lifecycle);
+        let kind = command.name();
+        let received_at = Instant::now();
+        let Ok(permit) = self.commands_tx.lifecycle.reserve().await else {
+            crate::metrics::COMMANDS_TOTAL
+                .with_label_values(&[kind, "ingress_closed"])
+                .inc();
+            return false;
+        };
+        let enqueued_at = Instant::now();
+        let sequence = self.allocate_command_sequence();
+        let class = CommandIngressClass::Lifecycle;
+        let queued = QueuedPlayerCommand {
+            ingress_class: Some(class),
+            sequence,
+            received_at,
+            enqueued_at,
+            command,
+        };
+        let depth = self
+            .command_queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let class_depth = self.command_ingress_depth[class.index()]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let high_water = self
+            .command_queue_high_water
+            .fetch_max(depth, Ordering::Relaxed)
+            .max(depth);
+        crate::metrics::COMMANDS_TOTAL
+            .with_label_values(&[kind, "enqueued"])
+            .inc();
+        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_INGRESS_DEPTH
+            .with_label_values(&[class.metric_name()])
+            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
+        self.push_command_ingress_age(class, enqueued_at);
+        permit.send(queued);
+        self.simulation_waker.wake();
+        true
     }
 
     pub fn enqueue_command(&self, command: PlayerCommand) -> bool {
         self.enqueue_command_received(command, Instant::now())
     }
 
+    pub async fn enqueue_internal(&self, command: PlayerCommand) -> bool {
+        use std::sync::atomic::Ordering;
+
+        debug_assert_eq!(command.ingress_class(), CommandIngressClass::Internal);
+        let kind = command.name();
+        let received_at = Instant::now();
+        let Ok(permit) = self.commands_tx.internal.reserve().await else {
+            crate::metrics::COMMANDS_TOTAL
+                .with_label_values(&[kind, "ingress_closed"])
+                .inc();
+            return false;
+        };
+        let enqueued_at = Instant::now();
+        let sequence = self.allocate_command_sequence();
+        let class = CommandIngressClass::Internal;
+        let queued = QueuedPlayerCommand {
+            ingress_class: Some(class),
+            sequence,
+            received_at,
+            enqueued_at,
+            command,
+        };
+        let depth = self
+            .command_queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let class_depth = self.command_ingress_depth[class.index()]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        let high_water = self
+            .command_queue_high_water
+            .fetch_max(depth, Ordering::Relaxed)
+            .max(depth);
+        crate::metrics::COMMANDS_TOTAL
+            .with_label_values(&[kind, "enqueued"])
+            .inc();
+        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_INGRESS_DEPTH
+            .with_label_values(&[class.metric_name()])
+            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
+        self.push_command_ingress_age(class, enqueued_at);
+        permit.send(queued);
+        self.simulation_waker.wake();
+        true
+    }
+
     pub fn enqueue_command_received(&self, command: PlayerCommand, received_at: Instant) -> bool {
         use std::sync::atomic::Ordering;
 
         let kind = command.name();
+        let class = command.ingress_class();
+        assert_ne!(
+            class,
+            CommandIngressClass::Internal,
+            "internal follow-up must use awaitable GameState::enqueue_internal"
+        );
         let enqueued_at = Instant::now();
         let sequence = self.allocate_command_sequence();
         let queued = QueuedPlayerCommand {
+            ingress_class: Some(class),
             sequence,
             received_at,
             enqueued_at,
@@ -933,29 +1178,73 @@ impl GameState {
                     .saturating_duration_since(received_at)
                     .as_secs_f64(),
             );
+        let sender = match class {
+            CommandIngressClass::Lifecycle => &self.commands_tx.lifecycle,
+            CommandIngressClass::Gameplay => &self.commands_tx.gameplay,
+            CommandIngressClass::Internal => &self.commands_tx.internal,
+        };
+        let Ok(permit) = sender.try_reserve() else {
+            crate::metrics::COMMANDS_TOTAL
+                .with_label_values(&[kind, "ingress_rejected"])
+                .inc();
+            crate::metrics::COMMANDS_TOTAL
+                .with_label_values(&[class.metric_name(), "ingress_rejected"])
+                .inc();
+            return false;
+        };
         let depth = self
             .command_queue_depth
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1);
-        if self.commands_tx.send(queued).is_err() {
-            self.command_queue_depth.fetch_sub(1, Ordering::Relaxed);
-            crate::metrics::COMMANDS_TOTAL
-                .with_label_values(&[kind, "queue_closed"])
-                .inc();
-            return false;
-        }
-
-        crate::metrics::COMMANDS_TOTAL
-            .with_label_values(&[kind, "enqueued"])
-            .inc();
+        let class_depth = self.command_ingress_depth[class.index()]
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
         let high_water = self
             .command_queue_high_water
             .fetch_max(depth, Ordering::Relaxed)
             .max(depth);
+        crate::metrics::COMMANDS_TOTAL
+            .with_label_values(&[kind, "enqueued"])
+            .inc();
         crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
         crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
+        crate::metrics::COMMAND_INGRESS_DEPTH
+            .with_label_values(&[class.metric_name()])
+            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
+        self.push_command_ingress_age(class, enqueued_at);
+        permit.send(queued);
         self.simulation_waker.wake();
         true
+    }
+
+    fn push_command_ingress_age(&self, class: CommandIngressClass, enqueued_at: Instant) {
+        let mut ages = self.command_ingress_ages[class.index()].lock();
+        ages.push_back(enqueued_at);
+        Self::record_oldest_command_ingress_age(class, ages.front().copied());
+    }
+
+    fn pop_command_ingress_age(&self, class: CommandIngressClass) {
+        let mut ages = self.command_ingress_ages[class.index()].lock();
+        assert!(ages.pop_front().is_some(), "command ingress age underflow");
+        Self::record_oldest_command_ingress_age(class, ages.front().copied());
+    }
+
+    pub(crate) fn refresh_command_ingress_oldest_ages(&self) {
+        for class in [
+            CommandIngressClass::Lifecycle,
+            CommandIngressClass::Gameplay,
+            CommandIngressClass::Internal,
+        ] {
+            let ages = self.command_ingress_ages[class.index()].lock();
+            Self::record_oldest_command_ingress_age(class, ages.front().copied());
+        }
+    }
+
+    fn record_oldest_command_ingress_age(class: CommandIngressClass, oldest: Option<Instant>) {
+        let age = oldest.map_or(Duration::ZERO, |timestamp| timestamp.elapsed());
+        crate::metrics::COMMAND_INGRESS_OLDEST_AGE_SECONDS
+            .with_label_values(&[class.metric_name()])
+            .set(age.as_secs_f64());
     }
 
     pub(crate) fn allocate_command_sequence(&self) -> CommandSeq {
@@ -969,13 +1258,20 @@ impl GameState {
         self.simulation_waker.clone()
     }
 
-    pub fn record_command_dequeued(&self) {
+    pub fn record_command_dequeued(&self, class: CommandIngressClass) {
         use std::sync::atomic::Ordering;
 
         let previous = self.command_queue_depth.fetch_sub(1, Ordering::Relaxed);
         debug_assert!(previous > 0, "command queue depth underflow");
         let depth = previous.saturating_sub(1);
         crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
+        let previous_class =
+            self.command_ingress_depth[class.index()].fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(previous_class > 0, "command ingress depth underflow");
+        crate::metrics::COMMAND_INGRESS_DEPTH
+            .with_label_values(&[class.metric_name()])
+            .set(i64::try_from(previous_class.saturating_sub(1)).unwrap_or(i64::MAX));
+        self.pop_command_ingress_age(class);
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>

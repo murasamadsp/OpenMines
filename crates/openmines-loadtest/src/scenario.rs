@@ -8,6 +8,7 @@ use std::time::Duration;
 pub async fn seed_players(
     database_path: &str,
     count: u32,
+    player_prefix: &str,
 ) -> Result<Vec<(i64, String)>, anyhow::Error> {
     use sqlx::Row;
 
@@ -15,8 +16,8 @@ pub async fn seed_players(
     let mut credentials = Vec::with_capacity(count as usize);
     let mut transaction = database.pool.begin().await?;
     for index in 0..count {
-        let name = format!("loadtest_{index}");
-        let hash = format!("lthash_{index}");
+        let name = format!("{player_prefix}_{index}");
+        let hash = format!("{player_prefix}_hash_{index}");
         let row = sqlx::query(
             "INSERT INTO players (name, hash) VALUES (?1, ?2) \
              ON CONFLICT(name) DO UPDATE SET hash = excluded.hash RETURNING id",

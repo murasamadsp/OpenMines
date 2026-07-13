@@ -351,9 +351,11 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
             row: Box::new(test_player_row(99)),
         });
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, gameplay_rx) = tokio::sync::mpsc::channel(2);
+    let mut rx = crate::game::CommandReceivers::test_with_gameplay(gameplay_rx);
     let now = Instant::now();
-    tx.send(crate::game::QueuedPlayerCommand {
+    tx.try_send(crate::game::QueuedPlayerCommand {
+        ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,
@@ -364,13 +366,13 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
     })
     .expect("queue disconnect");
     drop(tx);
-    let mut pending = None;
+    let mut pending = super::super::PendingCommandHeads::default();
 
     assert!(matches!(
-        take_admitted_command(&mut rx, &mut pending, &persistence),
+        take_admitted_command(&mut rx, &mut pending, &persistence, &[1, 1, 1]),
         Err("disconnect")
     ));
-    assert!(pending.is_some());
+    assert!(pending.has(crate::game::CommandIngressClass::Gameplay));
     assert!(state.is_player_active(pid));
 
     let filler = persisted.try_recv().expect("filler command");
@@ -379,7 +381,7 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
         crate::game::SaveCommand::Player { row } if row.id == 99
     ));
     let Ok(Some(AdmittedCommand { queued, permit })) =
-        take_admitted_command(&mut rx, &mut pending, &persistence)
+        take_admitted_command(&mut rx, &mut pending, &persistence, &[1, 1, 1])
     else {
         panic!("disconnect must be admitted after capacity is released");
     };
@@ -388,9 +390,9 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
     publish_command_saves(permit, &mut effects.saves, command_name);
 
     assert!(!state.is_player_active(pid));
-    assert!(pending.is_none());
+    assert!(pending.is_empty());
     assert!(matches!(
-        take_admitted_command(&mut rx, &mut pending, &persistence),
+        take_admitted_command(&mut rx, &mut pending, &persistence, &[1, 1, 1]),
         Ok(None)
     ));
     assert!(matches!(
@@ -398,6 +400,90 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
         Some(crate::game::SaveCommand::Player { row }) if row.id == player.id
     ));
     assert!(persisted.try_recv().is_none());
+}
+
+#[test]
+fn saturated_gameplay_head_does_not_starve_lifecycle_command() {
+    let (persistence, _persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+    let _filler = persistence
+        .try_reserve(crate::game::SaveKind::Player)
+        .expect("fill persistence capacity");
+    let (lifecycle_tx, lifecycle_rx) = tokio::sync::mpsc::channel(1);
+    let (gameplay_tx, gameplay_rx) = tokio::sync::mpsc::channel(1);
+    let (_internal_tx, internal_rx) = tokio::sync::mpsc::channel(1);
+    let now = Instant::now();
+    gameplay_tx
+        .try_send(crate::game::QueuedPlayerCommand {
+            ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
+            sequence: crate::game::CommandSeq::new(1),
+            received_at: now,
+            enqueued_at: now,
+            command: crate::game::PlayerCommand::Disconnect {
+                player_id: crate::game::PlayerId(1),
+                session_id: crate::game::SessionId::new(1),
+            },
+        })
+        .expect("queue durable gameplay command");
+    lifecycle_tx
+        .try_send(crate::game::QueuedPlayerCommand {
+            ingress_class: Some(crate::game::CommandIngressClass::Lifecycle),
+            sequence: crate::game::CommandSeq::new(2),
+            received_at: now,
+            enqueued_at: now,
+            command: crate::game::PlayerCommand::KnownNoopTy {
+                player_id: crate::game::PlayerId(1),
+                event: "lifecycle".to_owned(),
+                payload: bytes::Bytes::new(),
+            },
+        })
+        .expect("queue lifecycle command");
+    let mut rx =
+        crate::game::CommandReceivers::test_with_ingress(lifecycle_rx, gameplay_rx, internal_rx);
+    let mut pending = super::super::PendingCommandHeads {
+        next_class: 1,
+        ..Default::default()
+    };
+
+    let admitted = take_admitted_command(&mut rx, &mut pending, &persistence, &[1, 1, 1])
+        .expect("lifecycle command must remain runnable")
+        .expect("lifecycle command must be admitted");
+
+    assert_eq!(
+        admitted.queued.ingress_class,
+        Some(crate::game::CommandIngressClass::Lifecycle)
+    );
+    assert!(pending.has(crate::game::CommandIngressClass::Gameplay));
+}
+
+#[test]
+fn exhausted_class_budget_defers_its_ingress_until_the_next_cycle() {
+    let (persistence, _persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+    let (_lifecycle_tx, lifecycle_rx) = tokio::sync::mpsc::channel(1);
+    let (gameplay_tx, gameplay_rx) = tokio::sync::mpsc::channel(1);
+    let (_internal_tx, internal_rx) = tokio::sync::mpsc::channel(1);
+    let now = Instant::now();
+    gameplay_tx
+        .try_send(crate::game::QueuedPlayerCommand {
+            ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
+            sequence: crate::game::CommandSeq::new(1),
+            received_at: now,
+            enqueued_at: now,
+            command: crate::game::PlayerCommand::KnownNoopTy {
+                player_id: crate::game::PlayerId(1),
+                event: "gameplay".to_owned(),
+                payload: bytes::Bytes::new(),
+            },
+        })
+        .expect("queue gameplay command");
+    let mut rx =
+        crate::game::CommandReceivers::test_with_ingress(lifecycle_rx, gameplay_rx, internal_rx);
+    let mut pending = super::super::PendingCommandHeads::default();
+
+    assert!(matches!(
+        take_admitted_command(&mut rx, &mut pending, &persistence, &[1, 0, 1]),
+        Ok(None)
+    ));
+    assert_eq!(rx.len(), 1);
 }
 
 #[tokio::test]
@@ -417,6 +503,7 @@ async fn internal_building_delete_saturation_preserves_head_and_runtime_state() 
         });
     let now = Instant::now();
     let mut pending = VecDeque::from([crate::game::QueuedPlayerCommand {
+        ingress_class: None,
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,

@@ -138,6 +138,12 @@ pub struct SimulationConfig {
     pub due_action_capacity: usize,
     pub due_action_batch_budget: usize,
     pub due_action_time_budget_us: u64,
+    pub lifecycle_ingress_capacity: usize,
+    pub gameplay_ingress_capacity: usize,
+    pub internal_ingress_capacity: usize,
+    pub lifecycle_ingress_batch_budget: usize,
+    pub gameplay_ingress_batch_budget: usize,
+    pub internal_ingress_batch_budget: usize,
 }
 
 impl SimulationConfig {
@@ -147,6 +153,12 @@ impl SimulationConfig {
             due_action_capacity: 65_536,
             due_action_batch_budget: 256,
             due_action_time_budget_us: 2_000,
+            lifecycle_ingress_capacity: 1_024,
+            gameplay_ingress_capacity: 8_192,
+            internal_ingress_capacity: 1_024,
+            lifecycle_ingress_batch_budget: 64,
+            gameplay_ingress_batch_budget: 256,
+            internal_ingress_batch_budget: 64,
         }
     }
 }
@@ -469,6 +481,30 @@ impl SimulationConfig {
         if self.due_action_time_budget_us == 0 {
             anyhow::bail!("gameplay.simulation.due_action_time_budget_us must be greater than 0");
         }
+        if self.lifecycle_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.lifecycle_ingress_capacity must be greater than 0");
+        }
+        if self.gameplay_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.gameplay_ingress_capacity must be greater than 0");
+        }
+        if self.internal_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.internal_ingress_capacity must be greater than 0");
+        }
+        if self.lifecycle_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.lifecycle_ingress_batch_budget must be greater than 0"
+            );
+        }
+        if self.gameplay_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.gameplay_ingress_batch_budget must be greater than 0"
+            );
+        }
+        if self.internal_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.internal_ingress_batch_budget must be greater than 0"
+            );
+        }
         Ok(())
     }
 }
@@ -554,7 +590,13 @@ mod tests {
                      "simulation": {
                        "due_action_capacity": 65536,
                        "due_action_batch_budget": 256,
-                       "due_action_time_budget_us": 2000
+                       "due_action_time_budget_us": 2000,
+                       "lifecycle_ingress_capacity": 1024,
+                       "gameplay_ingress_capacity": 8192,
+                       "internal_ingress_capacity": 1024,
+                       "lifecycle_ingress_batch_budget": 64,
+                       "gameplay_ingress_batch_budget": 256,
+                       "internal_ingress_batch_budget": 64
                      },
                       "schedules": {
                         "hazards_ms": 10,
@@ -598,6 +640,12 @@ mod tests {
         assert_eq!(c.gameplay.simulation.due_action_capacity, 65_536);
         assert_eq!(c.gameplay.simulation.due_action_batch_budget, 256);
         assert_eq!(c.gameplay.simulation.due_action_time_budget_us, 2_000);
+        assert_eq!(c.gameplay.simulation.lifecycle_ingress_capacity, 1_024);
+        assert_eq!(c.gameplay.simulation.gameplay_ingress_capacity, 8_192);
+        assert_eq!(c.gameplay.simulation.internal_ingress_capacity, 1_024);
+        assert_eq!(c.gameplay.simulation.lifecycle_ingress_batch_budget, 64);
+        assert_eq!(c.gameplay.simulation.gameplay_ingress_batch_budget, 256);
+        assert_eq!(c.gameplay.simulation.internal_ingress_batch_budget, 64);
         assert_eq!(c.gameplay.schedules.hazards_ms, 10);
         assert_eq!(c.gameplay.schedules.physics_ms, 400);
         assert_eq!(c.gameplay.schedules.programmator_ms, 10);
@@ -821,6 +869,12 @@ mod tests {
             "due_action_capacity",
             "due_action_batch_budget",
             "due_action_time_budget_us",
+            "lifecycle_ingress_capacity",
+            "gameplay_ingress_capacity",
+            "internal_ingress_capacity",
+            "lifecycle_ingress_batch_budget",
+            "gameplay_ingress_batch_budget",
+            "internal_ingress_batch_budget",
         ] {
             let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
             raw["gameplay"]["simulation"][key] = serde_json::json!(0);

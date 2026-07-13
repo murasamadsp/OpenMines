@@ -1,5 +1,4 @@
 use crate::db::players::PlayerRow;
-use crate::game::LifeCmd;
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerInventory,
     PlayerMetadata, PlayerPosition, PlayerSettings, PlayerSkillsComp, PlayerStats, PlayerUI,
@@ -33,7 +32,7 @@ fn fanout_event(
 /// spawn entity + Init-пакеты выполняет game-tick (`connect_in_tick`), чтобы
 /// `ecs`-`RwLock` не контендился между conn-тасками и тиком. cf/Gu (и AH при
 /// регистрации) уже отправлены вызывающим до этой точки — порядок в tx сохранён.
-pub fn init_player(
+pub async fn init_player(
     state: &Arc<GameState>,
     player: &PlayerRow,
     session_id: crate::game::SessionId,
@@ -43,17 +42,31 @@ pub fn init_player(
         tracing::debug!(player_id = %pid, session_id = session_id.get(), "Skipping player init for closed session");
         return pid;
     }
-    state.enqueue_life(LifeCmd::Connect {
-        row: Box::new(player.clone()),
-        session_id,
-    });
+    if !state
+        .enqueue_lifecycle(crate::game::PlayerCommand::Connect {
+            row: Box::new(player.clone()),
+            session_id,
+        })
+        .await
+    {
+        state.sessions.kick_session(session_id);
+    }
     pid
 }
 
 /// Conn-таск: ставит выход игрока в lifecycle-очередь (см. `init_player`).
-pub fn on_disconnect(state: &Arc<GameState>, pid: PlayerId, session_id: crate::game::SessionId) {
+pub async fn on_disconnect(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    session_id: crate::game::SessionId,
+) {
     state.remove_rate_limiter(pid);
-    state.enqueue_life(LifeCmd::Disconnect { pid, session_id });
+    let _ = state
+        .enqueue_lifecycle(crate::game::PlayerCommand::Disconnect {
+            player_id: pid,
+            session_id,
+        })
+        .await;
 }
 
 /// game-tick: спавн entity + Init-пакеты (1:1 порядок с `Player.Init()`).

@@ -7,8 +7,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::game::{GameState, PlayerCommand, PlayerId, SessionId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{
     LoclClient, TyPacket, XbldClient, decode_gui_button, decode_whoi, decode_xdig, decode_xmov,
+    ok_message,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +72,7 @@ pub fn classify_ty_event(event: &str) -> TyRouteClass {
 
 pub fn enqueue_ty_command(
     state: &Arc<GameState>,
+    outbox: &Outbox,
     session_id: SessionId,
     player_id: PlayerId,
     packet: &TyPacket,
@@ -82,7 +86,21 @@ pub fn enqueue_ty_command(
                 command = command.name(),
                 "accepted TY command"
             );
-            state.enqueue_command_received(command, received_at);
+            if !state.enqueue_command_received(command, received_at) {
+                crate::metrics::COMMANDS_TOTAL
+                    .with_label_values(&[class.metric_name(), "overload_notified"])
+                    .inc();
+                send_u_packet(
+                    outbox,
+                    "OK",
+                    &ok_message("СЕРВЕР", "Сервер перегружен, повторите действие.").1,
+                );
+                tracing::warn!(
+                    player_id = %player_id,
+                    class = ?class,
+                    "rejected TY command because gameplay ingress is full"
+                );
+            }
         }
         TyRoute::Rejected {
             class,

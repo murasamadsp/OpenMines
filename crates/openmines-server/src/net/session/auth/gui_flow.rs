@@ -158,7 +158,7 @@ async fn handle_login_password(
                 .await
                 .with_context(|| format!("migrate legacy password for player id={}", player.id))?;
         }
-        return finalize_auth(state, tx, &player, session_id, step);
+        return finalize_auth(state, tx, &player, session_id, step).await;
     }
 
     send_u_packet(tx, "OK", &ok_message("auth", "Не верный пароль").1);
@@ -232,11 +232,11 @@ async fn handle_register_password(
         "New player registered via GUI"
     );
 
-    finalize_auth(state, tx, &player, session_id, step)
+    finalize_auth(state, tx, &player, session_id, step).await
 }
 
 /// Shared finalization: send AH, cf, Gu, `init_player`.
-fn finalize_auth(
+async fn finalize_auth(
     state: &Arc<GameState>,
     tx: &Outbox,
     player: &crate::db::players::PlayerRow,
@@ -251,7 +251,7 @@ fn finalize_auth(
     let gu = gu_close();
     send_u_packet(tx, gu.0, &gu.1);
 
-    let pid = init_player(state, player, session_id);
+    let pid = init_player(state, player, session_id).await;
 
     *step = GuiAuthStep::MainMenu;
     Ok(Some(pid))

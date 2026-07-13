@@ -365,6 +365,7 @@ fn adapt_area_consumable_effects(
         pending_work
             .building_deletes
             .push_back(crate::game::QueuedPlayerCommand {
+                ingress_class: None,
                 sequence: state.allocate_command_sequence(),
                 received_at: now,
                 enqueued_at: now,

@@ -39,7 +39,7 @@ struct TickEffects {
 
 pub(super) fn run_game_tick_sync(
     state: &Arc<GameState>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    rx: &mut crate::game::CommandReceivers,
     due_actions: &mut crate::game::logic::due::DueActionQueue,
     tick_profile: &mut TickProfileState,
     schedule_clock: &mut ScheduleClock,
@@ -130,7 +130,7 @@ pub(super) fn run_game_tick_sync(
 
 pub(super) fn run_quiescing_cycle(
     state: &Arc<GameState>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    rx: &mut crate::game::CommandReceivers,
     due_actions: &mut crate::game::logic::due::DueActionQueue,
     pending_work: &mut TickPendingWork,
     services: &TickServices,

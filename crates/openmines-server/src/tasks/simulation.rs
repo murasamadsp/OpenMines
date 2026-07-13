@@ -45,7 +45,7 @@ struct BoxPickupBacklog {
 }
 
 struct TickPendingWork {
-    command: Option<crate::game::QueuedPlayerCommand>,
+    commands: PendingCommandHeads,
     building_deletes: VecDeque<crate::game::QueuedPlayerCommand>,
     box_pickups: BoxPickupBacklog,
     deaths: DeathBacklog,
@@ -60,7 +60,7 @@ impl TickPendingWork {
     ) -> Self {
         let now = Instant::now();
         Self {
-            command: None,
+            commands: PendingCommandHeads::default(),
             building_deletes: VecDeque::new(),
             box_pickups: BoxPickupBacklog::default(),
             deaths: DeathBacklog::default(),
@@ -68,6 +68,81 @@ impl TickPendingWork {
             next_player_flush: now,
             next_building_flush: now,
         }
+    }
+}
+
+#[derive(Default)]
+struct PendingCommandHeads {
+    lifecycle: Option<crate::game::QueuedPlayerCommand>,
+    gameplay: Option<crate::game::QueuedPlayerCommand>,
+    internal: Option<crate::game::QueuedPlayerCommand>,
+    next_class: usize,
+}
+
+impl PendingCommandHeads {
+    const fn take(
+        &mut self,
+        class: crate::game::CommandIngressClass,
+    ) -> Option<crate::game::QueuedPlayerCommand> {
+        match class {
+            crate::game::CommandIngressClass::Lifecycle => self.lifecycle.take(),
+            crate::game::CommandIngressClass::Gameplay => self.gameplay.take(),
+            crate::game::CommandIngressClass::Internal => self.internal.take(),
+        }
+    }
+
+    fn put(&mut self, command: crate::game::QueuedPlayerCommand) {
+        let slot = match command.ingress_class.expect("external command class") {
+            crate::game::CommandIngressClass::Lifecycle => &mut self.lifecycle,
+            crate::game::CommandIngressClass::Gameplay => &mut self.gameplay,
+            crate::game::CommandIngressClass::Internal => &mut self.internal,
+        };
+        assert!(
+            slot.replace(command).is_none(),
+            "pending command class head replaced"
+        );
+    }
+
+    #[cfg(test)]
+    const fn has(&self, class: crate::game::CommandIngressClass) -> bool {
+        match class {
+            crate::game::CommandIngressClass::Lifecycle => self.lifecycle.is_some(),
+            crate::game::CommandIngressClass::Gameplay => self.gameplay.is_some(),
+            crate::game::CommandIngressClass::Internal => self.internal.is_some(),
+        }
+    }
+
+    const fn has_empty_slot(&self) -> bool {
+        self.lifecycle.is_none() || self.gameplay.is_none() || self.internal.is_none()
+    }
+
+    fn persistence_ready(
+        &self,
+        mut capacity_available: impl FnMut(crate::game::SaveKind) -> bool,
+    ) -> bool {
+        [
+            self.lifecycle.as_ref(),
+            self.gameplay.as_ref(),
+            self.internal.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|queued| {
+            queued
+                .command
+                .persistence_kind()
+                .is_none_or(&mut capacity_available)
+        })
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.lifecycle.is_none() && self.gameplay.is_none() && self.internal.is_none()
+    }
+
+    fn len(&self) -> usize {
+        usize::from(self.lifecycle.is_some())
+            .saturating_add(usize::from(self.gameplay.is_some()))
+            .saturating_add(usize::from(self.internal.is_some()))
     }
 }
 
@@ -255,7 +330,7 @@ pub fn spawn_game_tick_loop(
 
 struct SimulationRuntime {
     state: Arc<GameState>,
-    commands: tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+    commands: crate::game::CommandReceivers,
     shutdown: broadcast::Receiver<()>,
     services: TickServices,
     tick_profile: TickProfileState,
@@ -271,7 +346,7 @@ struct SimulationRuntime {
 impl SimulationRuntime {
     fn new(
         state: Arc<GameState>,
-        commands: tokio::sync::mpsc::UnboundedReceiver<crate::game::QueuedPlayerCommand>,
+        commands: crate::game::CommandReceivers,
         shutdown: broadcast::Receiver<()>,
         services: TickServices,
         persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
@@ -346,7 +421,7 @@ impl SimulationRuntime {
 
     fn quiescing_is_drained(&self) -> bool {
         self.commands.is_empty()
-            && self.pending_work.command.is_none()
+            && self.pending_work.commands.is_empty()
             && self.pending_work.building_deletes.is_empty()
             && self.due_actions.is_empty()
             && self.pending_work.box_pickups.queue.is_empty()
@@ -364,14 +439,20 @@ impl SimulationRuntime {
         {
             return true;
         }
-        if !self.commands.is_empty() && self.pending_work.command.is_none() {
+        if !self.commands.is_empty() && self.pending_work.commands.has_empty_slot() {
+            return true;
+        }
+        if self
+            .pending_work
+            .commands
+            .persistence_ready(|kind| self.persistence_capacity_available(kind))
+        {
             return true;
         }
         let pending_kind = self
             .pending_work
             .building_deletes
             .front()
-            .or(self.pending_work.command.as_ref())
             .and_then(|queued| queued.command.persistence_kind());
         if let Some(kind) = pending_kind {
             return self.persistence_capacity_available(kind);
@@ -418,13 +499,11 @@ impl SimulationRuntime {
     }
 
     fn next_wait_plan(&mut self, now: Instant) -> wait::WaitPlan {
-        let command_ready = match self.pending_work.command.as_ref() {
-            Some(queued) => queued
-                .command
-                .persistence_kind()
-                .is_none_or(|kind| self.persistence_capacity_available(kind)),
-            None => !self.commands.is_empty(),
-        };
+        let command_ready = self
+            .pending_work
+            .commands
+            .persistence_ready(|kind| self.persistence_capacity_available(kind))
+            || (!self.commands.is_empty() && self.pending_work.commands.has_empty_slot());
         let completion_ready = !self.pending_work.persistence_completions.is_empty();
         let persistence_backlog_pending = !self.pending_work.box_pickups.queue.is_empty()
             || !self.pending_work.deaths.queue.is_empty()

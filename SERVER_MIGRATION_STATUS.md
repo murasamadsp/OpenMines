@@ -143,7 +143,7 @@ event/due model и не появился injected simulation clock. Просты
 | 1. Session/output owner | 65% | `SessionId`, bounded outbox, `SessionHub`, presentation owner есть; common authenticated envelope не завершён |
 | 2. Command/effects boundary | 35% | connect/disconnect, move, teleport-open, delayed consumables и building delete перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
 | 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
-| 4. Admission/isolation | 35% | event-driven wait и bounded due queue готовы; основной ingress всё ещё unbounded, workload classes не разделены |
+| 4. Admission/isolation | 50% | event-driven wait, bounded due queue и typed bounded ingress готовы; thin connect остаётся |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
 | 6. Active/due work | 20% | granular frontier, crafting due queue и consumable due queue есть; actors/guns/hazards/dirty snapshots ещё частично scan-all |
 | 7. Interest/read model | 10% | teleport DTO и часть immutable presentation готовы; bots render и admin всё ещё читают общий state |
@@ -203,17 +203,7 @@ event/due model и не появился injected simulation clock. Просты
 
 ## Что горит
 
-### P1: основной ingress остаётся unbounded
-
-При долгом persistence stall durable command удерживает FIFO head, а новые
-movement/chat/connect продолжают накапливаться. Это bounded-latency и OOM risk.
-
-Нужен не `Vec`-лимит и не silent drop, а typed ingress classes:
-
-- lifecycle - гарантированный bounded admission;
-- gameplay - bounded queue с явной overload policy;
-- internal completion/follow-up - отдельный недропаемый путь;
-- depth, oldest age, rejected/coalesced и starvation metrics.
+### P1: global mutable `GameState`
 
 ### P1: accepted DueAction теряется при graceful shutdown
 
@@ -232,8 +222,6 @@ Boom/Protector/Raz до его deadline. Финальный player snapshot то
 
 Это закрывает graceful shutdown. Crash durability отдельно требует persistent
 action intent/idempotency и replay; `Instant` сериализовать нельзя.
-
-### P1: global mutable `GameState`
 
 ECS находится под общим `RwLock`, а session/admin/web/background paths всё ещё
 могут читать или мутировать authoritative state. Поэтому preemption owner-а
@@ -369,14 +357,43 @@ scripts/dev-smoke.sh
 - не называть graceful drain crash durability;
 - не смешивать этот срез с ECS ownership, chat optimization или multicore.
 
+## Завершённый кодовый срез
+
+**M2: bounded typed ingress закрыт.** Вместо одного unbounded `PlayerCommand`
+ingress введены независимые bounded каналы lifecycle, gameplay и internal.
+
+- capacity: `1024/8192/1024`; budgets на active cycle: `64/256/64`;
+- gameplay full отклоняется до mutation и получает legacy-safe `OK`; lifecycle
+  и internal используют awaitable admission, поэтому принятый follow-up не
+  теряется;
+- depth, oldest age, residence, rejected и budget carry-over метрики разделены
+  по классу;
+- saturated durable head одного класса не блокирует runnable команду другого;
+  FIFO внутри класса сохраняется;
+- deterministic tests покрывают reserve lifecycle при full gameplay, round-robin,
+  persistence saturation, starvation и исчерпание class budget.
+
+Release runtime gate на одном `8x8` local fixture:
+
+- baseline: `100` gameplay clients, `1000 Xmov/s`, p99 `5.325ms`;
+- staged storm: те же `100` gameplay clients (`15000/15000` effects, `0`
+  unexpected disconnect) и отдельный burst `300` connect clients;
+- gameplay pool under storm: p99 `7.078ms`, p99.9 `8.249ms`; storm pool
+  подключился `300/300`, без disconnect и drain timeout.
+
+Первый 35s прогон отброшен: loadtest не поддерживал heartbeat дольше 30s и
+получил `Pong timeout`; корректный 15s staged run исключил этот артефакт.
+
+Это закрывает admission safety, но не объясняет и не устраняет CPU-bound
+`channel_chat` `201ms` или off-CPU/global-lock stalls. Они остаются evidence для
+будущих vertical slices.
+
 ## Следующий кодовый срез
 
-**Bounded typed ingress.** Основной `PlayerCommand` ingress всё ещё
-`unbounded_channel`: при persistence stall команды накапливаются без верхней
-границы. Следующий срез вводит отдельные bounded workload classes для lifecycle,
-gameplay и internal completion/follow-up, с явной overload policy, metrics depth,
-oldest age, rejected/coalesced и starvation. Уже принятые durable actions не
-теряются; silent drop и общий `try_send` запрещены.
+**DirtyBuildings.** Убрать scan-all building snapshot каждые 45s через
+owner-owned dirty registry; до mutation проверить missing dirty marks в hourly
+damage и gun charge. После этого - active reconnect и incarnation-aware
+`DirtyPlayers`.
 
 ## Следующий обязательный порядок
 
@@ -400,7 +417,7 @@ oldest age, rejected/coalesced и starvation. Уже принятые durable ac
 | Milestone | Пользовательский результат | Статус |
 | --- | --- | --- |
 | M1. Zero-player idle | почти нулевой CPU, нет 100 Hz ticks и idle warnings | готов |
-| M2. Saturation safety | DB stall не вызывает OOM, starvation или item loss | следующий |
+| M2. Saturation safety | DB stall не вызывает OOM, starvation или item loss | готов |
 | M3. Zero scan-all idle | огромный clean world не влияет на maintenance cost | не готов |
 | M4. Thin connect | connect storm не блокирует gameplay, init не сидит в owner | не готов |
 | M5. Cheap idle actor | один sleeping player/robot почти ничего не стоит | не готов |
