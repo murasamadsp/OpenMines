@@ -401,10 +401,18 @@ Release runtime gate на одном `8x8` local fixture:
 - Устранена флапающая ошибка/коллизия базы данных в тестах `schedule_intervals_come_from_config` путем изоляции временных путей SQLite для параллельных тестов.
 - Все тесты, clippy, `arch-guard.sh` и `dev-smoke.sh` успешно проходят.
 
+## Завершённый кодовый срез
+
+**Active reconnect и DirtyPlayers закрыт.**
+- Исправлено поведение active reconnect: при повторном подключении старая ECS-сущность больше не деспавнится и не пересоздаётся, а переиспользуется.
+- В ECS-компонент `PlayerFlags` добавлено поле `incarnation: SessionId`.
+- Ресурс `DirtyPlayers` переведён на хранение пар `(Entity, SessionId)`, что позволяет безопасно фильтровать и отбрасывать устаревшие грязные записи предыдущих инкарнаций сессии при сохранении (в методе `snapshot_dirty_player` и таске `flush_dirty_players_once`), исключая ABA гонки и затирание свежих данных.
+- Исправлен баг синхронизации ролей при реконнекте: роль игрока теперь корректно обновляется в `PlayerStats` при переиспользовании ECS-сущности на логине (для корректной работы `is_admin_command`).
+- Все тесты, включая `dirty_player_registry_drops_stale_entity_after_reconnect`, `stale_disconnect_cannot_remove_or_save_reconnected_incarnation` и `scripts/dev-smoke.sh`, успешно проходят.
+
 ## Следующий кодовый срез
 
-**Active/due registries.** Перевести guns, hazards, alive/granular с periodic
-entity scans на explicit due/active work.
+**Thin connect.** Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send.
 
 ## Следующий обязательный порядок
 

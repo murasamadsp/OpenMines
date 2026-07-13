@@ -203,7 +203,7 @@ pub fn standing_cell_hazard_system(
                 death_q.push(p_meta.id);
             }
             flags.dirty = true;
-            dirty_players.0.insert(entity);
+            dirty_players.0.insert((entity, flags.incarnation));
             if let Some(conn) = conn {
                 send_direct(
                     &mut bcast_q,
@@ -437,14 +437,14 @@ pub fn gun_firing_system(
                 if stats.health > dmg {
                     stats.health -= dmg;
                     flags.dirty = true;
-                    dirty_players.0.insert(player_entity);
+                    dirty_players.0.insert((player_entity, flags.incarnation));
                     bcast_q
                         .0
                         .push(hurt_fx_broadcast(p_meta.id, p_pos.x, p_pos.y, None));
                 } else {
                     stats.health = 0;
                     flags.dirty = true;
-                    dirty_players.0.insert(player_entity);
+                    dirty_players.0.insert((player_entity, flags.incarnation));
                     death_q.push(p_meta.id);
                 }
             }

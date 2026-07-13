@@ -158,32 +158,13 @@ fn connect_entity_in_tick_inner(
     } // временная система
     profile.spawn_cell_clear = section_t0.elapsed();
 
-    // BUG 1: Reconnect entity leak — clean up any existing session for this pid before spawning a new one.
+    // Active reconnect — clean up any active player mapping but keep the ECS entity to reuse it.
     let section_t0 = Instant::now();
     if let Some(old_player) = state.remove_active_player(pid) {
-        let old_entity = old_player.ecs_entity;
-        let (old_cx, old_cy) = {
-            let ecs = state.ecs.read();
-            ecs.get::<PlayerPosition>(old_entity)
-                .map(|pos| (pos.chunk_x(), pos.chunk_y()))
-                .unwrap_or((0, 0))
-        };
-        // Broadcast removal to nearby players.
-        let sub = crate::protocol::packets::hb_bot_del(net_u16_nonneg(pid));
-        let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-        effects
-            .events
-            .push(fanout_event(state, old_cx, old_cy, hb_data, None));
-        // Remove from chunk player index — iterate all entries to handle stale registrations.
-        state.unregister_player_from_all_chunks(pid);
-        // Despawn old ECS entity.
-        state
-            .ecs_write_profiled("player.connect.cleanup_old_entity")
-            .despawn(old_entity);
-        state.unregister_player_entity(pid);
-        tracing::warn!(
+        tracing::info!(
             player_id = %pid,
-            "Player reconnected — old ECS entity cleaned up"
+            old_session = old_player.session_id.get(),
+            "Active player reconnecting — old session kicked, reusing entity"
         );
     }
     profile.reconnect_cleanup = section_t0.elapsed();
@@ -202,6 +183,13 @@ fn connect_entity_in_tick_inner(
                 if let Some(mut view) = ecs.get_mut::<PlayerView>(entity) {
                     view.last_chunk = None;
                     view.visible_chunks.clear();
+                }
+                if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
+                    flags.incarnation = session_id;
+                    flags.dirty = false;
+                }
+                if let Some(mut stats) = ecs.get_mut::<PlayerStats>(entity) {
+                    stats.role = player.role;
                 }
                 crate::game::player::extract_player_row(&ecs, entity)
             }
@@ -323,7 +311,10 @@ fn connect_entity_in_tick_inner(
             aggression: player.aggression,
             ..PlayerSettings::default()
         },
-        PlayerFlags { dirty: false },
+        PlayerFlags {
+            dirty: false,
+            incarnation: session_id,
+        },
     );
     profile.spawn_prepare = section_t0.elapsed();
 
@@ -854,7 +845,7 @@ mod tests {
         connect_in_tick(state, &new_tx, &player, 456);
         let new_entity = state.get_player_entity(pid).expect("new active entity");
 
-        assert_ne!(old_entity, new_entity);
+        assert_eq!(old_entity, new_entity);
         assert_eq!(
             state.active_session_for_player(pid),
             Some(crate::game::SessionId::new(456))

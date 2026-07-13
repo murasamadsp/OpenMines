@@ -39,11 +39,11 @@ pub(super) fn flush_dirty_players_once(
 ) -> usize {
     let mut dirty_entities = state.take_dirty_player_entities();
     let mut accepted = 0usize;
-    while let Some(entity) = dirty_entities.pop() {
+    while let Some((entity, incarnation)) = dirty_entities.pop() {
         let permit = match persistence.try_reserve(crate::game::SaveKind::Player) {
             Ok(permit) => permit,
             Err(crate::persistence::PersistenceAdmissionError::Full) => {
-                dirty_entities.push(entity);
+                dirty_entities.push((entity, incarnation));
                 state.requeue_dirty_player_entities(dirty_entities);
                 break;
             }
@@ -51,7 +51,7 @@ pub(super) fn flush_dirty_players_once(
                 panic!("persistence worker closed during periodic player flush");
             }
         };
-        let row = state.snapshot_dirty_player(entity);
+        let row = state.snapshot_dirty_player(entity, incarnation);
         if let Some(row) = row {
             permit.publish(crate::game::SaveCommand::Player { row: Box::new(row) });
             accepted = accepted.saturating_add(1);

@@ -979,7 +979,7 @@ async fn dirty_player_registry_drops_stale_entity_after_reconnect() {
 
     let (_new_outbox, _new_rx) = test.connect_with_outbox(43);
     let new_entity = state.get_player_entity(pid).expect("new entity");
-    assert_ne!(old_entity, new_entity);
+    assert_eq!(old_entity, new_entity);
 
     let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
     assert_eq!(flush_dirty_players_once(&state, &persistence), 0);

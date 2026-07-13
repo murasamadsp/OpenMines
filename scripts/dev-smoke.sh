@@ -86,6 +86,7 @@ env \
 SERVER_PID="$!"
 popd >/dev/null
 
+set +e
 python3 - "$PORT" "$SERVER_PID" "$LOG_FILE" <<'PY'
 import os
 import hashlib
@@ -503,6 +504,14 @@ print("    programmator: Pope/create/open/rename/copy/delete/PROG/pRST wire cont
 print("    settings: TAGR and settings save wire contract")
 print("    reconnect: selected program restored with post-status #p hydration")
 PY
+STATUS=$?
+set -e
+if [ $STATUS -ne 0 ]; then
+  echo "=== server.log ==="
+  cat "$LOG_FILE"
+  echo "=== end server.log ==="
+  exit $STATUS
+fi
 
 echo "==> Stopping smoke server"
 kill -TERM "$SERVER_PID"

@@ -128,6 +128,7 @@ impl Default for PlayerSettings {
 #[derive(Component)]
 pub struct PlayerFlags {
     pub dirty: bool,
+    pub incarnation: crate::game::SessionId,
 }
 
 /// Owner-local set of player snapshots awaiting persistence.
@@ -135,7 +136,7 @@ pub struct PlayerFlags {
 /// `Entity` includes its Bevy generation, so a stale entry from a disconnected
 /// incarnation cannot target an entity created for a later reconnect.
 #[derive(Resource, Default)]
-pub struct DirtyPlayers(pub HashSet<Entity>);
+pub struct DirtyPlayers(pub HashSet<(Entity, crate::game::SessionId)>);
 
 #[derive(Component)]
 pub struct PlayerConnection {

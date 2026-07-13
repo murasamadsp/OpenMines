@@ -1423,34 +1423,47 @@ impl GameState {
             .get::<PlayerFlags>(entity)
             .is_some_and(|flags| flags.dirty)
         {
-            ecs.resource_mut::<DirtyPlayers>().0.insert(entity);
+            let incarnation = ecs.get::<PlayerFlags>(entity).unwrap().incarnation;
+            ecs.resource_mut::<DirtyPlayers>()
+                .0
+                .insert((entity, incarnation));
         }
         drop(ecs);
         Some(res)
     }
 
-    pub fn take_dirty_player_entities(&self) -> Vec<Entity> {
+    pub fn take_dirty_player_entities(&self) -> Vec<(Entity, crate::game::SessionId)> {
         let mut ecs = self.ecs_write_profiled("game.take_dirty_players");
         std::mem::take(&mut ecs.resource_mut::<DirtyPlayers>().0)
             .into_iter()
             .collect()
     }
 
-    pub fn requeue_dirty_player_entities(&self, entities: impl IntoIterator<Item = Entity>) {
+    pub fn requeue_dirty_player_entities(
+        &self,
+        entities: impl IntoIterator<Item = (Entity, crate::game::SessionId)>,
+    ) {
         self.ecs_write_profiled("game.requeue_dirty_players")
             .resource_mut::<DirtyPlayers>()
             .0
             .extend(entities);
     }
 
-    pub fn snapshot_dirty_player(&self, entity: Entity) -> Option<crate::db::PlayerRow> {
+    pub fn snapshot_dirty_player(
+        &self,
+        entity: Entity,
+        incarnation: crate::game::SessionId,
+    ) -> Option<crate::db::PlayerRow> {
         let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_player");
+        if !ecs.entities().contains(entity) {
+            return None;
+        }
+        let flags = ecs.get::<PlayerFlags>(entity)?;
+        if flags.incarnation != incarnation || !flags.dirty {
+            return None;
+        }
         let player_id = ecs.get::<PlayerMetadata>(entity)?.id;
-        if self.get_player_entity(player_id) != Some(entity)
-            || !ecs
-                .get::<PlayerFlags>(entity)
-                .is_some_and(|flags| flags.dirty)
-        {
+        if self.get_player_entity(player_id) != Some(entity) {
             return None;
         }
         let row = crate::game::player::extract_player_row(&ecs, entity)?;
@@ -2305,6 +2318,7 @@ impl GameState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn unregister_player_from_all_chunks(&self, pid: PlayerId) {
         self.chunk_players
             .iter_mut()

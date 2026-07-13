@@ -287,7 +287,8 @@ fn apply_boom_damage(
         ecs.get_mut::<PlayerFlags>(entity)
             .expect("PlayerFlags checked before Boom damage")
             .dirty = true;
-        dirty_entities.push(entity);
+        let incarnation = ecs.get::<PlayerFlags>(entity).unwrap().incarnation;
+        dirty_entities.push((entity, incarnation));
 
         player_health.push(ConsumablePlayerHealthEffect {
             player_id,
@@ -373,7 +374,8 @@ fn apply_area_player_damage(
         ecs.get_mut::<PlayerFlags>(entity)
             .expect("PlayerFlags checked before consumable damage")
             .dirty = true;
-        dirty_entities.push(entity);
+        let incarnation = ecs.get::<PlayerFlags>(entity).unwrap().incarnation;
+        dirty_entities.push((entity, incarnation));
 
         player_health.push(ConsumablePlayerHealthEffect {
             player_id,

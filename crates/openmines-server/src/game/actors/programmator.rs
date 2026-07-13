@@ -1721,7 +1721,7 @@ pub fn programmator_system(
             due_queue.schedule(entity, prog.delay);
         }
         flags.dirty = true;
-        dirty_players.0.insert(entity);
+        dirty_players.0.insert((entity, flags.incarnation));
     }
 }
 
