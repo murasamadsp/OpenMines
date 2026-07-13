@@ -468,8 +468,9 @@ architecture guard и wire smoke.
 `PlayerView`/chunk index под owner-side session guard и публикует immutable
 visible-chunk list. Map/BotSpot/HB encoding перенесены в presentation owner,
 Player.Init order и повторный session guard сохранены. Initial building overlay
-пока делает короткий ECS read snapshot в presentation: это явный следующий
-read-model debt, но command dispatch его больше не выполняет.
+делает отдельный ECS read snapshot на каждый чанк, поэтому preemption не держит
+lock на весь 5x5 view. Полный per-chunk cache остаётся следующим read-model debt,
+но command dispatch его больше не выполняет.
 
 Проверка: init/reconnect regression, полный server suite (`368 passed`,
 `1 ignored`), strict clippy, architecture guard и wire smoke.

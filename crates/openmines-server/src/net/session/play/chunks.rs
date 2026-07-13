@@ -102,16 +102,19 @@ pub fn build_initial_chunk_packets(
 
     // The legacy client clears a whole block for every `O`; each packet must
     // therefore include every building in that block after all map/bot packets.
-    let ecs = state.ecs_read_profiled("initial_chunk.packs_snapshot");
     let mut by_block: HashMap<i32, Vec<PackOverlay>> = HashMap::new();
     for &(cx, cy) in visible_chunks {
-        for pack in state.get_packs_in_single_chunk_with_ecs(&ecs, cx, cy) {
+        // A preemption here must not hold ECS for the whole 5x5 initial view.
+        let packs = {
+            let ecs = state.ecs_read_profiled("initial_chunk.packs_snapshot");
+            state.get_packs_in_single_chunk_with_ecs(&ecs, cx, cy)
+        };
+        for pack in packs {
             if let Some(block_pos) = state.pack_block_pos(i32::from(pack.x), i32::from(pack.y)) {
                 by_block.entry(block_pos).or_default().push(pack);
             }
         }
     }
-    drop(ecs);
     for (block_pos, packs) in by_block {
         let wire = packs
             .iter()

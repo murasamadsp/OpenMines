@@ -63,7 +63,7 @@ TCP sessions -> QueuedGameCommand -> SimulationRuntime
 - `PresentationRuntime` принимает bounded `GameEvent` и доставляет immutable
   packet/view data. Initial chunk map/BotSpot snapshot уже строится там после
   owner-side visibility commit; building overlay временно читает ECS только как
-  read-only snapshot до следующего per-chunk read-model slice.
+  read-only snapshot по одному чанку до следующего per-chunk read-model slice.
 - `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
   записи, делает retry и публикует typed completion.
 
