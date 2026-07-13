@@ -157,6 +157,9 @@ fn apply_charge_fill(
     ecs.get_mut::<BuildingFlags>(building_entity)
         .expect("BuildingFlags checked before charge fill")
         .dirty = true;
+    ecs.resource_mut::<crate::game::DirtyBuildings>()
+        .0
+        .insert(building_entity);
 
     FillResult::Filled { crystals }
 }
@@ -499,6 +502,7 @@ pub fn handle_resp_profit(
         return;
     };
     if amount > 0 {
+        assert!(state.mark_building_dirty(building_entity));
         send_u_packet(tx, "P$", &money(money_now, creds_now).1);
     }
 

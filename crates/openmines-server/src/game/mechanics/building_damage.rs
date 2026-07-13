@@ -16,26 +16,35 @@ pub struct CraftingDue {
 #[derive(Resource, Default)]
 pub struct CraftingDueBatch(pub Vec<CraftingDue>);
 
+type HourlyDamageQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static BuildingMetadata,
+        &'static GridPosition,
+        &'static BuildingOwnership,
+        &'static mut BuildingStats,
+        &'static mut BuildingFlags,
+    ),
+    Without<BuildingDeletePending>,
+>;
+
 /// Hourly `IDamagable.Damage(2)` tick + `NeedEffect`.
 /// C# `World.cs:472-486`: each pack that is `IDamagable` → `Damage(2)`; if `NeedEffect` → `SendBrokenEffect`.
 #[allow(clippy::needless_pass_by_value)]
 pub fn building_hourly_damage_system(
-    mut query: Query<
-        (
-            &BuildingMetadata,
-            &GridPosition,
-            &BuildingOwnership,
-            &mut BuildingStats,
-        ),
-        Without<BuildingDeletePending>,
-    >,
+    mut query: HourlyDamageQuery<'_, '_>,
     mut bcast_q: ResMut<BroadcastQueue>,
+    mut dirty_buildings: ResMut<crate::game::DirtyBuildings>,
 ) {
-    for (meta, bpos, ownership, mut stats) in &mut query {
+    for (entity, meta, bpos, ownership, mut stats, mut flags) in &mut query {
         if !is_damagable(meta.pack_type) || ownership.owner_id == 0 {
             continue;
         }
         damage_building(&mut stats, 2);
+        flags.dirty = true;
+        dirty_buildings.0.insert(entity);
         if need_effect(&stats) {
             send_broken_effect_to_queue(&mut bcast_q, bpos.x, bpos.y);
         }
@@ -79,6 +88,7 @@ pub fn crafter_completion_resend_system(
     )>,
     mut due_batch: ResMut<CraftingDueBatch>,
     mut pack_resend_q: ResMut<PackResendQueue>,
+    mut dirty_buildings: ResMut<crate::game::DirtyBuildings>,
 ) {
     let now = crate::time::now_unix();
     for due in std::mem::take(&mut due_batch.0) {
@@ -95,6 +105,7 @@ pub fn crafter_completion_resend_system(
         }
         craft.ready = true;
         flags.dirty = true;
+        dirty_buildings.0.insert(due.entity);
         pack_resend_q.0.push((bpos.x, bpos.y));
     }
 }
@@ -135,6 +146,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(PackResendQueue::default());
         world.insert_resource(CraftingDueBatch::default());
+        world.insert_resource(crate::game::DirtyBuildings::default());
         let end_ts = crate::time::now_unix() - 1;
         let entity = world
             .spawn((
@@ -166,6 +178,12 @@ mod tests {
         let queue = world.resource::<PackResendQueue>();
         assert!(craft.ready);
         assert!(flags.dirty);
+        assert!(
+            world
+                .resource::<crate::game::DirtyBuildings>()
+                .0
+                .contains(&entity)
+        );
         assert_eq!(queue.0, vec![(10, 20)]);
 
         schedule.run(&mut world);
@@ -178,6 +196,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(PackResendQueue::default());
         world.insert_resource(CraftingDueBatch::default());
+        world.insert_resource(crate::game::DirtyBuildings::default());
         let end_ts = crate::time::now_unix() + 60;
         let entity = world
             .spawn((
@@ -208,9 +227,52 @@ mod tests {
     }
 
     #[test]
+    fn hourly_damage_marks_damaged_building_dirty_for_persistence() {
+        let mut world = World::new();
+        world.insert_resource(BroadcastQueue::default());
+        world.insert_resource(crate::game::DirtyBuildings::default());
+        let entity = world
+            .spawn((
+                BuildingMetadata {
+                    id: 1,
+                    pack_type: PackType::Resp,
+                },
+                GridPosition { x: 10, y: 20 },
+                BuildingOwnership {
+                    owner_id: crate::game::PlayerId(1),
+                    clan_id: 0,
+                },
+                BuildingStats {
+                    charge: 0,
+                    max_charge: 0,
+                    cost: 0,
+                    hp: 100,
+                    max_hp: 100,
+                    clanzone: 0,
+                    broken_timer: None,
+                },
+                BuildingFlags { dirty: false },
+            ))
+            .id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(building_hourly_damage_system);
+        schedule.run(&mut world);
+
+        assert_eq!(world.get::<BuildingStats>(entity).unwrap().hp, 98);
+        assert!(world.get::<BuildingFlags>(entity).unwrap().dirty);
+        assert!(
+            world
+                .resource::<crate::game::DirtyBuildings>()
+                .0
+                .contains(&entity)
+        );
+    }
+
+    #[test]
     fn pending_delete_is_frozen_for_damage_and_effect_systems() {
         let mut world = World::new();
         world.insert_resource(BroadcastQueue::default());
+        world.insert_resource(crate::game::DirtyBuildings::default());
         let entity = world
             .spawn((
                 BuildingMetadata {

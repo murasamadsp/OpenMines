@@ -1,7 +1,7 @@
 use crate::db::buildings::{BuildingExtra, BuildingRow};
 use crate::game::player::PlayerId;
 use anyhow::Context as _;
-use bevy_ecs::prelude::{Component, Entity};
+use bevy_ecs::prelude::{Component, Entity, Resource};
 use rand::Rng as _;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -408,6 +408,13 @@ pub struct GridPosition {
 pub struct BuildingFlags {
     pub dirty: bool,
 }
+
+/// Owner-local deduplicated set of building snapshots awaiting persistence.
+///
+/// A dirty flag protects correctness; this registry protects periodic work from
+/// scanning every building entity to find that flag.
+#[derive(Resource, Default)]
+pub struct DirtyBuildings(pub HashSet<Entity>);
 
 #[derive(Component, Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BuildingDeletePending {

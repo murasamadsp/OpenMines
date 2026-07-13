@@ -81,17 +81,7 @@ async fn save_players_on_shutdown(
 fn collect_dirty_building_rows(
     game_state: &std::sync::Arc<game::GameState>,
 ) -> Vec<crate::db::BuildingRow> {
-    let dirty_entities = {
-        let mut ecs = game_state.ecs.write();
-        let mut query = ecs.query::<(bevy_ecs::prelude::Entity, &game::BuildingFlags)>();
-        let entities = query
-            .iter(&ecs)
-            .filter_map(|(e, f)| f.dirty.then_some(e))
-            .collect::<Vec<_>>();
-        drop(query);
-        drop(ecs);
-        entities
-    };
+    let dirty_entities = game_state.take_dirty_building_entities();
 
     let mut building_rows = Vec::with_capacity(dirty_entities.len());
     for entity in dirty_entities {

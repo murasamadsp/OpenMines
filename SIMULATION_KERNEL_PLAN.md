@@ -561,9 +561,10 @@ Event-driven owner wait gate закрыт 2026-07-12:
   RSS `5-12 MiB`, idle `OVER-BUDGET`/watchdog warnings отсутствуют;
 - один SIGINT полностью остановил owner, persistence и world flush без Enter.
 
-Остаток idle-cost теперь локализован: periodic dirty flush будит owner раз в
-`10s/45s` и сканирует все player/building entities. Следующий performance gate -
-explicit dirty registries с работой `O(dirty)`. Дешёвый `1 idle player` после
+Остаток idle-cost теперь локализован: periodic player dirty flush будит owner раз
+в `10s` и сканирует player entities; buildings уже используют `DirtyBuildings`
+с работой `O(dirty)`. Следующий performance gate - incarnation-aware player
+registry. Дешёвый `1 idle player` после
 этого требует due-only hazards/guns/programmator вместо periodic entity scans.
 
 Event-driven wait не закрывает два соседних correctness gate: основной command

@@ -938,6 +938,7 @@ async fn periodic_building_snapshot_preserves_dirty_on_saturation_and_persists_o
         ecs.get_mut::<crate::game::BuildingFlags>(entity)?.dirty = true;
         Some(())
     });
+    assert!(state.mark_building_dirty(entity));
 
     let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(1);
     persistence
@@ -967,6 +968,53 @@ async fn periodic_building_snapshot_preserves_dirty_on_saturation_and_persists_o
         snapshot,
         crate::game::SaveCommand::Building { row }
             if row.id == 7 && row.money_inside == 123
+    ));
+    assert_eq!(flush_dirty_buildings_once(&state, &persistence), 0);
+    assert!(persisted.try_recv().is_none());
+}
+
+#[tokio::test]
+async fn building_snapshot_flush_uses_registry_and_deduplicates_entities() {
+    let test = make_persistence_test_state("building_registry").await;
+    let state = test.state.clone();
+    let extra = crate::db::BuildingExtra {
+        charge: 7,
+        max_charge: 100,
+        cost: 12,
+        hp: 80,
+        max_hp: 100,
+        money_inside: 0,
+        crystals_inside: [0; 6],
+        items_inside: std::collections::HashMap::new(),
+        craft_recipe_id: None,
+        craft_num: 0,
+        craft_end_ts: 0,
+        craft_ready: false,
+        clanzone: 0,
+    };
+    let entity = {
+        let mut ecs = state.ecs_write_profiled("test.building_registry_spawn");
+        crate::game::buildings::spawn_building_from_extra(
+            &mut ecs,
+            &crate::game::BuildingSpawnSpec {
+                id: 8,
+                pack_type: crate::game::PackType::Gun,
+                x: 11,
+                y: 11,
+                owner_id: crate::game::PlayerId(1),
+                clan_id: 0,
+                extra: &extra,
+            },
+        )
+    };
+    assert!(state.mark_building_dirty(entity));
+    assert!(state.mark_building_dirty(entity));
+
+    let (persistence, mut persisted) = crate::persistence::PersistenceHandle::test_channel(2);
+    assert_eq!(flush_dirty_buildings_once(&state, &persistence), 1);
+    assert!(matches!(
+        persisted.try_recv(),
+        Some(crate::game::SaveCommand::Building { row }) if row.id == 8
     ));
     assert_eq!(flush_dirty_buildings_once(&state, &persistence), 0);
     assert!(persisted.try_recv().is_none());

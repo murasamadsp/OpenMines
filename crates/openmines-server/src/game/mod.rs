@@ -43,7 +43,7 @@ pub use actors::player::{ActivePlayer, PlayerFlags, PlayerId, PlayerMetadata, Pl
 pub use mechanics::events::{ActiveEvent, ActiveEvents, ExpContext};
 pub use structures::buildings::{
     BuildingDeletePending, BuildingFlags, BuildingMetadata, BuildingOwnership, BuildingSpawnSpec,
-    BuildingStats, GridPosition, PackType, PackView,
+    BuildingStats, DirtyBuildings, GridPosition, PackType, PackView,
 };
 pub use world::coords::{ChunkPos, WorldPos};
 
@@ -936,6 +936,7 @@ impl GameState {
             ecs.insert_resource(PendingCellConversions::default());
             ecs.insert_resource(PackResendQueue::default());
             ecs.insert_resource(building_damage::CraftingDueBatch::default());
+            ecs.insert_resource(DirtyBuildings::default());
         }
 
         Self::load_buildings_into_ecs(&state).await?;
@@ -1366,6 +1367,32 @@ impl GameState {
     {
         let mut ecs = self.ecs_write_profiled("game.modify_building");
         f(&mut ecs, entity)
+    }
+
+    pub fn mark_building_dirty(&self, entity: Entity) -> bool {
+        let mut ecs = self.ecs_write_profiled("game.mark_building_dirty");
+        {
+            let Some(mut flags) = ecs.get_mut::<BuildingFlags>(entity) else {
+                return false;
+            };
+            flags.dirty = true;
+        }
+        ecs.resource_mut::<DirtyBuildings>().0.insert(entity);
+        true
+    }
+
+    pub fn take_dirty_building_entities(&self) -> Vec<Entity> {
+        let mut ecs = self.ecs_write_profiled("game.take_dirty_buildings");
+        std::mem::take(&mut ecs.resource_mut::<DirtyBuildings>().0)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn requeue_dirty_building_entities(&self, entities: impl IntoIterator<Item = Entity>) {
+        self.ecs_write_profiled("game.requeue_dirty_buildings")
+            .resource_mut::<DirtyBuildings>()
+            .0
+            .extend(entities);
     }
 
     pub const AUTH_FAILURE_LIMIT: u32 = 6;

@@ -18,8 +18,8 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `8e572b89` (`Перевести симуляцию на событийное
-ожидание`) в `main`. Документационный checkpoint может быть более новым.
+Ожидаемый code checkpoint: `979f51a0` (`Ограничить ingress симуляции по
+классам`) в `main`. Документационный checkpoint может быть более новым.
 
 Дальше:
 
@@ -145,7 +145,7 @@ event/due model и не появился injected simulation clock. Просты
 | 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
 | 4. Admission/isolation | 50% | event-driven wait, bounded due queue и typed bounded ingress готовы; thin connect остаётся |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
-| 6. Active/due work | 20% | granular frontier, crafting due queue и consumable due queue есть; actors/guns/hazards/dirty snapshots ещё частично scan-all |
+| 6. Active/due work | 25% | granular frontier, crafting due queue, consumable due queue и DirtyBuildings есть; player snapshots и actor systems ещё частично scan-all |
 | 7. Interest/read model | 10% | teleport DTO и часть immutable presentation готовы; bots render и admin всё ещё читают общий state |
 | 8. Spatial multicore | 0% | Rayon analysis не является ownership sharding; deterministic 1/2/4-worker model ещё не начат |
 
@@ -251,11 +251,12 @@ auth hydrate outside owner
 ### P2: periodic dirty scan
 
 - players: scan всех player entities каждые `10s`;
-- buildings: scan всех building entities каждые `45s`;
 - saturation откладывает повтор до следующего interval.
 
-Building registry делается первым: lifecycle зданий уже централизован, а
-production dirty transitions ограничены. Player registry требует сначала
+Building registry закрыт: `DirtyBuildings` dedup-ит entity, periodic flush и
+shutdown берут только registry, а saturation requeue-ит остаток. Hourly damage,
+craft completion, Raz, gun charge, pack/UI и paid Resp flows mark registry вместе
+с `BuildingFlags.dirty`. Player registry требует сначала
 incarnation-safe reconnect, иначе старая dirty entity может исчезнуть без save.
 
 ### P2: один idle player всё ещё запускает periodic systems
@@ -390,10 +391,9 @@ Release runtime gate на одном `8x8` local fixture:
 
 ## Следующий кодовый срез
 
-**DirtyBuildings.** Убрать scan-all building snapshot каждые 45s через
-owner-owned dirty registry; до mutation проверить missing dirty marks в hourly
-damage и gun charge. После этого - active reconnect и incarnation-aware
-`DirtyPlayers`.
+**Active reconnect, затем DirtyPlayers.** Старый `Disconnect` не должен снять
+новую player incarnation; после этого заменить 10s player scan на
+incarnation-aware dirty registry и убрать последний periodic entity scan.
 
 ## Следующий обязательный порядок
 

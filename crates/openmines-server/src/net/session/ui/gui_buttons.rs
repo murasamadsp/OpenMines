@@ -1515,6 +1515,7 @@ fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: 
         send_crafter_action_error(tx);
         return;
     }
+    assert!(state.mark_building_dirty(building_entity));
 
     broadcast_pack_update(state, &view);
     show_crafter_recipes(tx, &view);
@@ -1815,13 +1816,16 @@ fn do_market_sell(
             flags.dirty = true;
         }
 
-        Some((crystals, money_now, creds_now))
+        Some((crystals, money_now, creds_now, total_money > 0))
     };
-    let Some((crystals, money_now, creds_now)) = sell_result else {
+    let Some((crystals, money_now, creds_now, building_changed)) = sell_result else {
         tracing::error!(player_id = %pid, x = bx, y = by, "Market sell failed before mutation");
         send_market_state_error(tx);
         return;
     };
+    if building_changed {
+        assert!(state.mark_building_dirty(building_entity));
+    }
 
     send_u_packet(tx, "@B", &basket(&crystals, 1).1);
     send_u_packet(tx, "P$", &money(money_now, creds_now).1);

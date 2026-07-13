@@ -599,10 +599,15 @@ where
     // Помечаем dirty для периодического snapshot flush (каждые 45с).
     // Флаг снимается только после admission в bounded persistence owner; принятые
     // команды не теряются и повторяются при transient DB error.
-    let mut flags = ecs
-        .get_mut::<BuildingFlags>(entity)
-        .ok_or_else(|| "Состояние здания недоступно".to_string())?;
-    flags.dirty = true;
+    {
+        let mut flags = ecs
+            .get_mut::<BuildingFlags>(entity)
+            .ok_or_else(|| "Состояние здания недоступно".to_string())?;
+        flags.dirty = true;
+    }
+    ecs.resource_mut::<crate::game::DirtyBuildings>()
+        .0
+        .insert(entity);
 
     Ok(res)
 }

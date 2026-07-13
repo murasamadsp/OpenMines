@@ -2,7 +2,6 @@
 
 use super::TickPendingWork;
 use crate::game::GameState;
-use bevy_ecs::prelude::Entity;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -83,22 +82,16 @@ pub(super) fn flush_dirty_buildings_once(
     state: &Arc<GameState>,
     persistence: &crate::persistence::PersistenceHandle,
 ) -> usize {
-    let dirty_entities = {
-        let mut ecs = state.ecs_write_profiled("simulation.building_dirty_flush.scan");
-        let mut query = ecs.query::<(Entity, &crate::game::BuildingFlags)>();
-        let entities = query
-            .iter(&ecs)
-            .filter_map(|(entity, flags)| flags.dirty.then_some(entity))
-            .collect::<Vec<_>>();
-        drop(query);
-        drop(ecs);
-        entities
-    };
+    let mut dirty_entities = state.take_dirty_building_entities();
     let mut accepted = 0usize;
-    for entity in dirty_entities {
+    while let Some(entity) = dirty_entities.pop() {
         let permit = match persistence.try_reserve(crate::game::SaveKind::Building) {
             Ok(permit) => permit,
-            Err(crate::persistence::PersistenceAdmissionError::Full) => break,
+            Err(crate::persistence::PersistenceAdmissionError::Full) => {
+                dirty_entities.push(entity);
+                state.requeue_dirty_building_entities(dirty_entities);
+                break;
+            }
             Err(crate::persistence::PersistenceAdmissionError::Closed) => {
                 panic!("persistence worker closed during periodic building flush");
             }

@@ -209,10 +209,15 @@ pub fn apply_player_death_core(
                         .get_mut::<crate::game::buildings::BuildingStorage>(bld_ent)
                         .ok_or(DeathCoreError::RespState("BuildingStorage"))?;
                     bld_storage.money += resp_cost;
-                    let mut bld_flags = ecs
-                        .get_mut::<crate::game::buildings::BuildingFlags>(bld_ent)
-                        .ok_or(DeathCoreError::RespState("BuildingFlags"))?;
-                    bld_flags.dirty = true;
+                    {
+                        let mut bld_flags = ecs
+                            .get_mut::<crate::game::buildings::BuildingFlags>(bld_ent)
+                            .ok_or(DeathCoreError::RespState("BuildingFlags"))?;
+                        bld_flags.dirty = true;
+                    }
+                    ecs.resource_mut::<crate::game::DirtyBuildings>()
+                        .0
+                        .insert(bld_ent);
                     // C# ref: Resp.OnRespawn calls p.SendMoney() — capture for later
                     let s = ecs
                         .get::<crate::game::player::PlayerStats>(entity)

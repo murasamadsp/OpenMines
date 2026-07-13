@@ -491,6 +491,7 @@ fn apply_raz_buildings(
     ), bevy_ecs::prelude::Without<BuildingDeletePending>>();
     let mut removals = Vec::new();
     let mut pack_resends = Vec::new();
+    let mut dirty_entities = Vec::new();
 
     for entity in candidates {
         let Ok((metadata, position, ownership, mut building_stats, mut flags)) =
@@ -517,10 +518,15 @@ fn apply_raz_buildings(
         }
         damage_building(&mut building_stats, RAZ_BUILDING_DAMAGE);
         flags.dirty = true;
+        dirty_entities.push(entity);
         if building_stats.charge == 0 {
             pack_resends.push(building_position);
         }
     }
+    drop(query);
+    ecs.resource_mut::<crate::game::DirtyBuildings>()
+        .0
+        .extend(dirty_entities);
     drop(ecs);
     removals.sort_unstable_by_key(|remove| (remove.x, remove.y));
     pack_resends.sort_unstable();
