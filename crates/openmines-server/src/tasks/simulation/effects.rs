@@ -629,6 +629,7 @@ fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
             state.schedule_hazard(entity, std::time::Instant::now());
         }
         state.seed_granular_region(respawn_x, respawn_y);
+        state.seed_alive_region(respawn_x, respawn_y);
         crate::net::session::play::death::run_death_broadcasts(state, &broadcasts, player_id);
         if let Some(tx) = state.player_sender(player_id) {
             crate::net::session::play::death::send_respawn_after_death(

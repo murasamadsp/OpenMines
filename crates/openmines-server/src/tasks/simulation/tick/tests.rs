@@ -36,7 +36,7 @@ fn schedule_clock_skips_idle_world_without_catchup() {
     let mut clock = ScheduleClock::new(2, base);
     let schedules = [
         candidate("hazards", ScheduleActivity::OnlinePlayers, 10),
-        candidate("physics", ScheduleActivity::PlayerEntities, 10),
+        candidate("physics", ScheduleActivity::OnlinePlayers, 10),
     ];
 
     let due = clock.select_due(
@@ -44,12 +44,12 @@ fn schedule_clock_skips_idle_world_without_catchup() {
         base + Duration::from_millis(11),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -60,12 +60,12 @@ fn schedule_clock_skips_idle_world_without_catchup() {
         base + Duration::from_millis(12),
         ScheduleWorkload {
             online_count: 1,
-            player_entity_count: 1,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -79,12 +79,12 @@ fn schedule_clock_skips_idle_world_without_catchup() {
         base + Duration::from_millis(21),
         ScheduleWorkload {
             online_count: 1,
-            player_entity_count: 1,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -96,7 +96,7 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
     let base = Instant::now();
     let schedules = [
         candidate("renamed_online_work", ScheduleActivity::OnlinePlayers, 10),
-        candidate("renamed_entity_work", ScheduleActivity::PlayerEntities, 10),
+        candidate("renamed_active_work", ScheduleActivity::ActiveAlive, 10),
         candidate("renamed_durable_work", ScheduleActivity::Always, 10),
         candidate("renamed_crafting_work", ScheduleActivity::DueCrafting, 10),
     ];
@@ -107,12 +107,12 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
         base + Duration::from_millis(11),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 1,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: Some(base),
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -124,12 +124,12 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
         base + Duration::from_millis(11),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -141,12 +141,12 @@ fn schedule_activity_defines_idle_behavior_without_name_matching() {
         base + Duration::from_millis(11),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: true,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -172,12 +172,12 @@ fn schedule_clock_preserves_disabled_schedule_slots() {
         base + Duration::from_millis(11),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: true,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied().flatten(),
     );
@@ -197,12 +197,12 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
         first_due_at,
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -214,12 +214,12 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
         first_due_at + Duration::from_millis(9),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -230,12 +230,12 @@ fn schedule_clock_runs_from_completion_time_not_original_deadline() {
         first_due_at + Duration::from_millis(10),
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |idx| schedules.get(idx).copied(),
     );
@@ -257,12 +257,12 @@ fn schedule_clock_deadline_skips_idle_work_without_catchup() {
         idle_checked_at,
         ScheduleWorkload {
             online_count: 0,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |index| schedules.get(index).copied(),
     );
@@ -274,12 +274,12 @@ fn schedule_clock_deadline_skips_idle_work_without_catchup() {
         enabled_at,
         ScheduleWorkload {
             online_count: 1,
-            player_entity_count: 0,
             crafting_due: false,
             guns_due: false,
             programmator_due: false,
             hazard_due_at: None,
             granular_work_at: None,
+            alive_work_at: None,
         },
         |index| schedules.get(index).copied(),
     );
@@ -297,12 +297,12 @@ fn due_crafting_uses_its_domain_deadline_not_the_periodic_interval() {
     )];
     let workload = ScheduleWorkload {
         online_count: 0,
-        player_entity_count: 0,
         crafting_due: true,
         guns_due: false,
         programmator_due: false,
         hazard_due_at: None,
         granular_work_at: None,
+        alive_work_at: None,
     };
     let mut clock = ScheduleClock::new(schedules.len(), base);
 
@@ -333,12 +333,12 @@ fn due_programmator_uses_its_domain_deadline_not_player_entity_scan() {
 
     let idle = ScheduleWorkload {
         online_count: 1,
-        player_entity_count: 100,
         crafting_due: false,
         guns_due: false,
         programmator_due: false,
         hazard_due_at: None,
         granular_work_at: None,
+        alive_work_at: None,
     };
     assert!(
         clock
@@ -368,12 +368,12 @@ fn due_hazards_do_not_run_for_safe_idle_players() {
     let mut clock = ScheduleClock::new(schedules.len(), base);
     let idle = ScheduleWorkload {
         online_count: 1,
-        player_entity_count: 1,
         crafting_due: false,
         guns_due: false,
         programmator_due: false,
         hazard_due_at: None,
         granular_work_at: None,
+        alive_work_at: None,
     };
 
     assert!(
@@ -387,6 +387,7 @@ fn due_hazards_do_not_run_for_safe_idle_players() {
     let due = ScheduleWorkload {
         hazard_due_at: Some(now),
         granular_work_at: None,
+        alive_work_at: None,
         ..idle
     };
     assert_eq!(
@@ -405,12 +406,12 @@ fn active_granular_frontier_does_not_run_for_sleeping_players() {
     let mut clock = ScheduleClock::new(schedules.len(), base);
     let idle = ScheduleWorkload {
         online_count: 1,
-        player_entity_count: 1,
         crafting_due: false,
         guns_due: false,
         programmator_due: false,
         hazard_due_at: None,
         granular_work_at: None,
+        alive_work_at: None,
     };
 
     assert!(
@@ -430,6 +431,44 @@ fn active_granular_frontier_does_not_run_for_sleeping_players() {
     let active_at = now + Duration::from_millis(400);
     let active = ScheduleWorkload {
         granular_work_at: Some(active_at),
+        alive_work_at: None,
+        ..idle
+    };
+    assert_eq!(
+        clock.select_due(schedules.len(), active_at, active, |index| {
+            schedules.get(index).copied()
+        }),
+        vec![0]
+    );
+}
+
+#[test]
+fn active_alive_registry_does_not_run_for_sleeping_players() {
+    let base = Instant::now();
+    let now = base + Duration::from_millis(5_001);
+    let schedules = [candidate("alive", ScheduleActivity::ActiveAlive, 5_000)];
+    let mut clock = ScheduleClock::new(schedules.len(), base);
+    let idle = ScheduleWorkload {
+        online_count: 1,
+        crafting_due: false,
+        guns_due: false,
+        programmator_due: false,
+        hazard_due_at: None,
+        granular_work_at: None,
+        alive_work_at: None,
+    };
+
+    assert!(
+        clock
+            .select_due(schedules.len(), now, idle, |index| schedules
+                .get(index)
+                .copied())
+            .is_empty()
+    );
+
+    let active_at = now + Duration::from_secs(5);
+    let active = ScheduleWorkload {
+        alive_work_at: Some(active_at),
         ..idle
     };
     assert_eq!(

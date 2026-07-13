@@ -578,12 +578,12 @@ pub struct GameSchedule {
 pub enum ScheduleActivity {
     Always,
     OnlinePlayers,
-    PlayerEntities,
     DueCrafting,
     DueGuns,
     DueProgrammator,
     DueHazards,
     ActiveGranular,
+    ActiveAlive,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -865,6 +865,7 @@ pub struct GameState {
     box_pickup_queue: BoxPickupQueue,
     death_queue: combat::DeathQueue,
     granular_wake_q: GranularWakeQueue,
+    alive_work_q: alive::AliveWorkQueue,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
     /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `WorldPos` →
@@ -1027,7 +1028,7 @@ impl GameState {
             },
             GameSchedule {
                 name: "alive".to_string(),
-                activity: ScheduleActivity::PlayerEntities,
+                activity: ScheduleActivity::ActiveAlive,
                 schedule: RwLock::new(schedule_alive),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.alive_ms),
             },
@@ -1107,6 +1108,7 @@ impl GameState {
             box_pickup_queue: BoxPickupQueue::default(),
             death_queue: combat::DeathQueue::default(),
             granular_wake_q: GranularWakeQueue::default(),
+            alive_work_q: alive::AliveWorkQueue::default(),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
             consumable_packs: DashMap::new(),
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
@@ -1169,6 +1171,7 @@ impl GameState {
             ecs.insert_resource(ScheduleConfigResource(state.config.gameplay.schedules));
             ecs.insert_resource(state.box_pickup_queue.clone());
             ecs.insert_resource(state.granular_wake_q.clone());
+            ecs.insert_resource(state.alive_work_q.clone());
             ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
@@ -2350,12 +2353,22 @@ impl GameState {
         self.granular_wake_q.has_work()
     }
 
+    pub fn seed_alive_region(&self, x: i32, y: i32) {
+        self.alive_work_q.seed_region(x, y);
+        self.simulation_waker.wake();
+    }
+
+    pub fn has_alive_work(&self) -> bool {
+        self.alive_work_q.has_work()
+    }
+
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {
         use crate::protocol::packets::hb_cell;
         self.wake_granular_neighborhood(x, y);
         let Some(cell) = self.world.read_world_cell(x, y) else {
             return;
         };
+        self.alive_work_q.note_cell(x, y, cell.cell_type);
         let sub = hb_cell(
             u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
             u16::try_from(y.rem_euclid(65536)).unwrap_or(0),

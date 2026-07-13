@@ -806,11 +806,7 @@ pub fn try_spend_crystal(
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    let Some(cell) = state.world.read_world_cell(x, y) else {
-        return;
-    };
-    let sub = hb_cell(net_u16_nonneg(x), net_u16_nonneg(y), cell.cell_type.0);
-    state.broadcast_hb_at(x, y, &[sub], None);
+    state.broadcast_cell_update(x, y);
 }
 
 fn place_block(state: &Arc<GameState>, x: i32, y: i32, cell: u8) {

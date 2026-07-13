@@ -57,12 +57,12 @@ pub(super) struct ScheduleClock {
 #[derive(Clone, Copy)]
 pub(super) struct ScheduleWorkload {
     pub(super) online_count: usize,
-    pub(super) player_entity_count: usize,
     pub(super) crafting_due: bool,
     pub(super) guns_due: bool,
     pub(super) programmator_due: bool,
     pub(super) hazard_due_at: Option<Instant>,
     pub(super) granular_work_at: Option<Instant>,
+    pub(super) alive_work_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -134,8 +134,13 @@ impl ScheduleClock {
                 }
                 continue;
             }
-            if schedule.activity == ScheduleActivity::ActiveGranular
-                && workload.granular_work_at.is_none()
+            if matches!(
+                schedule.activity,
+                ScheduleActivity::ActiveGranular | ScheduleActivity::ActiveAlive
+            ) && ((schedule.activity == ScheduleActivity::ActiveGranular
+                && workload.granular_work_at.is_none())
+                || (schedule.activity == ScheduleActivity::ActiveAlive
+                    && workload.alive_work_at.is_none()))
             {
                 *self.last_run_mut(idx, now) = now;
                 continue;
@@ -187,8 +192,13 @@ impl ScheduleClock {
                 }
                 continue;
             }
-            if schedule.activity == ScheduleActivity::ActiveGranular
-                && workload.granular_work_at.is_none()
+            if matches!(
+                schedule.activity,
+                ScheduleActivity::ActiveGranular | ScheduleActivity::ActiveAlive
+            ) && ((schedule.activity == ScheduleActivity::ActiveGranular
+                && workload.granular_work_at.is_none())
+                || (schedule.activity == ScheduleActivity::ActiveAlive
+                    && workload.alive_work_at.is_none()))
             {
                 *self.last_run_mut(idx, now) = now;
                 continue;
@@ -209,12 +219,12 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
     match activity {
         ScheduleActivity::Always => false,
         ScheduleActivity::OnlinePlayers => workload.online_count == 0,
-        ScheduleActivity::PlayerEntities => workload.player_entity_count == 0,
         ScheduleActivity::DueCrafting => !workload.crafting_due,
         ScheduleActivity::DueGuns => !workload.guns_due,
         ScheduleActivity::DueProgrammator => !workload.programmator_due,
         ScheduleActivity::DueHazards => workload.hazard_due_at.is_none(),
         ScheduleActivity::ActiveGranular => workload.granular_work_at.is_none(),
+        ScheduleActivity::ActiveAlive => workload.alive_work_at.is_none(),
     }
 }
 
@@ -340,12 +350,12 @@ pub(super) fn run_schedule_phase(
         now,
         ScheduleWorkload {
             online_count,
-            player_entity_count,
             crafting_due: state.has_due_crafting(now_ts),
             guns_due: online_count > 0 && state.guns_due(now),
             programmator_due: state.has_due_programmator(now),
             hazard_due_at: state.next_hazard_due_at().filter(|due_at| *due_at <= now),
             granular_work_at: (player_entity_count > 0 && state.has_granular_work()).then_some(now),
+            alive_work_at: (player_entity_count > 0 && state.has_alive_work()).then_some(now),
         },
         |idx| configured_candidate(state, idx),
     );

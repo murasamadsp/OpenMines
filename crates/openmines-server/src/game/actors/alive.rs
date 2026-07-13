@@ -5,12 +5,18 @@
 
 use crate::game::player::{PlayerConnection, PlayerPosition};
 use crate::game::programmator::ProgrammatorState;
-use crate::game::{BroadcastEffect, BroadcastQueue, ScheduleConfigResource, WorldResource};
+use crate::game::{
+    BroadcastEffect, BroadcastQueue, ScheduleConfigResource, WorldPos, WorldResource,
+};
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
 use bevy_ecs::prelude::*;
+use parking_lot::Mutex;
 use rand::Rng;
-use std::collections::{BTreeMap, HashSet};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Directions used by alive cell logic (cardinal: right, down, left, up).
@@ -18,7 +24,7 @@ const DIRS: [(i32, i32); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
 const ACTIVE_RADIUS: i32 = 16;
 
 /// Check if a cell type is an alive cell.
-const fn is_alive(cell: crate::world::CellType) -> bool {
+pub const fn is_alive(cell: crate::world::CellType) -> bool {
     matches!(
         cell.0,
         cell_type::ALIVE_BLUE
@@ -31,6 +37,53 @@ const fn is_alive(cell: crate::world::CellType) -> bool {
     )
 }
 
+#[derive(Default)]
+struct AliveWorkState {
+    cells: HashSet<WorldPos>,
+    region_seeds: HashSet<WorldPos>,
+    active: bool,
+}
+
+#[derive(Resource, Clone, Default)]
+pub struct AliveWorkQueue(Arc<Mutex<AliveWorkState>>);
+
+impl AliveWorkQueue {
+    pub fn seed_region(&self, x: i32, y: i32) {
+        let mut state = self.0.lock();
+        state.region_seeds.insert((x, y).into());
+        state.active = true;
+    }
+
+    pub fn note_cell(&self, x: i32, y: i32, cell: crate::world::CellType) {
+        let mut state = self.0.lock();
+        if is_alive(cell) {
+            state.cells.insert((x, y).into());
+            state.active = true;
+        } else {
+            state.cells.remove(&WorldPos::from((x, y)));
+        }
+    }
+
+    fn take_region_seeds(&self) -> Vec<WorldPos> {
+        std::mem::take(&mut self.0.lock().region_seeds)
+            .into_iter()
+            .collect()
+    }
+
+    fn cells(&self) -> Vec<WorldPos> {
+        self.0.lock().cells.iter().copied().collect()
+    }
+
+    fn set_active(&self, active: bool) {
+        self.0.lock().active = active;
+    }
+
+    pub fn has_work(&self) -> bool {
+        let state = self.0.lock();
+        state.active || !state.region_seeds.is_empty()
+    }
+}
+
 /// Collected set of player positions for occupancy checks.
 struct PlayerPositions {
     positions: HashSet<(i32, i32)>,
@@ -40,12 +93,21 @@ impl PlayerPositions {
     fn has_player_at(&self, x: i32, y: i32) -> bool {
         self.positions.contains(&(x, y))
     }
+
+    fn is_active_for(&self, x: i32, y: i32) -> bool {
+        self.positions.iter().any(|&(px, py)| {
+            x.saturating_sub(px).unsigned_abs() <= ACTIVE_RADIUS.unsigned_abs()
+                && y.saturating_sub(py).unsigned_abs() <= ACTIVE_RADIUS.unsigned_abs()
+        })
+    }
 }
 
+#[cfg(test)]
 struct ActiveFrontier {
     rows: Vec<(i32, Vec<(i32, i32)>)>,
 }
 
+#[cfg(test)]
 impl ActiveFrontier {
     fn around(players: &PlayerPositions) -> Self {
         let mut rows: BTreeMap<i32, Vec<(i32, i32)>> = BTreeMap::new();
@@ -94,10 +156,33 @@ fn dedup_alive_actions(actions: Vec<AliveAction>) -> Vec<AliveAction> {
     by_pos.into_values().collect()
 }
 
+fn seed_alive_regions(queue: &AliveWorkQueue, world: &crate::world::World) -> (usize, usize) {
+    let mut seeds = queue.take_region_seeds();
+    seeds.sort_unstable_by_key(|pos| {
+        let (x, y): (i32, i32) = (*pos).into();
+        (y, x)
+    });
+    seeds.dedup();
+    let mut scanned = 0usize;
+    for seed in seeds.iter().copied() {
+        let (px, py): (i32, i32) = seed.into();
+        for y in py.saturating_sub(ACTIVE_RADIUS)..=py.saturating_add(ACTIVE_RADIUS) {
+            for x in px.saturating_sub(ACTIVE_RADIUS)..=px.saturating_add(ACTIVE_RADIUS) {
+                scanned += 1;
+                if world.valid_coord(x, y) {
+                    queue.note_cell(x, y, world.get_cell_typed(x, y));
+                }
+            }
+        }
+    }
+    (seeds.len(), scanned)
+}
+
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 pub fn alive_physics_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
+    alive_work: Res<AliveWorkQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
     query: Query<(
         &PlayerPosition,
@@ -122,27 +207,25 @@ pub fn alive_physics_system(
     };
     let player_collect_time = player_collect_t0.elapsed();
 
-    // Merge overlapping player windows before reading the world. Work is
-    // proportional to the active spatial union, not players × window area.
+    // Full world windows are scanned only after a position transition. The
+    // periodic path evaluates the explicit set of known alive cells.
     let collect_t0 = Instant::now();
-    let mut alive_cells: Vec<(i32, i32, crate::world::CellType)> = Vec::new();
-    let mut cells_scanned = 0usize;
-    let frontier = ActiveFrontier::around(&players);
-    for (y, intervals) in &frontier.rows {
-        for &(start_x, end_x) in intervals {
-            for x in start_x..=end_x {
-                cells_scanned += 1;
-                if !world.valid_coord(x, *y) {
-                    continue;
-                }
-                let cell = world.get_cell_typed(x, *y);
-                if is_alive(cell) {
-                    alive_cells.push((x, *y, cell));
-                }
-            }
+    let (seed_regions, cells_scanned) = seed_alive_regions(&alive_work, world);
+    let mut alive_cells = Vec::new();
+    for pos in alive_work.cells() {
+        let (x, y): (i32, i32) = pos.into();
+        if !world.valid_coord(x, y) {
+            alive_work.note_cell(x, y, crate::world::CellType(cell_type::EMPTY));
+            continue;
+        }
+        let cell = world.get_cell_typed(x, y);
+        alive_work.note_cell(x, y, cell);
+        if is_alive(cell) && players.is_active_for(x, y) {
+            alive_cells.push((x, y, cell));
         }
     }
     let collect_time = collect_t0.elapsed();
+    alive_work.set_active(!alive_cells.is_empty());
 
     let mut rng = rand::rng();
     let mut actions: Vec<AliveAction> = Vec::new();
@@ -255,6 +338,10 @@ pub fn alive_physics_system(
         bcast_q
             .0
             .push(BroadcastEffect::CellUpdate((action.x, action.y).into()));
+        alive_work.note_cell(action.x, action.y, action.cell);
+    }
+    for &(x, y) in &clears {
+        alive_work.note_cell(x, y, world.get_cell_typed(x, y));
     }
     let apply_time = apply_t0.elapsed();
     let total = started_at.elapsed();
@@ -263,6 +350,7 @@ pub fn alive_physics_system(
         tracing::warn!(
             target: "tickprof",
             players = players.positions.len(),
+            seed_regions,
             cells_scanned,
             alive_cells = alive_cells.len(),
             actions = actions.len(),

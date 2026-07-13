@@ -248,11 +248,10 @@ incarnation после reconnect не может сохранить новую.
 
 ### P2: один idle player всё ещё запускает periodic systems
 
-Programmator, guns, standing-cell hazards и granular physics используют
-bounded active/due work. Granular region seed-ится при position transition, а
-cell transition будит только локальный frontier; sleeping player не запускает
-physics schedule. Alive и bots render пока не все выражены через explicit
-registries, поэтому `1 idle player` ещё платит за оставшиеся periodic systems.
+Programmator, guns, standing-cell hazards, granular physics и alive cells
+используют bounded active/due work. Granular/alive region seed-ятся при position
+transition, cell transition обновляет локальный frontier; sleeping player не
+запускает их schedules. Из заметных periodic read paths остаётся bots render.
 
 ### P2: presentation/read paths
 
@@ -433,12 +432,23 @@ physics больше не удерживает schedule активным.
 полный server suite (`367 passed`, `1 ignored`), strict clippy, architecture
 guard и `scripts/dev-smoke.sh`.
 
+## Завершённый кодовый срез
+
+**Alive active registry закрыт.** `AliveWorkQueue` scan-ит player window только
+на position transition, хранит exact set обнаруженных `ALIVE_*` cells и каждые
+пять секунд обрабатывает только этот set. Cell update проходит через общий
+`GameState::broadcast_cell_update`, поэтому placement/transform не обходит
+registry. Пустой filtered batch выключает schedule до следующего seed/wake.
+
+Проверка: alive/granular coupled fixture, scheduler test safe idle/active
+registry, полный server suite (`368 passed`, `1 ignored`), strict clippy,
+architecture guard и `scripts/dev-smoke.sh`.
+
 ## Текущий кодовый срез
 
-**Следующий vertical slice: alive active registry.** Заменить scan player
-windows на explicit registry живых клеток, поддерживаемый cell/position
-transitions. Не смешивать с ECS ownership или read model; legacy five-second
-cadence и deterministic conflict order должны остаться проверяемыми.
+**Следующий vertical slice: bots render snapshot.** Вынести immutable snapshot
+и encode из общего ECS read-lock, сохранив observer/byte budgets и legacy HB
+order. Это следующий подтверждённый источник lock contention из runtime trace.
 
 ## Видимые milestones
 

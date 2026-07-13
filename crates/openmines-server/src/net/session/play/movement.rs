@@ -337,6 +337,7 @@ fn apply_move(
         state.schedule_hazard(entity, std::time::Instant::now());
     }
     state.seed_granular_region(nx, ny);
+    state.seed_alive_region(nx, ny);
 
     let tail = state
         .query_player(pid, |ecs, entity| {

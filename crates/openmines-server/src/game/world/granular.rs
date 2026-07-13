@@ -886,12 +886,15 @@ mod physics_repro {
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
         w.insert_resource(crate::game::GranularWakeQueue::default());
+        w.insert_resource(crate::game::alive::AliveWorkQueue::default());
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
         spawn_connected_test_player(&mut w, 64, 65);
         w.resource::<crate::game::GranularWakeQueue>()
+            .seed_region(64, 65);
+        w.resource::<crate::game::alive::AliveWorkQueue>()
             .seed_region(64, 65);
 
         let mut sched = Schedule::default();

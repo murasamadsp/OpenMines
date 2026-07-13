@@ -259,6 +259,7 @@ pub(super) fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, coords: 
         state.schedule_hazard(entity, std::time::Instant::now());
     }
     state.seed_granular_region(dest_x, tp_y);
+    state.seed_alive_region(dest_x, tp_y);
     let packet = tp(dest_x, tp_y);
     send_u_packet(tx, packet.0, &packet.1);
     crate::net::session::play::chunks::check_chunk_changed(state, tx, pid);

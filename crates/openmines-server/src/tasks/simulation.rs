@@ -519,7 +519,6 @@ impl SimulationRuntime {
             now,
             scheduler::ScheduleWorkload {
                 online_count,
-                player_entity_count: self.state.player_entity_count(),
                 crafting_due: self.state.has_due_crafting(now_ts),
                 guns_due: online_count > 0 && self.state.guns_due(now),
                 programmator_due: self.state.has_due_programmator(now),
@@ -529,6 +528,9 @@ impl SimulationRuntime {
                     .filter(|due_at| *due_at <= now),
                 granular_work_at: (self.state.player_entity_count() > 0
                     && self.state.has_granular_work())
+                .then_some(now),
+                alive_work_at: (self.state.player_entity_count() > 0
+                    && self.state.has_alive_work())
                 .then_some(now),
             },
             |index| scheduler::configured_candidate(&self.state, index),
