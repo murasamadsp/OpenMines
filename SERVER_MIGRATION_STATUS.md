@@ -472,6 +472,13 @@ Player.Init order и повторный session guard сохранены. Initia
 lock на весь 5x5 view. Полный per-chunk cache остаётся следующим read-model debt,
 но command dispatch его больше не выполняет.
 
+**Intra-chunk movement fast path закрыт.** `Xmov` больше не вызывает
+`prepare_chunk_changed` и ECS snapshot, пока source/target остаются в одном
+чанке. Chunk sync, clears и index update остаются только при реальном crossing.
+На live baseline `100` клиентов / `2,000 Xmov/s` это убирает до `2,000`
+лишних snapshot attempts в секунду; baseline сохранил `30,082/30,082` effects
+без disconnect или drain timeout.
+
 Проверка: init/reconnect regression, полный server suite (`368 passed`,
 `1 ignored`), strict clippy, architecture guard и wire smoke.
 

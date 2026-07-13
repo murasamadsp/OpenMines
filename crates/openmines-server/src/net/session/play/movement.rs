@@ -16,6 +16,7 @@ enum MoveOutcome {
         ndir: i32,
         skin: i32,
         clan: i32,
+        chunk_changed: bool,
     },
     Autodig(i32),
 }
@@ -312,18 +313,20 @@ fn apply_move(
                 ndir: actual_dir,
                 skin,
                 clan,
+                chunk_changed: World::chunk_pos(px, py) != World::chunk_pos(target_x, target_y),
             })
         })
         .flatten();
 
-    let (nx, ny, ndir, skin, clan) = match result {
+    let (nx, ny, ndir, skin, clan, chunk_changed) = match result {
         Some(MoveOutcome::Moved {
             nx,
             ny,
             ndir,
             skin,
             clan,
-        }) => (nx, ny, ndir, skin, clan),
+            chunk_changed,
+        }) => (nx, ny, ndir, skin, clan, chunk_changed),
         Some(MoveOutcome::Autodig(dig_dir)) => {
             return MoveApplication {
                 followup: Some(MoveFollowup::Autodig(dig_dir)),
@@ -361,8 +364,11 @@ fn apply_move(
     };
 
     let chunk_packets = crate::net::session::wire::PacketBatch::default();
-    let chunk_fanouts =
-        crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_packets, pid);
+    let chunk_fanouts = if chunk_changed {
+        crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_packets, pid)
+    } else {
+        Vec::new()
+    };
 
     // C# `World.AddPack` регистрирует pack только в origin-клетке. Проверка
     // footprint здесь была регрессией: road-клетки Resp открывали GUI.
