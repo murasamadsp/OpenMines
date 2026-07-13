@@ -8,10 +8,8 @@ use crate::game::programmator::ProgrammatorState;
 use crate::game::skills::{OnHealth, PlayerSkills};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
-    send_player_basket, send_player_health, send_player_level, send_player_skills,
-    send_player_speed,
+    send_player_basket, send_player_level, send_player_skills, send_player_speed,
 };
-use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -347,7 +345,126 @@ pub fn connect_entity_in_tick(
     if state.sessions.outbox_for_session(session_id).is_none() {
         return crate::game::CommandEffects::default();
     }
-    connect_entity_in_tick_inner(state, player, session_id)
+    let mut effects = connect_entity_in_tick_inner(state, player, session_id);
+
+    let pid: PlayerId = player.id.into();
+    if let Some(entity) = state.active_player_entity_for_session(pid, session_id) {
+        let chunk_batch = crate::net::session::wire::PacketBatch::default();
+        let fanouts =
+            crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_batch, pid);
+        for fanout in fanouts {
+            effects.events.push(crate::game::GameEvent::Fanout {
+                recipients: fanout.recipients,
+                data: fanout.data,
+            });
+        }
+        if let Some(mut view) = extract_init_view(state, pid, entity, player) {
+            view.chunk_packets = chunk_batch.into_packets();
+            effects.events.push(crate::game::GameEvent::PlayerInit {
+                session_id,
+                view: Box::new(view),
+            });
+        }
+    }
+    effects
+}
+
+fn extract_init_view(
+    state: &Arc<GameState>,
+    _pid: PlayerId,
+    entity: bevy_ecs::entity::Entity,
+    player_row: &PlayerRow,
+) -> Option<crate::game::PlayerInitView> {
+    let (
+        geo_label,
+        max_health,
+        skills,
+        inventory,
+        chunk_x,
+        chunk_y,
+        dir,
+        skin,
+        clan_id_u16,
+        chat_tag,
+        prog_running,
+        hand_mode_active,
+    ) = {
+        let ecs = state.ecs.read();
+        if !ecs.entities().contains(entity) {
+            return None;
+        }
+        let geo_label = ecs
+            .get::<PlayerGeoStack>(entity)
+            .and_then(|gs| gs.0.last().copied())
+            .map(|cell| state.world.cell_defs().get(cell).name.clone())
+            .unwrap_or_default();
+        let player_stats = ecs.get::<PlayerStats>(entity)?;
+        let max_health = player_stats.max_health;
+        let skin = player_stats.skin as u8;
+        let clan_id_u16 = player_stats.clan_id.unwrap_or(0).clamp(0, 65535) as u16;
+        let skills = ecs.get::<PlayerSkillsComp>(entity)?.clone();
+        let inventory = ecs.get::<PlayerInventory>(entity)?.clone();
+        let pos = ecs.get::<PlayerPosition>(entity)?;
+        let chunk_x = pos.chunk_x();
+        let chunk_y = pos.chunk_y();
+        let dir = pos.dir as u8;
+        let chat_tag = ecs
+            .get::<PlayerUI>(entity)
+            .map(|u| u.current_chat.clone())
+            .unwrap_or_else(|| "FED".to_string());
+
+        let (prog_running, hand_mode_active) = ecs
+            .get::<ProgrammatorState>(entity)
+            .map_or((false, false), |prog| (prog.running, prog.hand_mode_active));
+
+        (
+            geo_label,
+            max_health,
+            skills,
+            inventory,
+            chunk_x,
+            chunk_y,
+            dir,
+            skin,
+            clan_id_u16,
+            chat_tag,
+            prog_running,
+            hand_mode_active,
+        )
+    };
+
+    let (chat_name, chat_history) = {
+        let channels = state.chat_channels.read();
+        channels
+            .iter()
+            .find(|c| c.tag == chat_tag)
+            .map(|c| {
+                (
+                    c.name.clone(),
+                    c.messages.iter().cloned().collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default()
+    };
+
+    Some(crate::game::PlayerInitView {
+        player: Box::new(player_row.clone()),
+        geo_label,
+        max_health,
+        skills,
+        inventory,
+        chunk_x,
+        chunk_y,
+        dir,
+        skin,
+        clan_id_u16,
+        chat_tag,
+        chat_name,
+        chat_history,
+        prog_running,
+        hand_mode_active,
+        chunk_packets: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -355,13 +472,12 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
     let session_id = crate::game::SessionId::new(session_id);
     state.sessions.register_test_outbox(session_id, tx.clone());
     state.sessions.bind_player(session_id, player.id.into());
-    let mut effects = connect_entity_in_tick_inner(state, player, session_id);
-    effects.append(prepare_initial_presentation(state, player, session_id));
+    let effects = connect_entity_in_tick(state, player, session_id);
     assert!(effects.saves.is_empty());
     for event in effects.events {
         match event {
-            crate::game::GameEvent::PlayerInit { session_id, player } => {
-                deliver_player_init(state, session_id, &player);
+            crate::game::GameEvent::PlayerInit { session_id, view } => {
+                deliver_player_init(state, session_id, &view);
             }
             crate::game::GameEvent::SessionBatch {
                 session_id,
@@ -380,10 +496,10 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
 
 pub fn prepare_initial_presentation(
     state: &Arc<GameState>,
-    player: &PlayerRow,
+    view: &crate::game::PlayerInitView,
     session_id: crate::game::SessionId,
 ) -> crate::game::CommandEffects {
-    let pid: PlayerId = player.id.into();
+    let pid: PlayerId = view.player.id.into();
     if state
         .active_player_entity_for_session(pid, session_id)
         .is_none()
@@ -397,7 +513,7 @@ pub fn prepare_initial_presentation(
     }
     let packets = crate::net::session::wire::PacketBatch::default();
     let threshold = Duration::from_millis(state.config.gameplay.schedules.game_loop_tick_rate_ms);
-    let (profile, nearby) = build_initial_presentation(state, &packets, player);
+    let (profile, nearby) = build_initial_presentation(state, &packets, view);
     if profile.total > threshold {
         tracing::warn!(
             target: "tickprof",
@@ -431,9 +547,9 @@ pub fn prepare_initial_presentation(
 pub fn deliver_player_init(
     state: &Arc<GameState>,
     session_id: crate::game::SessionId,
-    player: &PlayerRow,
+    view: &crate::game::PlayerInitView,
 ) {
-    let effects = prepare_initial_presentation(state, player, session_id);
+    let effects = prepare_initial_presentation(state, view, session_id);
     for event in effects.events {
         match event {
             crate::game::GameEvent::SessionBatch {
@@ -540,157 +656,129 @@ pub fn disconnect_in_tick(
 }
 
 /// Порядок 1:1 с референсом `Player.Init()` (`Player.cs:597-652`).
-/// Полностью синхронна: на логине нет async-DB (`current_chat`=="FED" резолвится
-/// из in-memory `chat_channels`; блок программы мёртв — `selected_id`=None).
+/// Полностью без синхронного чтения ECS и глобального лок стейта.
 #[allow(clippy::similar_names)]
 fn build_initial_presentation(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
-    player: &PlayerRow,
+    view: &crate::game::PlayerInitView,
 ) -> (InitSyncProfile, Option<crate::game::GameEvent>) {
     let started_at = Instant::now();
     let mut profile = InitSyncProfile::default();
-    let pid: PlayerId = player.id.into();
+    let pid: PlayerId = view.player.id.into();
+
+    let section_t0 = Instant::now();
     // BUG 2: C# ref calls MoveToChunk(ChunkX, ChunkY) BEFORE sync packets (BD, GE, @L, BI, etc.).
-    let section_t0 = Instant::now();
-    check_chunk_changed(state, tx, pid);
+    for packet in &view.chunk_packets {
+        // Send chunk packets calculated synchronously inside authoritative connect tick
+        let _ = tx.send_packet(packet.clone());
+    }
     profile.chunk_sync = section_t0.elapsed();
-    let section_t0 = Instant::now();
-    state.modify_player(pid, |ecs, entity| {
-        let stats = ecs.get::<PlayerStats>(entity)?;
-        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
 
-        // 1. SendAutoDigg
-        send_u_packet(tx, "BD", &auto_digg(player.auto_dig).1);
-        send_u_packet(tx, "BA", &aggression(player.aggression).1);
-        // 2. SendGeo (`pSenders.cs` — `World.GetProp(geo.Peek()).name` или "")
-        let geo_label = ecs
-            .get::<PlayerGeoStack>(entity)
-            .and_then(|gs| gs.0.last().copied())
-            .map(|cell| state.world.cell_defs().get(cell).name.clone())
-            .unwrap_or_default();
-        send_u_packet(tx, "GE", &geo(&geo_label).1);
-        // 3. SendHealth
-        send_player_health(tx, stats);
-        // 4. SendBotInfo
-        let bi = bot_info(&player.name, player.x, player.y, pid.into());
-        send_u_packet(tx, bi.0, &bi.1);
-        // 5. SendSpeed
-        send_player_speed(tx, skills);
-        // 6. SendCrys
-        send_player_basket(tx, stats, skills);
-        // 7. SendMoney
-        send_u_packet(tx, "P$", &money(player.money, player.creds).1);
-        // 8. SendLvl
-        send_player_level(tx, skills);
-        // 8a. SendSkills (@S) — C# ref: `Player.Init()` sends @S immediately after LV.
-        send_player_skills(tx, skills);
-        // 9. SendInventory (`Inventory.InvToSend` — нужен `&mut` для `miniq` префилла)
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        send_inventory(tx, &mut inv);
-        Some(())
-    });
+    let section_t0 = Instant::now();
+    // 1. SendAutoDigg
+    send_u_packet(tx, "BD", &auto_digg(view.player.auto_dig).1);
+    send_u_packet(tx, "BA", &aggression(view.player.aggression).1);
+    // 2. SendGeo
+    send_u_packet(tx, "GE", &geo(&view.geo_label).1);
+    // 3. SendHealth
+    send_u_packet(
+        tx,
+        "@L",
+        &crate::protocol::packets::health(view.player.health, view.max_health).1,
+    );
+    // 4. SendBotInfo
+    let bi = bot_info(&view.player.name, view.player.x, view.player.y, pid.into());
+    send_u_packet(tx, bi.0, &bi.1);
+    // 5. SendSpeed
+    send_player_speed(tx, &view.skills);
+    // 6. SendCrys
+    let dummy_stats = PlayerStats {
+        health: 0,
+        max_health: 0,
+        money: 0,
+        creds: 0,
+        crystals: view.player.crystals,
+        role: 0,
+        skin: 0,
+        clan_id: None,
+        clan_rank: 0,
+        last_bonus_at: 0,
+    };
+    send_player_basket(tx, &dummy_stats, &view.skills);
+    // 7. SendMoney
+    send_u_packet(tx, "P$", &money(view.player.money, view.player.creds).1);
+    // 8. SendLvl
+    send_player_level(tx, &view.skills);
+    // 8a. SendSkills (@S)
+    send_player_skills(tx, &view.skills);
+    // 9. SendInventory
+    let mut inv = view.inventory.clone();
+    send_inventory(tx, &mut inv);
     profile.ecs_packets = section_t0.elapsed();
-    let section_t0 = Instant::now();
-    let spawn_broadcast = state.query_player_opt(pid, |ecs, entity| {
-        let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-            tracing::error!(
-                player_id = %pid,
-                "PlayerStats missing; skipping teleport and clan sync at init"
-            );
-            return None;
-        };
 
-        // 11. tp(x, y)
-        tracing::info!(
-            player_id = %pid,
-            x = player.x,
-            y = player.y,
-            "Teleporting player to saved position at init"
-        );
-        send_u_packet(tx, "@T", &tp(player.x, player.y).1);
-        // 12 консоль — пропускаем
-        // 13. SendSettings (#S)
-        let stg = settings_default_wire();
-        send_u_packet(tx, stg.0, &stg.1);
-        // 14. SendClan
-        if let Some(cid) = stats.clan_id {
-            if cid != 0 {
-                send_u_packet(tx, "cS", &clan_show(cid).1);
-            } else {
-                send_u_packet(tx, "cH", &clan_hide().1);
-            }
+    let section_t0 = Instant::now();
+    // 11. tp(x, y)
+    tracing::info!(
+        player_id = %pid,
+        x = view.player.x,
+        y = view.player.y,
+        "Teleporting player to saved position at init"
+    );
+    send_u_packet(tx, "@T", &tp(view.player.x, view.player.y).1);
+    // 12 консоль — пропускаем
+    // 13. SendSettings (#S)
+    let stg = settings_default_wire();
+    send_u_packet(tx, stg.0, &stg.1);
+    // 14. SendClan
+    if let Some(cid) = view.player.clan_id {
+        if cid != 0 {
+            send_u_packet(tx, "cS", &clan_show(cid).1);
         } else {
             send_u_packet(tx, "cH", &clan_hide().1);
         }
-
-        // BUG 4: Collect data needed to broadcast hb_bot to nearby players.
-        let pos = ecs.get::<PlayerPosition>(entity)?;
-        let clan_id_raw = stats.clan_id.unwrap_or(0).clamp(0, 65535) as u16;
-        Some((
-            pos.chunk_x(),
-            pos.chunk_y(),
-            pos.dir as u8,
-            stats.skin as u8,
-            clan_id_raw,
-        ))
-    });
+    } else {
+        send_u_packet(tx, "cH", &clan_hide().1);
+    }
     profile.spawn_broadcast_query = section_t0.elapsed();
 
     // BUG 4: Broadcast @T appearance to nearby players so they see the newly logged-in player.
     let section_t0 = Instant::now();
-    let nearby = spawn_broadcast.map(|(cx, cy, dir, skin, clan_id_u16)| {
-        let sub = hb_bot(
-            net_u16_nonneg(pid),
-            net_u16_nonneg(player.x),
-            net_u16_nonneg(player.y),
-            dir,
-            skin,
-            clan_id_u16,
-            0,
-        );
-        let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
-        fanout_event(state, cx, cy, hb_data, Some(pid))
-    });
+    let sub = hb_bot(
+        net_u16_nonneg(pid),
+        net_u16_nonneg(view.player.x),
+        net_u16_nonneg(view.player.y),
+        view.dir,
+        view.skin,
+        view.clan_id_u16,
+        0,
+    );
+    let hb_data = encode_hb_bundle(&hb_bundle(&[sub]).1);
+    let nearby = Some(fanout_event(
+        state,
+        view.chunk_x,
+        view.chunk_y,
+        hb_data,
+        Some(pid),
+    ));
     profile.spawn_broadcast_send = section_t0.elapsed();
-    // 15. SendChat (login): mO + bounded current-chat history. `Chin` may still
-    // arrive later from the client, but client-side mU dedup prevents visual
-    // duplicates while this makes first login independent from that timing.
+
+    // 15. SendChat (login)
     let section_t0 = Instant::now();
-    let chat_mo = state
-        .query_player_opt(pid, |ecs, e| {
-            ecs.get::<PlayerUI>(e).map(|u| u.current_chat.clone())
-        })
-        .and_then(|tag| {
-            let channels = state.chat_channels.read();
-            channels.iter().find(|c| c.tag == tag).map(|c| {
-                (
-                    tag,
-                    c.name.clone(),
-                    c.messages.iter().cloned().collect::<Vec<_>>(),
-                )
-            })
-        });
-    if let Some((tag, name, history)) = chat_mo {
-        send_u_packet(tx, "mO", &chat_current(&tag, &name).1);
-        send_u_packet(tx, "mU", &chat_messages(&tag, &history).1);
-    }
+    send_u_packet(tx, "mO", &chat_current(&view.chat_tag, &view.chat_name).1);
+    send_u_packet(
+        tx,
+        "mU",
+        &chat_messages(&view.chat_tag, &view.chat_history).1,
+    );
     profile.chat = section_t0.elapsed();
+
     // 16. ConfigPacket
     let section_t0 = Instant::now();
     send_u_packet(tx, "#F", &config_packet("oldprogramformat+").1);
-    let (prog_running, hand_mode_active) = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<ProgrammatorState>(entity)
-                .map_or((false, false), |prog| (prog.running, prog.hand_mode_active))
-        })
-        .unwrap_or((false, false));
-    send_u_packet(tx, "@P", &programmator_status(prog_running).1);
-    send_u_packet(tx, "BH", &hand_mode(hand_mode_active).1);
-    // Unity @P=1 activates the whole ProgrammatorWindow. If a selected program
-    // exists, #p must follow @P/BH so UpdateProgramm hydrates programId/source
-    // and hides the window again.
-    if let Some(program) = &player.selected_program {
+    send_u_packet(tx, "@P", &programmator_status(view.prog_running).1);
+    send_u_packet(tx, "BH", &hand_mode(view.hand_mode_active).1);
+    if let Some(program) = &view.player.selected_program {
         send_u_packet(
             tx,
             "#p",
@@ -699,11 +787,11 @@ fn build_initial_presentation(
         );
     }
     profile.programmator = section_t0.elapsed();
-    // 17. DR — индикатор ежедневного бонуса (мигание кнопки БОНУСЫ): "1" если
-    // доступен (прошло ≥ кулдауна с последнего клейма), иначе "0".
+
+    // 17. DR
     let section_t0 = Instant::now();
     let dr = if crate::game::logic::bonus::bonus_available(
-        player.last_bonus_at,
+        view.player.last_bonus_at,
         state.config.gameplay.bonus.cooldown_secs,
     ) {
         "1"
@@ -802,9 +890,9 @@ mod tests {
             event,
             crate::game::GameEvent::PlayerInit {
                 session_id: actual_session_id,
-                player: row,
+                view,
             } if *actual_session_id == session_id
-                && row.id == player.id
+                && view.player.id == player.id
         )));
         assert!(
             rx.try_recv().is_err(),
@@ -815,9 +903,7 @@ mod tests {
             .events
             .into_iter()
             .find_map(|event| match event {
-                crate::game::GameEvent::PlayerInit { session_id, player } => {
-                    Some((session_id, player))
-                }
+                crate::game::GameEvent::PlayerInit { session_id, view } => Some((session_id, view)),
                 crate::game::GameEvent::SessionBatch { .. }
                 | crate::game::GameEvent::Fanout { .. }
                 | crate::game::GameEvent::GuiView { .. } => None,

@@ -412,7 +412,10 @@ Release runtime gate на одном `8x8` local fixture:
 
 ## Следующий кодовый срез
 
-**Thin connect.** Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send.
+- [x] **M4. Thin connect.** Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send в presentation task.
+- [ ] **M5. Chat consistency.** Перевести чаты на `CommandEffects::Saves(ChatAppend)` + `ChatFanout`.
+- [ ] **M6. Command pipeline.** Единый `mpsc` для `GameCommand` из всех сессий.
+- [ ] **M7. Programmator consistency.** Убрать `tokio::spawn` из `create_program`, вынести в `CommandEffects::Saves`.
 
 ## Следующий обязательный порядок
 

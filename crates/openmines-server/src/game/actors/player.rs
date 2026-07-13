@@ -27,7 +27,7 @@ pub struct PlayerStats {
     pub last_bonus_at: i64,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct PlayerInventory {
     pub items: HashMap<i32, i32>,
     pub selected: i32,
@@ -37,7 +37,7 @@ pub struct PlayerInventory {
     pub miniq: Vec<i32>,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Debug)]
 pub struct PlayerSkillsComp {
     /// Слотовая модель скиллов (1:1 C# `PlayerSkills`): slot→skill + slots + selectedslot.
     pub states: SkillSlots,

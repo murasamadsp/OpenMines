@@ -122,10 +122,6 @@ fn apply_session_command(state: &Arc<GameState>, command: PlayerCommand) -> Comm
             effects.append(crate::net::session::player::init::connect_entity_in_tick(
                 state, &row, session_id,
             ));
-            effects.events.push(crate::game::GameEvent::PlayerInit {
-                player: row,
-                session_id,
-            });
         }
         crate::game::PlayerCommand::Disconnect {
             player_id,

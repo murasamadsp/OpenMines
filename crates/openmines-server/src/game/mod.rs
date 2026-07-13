@@ -13,9 +13,9 @@ pub use economy::market;
 pub use logic::contracts::{
     BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
     BuildingDeleteResult, BuildingIdentity, CommandEffects, CommandIngressClass, CommandSeq,
-    GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, ProgramSaveRequest,
-    ProgramSaveResult, QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
-    TeleportGuiView,
+    GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, PlayerInitView,
+    ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind,
+    SessionId, SimTick, TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};

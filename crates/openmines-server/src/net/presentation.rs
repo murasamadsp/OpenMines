@@ -54,8 +54,8 @@ async fn run_delivery(state: Arc<GameState>, mut rx: tokio::sync::mpsc::Receiver
 
 fn deliver(state: &Arc<GameState>, event: GameEvent) {
     match event {
-        GameEvent::PlayerInit { session_id, player } => {
-            crate::net::session::player::init::deliver_player_init(state, session_id, &player);
+        GameEvent::PlayerInit { session_id, view } => {
+            crate::net::session::player::init::deliver_player_init(state, session_id, &view);
         }
         GameEvent::SessionBatch {
             session_id,

@@ -562,13 +562,34 @@ impl CommandEffects {
     }
 }
 
+/// Data snapshot for presentation-owned Player.Init encoding, extracted during simulation tick.
+#[derive(Debug, Clone)]
+pub struct PlayerInitView {
+    pub player: Box<PlayerRow>,
+    pub geo_label: String,
+    pub max_health: i32,
+    pub skills: crate::game::actors::player::PlayerSkillsComp,
+    pub inventory: crate::game::player::PlayerInventory,
+    pub chunk_x: u32,
+    pub chunk_y: u32,
+    pub dir: u8,
+    pub skin: u8,
+    pub clan_id_u16: u16,
+    pub chat_tag: String,
+    pub chat_name: String,
+    pub chat_history: Vec<openmines_protocol::chat::ChatMessage>,
+    pub prog_running: bool,
+    pub hand_mode_active: bool,
+    pub chunk_packets: Vec<Vec<u8>>,
+}
+
 /// Outbound work produced by authoritative command application.
 #[derive(Debug, Clone)]
 pub enum GameEvent {
-    /// Hydrated login row for presentation-owned Player.Init encoding.
+    /// Hydrated login view for presentation-owned Player.Init encoding.
     PlayerInit {
         session_id: SessionId,
-        player: Box<PlayerRow>,
+        view: Box<PlayerInitView>,
     },
     SessionBatch {
         session_id: SessionId,
