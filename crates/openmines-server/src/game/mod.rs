@@ -34,7 +34,7 @@ use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -527,6 +527,7 @@ pub enum ScheduleActivity {
     DueCrafting,
     DueGuns,
     DueProgrammator,
+    DueHazards,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -591,9 +592,111 @@ impl ProgrammatorDueQueue {
 #[derive(Resource, Default)]
 pub struct ProgrammatorDueBatch(pub Vec<(Entity, Instant)>);
 
+#[derive(Resource, Clone)]
+pub struct HazardDueQueue(Arc<Mutex<HazardDueSchedule>>);
+
+impl HazardDueQueue {
+    pub fn schedule(&self, entity: Entity, due_at: Instant) {
+        self.0.lock().schedule(entity, due_at);
+    }
+}
+
+#[derive(Resource, Default)]
+pub struct HazardDueBatch(pub Vec<(Entity, Instant)>);
+
+#[derive(Resource, Clone)]
+pub struct StandingCellHazardContext {
+    pub box_pickups: BoxPickupQueue,
+    pub death_queue: combat::DeathQueue,
+    pub due_queue: HazardDueQueue,
+    pub interval: Duration,
+    pub slow_threshold: Duration,
+}
+
 #[derive(Default)]
 struct ProgrammatorDueSchedule {
     due: BinaryHeap<Reverse<(Instant, Entity)>>,
+}
+
+#[derive(Default)]
+struct HazardDueSchedule {
+    due: BinaryHeap<Reverse<(Instant, Entity)>>,
+    scheduled: HashMap<Entity, Instant>,
+}
+
+impl HazardDueSchedule {
+    fn schedule(&mut self, entity: Entity, due_at: Instant) {
+        let Some(previous) = self.scheduled.insert(entity, due_at) else {
+            self.due.push(Reverse((due_at, entity)));
+            return;
+        };
+        if due_at < previous {
+            self.due.push(Reverse((due_at, entity)));
+        } else {
+            self.scheduled.insert(entity, previous);
+        }
+    }
+
+    fn discard_stale_head(&mut self) {
+        while let Some(&Reverse((due_at, entity))) = self.due.peek() {
+            if self
+                .scheduled
+                .get(&entity)
+                .is_some_and(|current| *current == due_at)
+            {
+                break;
+            }
+            self.due.pop();
+        }
+    }
+
+    fn next_due_at(&mut self) -> Option<Instant> {
+        self.discard_stale_head();
+        self.due.peek().map(|Reverse((due_at, _))| *due_at)
+    }
+
+    fn pop_due(&mut self, now: Instant, limit: usize) -> Vec<(Entity, Instant)> {
+        let mut due = Vec::with_capacity(limit.min(self.scheduled.len()));
+        while due.len() < limit {
+            self.discard_stale_head();
+            let Some(&Reverse((due_at, entity))) = self.due.peek() else {
+                break;
+            };
+            if due_at > now {
+                break;
+            }
+            self.due.pop();
+            self.scheduled.remove(&entity);
+            due.push((entity, due_at));
+        }
+        due
+    }
+}
+
+#[cfg(test)]
+mod hazard_due_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_one_earliest_deadline_per_entity() {
+        let base = Instant::now();
+        let entity = Entity::from_raw_u32(1).expect("non-placeholder entity id");
+        let mut schedule = HazardDueSchedule::default();
+
+        schedule.schedule(entity, base + Duration::from_millis(20));
+        schedule.schedule(entity, base + Duration::from_millis(10));
+        schedule.schedule(entity, base + Duration::from_millis(30));
+
+        assert_eq!(
+            schedule.next_due_at(),
+            Some(base + Duration::from_millis(10))
+        );
+        assert_eq!(
+            schedule.pop_due(base + Duration::from_millis(10), 1),
+            vec![(entity, base + Duration::from_millis(10))]
+        );
+        assert!(schedule.next_due_at().is_none());
+    }
 }
 
 impl ProgrammatorDueSchedule {
@@ -695,6 +798,7 @@ pub struct GameState {
     simulation_waker: crate::simulation_waker::SimulationWaker,
     crafting_due_schedule: Mutex<CraftingDueSchedule>,
     programmator_due_schedule: Arc<Mutex<ProgrammatorDueSchedule>>,
+    hazard_due_schedule: Arc<Mutex<HazardDueSchedule>>,
     bots_render_schedule: Mutex<BotsRenderSchedule>,
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
@@ -727,6 +831,7 @@ impl GameState {
     pub const BOTS_RENDER_BYTE_BUDGET: usize = 1024 * 1024;
     pub const CRAFTING_DUE_BATCH_BUDGET: usize = 256;
     pub const PROGRAMMATOR_DUE_BATCH_BUDGET: usize = 256;
+    pub const HAZARD_DUE_BATCH_BUDGET: usize = 256;
 
     pub fn next_chat_id(&self) -> i64 {
         self.chat_id_seq
@@ -842,7 +947,7 @@ impl GameState {
         let schedules = vec![
             GameSchedule {
                 name: "hazards".to_string(),
-                activity: ScheduleActivity::OnlinePlayers,
+                activity: ScheduleActivity::DueHazards,
                 schedule: RwLock::new(schedule_hazards),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.hazards_ms),
             },
@@ -896,6 +1001,7 @@ impl GameState {
 
         let ingress = config.gameplay.simulation;
         let programmator_due_schedule = Arc::new(Mutex::new(ProgrammatorDueSchedule::default()));
+        let hazard_due_schedule = Arc::new(Mutex::new(HazardDueSchedule::default()));
         let (lifecycle_tx, lifecycle_rx) = mpsc::channel(ingress.lifecycle_ingress_capacity);
         let (gameplay_tx, gameplay_rx) = mpsc::channel(ingress.gameplay_ingress_capacity);
         let (internal_tx, internal_rx) = mpsc::channel(ingress.internal_ingress_capacity);
@@ -936,6 +1042,7 @@ impl GameState {
             simulation_waker: crate::simulation_waker::SimulationWaker::default(),
             crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
             programmator_due_schedule,
+            hazard_due_schedule,
             bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
             bots_render_slot_seq: std::sync::atomic::AtomicU64::new(0),
             tokio_handle: tokio::runtime::Handle::current(),
@@ -1013,6 +1120,19 @@ impl GameState {
                 state.programmator_due_schedule.clone(),
             ));
             ecs.insert_resource(ProgrammatorDueBatch::default());
+            ecs.insert_resource(HazardDueBatch::default());
+            ecs.insert_resource(StandingCellHazardContext {
+                box_pickups: state.box_pickup_queue.clone(),
+                death_queue: state.death_queue.clone(),
+                due_queue: HazardDueQueue(state.hazard_due_schedule.clone()),
+                interval: Duration::from_millis(state.config.gameplay.schedules.hazards_ms),
+                slow_threshold: Duration::from_millis(
+                    state.config.gameplay.schedules.schedule_warn_threshold_ms,
+                )
+                .min(Duration::from_millis(
+                    state.config.gameplay.schedules.game_loop_tick_rate_ms,
+                )),
+            });
             ecs.insert_resource(combat::GunTickTimer::default());
             ecs.insert_resource(combat::GunCandidateBatch::default());
             ecs.insert_resource(PendingCellConversions::default());
@@ -1112,6 +1232,21 @@ impl GameState {
         self.programmator_due_schedule
             .lock()
             .pop_due(now, Self::PROGRAMMATOR_DUE_BATCH_BUDGET)
+    }
+
+    pub fn schedule_hazard(&self, entity: Entity, due_at: Instant) {
+        self.hazard_due_schedule.lock().schedule(entity, due_at);
+        self.simulation_waker.wake();
+    }
+
+    pub fn next_hazard_due_at(&self) -> Option<Instant> {
+        self.hazard_due_schedule.lock().next_due_at()
+    }
+
+    pub fn take_due_hazards(&self, now: Instant) -> Vec<(Entity, Instant)> {
+        self.hazard_due_schedule
+            .lock()
+            .pop_due(now, Self::HAZARD_DUE_BATCH_BUDGET)
     }
 
     pub fn take_due_crafting(

@@ -44,7 +44,7 @@ runtime evidence и следующий срез находятся в
 ### Текущие runtime owners
 
 ```text
-TCP sessions -> typed PlayerCommand -> SimulationRuntime
+TCP sessions -> QueuedGameCommand -> SimulationRuntime
       ^                                  |       |
       |                           GameEvent    SaveCommand
       |                                  |       |
@@ -65,10 +65,11 @@ TCP sessions -> typed PlayerCommand -> SimulationRuntime
 - `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
   записи, делает retry и публикует typed completion.
 
-TY frame разбирается в session adapter до enqueue. `PlayerCommand` содержит
-typed variants (`Move`, `Dig`, `Build`, `Gui`, `InventoryUse`, `ProgramAction` и
+TY frame разбирается в session adapter до enqueue. `GameCommand` содержит typed
+variants (`Move`, `Dig`, `Build`, `Gui`, `InventoryUse`, `ProgramAction` и
 другие), а не сырой `Ty` payload. `QueuedGameCommand` несёт общий authenticated
-envelope (`player_id`, `session_id`, `GameCommand`) для всех client actions.
+envelope (`player_id`, `session_id`, `GameCommand`) для всех client actions;
+внутренний `PlayerCommand` не повторяет identity.
 
 Command ingress разделён на bounded классы lifecycle, gameplay и internal.
 Каждый имеет отдельные capacity и item budget на active cycle; gameplay при full
@@ -97,6 +98,8 @@ flush. Crash durability это не заменяет.
 - `PlayerInit` chunk snapshot, wire encode и delivery принадлежат presentation
   owner; simulation `Connect` делает только entity/index apply;
 - programmator исполняется через entity-aware due heap, не periodic player scan;
+- standing-cell hazards используют deduplicated due deadlines: safe idle player
+  не запускает ECS schedule, непустая клетка повторно планирует только себя;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 

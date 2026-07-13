@@ -625,6 +625,9 @@ fn apply_programmator_action(state: &Arc<GameState>, action: crate::game::Progra
 
 fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
     for (player_id, respawn_x, respawn_y, max_health, broadcasts) in deaths {
+        if let Some(entity) = state.get_player_entity(player_id) {
+            state.schedule_hazard(entity, std::time::Instant::now());
+        }
         crate::net::session::play::death::run_death_broadcasts(state, &broadcasts, player_id);
         if let Some(tx) = state.player_sender(player_id) {
             crate::net::session::play::death::send_respawn_after_death(

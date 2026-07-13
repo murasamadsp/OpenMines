@@ -165,7 +165,7 @@ per-drain work budget и saturation/burst tests. Ограничение памя
 ### C2. Common envelopes и outcomes
 
 - все client actions получают `SessionId` через общий envelope;
-- `PlayerCommand` разделяется по источникам input;
+- `QueuedGameCommand` отделяет authenticated identity от typed `GameCommand`;
 - прямые output queues сходятся в один typed effect pipeline;
 - error semantics становятся видны из сигнатур.
 

@@ -133,6 +133,15 @@
 только atomics/spin. Completion ack отправлять через обычный non-rendezvous
 channel; timeout использовать только как deadlock guard, не как latency assert.
 
+### Урок 11: Новый durable SaveKind требует полного completion-admission пути
+
+При переносе `createprog` добавил `SaveCommand::ProgramCreate`, но сначала
+забыл резервирование completion permit в `PersistenceHandle`. Smoke дошёл до
+создания программы и worker упал уже после принятия действия.
+
+**Правило:** новый durable `SaveKind` одновременно проходит `kind()`, admission,
+completion capacity/permit, worker dispatch, completion apply и saturation test.
+
 ## Документация
 
 - **`SERVER_MIGRATION_STATUS.md`** — единственный актуальный checkpoint/handoff
@@ -411,7 +420,7 @@ cargo fmt --all
 ### Runtime ownership — переходное состояние
 
 ```text
-TCP Session -> PlayerCommand -> SimulationRuntime -> CommandEffects
+TCP Session -> QueuedGameCommand -> SimulationRuntime -> CommandEffects
                                     |                    |
                                     |              GameEvent / SaveCommand
                                     v                    v
@@ -419,6 +428,9 @@ TCP Session -> PlayerCommand -> SimulationRuntime -> CommandEffects
 ```
 
 - `SessionHub` владеет session identity и bounded per-session outbox.
+- `QueuedGameCommand` несёт общий authenticated envelope: `PlayerId`,
+  `SessionId` и typed `GameCommand`; variants `PlayerCommand` не дублируют
+  identity.
 - `SimulationRuntime` владеет receiver, clocks, `DueActionQueue` и backlogs.
 - `PersistenceRuntime` владеет перенесёнными durable writes и completions.
 - `PresentationRuntime` доставляет перенесённые immutable effects.

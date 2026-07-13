@@ -18,27 +18,29 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `fd4523c8` (`Убрать scan-all flush игроков`) в
-`main`. Документационный checkpoint может быть более новым.
+Ожидаемый code checkpoint: `d6570b19` (`Перевести команды и создание программ
+на simulation pipeline`) в `main`. Документационный checkpoint может быть
+более новым.
 
 Дальше:
 
-1. Прочитать разделы `Что горит`, `Следующий кодовый срез` и `Запрещённые
+1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые
    решения` ниже.
-2. Не начинать bounded ingress, dirty registries, chat optimization или
-   multicore до завершения текущего среза graceful DueAction drain.
+2. Текущий срез - убрать periodic `PlayerEntities` work для sleeping
+   alive/granular actors через explicit active frontier. Не смешивать его с ECS
+   ownership, chat optimization или multicore.
 3. Перед правкой проверить указанные функции в текущем коде: номера строк могут
    сдвинуться, имена и invariants важнее номера.
 4. После среза обновить этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
-На code checkpoint `8e572b89` зелёные:
+На code checkpoint `d6570b19` зелёные:
 
 - pre-commit doctor, architecture guard, dependency policy и security audit;
 - strict clippy для всех targets/features;
 - `585/585` tests в `cargo-nextest`, `2` skipped;
-- отдельный server suite: `360 passed`, `1 ignored` benchmark;
+- отдельный server suite: `364 passed`, `1 ignored` benchmark;
 - `scripts/dev-smoke.sh`: auth, gameplay, building/admin, programmator,
   settings и reconnect wire flows;
 - rustfmt и `git diff --check`;
@@ -140,9 +142,9 @@ event/due model и не появился injected simulation clock. Просты
 | Этап | Готовность | Фактическое состояние |
 | --- | ---: | --- |
 | 0. Evidence и guards | 75% | release traces, CPU/off-CPU classification, strict clippy, architecture guard; одинаковый benchmark обязателен не для каждого среза |
-| 1. Session/output owner | 70% | `SessionId`, bounded outbox, `SessionHub`, presentation-owned PlayerInit есть; common authenticated envelope не завершён |
+| 1. Session/output owner | 75% | `SessionId`, bounded outbox, `SessionHub`, presentation-owned PlayerInit и common authenticated envelope есть |
 | 2. Command/effects boundary | 40% | connect/disconnect, move, teleport-open, delayed consumables и building delete перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
-| 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
+| 3. Persistence owner | 50% | bounded writer, batching, retry, writer drain и `ProgramCreate` completion есть; GUI/auction bypass и crash journal остаются |
 | 4. Admission/isolation | 55% | event-driven wait, bounded due queue, typed bounded ingress и thin connect готовы |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
 | 6. Active/due work | 40% | granular frontier, crafting/consumable/programmator/guns due queues и dirty registries есть; actor systems ещё частично scan-all |
@@ -205,24 +207,6 @@ event/due model и не появился injected simulation clock. Просты
 
 ### P1: global mutable `GameState`
 
-### P1: accepted DueAction теряется при graceful shutdown
-
-Inventory уже списан, но `finish_shutdown` сейчас может уничтожить будущий
-Boom/Protector/Raz до его deadline. Финальный player snapshot тогда сохраняет
-списанный item, а действие не выполняется.
-
-Правильный gate:
-
-- simulation переходит в `Quiescing` и закрывает внешний ingress;
-- buffered commands и due actions исполняются по реальным deadlines;
-- Protector/Raz building removals идут во внутренний simulation-owned FIFO, а
-  не обратно во внешний command channel;
-- persistence completion barrier завершается до final player/building/world
-  flush.
-
-Это закрывает graceful shutdown. Crash durability отдельно требует persistent
-action intent/idempotency и replay; `Instant` сериализовать нельзя.
-
 ECS находится под общим `RwLock`, а session/admin/web/background paths всё ещё
 могут читать или мутировать authoritative state. Поэтому preemption owner-а
 превращается в latency других подсистем, а invariants нельзя доказать типами.
@@ -261,11 +245,11 @@ incarnation после reconnect не может сохранить новую.
 
 ### P2: один idle player всё ещё запускает periodic systems
 
-Programmator уже использует entity-aware due heap: stale start/stop entries
-отбрасываются по `running/delay`, а batch ограничен `256` entities. Hazards,
-guns, physics/alive и bots render пока не все выражены через explicit due/active
-registries. Поэтому `0 players` уже дешёвый, а
-`1 idle player` - ещё нет.
+Programmator, guns и standing-cell hazards используют bounded due work. Hazards
+ставятся при connect/reconnect, успешном move, teleport и respawn; безопасная
+idle-позиция не имеет deadline и не запускает ECS schedule. Physics/alive и
+bots render пока не все выражены через explicit due/active registries, поэтому
+`1 idle player` ещё платит за оставшиеся periodic systems.
 
 ### P2: presentation/read paths
 
@@ -410,34 +394,37 @@ Release runtime gate на одном `8x8` local fixture:
 - Исправлен баг синхронизации ролей при реконнекте: роль игрока теперь корректно обновляется в `PlayerStats` при переиспользовании ECS-сущности на логине (для корректной работы `is_admin_command`).
 - Все тесты, включая `dirty_player_registry_drops_stale_entity_after_reconnect`, `stale_disconnect_cannot_remove_or_save_reconnected_incarnation` и `scripts/dev-smoke.sh`, успешно проходят.
 
-## Следующий кодовый срез
+## Завершённый кодовый срез
 
-- [x] **M4. Thin connect.** Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send в presentation task.
-- [x] **M5. Chat consistency.** Перевести чаты на `CommandEffects::Saves(ChatAppend)` + `ChatFanout`.
+- [x] **M4. Thin connect.** Connect ограничен entity/index apply; immutable
+  `PlayerInitView` кодируется и доставляется presentation owner-ом.
+- [x] **M5. Chat consistency.** Чат использует `CommandEffects::Saves(ChatAppend)`
+  и `ChatFanout`.
 - [x] **M6. Command pipeline.** Все session actions проходят через общий
-  `QueuedGameCommand { player_id, session_id, command: GameCommand }`. Три
-  bounded QoS-очереди lifecycle/gameplay/internal сохранены: это admission
-  policy M2, а не второй command contract.
-- [x] **M7. Programmator consistency.** `createprog:` возвращает
-  `SaveCommand::ProgramCreate`; persistence worker создаёт и выбирает программу,
-  затем simulation completion открывает editor только исходной current session.
+  `QueuedGameCommand { player_id, session_id, command: GameCommand }`; три
+  bounded QoS-очереди остаются admission policy M2.
+- [x] **M7. Programmator consistency.** `createprog:` выдаёт
+  `SaveCommand::ProgramCreate`; persistence completion открывает editor только
+  исходной current session.
 
-## Следующий обязательный порядок
+**Hazards active/due registry закрыт.** `HazardDueSchedule` держит один
+ближайший deadline на entity и отбрасывает stale heap entries. Scheduler
+запускает hazards только при due batch (`256` entities); system повторно ставит
+только живого игрока на непустой клетке. Damage, box pickup и destructible-cell
+effects сохранили существующий apply path. C190 reset перенесён к C190 use,
+чтобы безопасная idle-позиция не меняла его timeout semantics.
 
-1. Закрыть graceful drain accepted DueAction через `Quiescing` и internal
-   building-delete backlog.
-2. Заменить unbounded ingress на bounded typed workload classes с overload и
-   starvation policy.
-3. Ввести `DirtyBuildings`, удалить building scan-all и исправить missing dirty
-   marks в hourly damage/gun charge.
-4. Исправить active reconnect; затем ввести incarnation-aware `DirtyPlayers`.
-5. Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send.
-6. Перевести programmator, guns, hazards, alive/granular на due/active registries.
-7. Удалить external ECS writers и физически передать Bevy `World` simulation
-   owner-у по значению.
-8. Построить immutable per-chunk read model и interest subscriptions.
-9. Только затем вводить spatial workers и проверять deterministic digest на
-   `1/2/4` workers.
+Проверка: registry dedup/deadline test, scheduler test для safe idle player,
+полный server suite (`366 passed`, `1 ignored`), strict clippy, architecture
+guard и `scripts/dev-smoke.sh`.
+
+## Текущий кодовый срез
+
+**Следующий vertical slice: alive/granular active frontier.** Убрать periodic
+`PlayerEntities` work для sleeping actors без нового external ECS writer или
+второго apply path. Сначала составить карту cell/position transitions и доказать
+legacy behavior на granular fixtures; затем - immutable read model и spatial
+ownership/multicore.
 
 ## Видимые milestones
 

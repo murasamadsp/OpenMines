@@ -826,9 +826,10 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         let _ = conn_tx.send(pkt);
                     }
                     // Get stacks and compute damage
-                    let stacks = ecs
-                        .get::<PlayerCooldowns>(entity)
-                        .map_or(0, |cd| cd.c190_stacks);
+                    let stacks = ecs.get_mut::<PlayerCooldowns>(entity).map_or(0, |mut cd| {
+                        crate::game::mechanics::combat::reset_c190_if_due(&mut cd);
+                        cd.c190_stacks
+                    });
                     let dmg = 20 + 60 * stacks;
                     // Apply damage
                     let (h, mh) = {

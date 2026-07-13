@@ -27,7 +27,7 @@ auth.reconnect | saved credentials | AU | <uniq>_<id>_<md5(hash+sid)> | auth/log
 ```text
 prog.menu.open | GUIManager.OnProgButton | Pope | ignored | social/buildings.rs::handle_programmator_pope_menu | GU | список программ, не запуск
 prog.create.dialog | HORB button | GUI_ | {"b":"createprog"} | ui/gui_buttons.rs::open_create_prog_dialog | GU | поле имени программы
-prog.create.confirm | HORB input button | GUI_ | {"b":"createprog:<name>"} | ui/gui_buttons.rs::handle_create_prog | Gu,#P,Gu | выбирает created program, открывает редактор
+prog.create.confirm | HORB input button | GUI_ | {"b":"createprog:<name>"} | logic/commands.rs -> PersistenceRuntime::ProgramCreate | Gu,#P,Gu | durable create/select, затем открывает editor исходной session
 prog.open | HORB list button | GUI_ | {"b":"openprog:<id>"} | ui/gui_buttons.rs::handle_open_prog | Gu,#P,Gu | только owned program
 prog.save.start | ProgrammerView.SendAndStartProgram | PROG | [len:i32][id:i32][compiled][source] | social/misc.rs::handle_prog_ty | Gu,optional @T,@P,BH,#p,optional OK | успешный старт: #p только последним после @P/BH, потому что @P 1 включает ProgrammatorWindow
 prog.stop | GUIManager/ProgPanel stop | pRST | empty | social/misc.rs::handle_prog_ty | Gu,@P,BH | только если реально был running

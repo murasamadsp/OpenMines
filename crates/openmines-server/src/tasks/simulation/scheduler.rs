@@ -61,6 +61,7 @@ pub(super) struct ScheduleWorkload {
     pub(super) crafting_due: bool,
     pub(super) guns_due: bool,
     pub(super) programmator_due: bool,
+    pub(super) hazard_due_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -119,11 +120,14 @@ impl ScheduleClock {
                 ScheduleActivity::DueCrafting
                     | ScheduleActivity::DueGuns
                     | ScheduleActivity::DueProgrammator
+                    | ScheduleActivity::DueHazards
             ) {
                 if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
                     || (schedule.activity == ScheduleActivity::DueGuns && workload.guns_due)
                     || (schedule.activity == ScheduleActivity::DueProgrammator
                         && workload.programmator_due)
+                    || (schedule.activity == ScheduleActivity::DueHazards
+                        && workload.hazard_due_at.is_some())
                 {
                     due_schedules.push(idx);
                 }
@@ -163,11 +167,14 @@ impl ScheduleClock {
                 ScheduleActivity::DueCrafting
                     | ScheduleActivity::DueGuns
                     | ScheduleActivity::DueProgrammator
+                    | ScheduleActivity::DueHazards
             ) {
                 if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
                     || (schedule.activity == ScheduleActivity::DueGuns && workload.guns_due)
                     || (schedule.activity == ScheduleActivity::DueProgrammator
                         && workload.programmator_due)
+                    || (schedule.activity == ScheduleActivity::DueHazards
+                        && workload.hazard_due_at.is_some())
                 {
                     return Some(now);
                 }
@@ -193,6 +200,7 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
         ScheduleActivity::DueCrafting => !workload.crafting_due,
         ScheduleActivity::DueGuns => !workload.guns_due,
         ScheduleActivity::DueProgrammator => !workload.programmator_due,
+        ScheduleActivity::DueHazards => workload.hazard_due_at.is_none(),
     }
 }
 
@@ -290,6 +298,7 @@ pub(super) fn run_schedule_phase(
             crafting_due: state.has_due_crafting(now_ts),
             guns_due: online_count > 0 && state.guns_due(now),
             programmator_due: state.has_due_programmator(now),
+            hazard_due_at: state.next_hazard_due_at().filter(|due_at| *due_at <= now),
         },
         |idx| configured_candidate(state, idx),
     );
@@ -329,6 +338,9 @@ pub(super) fn run_schedule_phase(
         if gs.activity == ScheduleActivity::DueProgrammator {
             ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 =
                 state.take_due_programmators(now);
+        }
+        if gs.activity == ScheduleActivity::DueHazards {
+            ecs.resource_mut::<crate::game::HazardDueBatch>().0 = state.take_due_hazards(now);
         }
         if gs.activity == ScheduleActivity::DueGuns {
             *ecs.resource_mut::<crate::game::combat::GunCandidateBatch>() =

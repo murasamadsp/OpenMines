@@ -203,6 +203,7 @@ fn connect_entity_in_tick_inner(
             }) {
                 state.schedule_programmator(entity, due_at);
             }
+            state.schedule_hazard(entity, Instant::now());
             profile.reuse_existing = section_t0.elapsed();
             tracing::info!(player_id = %pid, "Player reconnected to existing ECS entity");
             log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);
@@ -331,6 +332,7 @@ fn connect_entity_in_tick_inner(
     }) {
         state.schedule_programmator(entity, due_at);
     }
+    state.schedule_hazard(entity, Instant::now());
     profile.register = section_t0.elapsed();
 
     log_connect_profile_if_slow(pid, started_at.elapsed(), threshold, profile);

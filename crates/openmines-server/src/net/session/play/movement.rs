@@ -333,6 +333,10 @@ fn apply_move(
         None => return MoveApplication::default(),
     };
 
+    if let Some(entity) = state.get_player_entity(pid) {
+        state.schedule_hazard(entity, std::time::Instant::now());
+    }
+
     let tail = state
         .query_player(pid, |ecs, entity| {
             ecs.get::<crate::game::programmator::ProgrammatorState>(entity)

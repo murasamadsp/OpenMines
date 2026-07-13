@@ -523,6 +523,10 @@ impl SimulationRuntime {
                 crafting_due: self.state.has_due_crafting(now_ts),
                 guns_due: online_count > 0 && self.state.guns_due(now),
                 programmator_due: self.state.has_due_programmator(now),
+                hazard_due_at: self
+                    .state
+                    .next_hazard_due_at()
+                    .filter(|due_at| *due_at <= now),
             },
             |index| scheduler::configured_candidate(&self.state, index),
         );
@@ -544,6 +548,15 @@ impl SimulationRuntime {
             schedule_deadline = Some(schedule_deadline.map_or(programmator_deadline, |deadline| {
                 deadline.min(programmator_deadline)
             }));
+        }
+        if let Some(hazard_deadline) = self
+            .state
+            .next_hazard_due_at()
+            .filter(|deadline| *deadline > now)
+        {
+            schedule_deadline = Some(
+                schedule_deadline.map_or(hazard_deadline, |deadline| deadline.min(hazard_deadline)),
+            );
         }
 
         wait::plan_wait(

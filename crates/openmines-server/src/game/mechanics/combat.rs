@@ -10,8 +10,8 @@ use crate::game::player::{
 use crate::game::programmator::ProgrammatorState;
 use crate::game::skills::{OnHurt, PlayerSkills as SkillHurt};
 use crate::game::{
-    BoxPickupIntent, BoxPickupQueue, BoxPickupSource, BroadcastEffect, BroadcastQueue,
-    CombatConfigResource, PackResendQueue, ScheduleConfigResource, WorldResource,
+    BoxPickupIntent, BoxPickupSource, BroadcastEffect, BroadcastQueue, CombatConfigResource,
+    PackResendQueue, StandingCellHazardContext, WorldResource,
 };
 use crate::world::WorldProvider;
 use crate::world::cells::cell_type;
@@ -123,7 +123,7 @@ impl HazardProfile {
     }
 }
 
-fn reset_c190_if_due(cooldowns: &mut PlayerCooldowns) {
+pub fn reset_c190_if_due(cooldowns: &mut PlayerCooldowns) {
     if cooldowns
         .last_c190_hit
         .is_some_and(|t| t.elapsed() >= Duration::from_mins(1))
@@ -144,9 +144,8 @@ fn send_direct(bcast_q: &mut BroadcastQueue, conn: &PlayerConnection, data: Vec<
 #[allow(clippy::needless_pass_by_value)]
 pub fn standing_cell_hazard_system(
     world_res: Res<WorldResource>,
-    schedule_cfg: Res<ScheduleConfigResource>,
-    box_pickups: Res<BoxPickupQueue>,
-    death_q: Res<DeathQueue>,
+    context: Res<StandingCellHazardContext>,
+    mut hazard_batch: ResMut<crate::game::HazardDueBatch>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut dirty_players: ResMut<crate::game::DirtyPlayers>,
     mut q: HazardQuery<'_, '_>,
@@ -155,8 +154,14 @@ pub fn standing_cell_hazard_system(
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
 
-    for (entity, p_meta, pos, mut stats, conn, prog, mut flags, mut skills, mut cooldowns) in &mut q
-    {
+    let now = Instant::now();
+    let next_due = now + context.interval;
+    for (entity, _) in std::mem::take(&mut hazard_batch.0) {
+        let Ok((entity, p_meta, pos, mut stats, conn, prog, mut flags, mut skills, mut cooldowns)) =
+            q.get_mut(entity)
+        else {
+            continue;
+        };
         if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
             continue;
         }
@@ -200,7 +205,7 @@ pub fn standing_cell_hazard_system(
                 stats.health -= fd;
             } else {
                 stats.health = 0;
-                death_q.push(p_meta.id);
+                context.death_queue.push(p_meta.id);
             }
             flags.dirty = true;
             dirty_players.0.insert((entity, flags.incarnation));
@@ -226,7 +231,7 @@ pub fn standing_cell_hazard_system(
         if cell == crate::world::CellType(cell_type::BOX) {
             profile.boxes_seen += 1;
             let box_t0 = Instant::now();
-            box_pickups.push(BoxPickupIntent {
+            context.box_pickups.push(BoxPickupIntent {
                 player_id: p_meta.id,
                 player_pos: (px, py).into(),
                 box_pos: (px, py).into(),
@@ -240,11 +245,12 @@ pub fn standing_cell_hazard_system(
             bcast_q.0.push(BroadcastEffect::CellUpdate((px, py).into()));
             profile.destroy_time += destroy_t0.elapsed();
         }
+
+        if stats.health > 0 {
+            context.due_queue.schedule(entity, next_due);
+        }
     }
-    profile.log_if_slow(
-        Duration::from_millis(schedule_cfg.0.schedule_warn_threshold_ms)
-            .min(Duration::from_millis(schedule_cfg.0.game_loop_tick_rate_ms)),
-    );
+    profile.log_if_slow(context.slow_threshold);
 }
 
 /// Таймер залпа пушек. C# зовёт `gun.Update()` каждые 0.5с (`World.Update`
