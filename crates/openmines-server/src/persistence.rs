@@ -74,7 +74,10 @@ impl PersistenceHandle {
         if self.tx.is_closed()
             || (matches!(
                 kind,
-                SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+                SaveKind::Program
+                    | SaveKind::ProgramCreate
+                    | SaveKind::BuildingDelete
+                    | SaveKind::ChatColorCycle
             ) && self.completion_tx.is_closed())
         {
             return Err(PersistenceAdmissionError::Closed);
@@ -82,7 +85,10 @@ impl PersistenceHandle {
         if self.tx.capacity() == 0
             || (matches!(
                 kind,
-                SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+                SaveKind::Program
+                    | SaveKind::ProgramCreate
+                    | SaveKind::BuildingDelete
+                    | SaveKind::ChatColorCycle
             ) && self.completion_tx.capacity() == 0)
         {
             return Err(PersistenceAdmissionError::Full);
@@ -96,7 +102,10 @@ impl PersistenceHandle {
     ) -> Result<PersistencePermit, PersistenceAdmissionError> {
         let completion = if matches!(
             kind,
-            SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+            SaveKind::Program
+                | SaveKind::ProgramCreate
+                | SaveKind::BuildingDelete
+                | SaveKind::ChatColorCycle
         ) {
             match self.completion_tx.clone().try_reserve_owned() {
                 Ok(permit) => Some(permit),
@@ -305,6 +314,11 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         write: &crate::db::BuildingDeleteWrite,
     ) -> impl Future<Output = Result<crate::db::BuildingDeleteOutcome, PersistenceStoreFailure>> + Send;
+
+    fn cycle_chat_color(
+        &self,
+        request: &crate::game::ChatColorCycleRequest,
+    ) -> impl Future<Output = Result<Option<i32>, PersistenceStoreFailure>> + Send;
 }
 
 #[derive(Debug)]
@@ -394,6 +408,15 @@ impl PersistenceStore for Arc<crate::db::Database> {
             .await
             .map_err(PersistenceStoreFailure::Transient)
     }
+
+    async fn cycle_chat_color(
+        &self,
+        request: &crate::game::ChatColorCycleRequest,
+    ) -> Result<Option<i32>, PersistenceStoreFailure> {
+        self.cycle_chat_color_if_present(request.player_id.as_i32())
+            .await
+            .map_err(PersistenceStoreFailure::Transient)
+    }
 }
 
 async fn run_worker<S>(
@@ -457,11 +480,70 @@ async fn persist_batch<S>(
                 persist_building_delete_batch(store, &mut batch[start..end], simulation_waker)
                     .await;
             }
+            SaveKind::ChatColorCycle => {
+                persist_chat_color_cycle_batch(store, &mut batch[start..end], simulation_waker)
+                    .await;
+            }
             SaveKind::Player | SaveKind::Building | SaveKind::Box | SaveKind::ChatAppend => {
                 persist_compatible_batch(store, kind, &batch[start..end]).await;
             }
         }
         start = end;
+    }
+}
+
+async fn persist_chat_color_cycle_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::ChatColorCycle { request } = &envelope.command else {
+            unreachable!("compatible chat color cycle batch");
+        };
+        let request = request.clone();
+        let oldest = envelope.enqueued_at;
+        let mut attempt = 0u64;
+        let mut backoff = RETRY_INITIAL_BACKOFF;
+        let result = loop {
+            crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(oldest.elapsed().as_secs_f64());
+            match store.cycle_chat_color(&request).await {
+                Ok(Some(color)) => break crate::game::ChatColorCycleResult::Cycled { color },
+                Ok(None) => break crate::game::ChatColorCycleResult::Rejected,
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::ChatColorCycleResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[SaveKind::ChatColorCycle.name(), "retry"])
+                        .inc();
+                    tracing::warn!(
+                        attempt,
+                        ?backoff,
+                        error = ?error,
+                        player_id = %request.player_id,
+                        "Chat color persistence failed transiently; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2).min(RETRY_MAX_BACKOFF);
+                }
+            }
+        };
+        envelope
+            .completion
+            .take()
+            .expect("chat color cycle command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ChatColorCycled { request, result });
+        simulation_waker.wake();
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::ChatColorCycle.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
     }
 }
 
@@ -682,7 +764,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
-                        | SaveCommand::BuildingDelete { .. } => {
+                        | SaveCommand::BuildingDelete { .. }
+                        | SaveCommand::ChatColorCycle { .. } => {
                             unreachable!("compatible player batch")
                         }
                     })
@@ -699,7 +782,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
-                        | SaveCommand::BuildingDelete { .. } => {
+                        | SaveCommand::BuildingDelete { .. }
+                        | SaveCommand::ChatColorCycle { .. } => {
                             unreachable!("compatible building batch")
                         }
                     })
@@ -716,7 +800,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
-                        | SaveCommand::BuildingDelete { .. } => {
+                        | SaveCommand::BuildingDelete { .. }
+                        | SaveCommand::ChatColorCycle { .. } => {
                             unreachable!("compatible box batch")
                         }
                     })
@@ -733,14 +818,18 @@ where
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
-                        | SaveCommand::BuildingDelete { .. } => {
+                        | SaveCommand::BuildingDelete { .. }
+                        | SaveCommand::ChatColorCycle { .. } => {
                             unreachable!("compatible chat batch")
                         }
                     })
                     .collect::<Vec<_>>();
                 store.save_chat_messages_batch(&requests).await
             }
-            SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete => {
+            SaveKind::Program
+            | SaveKind::ProgramCreate
+            | SaveKind::BuildingDelete
+            | SaveKind::ChatColorCycle => {
                 unreachable!("completion command routed to compatible batch")
             }
         };
@@ -808,6 +897,7 @@ mod tests {
         },
         BuildingDelete(i32),
         Chats(Vec<i64>),
+        ChatColor(i32),
     }
 
     impl TestStore {
@@ -965,6 +1055,21 @@ mod tests {
                 })
             }
         }
+
+        fn cycle_chat_color(
+            &self,
+            request: &crate::game::ChatColorCycleRequest,
+        ) -> impl Future<Output = Result<Option<i32>, PersistenceStoreFailure>> + Send {
+            let store = self.clone();
+            let player_id = request.player_id.as_i32();
+            async move {
+                store
+                    .persist(SavedBatch::ChatColor(player_id))
+                    .await
+                    .map_err(PersistenceStoreFailure::Transient)?;
+                Ok(Some(1))
+            }
+        }
     }
 
     fn player(id: i32) -> crate::db::PlayerRow {
@@ -1036,7 +1141,20 @@ mod tests {
     async fn each_completion_wakes_owner_before_later_batch_work_finishes() {
         let store = TestStore::with_blocked_calls(&[0, 1]);
         let waker = crate::simulation_waker::SimulationWaker::default();
-        waker.register_current();
+
+        let (woken_tx, woken_rx) = std::sync::mpsc::channel();
+        let (park_tx, park_rx) = std::sync::mpsc::channel();
+
+        let test_waker = waker.clone();
+        let handle_thread = std::thread::spawn(move || {
+            test_waker.register_current();
+            park_tx.send(()).unwrap();
+            std::thread::park();
+            woken_tx.send(()).unwrap();
+        });
+
+        park_rx.recv().unwrap();
+
         let mut runtime = PersistenceRuntime::start_with_store_and_waker(store.clone(), 4, waker);
         let mut completions = runtime.take_completion_receiver();
         let handle = runtime.handle();
@@ -1044,19 +1162,21 @@ mod tests {
         publish_program(&handle, 7, 12, 2);
 
         store.started.acquire().await.unwrap().forget();
-        std::thread::park_timeout(Duration::ZERO);
         store.release.add_permits(1);
         store.started.acquire().await.unwrap().forget();
         assert!(completions.recv().await.is_some());
 
-        let started = Instant::now();
-        std::thread::park_timeout(Duration::from_millis(200));
-        assert!(started.elapsed() < Duration::from_millis(50));
+        let woken = woken_rx.recv_timeout(Duration::from_millis(200));
+        assert!(
+            woken.is_ok(),
+            "simulation thread was not woken by persistence completion"
+        );
 
         store.release.add_permits(1);
         drop(handle);
         runtime.shutdown().await;
         assert!(completions.recv().await.is_some());
+        handle_thread.join().unwrap();
     }
 
     fn publish(handle: &PersistenceHandle, id: i32) {
@@ -1138,6 +1258,18 @@ mod tests {
                     },
                     box_write: None,
                     inventory_drop_item: None,
+                },
+            });
+    }
+
+    fn publish_chat_color_cycle(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+        handle
+            .try_reserve(SaveKind::ChatColorCycle)
+            .expect("chat color persistence capacity")
+            .publish(SaveCommand::ChatColorCycle {
+                request: crate::game::ChatColorCycleRequest {
+                    player_id: crate::game::PlayerId(player_id),
+                    session_id: crate::game::SessionId::new(session_id),
                 },
             });
     }
@@ -1416,6 +1548,59 @@ mod tests {
         assert!(matches!(
             completions.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn chat_color_cycle_reserves_completion_and_publishes_result() {
+        let store = TestStore::new(false, 0);
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 1);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_chat_color_cycle(&handle, 7, 11);
+
+        while handle.backlog() != 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(matches!(
+            handle.try_reserve(SaveKind::ChatColorCycle),
+            Err(PersistenceAdmissionError::Full)
+        ));
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::ChatColorCycled {
+                request: crate::game::ChatColorCycleRequest { player_id, session_id },
+                result: crate::game::ChatColorCycleResult::Cycled { color: 1 },
+            }) if player_id == crate::game::PlayerId(7)
+                && session_id == crate::game::SessionId::new(11)
+        ));
+        assert_eq!(
+            *store.saved.lock().expect("saved lock"),
+            vec![SavedBatch::ChatColor(7)]
+        );
+
+        drop(handle);
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn chat_color_cycle_retries_transient_store_failure() {
+        let store = TestStore::new(false, 2);
+        let mut runtime = PersistenceRuntime::start_with_store(store.clone(), 1);
+        let mut completions = runtime.take_completion_receiver();
+        let handle = runtime.handle();
+        publish_chat_color_cycle(&handle, 7, 11);
+        drop(handle);
+
+        runtime.shutdown().await;
+
+        assert_eq!(store.calls.load(Ordering::Acquire), 3);
+        assert!(matches!(
+            completions.try_recv(),
+            Ok(crate::game::PersistenceCompletion::ChatColorCycled {
+                result: crate::game::ChatColorCycleResult::Cycled { color: 1 },
+                ..
+            })
         ));
     }
 }

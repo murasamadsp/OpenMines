@@ -536,14 +536,18 @@ impl GranularPhysicsState {
     }
 
     fn take_candidates(&mut self, limit: usize) -> (Vec<(i32, i32)>, usize) {
-        let mut candidates: Vec<_> = self.active_cells.drain().collect();
-        candidates.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        if candidates.len() <= limit {
+        if self.active_cells.len() <= limit {
+            let mut candidates: Vec<_> = self.active_cells.drain().collect();
+            candidates.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             return (candidates, 0);
         }
-        let deferred = candidates.split_off(limit);
-        let deferred_len = deferred.len();
-        self.active_cells.extend(deferred);
+        let mut candidates: Vec<_> = self.active_cells.iter().copied().collect();
+        candidates.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let deferred_len = candidates.len().saturating_sub(limit);
+        candidates.truncate(limit);
+        for item in &candidates {
+            self.active_cells.remove(item);
+        }
         (candidates, deferred_len)
     }
 }

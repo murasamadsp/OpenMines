@@ -12,12 +12,14 @@ pub(super) fn open(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &Pa
         return;
     }
 
-    use super::horb::{Button, Horb};
-    Horb::new("СПОТ")
-        .button(Button::new(
-            "Удалить",
-            format!("pack_op:remove:{}:{}", view.x, view.y),
-        ))
-        .close_button()
-        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
+    use super::horb::gui;
+    gui! {
+        <window title="СПОТ">
+            <buttons>
+                <button label="Удалить" action=format!("pack_op:remove:{}:{}", view.x, view.y) />
+            </buttons>
+        </window>
+    }
+    .close_button()
+    .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
 }

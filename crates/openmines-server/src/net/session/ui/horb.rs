@@ -20,6 +20,7 @@
 //! открывалось). Этот модуль централизует сборку и устраняет такие расхождения.
 
 use crate::net::session::prelude::*;
+pub use openmines_macros::gui;
 
 /// Кнопка окна: подпись + action (уходит серверу при клике).
 pub struct Button {
@@ -246,6 +247,34 @@ impl Horb {
     }
 
     #[must_use]
+    pub fn css(mut self, css: impl Into<String>) -> Self {
+        self.css = css.into();
+        self
+    }
+
+    #[must_use]
+    pub fn rect(mut self, x: i32, y: i32, w: i32, h: i32, color: impl Into<String>) -> Self {
+        self.canvas.push(CanvasEl::Rect {
+            x,
+            y,
+            w,
+            h,
+            color: color.into(),
+        });
+        self
+    }
+
+    #[must_use]
+    pub fn teleport_point(mut self, x: i32, y: i32, action: impl Into<String>) -> Self {
+        self.canvas.push(CanvasEl::Tp {
+            x,
+            y,
+            action: action.into(),
+        });
+        self
+    }
+
+    #[must_use]
     pub fn text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
         self
@@ -354,37 +383,20 @@ impl Horb {
                 };
                 let color = if empty { "008000" } else { "6495ed" };
                 // Y инвертируем: карта y-вниз, Unity y-вверх (север сверху).
-                self.canvas.push(CanvasEl::Rect {
-                    x: dx * PX,
-                    y: -dy * PX,
-                    w: PX,
-                    h: PX,
-                    color: color.into(),
-                });
+                self = self.rect(dx * PX, -dy * PX, PX, PX, color);
             }
         }
         // Маркер «вы здесь» (поверх плиток).
-        self.canvas.push(CanvasEl::Rect {
-            x: 0,
-            y: 0,
-            w: PX,
-            h: PX,
-            color: "ff3030".into(),
-        });
+        self = self.rect(0, 0, PX, PX, "ff3030");
         // Кликабельные точки в мировых координатах → авто-позиция на карте.
         for (mx, my, action) in markers {
             let (dcx, dcy) = (mx.div_euclid(32) - ccx, my.div_euclid(32) - ccy);
             if dcx.abs() <= radius && dcy.abs() <= radius {
-                self.canvas.push(CanvasEl::Tp {
-                    x: dcx * PX,
-                    y: -dcy * PX,
-                    action: action.clone(),
-                });
+                self = self.teleport_point(dcx * PX, -dcy * PX, action);
             }
         }
         let side = (2 * radius + 1) * PX + PX;
-        self.css = format!("canv-w={side};canv-h={side}");
-        self
+        self.css(format!("canv-w={side};canv-h={side}"))
     }
 
     /// Сериализовать в плоский `HORBConfig`-JSON. Коллекции разворачиваются в
@@ -513,7 +525,7 @@ impl Horb {
 
 #[cfg(test)]
 mod tests {
-    use super::{Button, Horb, RichRow, Tab};
+    use super::{Button, Horb, RichRow, Tab, gui};
 
     fn arr<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
         v.get(key)
@@ -671,5 +683,73 @@ mod tests {
             .expect("Unity ShowHORB requires # between canvas command and content");
         assert_eq!(command.rsplit_once('=').map(|(_, kind)| kind), Some("R"));
         assert_eq!(color, "008000");
+    }
+
+    #[test]
+    fn gui_macro_compiles_declarative_window_structure_properly() {
+        let name = "Alice";
+        let credits = 1500;
+        let is_leader = true;
+
+        let json = gui! {
+            <window title="Test Window" style="canv-w=100;canv-h=100">
+                <text>"Hello, " {name} "!"</text>
+                <tabs>
+                    <tab label="Info" active=true />
+                    <tab label="Admin" action="adm" active=false />
+                </tabs>
+                <form>
+                    <text-row label="Form Title" />
+                    <toggle-row label="Option active" key="opt" active=is_leader />
+                    <uint-row label="Amount" key="amt" value=credits />
+                    <dropdown-row label="Select rank" key="rank" selected=1>
+                        <option value=0 label="Member" />
+                        <option value=1 label="Leader" />
+                    </dropdown-row>
+                </form>
+                <canvas style="canv-w=50;canv-h=50">
+                    <rect x=10 y=10 w=18 h=18 color="ff0000" />
+                    <teleport-point x=20 y=20 action="tp:20:20" />
+                </canvas>
+                <buttons>
+                    <button label="Cancel" action="cancel" />
+                    <button label="Exit" action="exit" />
+                </buttons>
+            </window>
+        }
+        .to_json();
+
+        assert_eq!(json["title"], "Test Window");
+        assert_eq!(json["text"], "Hello, Alice!");
+        assert_eq!(json["css"], "canv-w=50;canv-h=50"); // canvas style overrides window style
+
+        let tabs = arr(&json, "tabs");
+        assert_eq!(tabs.len(), 4);
+        assert_eq!(tabs[0], "Info");
+        assert_eq!(tabs[1], "");
+        assert_eq!(tabs[2], "Admin");
+        assert_eq!(tabs[3], "adm");
+
+        let rich = arr(&json, "richList");
+        assert_eq!(rich.len(), 20); // 4 elements * 5 fields
+        assert_eq!(rich[1], "text");
+        assert_eq!(rich[6], "bool");
+        assert_eq!(rich[8], "opt");
+        assert_eq!(rich[9], "1");
+        assert_eq!(rich[11], "uint");
+        assert_eq!(rich[14], "1500");
+        assert_eq!(rich[16], "drop");
+        assert_eq!(rich[17], "0:Member#1:Leader#");
+
+        let canvas = arr(&json, "canvas");
+        assert_eq!(canvas.len(), 3);
+        assert_eq!(canvas[0], "10X10Y18w18h=R#ff0000");
+        assert_eq!(canvas[1], "20X20Y=t");
+        assert_eq!(canvas[2], "tp:20:20");
+
+        let buttons = arr(&json, "buttons");
+        assert_eq!(buttons.len(), 4);
+        assert_eq!(buttons[0], "Cancel");
+        assert_eq!(buttons[1], "cancel");
     }
 }

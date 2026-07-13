@@ -405,7 +405,7 @@ pub fn handle_prog_rename_prompt_ty(
 
 pub async fn handle_whoi(state: &Arc<GameState>, tx: &Outbox, ids: &[i32]) {
     let mut parts = Vec::new();
-    for &id in ids {
+    for &id in ids.iter().take(64) {
         let mut name_opt =
             state.query_player_opt(id.into(), |ecs: &bevy_ecs::prelude::World, entity| {
                 ecs.get::<crate::game::player::PlayerMetadata>(entity)

@@ -388,24 +388,6 @@ pub async fn handle_chat_choose(
     send_enter_channel(state, tx, pid, &tag).await;
 }
 
-/// TY `Cset` (`"_"`) — циклически сменить цвет поля ввода чата. Клиент
-/// `ChatManager.cs:60` `OnSettings`, ответ-обработчик `mcHandler`
-/// (`short.Parse`). `docs/reference/CLIENT_PROTOCOL_GAPS.md` §5.
-pub async fn handle_chat_settings(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    _payload: &[u8],
-) {
-    match state.db.cycle_chat_color(pid.as_i32()).await {
-        Ok(code) => send_u_packet(tx, "mC", &chat_color(code).1),
-        Err(e) => {
-            tracing::error!(player_id = %pid, error = ?e, "Failed to cycle chat color");
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-        }
-    }
-}
-
 /// TY `Cpri <userId>` — открыть ЛС с игроком. Клиент `ChatManager.cs:307`
 /// (клик по строке сообщения → `message.gid`). Тег `_min_max` стабилен
 /// для пары. Валидация: цель существует, не сам с собой.

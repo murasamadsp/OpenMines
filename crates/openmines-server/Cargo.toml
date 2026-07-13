@@ -16,6 +16,7 @@ openmines-protocol = { workspace = true }
 openmines-runtime = { workspace = true }
 openmines-storage = { workspace = true }
 openmines-world = { workspace = true }
+openmines-macros = { workspace = true }
 tokio = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }

@@ -12,11 +12,11 @@ pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
     BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
-    BuildingDeleteResult, BuildingIdentity, ChatAppendRequest, CommandEffects, CommandIngressClass,
-    CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
-    PlayerInitView, ProgramCreateRequest, ProgramCreateResult, ProgramSaveRequest,
-    ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
-    TeleportGuiView,
+    BuildingDeleteResult, BuildingIdentity, ChatAppendRequest, ChatColorCycleRequest,
+    ChatColorCycleResult, CommandEffects, CommandIngressClass, CommandSeq, GameCommand, GameEvent,
+    GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, PlayerInitView,
+    ProgramCreateRequest, ProgramCreateResult, ProgramSaveRequest, ProgramSaveResult,
+    QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};

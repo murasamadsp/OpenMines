@@ -97,7 +97,7 @@ pub fn apply_queued_player_command_with_due(
         | PlayerCommand::ChatChoose { .. }
         | PlayerCommand::ChatSettings { .. }
         | PlayerCommand::ChatPrivate { .. }
-        | PlayerCommand::Whois { .. }) => apply_chat_command(state, player_id, command),
+        | PlayerCommand::Whois { .. }) => apply_chat_command(state, player_id, session_id, command),
         command @ (PlayerCommand::ProgramAction { .. }
         | PlayerCommand::ApplyDeletedProgram { .. }
         | PlayerCommand::ApplyProgramEditorOpen { .. }
@@ -329,6 +329,7 @@ fn apply_inventory_use(
 fn apply_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
     command: PlayerCommand,
 ) -> CommandEffects {
     match command {
@@ -383,21 +384,16 @@ fn apply_chat_command(
             }
             CommandEffects::default()
         }
-        crate::game::PlayerCommand::ChatSettings { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "chat_settings", async move {
-                    crate::net::session::social::chat::handle_chat_settings(
-                        &task_state,
-                        &tx,
-                        player_id,
-                        &payload,
-                    )
-                    .await;
-                });
-            }
-            CommandEffects::default()
-        }
+        crate::game::PlayerCommand::ChatSettings { .. } => CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ChatColorCycle {
+                request: crate::game::ChatColorCycleRequest {
+                    player_id,
+                    session_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        },
         crate::game::PlayerCommand::ChatPrivate { payload } => {
             apply_private_chat_command(state, player_id, payload);
             CommandEffects::default()
@@ -919,6 +915,7 @@ fn prepare_program_save(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn apply_persistence_completion(
     state: &Arc<GameState>,
     completion: crate::game::PersistenceCompletion,
@@ -1011,6 +1008,35 @@ pub fn apply_persistence_completion(
             adapt_building_delete_completion(crate::game::logic::building_delete::apply_completion(
                 state, request, result,
             ))
+        }
+        crate::game::PersistenceCompletion::ChatColorCycled { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
+                return CommandEffects::default();
+            };
+            match result {
+                crate::game::ChatColorCycleResult::Cycled { color } => {
+                    crate::net::session::wire::send_u_packet(
+                        &tx,
+                        "mC",
+                        &crate::protocol::packets::chat_color(color).1,
+                    );
+                }
+                crate::game::ChatColorCycleResult::Rejected => {
+                    tracing::warn!(player_id = %request.player_id, "Chat color cycle rejected: player is missing");
+                }
+                crate::game::ChatColorCycleResult::PermanentFailure { message } => {
+                    tracing::error!(player_id = %request.player_id, error = message, "Chat color cycle failed");
+                    crate::net::session::wire::send_u_packet(
+                        &tx,
+                        "OK",
+                        &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
+                    );
+                }
+            }
+            CommandEffects::default()
         }
     }
 }
@@ -1937,4 +1963,70 @@ fn parse_program_rename_button(button: &str) -> Option<(i32, String)> {
     let rest = button.strip_prefix("rename:")?;
     let (id, name) = rest.split_once(':')?;
     Some((id.parse().ok()?, name.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_persistence_completion, apply_player_command};
+    use bytes::Bytes;
+
+    #[tokio::test]
+    async fn chat_color_completion_delivers_only_to_the_current_session() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "chat_color_completion_session_guard",
+            "chat-color-player",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let stale_session = crate::game::SessionId::new(101);
+        let mut receiver = test.connect(stale_session.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            stale_session,
+            crate::game::PlayerCommand::ChatSettings {
+                payload: Bytes::from_static(b"_"),
+            },
+        );
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ChatColorCycle {
+                request: crate::game::ChatColorCycleRequest { player_id: id, session_id }
+            }] if *id == player_id && *session_id == stale_session
+        ));
+
+        apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatColorCycled {
+                request: crate::game::ChatColorCycleRequest {
+                    player_id,
+                    session_id: stale_session,
+                },
+                result: crate::game::ChatColorCycleResult::Cycled { color: 3 },
+            },
+        );
+        assert_eq!(
+            crate::test_support::ServerTestHarness::drain_events(&mut receiver),
+            vec![("mC".to_owned(), b"3".to_vec())]
+        );
+
+        let current_session = crate::game::SessionId::new(102);
+        let mut current_receiver = test.connect(current_session.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut current_receiver);
+        apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatColorCycled {
+                request: crate::game::ChatColorCycleRequest {
+                    player_id,
+                    session_id: stale_session,
+                },
+                result: crate::game::ChatColorCycleResult::Cycled { color: 4 },
+            },
+        );
+        assert!(
+            crate::test_support::ServerTestHarness::drain_events(&mut current_receiver).is_empty()
+        );
+    }
 }

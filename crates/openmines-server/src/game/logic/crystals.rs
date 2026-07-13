@@ -50,6 +50,7 @@ pub fn spend_crystal(
     idx: usize,
     amount: i64,
 ) -> CrystalSpendResult {
+    assert!(amount >= 0, "amount to spend must be non-negative");
     state
         .modify_player(pid, |ecs, entity| {
             if ecs
@@ -139,5 +140,13 @@ mod tests {
             })
             .unwrap();
         assert!(!dirty);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "amount to spend must be non-negative")]
+    async fn spend_crystal_rejects_negative_amount_underflow() {
+        let test = make_crystal_test_state("negative").await;
+        let pid = PlayerId(test.player.id);
+        spend_crystal(&test.state, pid, 0, -5);
     }
 }

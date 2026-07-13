@@ -9,7 +9,8 @@ members = [
     "crates/openmines-world",
     "crates/openmines-server",
     "crates/openmines-loadtest",
-    "crates/openmines-proxy"
+    "crates/openmines-proxy",
+    "crates/openmines-macros"
 ]
 
 [workspace.package]
@@ -66,6 +67,10 @@ mime_guess = "2.0.5"
 num-traits = "0.2.19"
 governor = "0.10.4"
 libc = "0.2.183"
+syn = { version = "2.0.95", features = ["full"] }
+quote = "1.0.38"
+proc-macro2 = "1.0.93"
+rstml = "0.11.0"
 
 # Internal workspace dependency
 openmines-config = { path = "crates/openmines-config" }
@@ -74,6 +79,7 @@ openmines-protocol = { path = "crates/openmines-protocol" }
 openmines-runtime = { path = "crates/openmines-runtime" }
 openmines-storage = { path = "crates/openmines-storage" }
 openmines-world = { path = "crates/openmines-world" }
+openmines-macros = { path = "crates/openmines-macros" }
 
 [profile.dev]
 debug = 1

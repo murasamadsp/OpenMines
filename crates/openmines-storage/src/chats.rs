@@ -89,6 +89,20 @@ impl Database {
         Ok(next)
     }
 
+    /// Атомарно циклически меняет цвет чата. `None` означает, что игрока нет.
+    pub async fn cycle_chat_color_if_present(&self, player_id: i32) -> Result<Option<i32>> {
+        let row = sqlx::query(
+            "UPDATE players
+             SET chat_color = (chat_color + 1) % 20
+             WHERE id = ?1
+             RETURNING chat_color",
+        )
+        .bind(player_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| row.try_get("chat_color")).transpose()?)
+    }
+
     /// `(id, player_name, message, created_at, player_id, color, clan_id)`
     /// в порядке возрастания `id` (старые → новые).
     pub async fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>> {

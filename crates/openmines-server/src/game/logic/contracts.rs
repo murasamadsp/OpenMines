@@ -493,6 +493,7 @@ impl PlayerCommand {
                 command: GuiCommand::Button { raw, .. },
             } if raw.starts_with("createprog:") => Some(SaveKind::ProgramCreate),
             Self::ProgramAction { event, .. } if event == "PROG" => Some(SaveKind::Program),
+            Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             _ => None,
         }
     }
@@ -629,6 +630,9 @@ pub enum SaveCommand {
     ChatAppend {
         request: ChatAppendRequest,
     },
+    ChatColorCycle {
+        request: ChatColorCycleRequest,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -641,6 +645,12 @@ pub struct ChatAppendRequest {
     pub color: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChatColorCycleRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+}
+
 impl SaveCommand {
     pub const fn kind(&self) -> SaveKind {
         match self {
@@ -651,6 +661,7 @@ impl SaveCommand {
             Self::Program { .. } => SaveKind::Program,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
+            Self::ChatColorCycle { .. } => SaveKind::ChatColorCycle,
         }
     }
 }
@@ -684,6 +695,10 @@ pub enum PersistenceCompletion {
         request: BuildingDeleteRequest,
         result: BuildingDeleteResult,
     },
+    ChatColorCycled {
+        request: ChatColorCycleRequest,
+        result: ChatColorCycleResult,
+    },
 }
 
 #[derive(Debug)]
@@ -695,6 +710,13 @@ pub enum ProgramCreateResult {
 #[derive(Debug)]
 pub enum ProgramSaveResult {
     Saved { program_name: String },
+    Rejected,
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum ChatColorCycleResult {
+    Cycled { color: i32 },
     Rejected,
     PermanentFailure { message: String },
 }
@@ -715,6 +737,7 @@ pub enum SaveKind {
     ProgramCreate,
     BuildingDelete,
     ChatAppend,
+    ChatColorCycle,
 }
 
 impl SaveKind {
@@ -727,6 +750,7 @@ impl SaveKind {
             Self::ProgramCreate => "create_program",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
+            Self::ChatColorCycle => "cycle_chat_color",
         }
     }
 }
