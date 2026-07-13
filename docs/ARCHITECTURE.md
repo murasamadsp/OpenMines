@@ -61,7 +61,9 @@ TCP sessions -> QueuedGameCommand -> SimulationRuntime
   Authoritative ECS пока находится в `Arc<GameState>` под `RwLock`; это
   переходное состояние, а не целевая граница.
 - `PresentationRuntime` принимает bounded `GameEvent` и доставляет immutable
-  packet/view data без чтения ECS/world/DB.
+  packet/view data. Initial chunk map/BotSpot snapshot уже строится там после
+  owner-side visibility commit; building overlay временно читает ECS только как
+  read-only snapshot до следующего per-chunk read-model slice.
 - `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
   записи, делает retry и публикует typed completion.
 
@@ -96,7 +98,8 @@ flush. Crash durability это не заменяет.
 - periodic dirty flush использует owner-local deduplicated entity registries и
   не сканирует players/buildings;
 - `PlayerInit` chunk snapshot, wire encode и delivery принадлежат presentation
-  owner; simulation `Connect` делает только entity/index apply;
+  owner; simulation `Connect` делает только entity/index apply и фиксирует
+  visible-chunk list под session guard;
 - programmator исполняется через entity-aware due heap, не periodic player scan;
 - standing-cell hazards используют deduplicated due deadlines: safe idle player
   не запускает ECS schedule, непустая клетка повторно планирует только себя;

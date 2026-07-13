@@ -354,18 +354,12 @@ pub fn connect_entity_in_tick(
     let mut effects = connect_entity_in_tick_inner(state, player, session_id);
 
     let pid: PlayerId = player.id.into();
-    if let Some(entity) = state.active_player_entity_for_session(pid, session_id) {
-        let chunk_batch = crate::net::session::wire::PacketBatch::default();
-        let fanouts =
-            crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_batch, pid);
-        for fanout in fanouts {
-            effects.events.push(crate::game::GameEvent::Fanout {
-                recipients: fanout.recipients,
-                data: fanout.data,
-            });
-        }
+    if let Some(entity) = state.active_player_entity_for_session(pid, session_id)
+        && let Some(initial_visible_chunks) =
+            crate::net::session::play::chunks::initialize_chunk_visibility(state, pid, session_id)
+    {
         if let Some(mut view) = extract_init_view(state, pid, entity, player) {
-            view.chunk_packets = chunk_batch.into_packets();
+            view.initial_visible_chunks = initial_visible_chunks;
             effects.events.push(crate::game::GameEvent::PlayerInit {
                 session_id,
                 view: Box::new(view),
@@ -469,7 +463,7 @@ fn extract_init_view(
         chat_history,
         prog_running,
         hand_mode_active,
-        chunk_packets: Vec::new(),
+        initial_visible_chunks: Vec::new(),
     })
 }
 
@@ -676,11 +670,14 @@ fn build_initial_presentation(
     let pid: PlayerId = view.player.id.into();
 
     let section_t0 = Instant::now();
-    // BUG 2: C# ref calls MoveToChunk(ChunkX, ChunkY) BEFORE sync packets (BD, GE, @L, BI, etc.).
-    for packet in &view.chunk_packets {
-        // Send chunk packets calculated synchronously inside authoritative connect tick
-        let _ = tx.send_packet(packet.clone());
-    }
+    // C# calls MoveToChunk before the Player.Init sync packets. The command has
+    // already committed its visibility; packet construction belongs to presentation.
+    crate::net::session::play::chunks::build_initial_chunk_packets(
+        state,
+        tx,
+        pid,
+        &view.initial_visible_chunks,
+    );
     profile.chunk_sync = section_t0.elapsed();
 
     let section_t0 = Instant::now();
@@ -902,6 +899,7 @@ mod tests {
                 view,
             } if *actual_session_id == session_id
                 && view.player.id == player.id
+                && !view.initial_visible_chunks.is_empty()
         )));
         assert!(
             rx.try_recv().is_err(),

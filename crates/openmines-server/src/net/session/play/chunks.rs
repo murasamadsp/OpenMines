@@ -8,6 +8,126 @@ pub struct ChunkFanout {
     pub data: Vec<u8>,
 }
 
+/// Owner-side visibility commit for the first Player.Init. Expensive map/HB
+/// snapshotting happens later in the presentation owner from this immutable list.
+pub fn initialize_chunk_visibility(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    session_id: crate::game::SessionId,
+) -> Option<Vec<(u32, u32)>> {
+    state.active_player_entity_for_session(pid, session_id)?;
+    let update = state
+        .modify_player(pid, |ecs, entity| {
+            let connection = ecs.get::<crate::game::player::PlayerConnection>(entity)?;
+            if connection.session_id != session_id {
+                return None;
+            }
+            let position = ecs.get::<crate::game::player::PlayerPosition>(entity)?;
+            let center = (position.chunk_x(), position.chunk_y());
+            let visible = state.visible_chunks_around(center.0, center.1);
+            let mut view = ecs.get_mut::<crate::game::player::PlayerView>(entity)?;
+            view.last_chunk = Some(center);
+            view.visible_chunks = visible.clone();
+            Some((center, visible))
+        })
+        .flatten()?;
+    state.register_player_chunk(pid, update.0.0, update.0.1);
+    Some(update.1)
+}
+
+/// Builds the first chunk payload after authoritative visibility is committed.
+/// Unlike movement sync there are no old chunks to clear and no ECS mutation.
+pub fn build_initial_chunk_packets(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    visible_chunks: &[(u32, u32)],
+) {
+    let mut sub_packets = Vec::new();
+    let mut sub_batch_bytes = 0usize;
+    let flush = |sub_packets: &mut Vec<Vec<u8>>, sub_batch_bytes: &mut usize| {
+        if sub_packets.is_empty() {
+            return;
+        }
+        send_b_packet(tx, "HB", &hb_bundle(sub_packets.as_slice()).1);
+        sub_packets.clear();
+        *sub_batch_bytes = 0;
+    };
+
+    for &(cx, cy) in visible_chunks {
+        let cells = state.world.read_chunk_cells(cx, cy);
+        let ox = u16::try_from((cx * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
+        let oy = u16::try_from((cy * 32).min(u32::from(u16::MAX))).unwrap_or(u16::MAX);
+        sub_packets.push(hb_map(ox, oy, 32, 32, &cells));
+        sub_batch_bytes += sub_packets.last().map_or(0, Vec::len);
+
+        for player_id in state.players_in_chunk(cx, cy) {
+            if player_id == pid {
+                continue;
+            }
+            let Some(player) = state.bots_render_player(player_id) else {
+                continue;
+            };
+            sub_packets.push(hb_bot(
+                net_u16_nonneg(player_id),
+                net_u16_nonneg(player.x),
+                net_u16_nonneg(player.y),
+                net_u8_clamped(player.dir, 3),
+                net_u8_clamped(player.skin, 255),
+                net_u16_nonneg(player.clan_id),
+                player.tail,
+            ));
+            sub_batch_bytes += sub_packets.last().map_or(0, Vec::len);
+        }
+
+        for botspot in state.bots_render_botspots_in_chunk(cx, cy) {
+            sub_packets.push(hb_bot(
+                botspot.bot_id as u16,
+                net_u16_nonneg(botspot.x),
+                net_u16_nonneg(botspot.y),
+                net_u8_clamped(botspot.dir, 3),
+                crate::game::botspot::BotSpotData::SKIN,
+                net_u16_nonneg(botspot.clan_id),
+                crate::game::botspot::BotSpotData::TAIL,
+            ));
+            sub_batch_bytes += sub_packets.last().map_or(0, Vec::len);
+        }
+
+        if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
+            || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES
+        {
+            flush(&mut sub_packets, &mut sub_batch_bytes);
+        }
+    }
+
+    // The legacy client clears a whole block for every `O`; each packet must
+    // therefore include every building in that block after all map/bot packets.
+    let ecs = state.ecs_read_profiled("initial_chunk.packs_snapshot");
+    let mut by_block: HashMap<i32, Vec<PackOverlay>> = HashMap::new();
+    for &(cx, cy) in visible_chunks {
+        for pack in state.get_packs_in_single_chunk_with_ecs(&ecs, cx, cy) {
+            if let Some(block_pos) = state.pack_block_pos(i32::from(pack.x), i32::from(pack.y)) {
+                by_block.entry(block_pos).or_default().push(pack);
+            }
+        }
+    }
+    drop(ecs);
+    for (block_pos, packs) in by_block {
+        let wire = packs
+            .iter()
+            .map(|pack| (pack.code, pack.x, pack.y, pack.clan, pack.off))
+            .collect::<Vec<_>>();
+        sub_packets.push(hb_packs(block_pos, &wire));
+        sub_batch_bytes += sub_packets.last().map_or(0, Vec::len);
+        if sub_packets.len() >= CHUNK_BUNDLE_MAX_SUBPACKETS
+            || sub_batch_bytes >= CHUNK_BUNDLE_MAX_BYTES
+        {
+            flush(&mut sub_packets, &mut sub_batch_bytes);
+        }
+    }
+    flush(&mut sub_packets, &mut sub_batch_bytes);
+}
+
 pub fn check_chunk_changed(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     for fanout in prepare_chunk_changed(state, tx, pid) {
         state.sessions.fanout(&fanout.recipients, &fanout.data);

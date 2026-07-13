@@ -556,7 +556,7 @@ pub struct PlayerInitView {
     pub chat_history: Vec<openmines_protocol::chat::ChatMessage>,
     pub prog_running: bool,
     pub hand_mode_active: bool,
-    pub chunk_packets: Vec<Vec<u8>>,
+    pub initial_visible_chunks: Vec<(u32, u32)>,
 }
 
 /// Outbound work produced by authoritative command application.
