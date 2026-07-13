@@ -242,20 +242,23 @@ mod benchmarks {
 
     const BENCH_N: u32 = 500;
     fn create_minimal_state() -> Arc<crate::game::GameState> {
-        create_minimal_state_with_gameplay(crate::config::GameplayConfig::runtime_baseline())
+        create_minimal_state_with_gameplay(
+            "bench_dynamic",
+            "bench-player-dynamic",
+            crate::config::GameplayConfig::runtime_baseline(),
+        )
     }
 
     fn create_minimal_state_with_gameplay(
+        label: &str,
+        username: &str,
         gameplay: crate::config::GameplayConfig,
     ) -> Arc<crate::game::GameState> {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let test = crate::test_support::ServerTestHarness::with_gameplay(
-                "bench",
-                "bench-player",
-                gameplay,
-            )
-            .await;
+            let test =
+                crate::test_support::ServerTestHarness::with_gameplay(label, username, gameplay)
+                    .await;
             test.state.clone()
         })
     }
@@ -335,7 +338,8 @@ mod benchmarks {
         gameplay.schedules.physics_ms = 321;
         gameplay.schedules.programmator_ms = 654;
 
-        let state = create_minimal_state_with_gameplay(gameplay);
+        let state =
+            create_minimal_state_with_gameplay("bench_config", "bench-player-config", gameplay);
         let interval = |name: &str| {
             state
                 .schedules

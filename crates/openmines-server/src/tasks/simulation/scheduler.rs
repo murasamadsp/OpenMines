@@ -59,6 +59,7 @@ pub(super) struct ScheduleWorkload {
     pub(super) online_count: usize,
     pub(super) player_entity_count: usize,
     pub(super) crafting_due: bool,
+    pub(super) guns_due: bool,
     pub(super) programmator_due: bool,
 }
 
@@ -115,9 +116,12 @@ impl ScheduleClock {
             };
             if matches!(
                 schedule.activity,
-                ScheduleActivity::DueCrafting | ScheduleActivity::DueProgrammator
+                ScheduleActivity::DueCrafting
+                    | ScheduleActivity::DueGuns
+                    | ScheduleActivity::DueProgrammator
             ) {
                 if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
+                    || (schedule.activity == ScheduleActivity::DueGuns && workload.guns_due)
                     || (schedule.activity == ScheduleActivity::DueProgrammator
                         && workload.programmator_due)
                 {
@@ -156,9 +160,12 @@ impl ScheduleClock {
             };
             if matches!(
                 schedule.activity,
-                ScheduleActivity::DueCrafting | ScheduleActivity::DueProgrammator
+                ScheduleActivity::DueCrafting
+                    | ScheduleActivity::DueGuns
+                    | ScheduleActivity::DueProgrammator
             ) {
                 if (schedule.activity == ScheduleActivity::DueCrafting && workload.crafting_due)
+                    || (schedule.activity == ScheduleActivity::DueGuns && workload.guns_due)
                     || (schedule.activity == ScheduleActivity::DueProgrammator
                         && workload.programmator_due)
                 {
@@ -184,6 +191,7 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
         ScheduleActivity::OnlinePlayers => workload.online_count == 0,
         ScheduleActivity::PlayerEntities => workload.player_entity_count == 0,
         ScheduleActivity::DueCrafting => !workload.crafting_due,
+        ScheduleActivity::DueGuns => !workload.guns_due,
         ScheduleActivity::DueProgrammator => !workload.programmator_due,
     }
 }
@@ -280,6 +288,7 @@ pub(super) fn run_schedule_phase(
             online_count,
             player_entity_count,
             crafting_due: state.has_due_crafting(now_ts),
+            guns_due: online_count > 0 && state.guns_due(now),
             programmator_due: state.has_due_programmator(now),
         },
         |idx| configured_candidate(state, idx),
@@ -320,6 +329,10 @@ pub(super) fn run_schedule_phase(
         if gs.activity == ScheduleActivity::DueProgrammator {
             ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 =
                 state.take_due_programmators(now);
+        }
+        if gs.activity == ScheduleActivity::DueGuns {
+            *ecs.resource_mut::<crate::game::combat::GunCandidateBatch>() =
+                state.fill_gun_candidate_batch(&ecs);
         }
         let (schedule_lock_wait, schedule_run) = {
             let schedule_lock_t0 = Instant::now();

@@ -513,6 +513,7 @@ pub enum ScheduleActivity {
     OnlinePlayers,
     PlayerEntities,
     DueCrafting,
+    DueGuns,
     DueProgrammator,
 }
 
@@ -834,7 +835,7 @@ impl GameState {
             },
             GameSchedule {
                 name: "guns".to_string(),
-                activity: ScheduleActivity::OnlinePlayers,
+                activity: ScheduleActivity::DueGuns,
                 schedule: RwLock::new(schedule_guns),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.guns_ms),
             },
@@ -992,6 +993,7 @@ impl GameState {
             ));
             ecs.insert_resource(ProgrammatorDueBatch::default());
             ecs.insert_resource(combat::GunTickTimer::default());
+            ecs.insert_resource(combat::GunCandidateBatch::default());
             ecs.insert_resource(PendingCellConversions::default());
             ecs.insert_resource(PackResendQueue::default());
             ecs.insert_resource(building_damage::CraftingDueBatch::default());
@@ -1893,6 +1895,41 @@ impl GameState {
             .collect()
     }
 
+    pub fn guns_due(&self, now: Instant) -> bool {
+        let ecs = self.ecs.read();
+        let interval = std::time::Duration::from_millis(
+            ecs.resource::<CombatConfigResource>()
+                .0
+                .gun_fire_interval_ms,
+        );
+        ecs.resource::<combat::GunTickTimer>()
+            .is_due_at(now, interval)
+    }
+
+    pub fn fill_gun_candidate_batch(&self, ecs: &EcsWorld) -> combat::GunCandidateBatch {
+        let mut players = self
+            .active_players
+            .iter()
+            .map(|entry| entry.ecs_entity)
+            .filter(|entity| ecs.get::<player::PlayerPosition>(*entity).is_some())
+            .collect::<Vec<_>>();
+        players.sort_unstable_by_key(|entity| entity.to_bits());
+
+        let mut guns = Vec::new();
+        for player_entity in &players {
+            let Some(position) = ecs.get::<player::PlayerPosition>(*player_entity) else {
+                continue;
+            };
+            let (cx, cy) = World::chunk_pos(position.x, position.y);
+            for chunk in gun_candidate_chunks(cx, cy) {
+                guns.extend(self.building_entities_in_chunk_snapshot(chunk.0, chunk.1));
+            }
+        }
+        guns.sort_unstable_by_key(|entity| entity.to_bits());
+        guns.dedup();
+        combat::GunCandidateBatch { guns, players }
+    }
+
     pub fn active_session_for_player(&self, pid: PlayerId) -> Option<SessionId> {
         self.active_players
             .get(&pid)
@@ -2421,6 +2458,16 @@ impl GameState {
         token == Self::auth_token_hash_md5(hash, sid)
             || token == Self::auth_token_hash_sha256(hash, sid)
     }
+}
+
+fn gun_candidate_chunks(cx: u32, cy: u32) -> Vec<ChunkPos> {
+    let mut chunks = Vec::with_capacity(9);
+    for y in cy.saturating_sub(1)..=cy.saturating_add(1) {
+        for x in cx.saturating_sub(1)..=cx.saturating_add(1) {
+            chunks.push((x, y).into());
+        }
+    }
+    chunks
 }
 
 pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {

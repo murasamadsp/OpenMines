@@ -145,7 +145,7 @@ event/due model и не появился injected simulation clock. Просты
 | 3. Persistence owner | 45% | bounded writer, batching, retry и writer drain есть; DueAction shutdown barrier, program/chat/GUI/auction bypass и crash journal остаются |
 | 4. Admission/isolation | 55% | event-driven wait, bounded due queue, typed bounded ingress и thin connect готовы |
 | 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
-| 6. Active/due work | 35% | granular frontier, crafting/consumable/programmator due queues и dirty registries есть; actor systems ещё частично scan-all |
+| 6. Active/due work | 40% | granular frontier, crafting/consumable/programmator/guns due queues и dirty registries есть; actor systems ещё частично scan-all |
 | 7. Interest/read model | 10% | teleport DTO и часть immutable presentation готовы; bots render и admin всё ещё читают общий state |
 | 8. Spatial multicore | 0% | Rayon analysis не является ownership sharding; deterministic 1/2/4-worker model ещё не начат |
 
@@ -390,6 +390,16 @@ Release runtime gate на одном `8x8` local fixture:
 Это закрывает admission safety, но не объясняет и не устраняет CPU-bound
 `channel_chat` `201ms` или off-CPU/global-lock stalls. Они остаются evidence для
 будущих vertical slices.
+
+## Завершённый кодовый срез
+
+**M3: due queue для пушек закрыт.** Перевели guns с периодического сканирования всех сущностей (`OnlinePlayers`) на explicit `DueGuns` с использованием кэширования кандидатов вокруг активных игроков.
+
+- Добавлена логика `DueGuns` в планировщик, которая срабатывает только при наличии игроков в сети и наступлении времени выстрела пушек.
+- Введен метод `fill_gun_candidate_batch`, собирающий кандидатов-пушек в чанках вокруг активных игроков.
+- Исправлено отсутствие dirty-меток для пушек: при изменении заряда (charge) пушка помечается в `DirtyBuildings` для сохранения.
+- Устранена флапающая ошибка/коллизия базы данных в тестах `schedule_intervals_come_from_config` путем изоляции временных путей SQLite для параллельных тестов.
+- Все тесты, clippy, `arch-guard.sh` и `dev-smoke.sh` успешно проходят.
 
 ## Следующий кодовый срез
 

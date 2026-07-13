@@ -521,6 +521,7 @@ impl SimulationRuntime {
                 online_count,
                 player_entity_count: self.state.player_entity_count(),
                 crafting_due: self.state.has_due_crafting(now_ts),
+                guns_due: online_count > 0 && self.state.guns_due(now),
                 programmator_due: self.state.has_due_programmator(now),
             },
             |index| scheduler::configured_candidate(&self.state, index),

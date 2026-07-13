@@ -253,6 +253,12 @@ pub fn standing_cell_hazard_system(
 #[derive(Resource)]
 pub struct GunTickTimer(pub std::time::Instant);
 
+#[derive(Resource, Default)]
+pub struct GunCandidateBatch {
+    pub guns: Vec<Entity>,
+    pub players: Vec<Entity>,
+}
+
 impl Default for GunTickTimer {
     fn default() -> Self {
         Self(std::time::Instant::now())
@@ -260,7 +266,7 @@ impl Default for GunTickTimer {
 }
 
 impl GunTickTimer {
-    fn is_due_at(&self, now: Instant, interval: Duration) -> bool {
+    pub(crate) fn is_due_at(&self, now: Instant, interval: Duration) -> bool {
         now.saturating_duration_since(self.0) >= interval
     }
 
@@ -315,12 +321,53 @@ fn is_same_gun_clan(player_clan_id: Option<i32>, gun_clan_id: i32) -> bool {
     player_clan_id.unwrap_or(0) == gun_clan_id
 }
 
+fn send_gun_skill_progress(
+    queue: &mut BroadcastQueue,
+    connection: &PlayerConnection,
+    skills: &PlayerSkillsCom,
+) {
+    let packet = crate::protocol::packets::skills_packet(
+        &crate::game::skills::skill_progress_payload(&skills.states),
+    );
+    send_direct(
+        queue,
+        connection,
+        crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+    );
+}
+
+fn gun_shot_effect(
+    player: &PlayerMetadata,
+    position: &PlayerPosition,
+    gun: &GridPosition,
+) -> BroadcastEffect {
+    let fx = crate::protocol::packets::hb_gun_shot_fx(
+        crate::net::session::util::net_u16_nonneg(player.id),
+        u16::try_from(gun.x.rem_euclid(65536)).unwrap_or(0),
+        u16::try_from(gun.y.rem_euclid(65536)).unwrap_or(0),
+    );
+    let (cx, cy) = crate::world::World::chunk_pos(position.x, position.y);
+    BroadcastEffect::Nearby {
+        cx,
+        cy,
+        data: crate::net::session::wire::encode_hb_bundle(
+            &crate::protocol::packets::hb_bundle(&[fx]).1,
+        ),
+        exclude: None,
+    }
+}
+
 /// Радиус 20 (см. `Vector2.Distance(…) <= 20` в `Gun.cs`), 60 HP, `DamageType.Gun` → `AntiGun`.
 #[allow(clippy::needless_pass_by_value, clippy::type_complexity)]
 pub fn gun_firing_system(
     combat_cfg: Res<CombatConfigResource>,
     death_q: Res<DeathQueue>,
-    output: (ResMut<BroadcastQueue>, ResMut<crate::game::DirtyPlayers>),
+    output: (
+        ResMut<BroadcastQueue>,
+        ResMut<crate::game::DirtyPlayers>,
+        ResMut<GunCandidateBatch>,
+        ResMut<crate::game::DirtyBuildings>,
+    ),
     mut pack_resend_q: ResMut<PackResendQueue>,
     mut fire_timer: ResMut<GunTickTimer>,
     mut guns_query: Query<
@@ -343,65 +390,48 @@ pub fn gun_firing_system(
         &mut PlayerFlags,
     )>,
 ) {
-    let (mut bcast_q, mut dirty_players) = output;
+    let (mut bcast_q, mut dirty_players, mut candidates, mut dirty_buildings) = output;
     let now = std::time::Instant::now();
     let combat = combat_cfg.0;
-    // Залп раз в `gameplay.combat.gun_fire_interval_ms`
-    // (default 500ms = 1:1 C# `lastpackeffect`), а не каждый тик.
     let fire_interval = Duration::from_millis(combat.gun_fire_interval_ms);
     if !fire_timer.is_due_at(now, fire_interval) {
         return;
     }
-
-    for (meta, mut b_stats, b_ownership, b_pos) in &mut guns_query {
+    let GunCandidateBatch { guns, players } = std::mem::take(&mut *candidates);
+    for gun_entity in guns {
+        let Ok((meta, mut b_stats, b_ownership, b_pos)) = guns_query.get_mut(gun_entity) else {
+            continue;
+        };
         if meta.pack_type != PackType::Gun || b_stats.charge <= 0 {
             continue;
         }
-
-        // 1:1 C# `Gun.Update`: бьёт КАЖДОГО игрока в радиусе 20 (foreach), а не
-        // одного. Charge списывается per-hit; C# НЕ прерывает цикл при обнулении
-        // charge (оставшиеся жертвы всё равно получают урон в этот тик) — top-guard
-        // `charge <= 0` лишь пропускает пушку на СЛЕДУЮЩЕМ тике.
-        for (player_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags) in
-            &mut players_query
-        {
+        for player_entity in &players {
+            let Ok((player_entity, p_meta, p_pos, mut p_sk, mut stats, p_cd, conn, mut flags)) =
+                players_query.get_mut(*player_entity)
+            else {
+                continue;
+            };
             if stats.health <= 0 {
                 continue;
             }
-            // clan immunity (C# `player.cid == cid` → continue). cid у безкланового
-            // = 0; нормализуем Option→0, иначе `None == Some(0)` ложно и пушка
-            // без клана била бесклановых игроков (баг: «бьют, я у них во врагах»).
+            // C# clan immunity, including clanless `0`.
             if is_same_gun_clan(stats.clan_id, b_ownership.clan_id) {
                 continue;
             }
-            // Protector-скип. ВНИМАНИЕ: в C# `Player.Hurt`/`Gun.Update` проверки
-            // неуязвимости НЕТ — это добавление Rust (protector-механика идёт иным
-            // путём). См. `docs/CLIENT_PROTOCOL_GAPS.md`.
+            // Rust protector guard; C# has no equivalent.
             if p_cd.protection_until.is_some_and(|u| now < u) {
                 continue;
             }
-
             if !inside_gun_radius(p_pos, b_pos, combat.gun_radius_cells) {
                 continue;
             }
-
-            // C# Player.Hurt(60, DamageType.Gun): skill exp before damage
             let mut changed = false;
             changed |= crate::game::skills::add_skill_exp(&mut p_sk.states, "l", 1.0); // Health
             changed |= crate::game::skills::add_skill_exp(&mut p_sk.states, "*I", 1.0); // Induction
             changed |= crate::game::skills::add_skill_exp(&mut p_sk.states, "u", 1.0); // AntiGun
-            // Always send @S after skill exp IF changed (C# Skill.AddExp always sends if pct changed)
             if changed {
-                let sk_pkt = crate::protocol::packets::skills_packet(
-                    &crate::game::skills::skill_progress_payload(&p_sk.states),
-                );
-                send_direct(
-                    &mut bcast_q,
-                    conn,
-                    crate::net::session::wire::make_u_packet_bytes(sk_pkt.0, &sk_pkt.1),
-                );
+                send_gun_skill_progress(&mut bcast_q, conn, &p_sk);
             }
-            // C# Gun.Update order: damage first, then deduct charge
             let dmg = gun_damage_after_skills(combat.gun_damage, &p_sk.states);
             if dmg > 0 {
                 if stats.health > dmg {
@@ -426,9 +456,6 @@ pub fn gun_firing_system(
                     &crate::protocol::packets::health(stats.health, stats.max_health).1,
                 ),
             );
-
-            // Charge cost: дробная часть не хранится в BuildingStats, а применяется
-            // как шанс списать ещё 1 единицу.
             let induction_effect = crate::game::skills::get_player_skill_effect(
                 &p_sk.states,
                 crate::game::skills::SkillType::Induction,
@@ -442,33 +469,15 @@ pub fn gun_firing_system(
             if charge_cost > 0 {
                 if b_stats.charge > charge_cost {
                     b_stats.charge -= charge_cost;
+                    dirty_buildings.0.insert(gun_entity);
                 } else if b_stats.charge > 0 {
                     // Charge just depleted — broadcast HB O update (C# `ResendPack`)
                     b_stats.charge = 0;
+                    dirty_buildings.0.insert(gun_entity);
                     pack_resend_q.0.push((b_pos.x, b_pos.y));
                 }
             }
-
-            // C# `Gun.Update`: `player.SendDFToBots(7, gun.x, gun.y, player.id, 1)` —
-            // directed gun-shot FX (`D`-тег), бродкаст вокруг ЖЕРТВЫ
-            // (`vChunksAroundEx` игрока). Клиент `case 7 → AddGunShot(x, y, bid)`
-            // рисует выстрел пушка(x,y)→жертва(bid). Раньше слался `hb_fx` (`F`-тег,
-            // fx=1) у пушки → клиент `AddFX case 1: break` → выстрел был НЕВИДИМ.
-            let fx = crate::protocol::packets::hb_gun_shot_fx(
-                crate::net::session::util::net_u16_nonneg(p_meta.id),
-                u16::try_from(b_pos.x.rem_euclid(65536)).unwrap_or(0),
-                u16::try_from(b_pos.y.rem_euclid(65536)).unwrap_or(0),
-            );
-            let data = crate::net::session::wire::encode_hb_bundle(
-                &crate::protocol::packets::hb_bundle(&[fx]).1,
-            );
-            let (cx, cy) = crate::world::World::chunk_pos(p_pos.x, p_pos.y);
-            bcast_q.0.push(BroadcastEffect::Nearby {
-                cx,
-                cy,
-                data,
-                exclude: None,
-            });
+            bcast_q.0.push(gun_shot_effect(p_meta, p_pos, b_pos));
         }
     }
 
