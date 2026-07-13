@@ -35,11 +35,14 @@ pub(crate) trait DatabaseProvider: Send + Sync {
     // chats
     async fn add_chat_message(
         &self,
+        id: i64,
         tag: &str,
         name: &str,
         msg: &str,
         player_id: i32,
-    ) -> Result<(i64, i32)>;
+        color: i32,
+    ) -> Result<()>;
+    async fn get_max_chat_id(&self) -> Result<i64>;
     async fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>>;
 
     // clans
@@ -132,12 +135,18 @@ impl DatabaseProvider for Database {
 
     async fn add_chat_message(
         &self,
+        id: i64,
         tag: &str,
         name: &str,
         msg: &str,
         player_id: i32,
-    ) -> Result<(i64, i32)> {
-        self.add_chat_message(tag, name, msg, player_id).await
+        color: i32,
+    ) -> Result<()> {
+        self.add_chat_message(id, tag, name, msg, player_id, color)
+            .await
+    }
+    async fn get_max_chat_id(&self) -> Result<i64> {
+        self.get_max_chat_id().await
     }
     async fn get_recent_chat_messages(&self, tag: &str, limit: usize) -> Result<Vec<ChatRow>> {
         self.get_recent_chat_messages(tag, limit).await

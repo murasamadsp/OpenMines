@@ -88,10 +88,7 @@ pub fn apply_queued_player_command_with_due(
         | PlayerCommand::ChatChoose { .. }
         | PlayerCommand::ChatSettings { .. }
         | PlayerCommand::ChatPrivate { .. }
-        | PlayerCommand::Whois { .. }) => {
-            apply_chat_command(state, command);
-            CommandEffects::default()
-        }
+        | PlayerCommand::Whois { .. }) => apply_chat_command(state, command),
         command @ (PlayerCommand::ProgramAction { .. }
         | PlayerCommand::ApplyDeletedProgram { .. }
         | PlayerCommand::ApplyProgramEditorOpen { .. }
@@ -325,13 +322,13 @@ fn apply_inventory_use(
     effects
 }
 
-fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
+fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) -> CommandEffects {
     match command {
         crate::game::PlayerCommand::LocalChat { player_id, message } => {
-            apply_local_chat_command(state, player_id, message);
+            apply_local_chat_command(state, player_id, message)
         }
         crate::game::PlayerCommand::ChannelChat { player_id, payload } => {
-            apply_channel_chat_command(state, player_id, payload);
+            apply_channel_chat_command(state, player_id, payload)
         }
         crate::game::PlayerCommand::ChatResync { player_id, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -346,6 +343,7 @@ fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
                     .await;
                 });
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::ChatMenu { player_id, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -360,6 +358,7 @@ fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
                     .await;
                 });
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::ChatChoose { player_id, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -374,6 +373,7 @@ fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
                     .await;
                 });
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::ChatSettings { player_id, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -388,9 +388,11 @@ fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
                     .await;
                 });
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::ChatPrivate { player_id, payload } => {
             apply_private_chat_command(state, player_id, payload);
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::Whois { player_id, ids } => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -399,6 +401,7 @@ fn apply_chat_command(state: &Arc<GameState>, command: PlayerCommand) {
                     crate::net::session::social::misc::handle_whoi(&task_state, &tx, &ids).await;
                 });
             }
+            CommandEffects::default()
         }
         _ => unreachable!("non-chat command routed to chat command handler"),
     }
@@ -408,66 +411,91 @@ fn apply_local_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
     message: String,
-) {
+) -> CommandEffects {
+    let effects = CommandEffects::default();
     let Some(tx) = state.player_sender(player_id) else {
-        return;
+        return effects;
     };
     if !state.check_chat_rate(player_id) {
         tracing::debug!(player_id = %player_id, "chat rate limited (Locl)");
-        return;
+        return effects;
     }
     if crate::net::session::social::chat::handle_local_chat_non_command(
         state, &tx, player_id, &message,
     ) {
-        return;
+        return effects;
     }
     let task_state = state.clone();
     spawn_session_async_task(state, "local_chat_command", async move {
-        crate::net::session::social::chat::handle_local_chat(&task_state, &tx, player_id, &message)
-            .await;
+        crate::net::session::social::commands::handle_chat_command(
+            &task_state,
+            &tx,
+            player_id,
+            message.trim(),
+        )
+        .await;
     });
+    effects
 }
 
 fn apply_channel_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
     payload: bytes::Bytes,
-) {
+) -> CommandEffects {
+    let mut effects = CommandEffects::default();
     let Some(tx) = state.player_sender(player_id) else {
-        return;
+        return effects;
     };
     if !state.check_chat_rate(player_id) {
         tracing::debug!(player_id = %player_id, "chat rate limited (Chat)");
-        return;
+        return effects;
     }
     let text = crate::net::session::social::chat::extract_channel_message_text(&payload);
     if text.trim().starts_with('/') {
         let task_state = state.clone();
         spawn_session_async_task(state, "channel_chat_command", async move {
-            crate::net::session::social::chat::handle_channel_chat(
+            crate::net::session::social::commands::handle_chat_command(
                 &task_state,
                 &tx,
                 player_id,
-                &payload,
+                text.trim(),
             )
             .await;
         });
-    } else if let Some(prepared) =
-        crate::net::session::social::chat::prepare_channel_chat_non_command(
-            state, &tx, player_id, &text,
-        )
-    {
-        let task_state = state.clone();
-        spawn_session_async_task(state, "channel_chat", async move {
-            crate::net::session::social::chat::persist_prepared_channel_chat(
-                &task_state,
-                &tx,
-                player_id,
-                prepared,
-            )
-            .await;
+        return effects;
+    }
+
+    if let Some(prepared) = crate::net::session::social::chat::prepare_channel_chat_non_command(
+        state, &tx, player_id, &text,
+    ) {
+        let msg_id = state.next_chat_id();
+        let msg = openmines_protocol::chat::ChatMessage {
+            id: msg_id,
+            time: prepared.time,
+            clan_id: prepared.clan_id,
+            user_id: prepared.user_id,
+            nickname: prepared.nickname.clone(),
+            text: prepared.text.clone(),
+            color: prepared.color,
+        };
+
+        effects.saves.push(crate::game::SaveCommand::ChatAppend {
+            request: crate::game::ChatAppendRequest {
+                id: msg_id,
+                tag: prepared.db_tag,
+                nickname: prepared.nickname,
+                text: prepared.text,
+                player_id: prepared.user_id,
+                color: prepared.color,
+            },
+        });
+        effects.events.push(crate::game::GameEvent::ChatFanout {
+            route: prepared.route,
+            message: msg,
         });
     }
+    effects
 }
 
 fn apply_private_chat_command(

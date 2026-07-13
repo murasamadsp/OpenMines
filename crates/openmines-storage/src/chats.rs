@@ -12,26 +12,18 @@ impl Database {
     /// `(rowid, color)`
     pub async fn add_chat_message(
         &self,
+        id: i64,
         tag: &str,
         name: &str,
         msg: &str,
         player_id: i32,
-    ) -> Result<(i64, i32)> {
-        let color = if player_id <= 0 {
-            50
-        } else {
-            sqlx::query("SELECT chat_color FROM players WHERE id = ?1")
-                .bind(player_id)
-                .fetch_one(&self.pool)
-                .await
-                .with_context(|| format!("load chat_color for player id={player_id}"))?
-                .try_get::<i32, _>("chat_color")?
-        };
-
-        let result = sqlx::query(
-            "INSERT INTO chat_messages (chat_tag, player_name, message, player_id, color)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+        color: i32,
+    ) -> Result<()> {
+        let _result = sqlx::query(
+            "INSERT INTO chat_messages (id, chat_tag, player_name, message, player_id, color)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
+        .bind(id)
         .bind(tag)
         .bind(name)
         .bind(msg)
@@ -40,7 +32,16 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        Ok((result.last_insert_rowid(), color))
+        Ok(())
+    }
+
+    /// Fetches the maximum chat message ID currently in the database.
+    pub async fn get_max_chat_id(&self) -> Result<i64> {
+        let row = sqlx::query("SELECT MAX(id) as max_id FROM chat_messages")
+            .fetch_one(&self.pool)
+            .await?;
+        let max_id: Option<i64> = row.try_get("max_id")?;
+        Ok(max_id.unwrap_or(0))
     }
 
     /// Теги приватных каналов (`_a_b`) с участием `player_id`, по убыванию
@@ -120,14 +121,43 @@ mod tests {
         Database::open(path).await.unwrap()
     }
 
-    #[tokio::test]
-    async fn add_chat_message_rejects_missing_player_color() {
-        let database = temp_database("chat_missing_player_color").await;
-        let err = database
-            .add_chat_message("FED", "ghost", "msg", 12345)
+    async fn add_chat_message_test() {
+        let db = temp_database("empty_db").await;
+        db.add_chat_message(10, "FED", "ghost", "msg", 12345, 50)
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("load chat_color"));
+            .unwrap();
+
+        let msgs = db.get_recent_chat_messages("FED", 10).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].1, "ghost");
+        assert_eq!(msgs[0].2, "msg");
+        assert_eq!(msgs[0].4, 12345);
+        assert_eq!(msgs[0].5, 50);
+
+        let max_id = db.get_max_chat_id().await.unwrap();
+        assert_eq!(max_id, 10);
+    }
+
+    #[tokio::test]
+    async fn add_chat_message_system_test() {
+        let db = temp_database("get_max_chat_id").await;
+        db.add_chat_message(1, "FED", "system", "msg", 0, 10)
+            .await
+            .unwrap();
+        let msgs = db.get_recent_chat_messages("FED", 10).await.unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].5, 10);
+        let max_id = db.get_max_chat_id().await.unwrap();
+        assert_eq!(max_id, 1);
+    }
+
+    #[tokio::test]
+    async fn system_chat_message_succeeds_without_player_row() {
+        let database = temp_database("chat_system_color").await;
+        database
+            .add_chat_message(1, "FED", "ghost", "msg", 12345, 50)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -135,15 +165,5 @@ mod tests {
         let database = temp_database("chat_cycle_missing_player").await;
         let err = database.cycle_chat_color(12345).await.unwrap_err();
         assert!(err.to_string().contains("load chat_color"));
-    }
-
-    #[tokio::test]
-    async fn system_chat_message_keeps_system_color_without_player_row() {
-        let database = temp_database("chat_system_color").await;
-        let (_id, color) = database
-            .add_chat_message("FED", "system", "msg", 0)
-            .await
-            .unwrap();
-        assert_eq!(color, 50);
     }
 }

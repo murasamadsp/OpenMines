@@ -12,10 +12,10 @@ pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
     BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
-    BuildingDeleteResult, BuildingIdentity, CommandEffects, CommandIngressClass, CommandSeq,
-    GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, PlayerInitView,
-    ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, RemovePack, SaveCommand, SaveKind,
-    SessionId, SimTick, TeleportGuiView,
+    BuildingDeleteResult, BuildingIdentity, ChatAppendRequest, CommandEffects, CommandIngressClass,
+    CommandSeq, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
+    PlayerInitView, ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, RemovePack,
+    SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
@@ -687,6 +687,7 @@ pub struct GameState {
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
     pub sessions: crate::net::session::hub::SessionHub,
+    chat_id_seq: std::sync::atomic::AtomicI64,
     /// Боксы (ячейка 90) в памяти — авторитетно.
     box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
     box_pickup_queue: BoxPickupQueue,
@@ -714,6 +715,12 @@ impl GameState {
     pub const BOTS_RENDER_BYTE_BUDGET: usize = 1024 * 1024;
     pub const CRAFTING_DUE_BATCH_BUDGET: usize = 256;
     pub const PROGRAMMATOR_DUE_BATCH_BUDGET: usize = 256;
+
+    pub fn next_chat_id(&self) -> i64 {
+        self.chat_id_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1
+    }
 
     pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
         let wait_started_at = Instant::now();
@@ -880,6 +887,7 @@ impl GameState {
         let (lifecycle_tx, lifecycle_rx) = mpsc::channel(ingress.lifecycle_ingress_capacity);
         let (gameplay_tx, gameplay_rx) = mpsc::channel(ingress.gameplay_ingress_capacity);
         let (internal_tx, internal_rx) = mpsc::channel(ingress.internal_ingress_capacity);
+        let max_chat_id = database.get_max_chat_id().await.unwrap_or(0);
         let state = Arc::new(Self {
             world,
             db: database,
@@ -928,6 +936,7 @@ impl GameState {
             consumable_packs: DashMap::new(),
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
             rate_limiters: DashMap::new(),
+            chat_id_seq: std::sync::atomic::AtomicI64::new(max_chat_id),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по

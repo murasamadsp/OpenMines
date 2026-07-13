@@ -67,6 +67,9 @@ fn deliver(state: &Arc<GameState>, event: GameEvent) {
         GameEvent::Fanout { recipients, data } => {
             state.sessions.fanout(&recipients, &data);
         }
+        GameEvent::ChatFanout { route, message } => {
+            crate::net::session::social::chat::deliver_chat_fanout(state, &route, &message);
+        }
         GameEvent::GuiView {
             session_id,
             player_id,
@@ -120,6 +123,9 @@ fn disconnect_targets(state: &GameState, event: GameEvent) {
             for session_id in recipients {
                 state.sessions.kick_session(session_id);
             }
+        }
+        GameEvent::ChatFanout { .. } => {
+            // Cannot reliably determine targets that caused failure
         }
     }
 }

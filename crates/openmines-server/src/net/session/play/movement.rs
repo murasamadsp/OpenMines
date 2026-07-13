@@ -598,8 +598,9 @@ mod tests {
                 crate::game::GameEvent::Fanout { recipients, data } => {
                     test.state.sessions.fanout(&recipients, &data);
                 }
-                crate::game::GameEvent::GuiView { .. } => {
-                    panic!("ordinary move cannot produce GUI view events")
+                crate::game::GameEvent::GuiView { .. }
+                | crate::game::GameEvent::ChatFanout { .. } => {
+                    panic!("ordinary move cannot produce this event")
                 }
             }
         }

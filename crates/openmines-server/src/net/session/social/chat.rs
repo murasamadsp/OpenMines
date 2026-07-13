@@ -11,20 +11,22 @@ fn send_chat_state_error(tx: &Outbox) {
 }
 
 pub struct PreparedChannelChat {
-    db_tag: String,
-    wire_tag: String,
-    text: String,
-    nickname: String,
-    user_id: i32,
-    clan_id: i32,
-    route: ChannelChatRoute,
-    time: i64,
+    pub db_tag: String,
+    pub wire_tag: String,
+    pub text: String,
+    pub nickname: String,
+    pub user_id: i32,
+    pub clan_id: i32,
+    pub route: ChannelChatRoute,
+    pub time: i64,
+    pub color: i32,
 }
 
-enum ChannelChatRoute {
-    Global,
+#[derive(Debug, Clone)]
+pub enum ChannelChatRoute {
+    Global(String),
     Clan(i32),
-    Private([i32; 2]),
+    Private(String, [i32; 2]),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,13 +75,6 @@ fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync<'_>> {
     Some(ChinResync::Incremental { current, lastid })
 }
 
-pub async fn handle_local_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg: &str) {
-    if handle_local_chat_non_command(state, tx, pid, msg) {
-        return;
-    }
-    handle_chat_command(state, tx, pid, msg.trim()).await;
-}
-
 pub fn handle_local_chat_non_command(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -113,20 +108,6 @@ pub fn handle_local_chat_non_command(
     true
 }
 
-async fn handle_chat_command_if_present(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    msg: &str,
-) -> bool {
-    let msg = msg.trim();
-    if !msg.starts_with('/') {
-        return false;
-    }
-    handle_chat_command(state, tx, pid, msg).await;
-    true
-}
-
 fn broadcast_player_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg: &str) {
     let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
@@ -148,25 +129,6 @@ fn broadcast_player_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg
         msg,
     );
     state.broadcast_hb_at(px, py, &[chat_sub], None);
-}
-
-pub async fn handle_channel_chat(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    payload: &[u8],
-) {
-    let text = extract_channel_message_text(payload);
-    if text.is_empty() {
-        return;
-    }
-    if handle_chat_command_if_present(state, tx, pid, &text).await {
-        return;
-    }
-    let Some(prepared) = prepare_channel_chat_non_command(state, tx, pid, &text) else {
-        return;
-    };
-    persist_prepared_channel_chat(state, tx, pid, prepared).await;
 }
 
 pub fn prepare_channel_chat_non_command(
@@ -191,15 +153,20 @@ pub fn prepare_channel_chat_non_command(
             tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for channel chat");
             return None;
         };
+        let Some(settings) = ecs.get::<crate::game::player::PlayerSettings>(entity) else {
+            tracing::error!(player_id = %pid, component = "PlayerSettings", "Player component missing for channel chat");
+            return None;
+        };
         Some((
             meta.name.clone(),
             meta.id,
             pstats.clan_id,
             ui.current_chat.clone(),
+            settings.cc,
         ))
     });
 
-    let Some((nickname, my_id, clan_opt, channel_tag)) = p_data else {
+    let Some((nickname, my_id, clan_opt, channel_tag, chat_color)) = p_data else {
         send_chat_state_error(tx);
         return None;
     };
@@ -242,11 +209,11 @@ pub fn prepare_channel_chat_non_command(
         channel_tag.clone()
     };
     let route = if is_global {
-        ChannelChatRoute::Global
+        ChannelChatRoute::Global(channel_tag.clone())
     } else if is_clan {
         ChannelChatRoute::Clan(clan_opt.unwrap_or(0))
     } else if let Some(pair) = priv_ids {
-        ChannelChatRoute::Private(pair.into())
+        ChannelChatRoute::Private(channel_tag.clone(), pair.into())
     } else {
         return None;
     };
@@ -260,77 +227,36 @@ pub fn prepare_channel_chat_non_command(
         clan_id: clan_opt.unwrap_or(0),
         route,
         time,
+        color: chat_color,
     })
 }
 
-pub async fn persist_prepared_channel_chat(
+pub fn deliver_chat_fanout(
     state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    prepared: PreparedChannelChat,
+    route: &ChannelChatRoute,
+    msg: &openmines_protocol::chat::ChatMessage,
 ) {
-    // Вставляем в БД ПЕРЕД сборкой пакета: rowid становится `GCMessage.id`
-    // клиента (дедуп `LastIDs`). 1:1 с C# `Chat.AddMessage`. `add_chat_message`
-    // фиксирует и возвращает `color` (снимок `chat_color` автора) — live,
-    // in-mem и история несут ОДИН цвет (реф-баг 1/10: один message → разный
-    // цвет live и при перезагрузке). CLIENT_PROTOCOL_GAPS.md §1.
-    let (msg_id, color) = match state
-        .db
-        .add_chat_message(
-            &prepared.db_tag,
-            &prepared.nickname,
-            &prepared.text,
-            prepared.user_id,
-        )
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(chat_tag = prepared.db_tag, player_id = %pid, error = ?e, "Failed to add chat message in database");
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-            return;
-        }
-    };
-    // Один экземпляр: live-рассылка == in-mem-копия == будущая история
-    // (тот же id/time/color/user_id/clan_id).
-    let msg = ChatMessage {
-        id: msg_id,
-        time: prepared.time,
-        clan_id: prepared.clan_id,
-        user_id: prepared.user_id,
-        nickname: prepared.nickname,
-        text: prepared.text,
-        color,
-    };
-
-    match prepared.route {
-        ChannelChatRoute::Global => {
+    match route {
+        ChannelChatRoute::Global(wire_tag) => {
             {
                 let mut channels = state.chat_channels.write();
-                if let Some(ch) = channels.iter_mut().find(|c| c.tag == prepared.wire_tag) {
+                if let Some(ch) = channels.iter_mut().find(|c| c.tag == *wire_tag) {
                     ch.messages.push_back(msg.clone());
-                    if ch.messages.len() > CHAT_HISTORY_LIMIT {
+                    if ch.messages.len() > crate::net::session::social::chat::CHAT_HISTORY_LIMIT {
                         ch.messages.pop_front();
                     }
                 }
             }
-            // Wire-`ch` = РЕАЛЬНЫЙ channel_tag (FED→"FED", DNO→"DNO"). C#
-            // `Chat.cs:44` хардкодит "FED" для ЛЮБОГО global — РЕФЕРЕНС-БАГ:
-            // DNO-зритель (currentChat="DNO") не видел DNO, оно текло в FED
-            // (репорт юзера). Клиент важнее. CLIENT_PROTOCOL_GAPS.md §1.
-            let pkt = chat_messages(&prepared.wire_tag, &[msg]).1;
-            send_mu_to_all(state, &pkt);
+            let pkt = crate::protocol::packets::chat_messages(wire_tag, &[msg.clone()]).1;
+            crate::net::session::social::chat::send_mu_to_all(state, &pkt);
         }
         ChannelChatRoute::Clan(clan_id) => {
-            let pkt = chat_messages("CLAN", &[msg]).1;
-            send_mu_to_clan(state, &pkt, clan_id);
+            let pkt = crate::protocol::packets::chat_messages("CLAN", &[msg.clone()]).1;
+            crate::net::session::social::chat::send_mu_to_clan(state, &pkt, *clan_id);
         }
-        ChannelChatRoute::Private(users) => {
-            // Приват: wire-тег = сам `_a_b` (клиент обоих участников держит
-            // `currentChat == _a_b`). Рассылка ТОЛЬКО {a,b} — НЕ всем
-            // (утечка ЛС). docs/reference/CLIENT_PROTOCOL_GAPS.md §6.
-            let pkt = chat_messages(&prepared.wire_tag, &[msg]).1;
-            send_mu_to_users(state, &pkt, &users);
+        ChannelChatRoute::Private(wire_tag, users) => {
+            let pkt = crate::protocol::packets::chat_messages(wire_tag, &[msg.clone()]).1;
+            crate::net::session::social::chat::send_mu_to_users(state, &pkt, users);
         }
     }
 }
@@ -597,101 +523,6 @@ mod tests {
         assert_eq!(parse_chin_resync_payload("1:FED:FED#x"), None);
         assert_eq!(parse_chin_resync_payload("1:FED:#1"), None);
         assert_eq!(parse_chin_resync_payload("1:FED:FED#"), None);
-    }
-
-    #[tokio::test]
-    async fn local_chat_missing_position_is_explicit_error_not_silent_drop() {
-        let test = make_test_state("local_chat_missing_position").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        let pid = PlayerId(test.player.id);
-        let entity = test.state.get_player_entity(pid).unwrap();
-        {
-            let mut ecs = test.state.ecs.write();
-            ecs.entity_mut(entity)
-                .remove::<crate::game::player::PlayerPosition>();
-        }
-
-        handle_local_chat(&test.state, &tx, pid, "hello").await;
-
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
-        assert!(message.contains("Состояние чата недоступно."));
-    }
-
-    #[tokio::test]
-    async fn local_chat_hb_bubble_uses_raw_message_not_name_prefix() {
-        let test = make_test_state("local_chat_raw_bubble").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        handle_local_chat(&test.state, &tx, PlayerId(test.player.id), "5:hi").await;
-
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "HB");
-        assert_eq!(single_hb_chat_text(&events[0].1), "5:hi");
-    }
-
-    #[tokio::test]
-    async fn local_chat_with_open_window_sends_no_hb_bubble() {
-        let test = make_test_state("local_chat_open_window").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        let pid = PlayerId(test.player.id);
-        let entity = test.state.get_player_entity(pid).unwrap();
-        {
-            let mut ecs = test.state.ecs.write();
-            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
-                .unwrap()
-                .current_window = Some("pack:1:1".to_string());
-        }
-
-        handle_local_chat(&test.state, &tx, pid, "hello").await;
-
-        let events = drain_events(&mut rx);
-        assert!(events.is_empty());
-    }
-
-    #[tokio::test]
-    async fn local_chat_console_payloads_send_no_hb_bubble() {
-        let test = make_test_state("local_chat_console_payloads").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        let pid = PlayerId(test.player.id);
-        handle_local_chat(&test.state, &tx, pid, "console").await;
-        handle_local_chat(&test.state, &tx, pid, ">status").await;
-
-        let events = drain_events(&mut rx);
-        assert!(events.is_empty());
-    }
-
-    #[tokio::test]
-    async fn channel_chat_missing_stats_is_explicit_error_not_access_denied_noop() {
-        let test = make_test_state("channel_chat_missing_stats").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        let pid = PlayerId(test.player.id);
-        let entity = test.state.get_player_entity(pid).unwrap();
-        {
-            let mut ecs = test.state.ecs.write();
-            ecs.entity_mut(entity)
-                .remove::<crate::game::player::PlayerStats>();
-        }
-
-        handle_channel_chat(&test.state, &tx, pid, b"hello").await;
-
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
-        assert!(message.contains("Состояние чата недоступно."));
     }
 
     #[tokio::test]

@@ -600,6 +600,10 @@ pub enum GameEvent {
         recipients: Vec<SessionId>,
         data: Vec<u8>,
     },
+    ChatFanout {
+        route: crate::net::session::social::chat::ChannelChatRoute,
+        message: openmines_protocol::chat::ChatMessage,
+    },
     GuiView {
         session_id: SessionId,
         player_id: PlayerId,
@@ -613,6 +617,7 @@ impl GameEvent {
             Self::PlayerInit { .. } => "player_init",
             Self::SessionBatch { .. } => "session_batch",
             Self::Fanout { .. } => "fanout",
+            Self::ChatFanout { .. } => "chat_fanout",
             Self::GuiView { .. } => "gui_view",
         }
     }
@@ -636,6 +641,19 @@ pub enum SaveCommand {
     BuildingDelete {
         request: BuildingDeleteRequest,
     },
+    ChatAppend {
+        request: ChatAppendRequest,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatAppendRequest {
+    pub id: i64,
+    pub tag: String,
+    pub nickname: String,
+    pub text: String,
+    pub player_id: i32,
+    pub color: i32,
 }
 
 impl SaveCommand {
@@ -646,6 +664,7 @@ impl SaveCommand {
             Self::Box { .. } => SaveKind::Box,
             Self::Program { .. } => SaveKind::Program,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
+            Self::ChatAppend { .. } => SaveKind::ChatAppend,
         }
     }
 }
@@ -691,6 +710,7 @@ pub enum SaveKind {
     Box,
     Program,
     BuildingDelete,
+    ChatAppend,
 }
 
 impl SaveKind {
@@ -701,6 +721,7 @@ impl SaveKind {
             Self::Box => "save_box",
             Self::Program => "save_program",
             Self::BuildingDelete => "delete_building",
+            Self::ChatAppend => "save_chat",
         }
     }
 }

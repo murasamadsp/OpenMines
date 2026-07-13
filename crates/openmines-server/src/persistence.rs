@@ -271,12 +271,17 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
 
     fn save_buildings_batch(
         &self,
-        buildings: &[crate::db::BuildingRow],
+        buildings: &[crate::db::buildings::BuildingRow],
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     fn save_boxes_batch(
         &self,
         writes: &[crate::db::BoxWrite],
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    fn save_chat_messages_batch(
+        &self,
+        messages: &[crate::game::ChatAppendRequest],
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     fn save_program(
@@ -310,6 +315,24 @@ impl PersistenceStore for Arc<crate::db::Database> {
 
     async fn save_boxes_batch(&self, writes: &[crate::db::BoxWrite]) -> anyhow::Result<()> {
         crate::db::Database::save_boxes_batch(self, writes).await
+    }
+
+    async fn save_chat_messages_batch(
+        &self,
+        messages: &[crate::game::ChatAppendRequest],
+    ) -> anyhow::Result<()> {
+        for msg in messages {
+            self.add_chat_message(
+                msg.id,
+                &msg.tag,
+                &msg.nickname,
+                &msg.text,
+                msg.player_id,
+                msg.color,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn save_program(
@@ -405,7 +428,7 @@ async fn persist_batch<S>(
                 persist_building_delete_batch(store, &mut batch[start..end], simulation_waker)
                     .await;
             }
-            SaveKind::Player | SaveKind::Building | SaveKind::Box => {
+            SaveKind::Player | SaveKind::Building | SaveKind::Box | SaveKind::ChatAppend => {
                 persist_compatible_batch(store, kind, &batch[start..end]).await;
             }
         }
@@ -570,6 +593,7 @@ where
                         SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible player batch")
                         }
@@ -585,6 +609,7 @@ where
                         SaveCommand::Player { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible building batch")
                         }
@@ -600,12 +625,29 @@ where
                         SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible box batch")
                         }
                     })
                     .collect::<Vec<_>>();
                 store.save_boxes_batch(&writes).await
+            }
+            SaveKind::ChatAppend => {
+                let requests = batch
+                    .iter()
+                    .map(|envelope| match &envelope.command {
+                        SaveCommand::ChatAppend { request } => request.clone(),
+                        SaveCommand::Player { .. }
+                        | SaveCommand::Building { .. }
+                        | SaveCommand::Box { .. }
+                        | SaveCommand::Program { .. }
+                        | SaveCommand::BuildingDelete { .. } => {
+                            unreachable!("compatible chat batch")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                store.save_chat_messages_batch(&requests).await
             }
             SaveKind::Program | SaveKind::BuildingDelete => {
                 unreachable!("completion command routed to compatible batch")
@@ -674,6 +716,7 @@ mod tests {
             source: String,
         },
         BuildingDelete(i32),
+        Chats(Vec<i64>),
     }
 
     impl TestStore {
@@ -759,6 +802,15 @@ mod tests {
             let positions = writes.iter().map(|write| (write.x, write.y)).collect();
             let store = self.clone();
             async move { store.persist(SavedBatch::Boxes(positions)).await }
+        }
+
+        fn save_chat_messages_batch(
+            &self,
+            messages: &[crate::game::ChatAppendRequest],
+        ) -> impl Future<Output = anyhow::Result<()>> + Send {
+            let ids = messages.iter().map(|msg| msg.id).collect();
+            let store = self.clone();
+            async move { store.persist(SavedBatch::Chats(ids)).await }
         }
 
         fn save_program(

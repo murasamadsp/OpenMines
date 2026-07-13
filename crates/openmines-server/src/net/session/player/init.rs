@@ -487,8 +487,8 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
             crate::game::GameEvent::Fanout { recipients, data } => {
                 state.sessions.fanout(&recipients, &data);
             }
-            crate::game::GameEvent::GuiView { .. } => {
-                unreachable!("connect flow cannot produce GUI view events")
+            crate::game::GameEvent::GuiView { .. } | crate::game::GameEvent::ChatFanout { .. } => {
+                unreachable!("connect flow cannot produce GUI view or chat events")
             }
         }
     }
@@ -560,7 +560,9 @@ pub fn deliver_player_init(
             crate::game::GameEvent::Fanout { recipients, data } => {
                 state.sessions.fanout(&recipients, &data);
             }
-            crate::game::GameEvent::PlayerInit { .. } | crate::game::GameEvent::GuiView { .. } => {
+            crate::game::GameEvent::PlayerInit { .. }
+            | crate::game::GameEvent::GuiView { .. }
+            | crate::game::GameEvent::ChatFanout { .. } => {
                 unreachable!("Player.Init builder only produces packet/fanout effects")
             }
         }
@@ -906,7 +908,8 @@ mod tests {
                 crate::game::GameEvent::PlayerInit { session_id, view } => Some((session_id, view)),
                 crate::game::GameEvent::SessionBatch { .. }
                 | crate::game::GameEvent::Fanout { .. }
-                | crate::game::GameEvent::GuiView { .. } => None,
+                | crate::game::GameEvent::GuiView { .. }
+                | crate::game::GameEvent::ChatFanout { .. } => None,
             })
             .expect("initial presentation event");
         let _ = disconnect_in_tick(state, PlayerId(player.id), session_id);
