@@ -527,6 +527,9 @@ impl SimulationRuntime {
                     .state
                     .next_hazard_due_at()
                     .filter(|due_at| *due_at <= now),
+                granular_work_at: (self.state.player_entity_count() > 0
+                    && self.state.has_granular_work())
+                .then_some(now),
             },
             |index| scheduler::configured_candidate(&self.state, index),
         );

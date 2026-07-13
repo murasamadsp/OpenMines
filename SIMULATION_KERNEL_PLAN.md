@@ -461,7 +461,7 @@ simulation capacity:
 | 3. Persistence owner | частично; building delete закрыт | zero direct gameplay DB writes |
 | 4. Admission/isolation | event-driven wait, due queue и bounded QoS ingress закрыты | удерживать starvation/overload gates при новых flows |
 | 5. Owned simulation | только structural foundation | zero external ECS writers, удалить `RwLock<EcsWorld>` |
-| 6. Active/due work | programmator/guns/standing-cell hazards закрыты | zero scan-all для alive/granular sleeping actors |
+| 6. Active/due work | programmator/guns/hazards/granular закрыты | zero scan-all для alive sleeping actors |
 | 7. Interest/read model | pilot | immutable per-chunk snapshots и bounded fanout |
 | 8. Spatial multicore | не начат как ownership model | deterministic 1/2/4-worker digest и speedup |
 
@@ -718,7 +718,8 @@ Gate:
 - hazards: position-transition activation и damage deadlines;
 - guns: due guns + spatial query;
 - crafting/building damage: due queues;
-- alive/granular: active frontier by chunk;
+- granular: active frontier by region/cell transition;
+- alive: active registry by cell/position transition;
 - bots render: presentation scheduler outside gameplay systems;
 - persistence: explicit dirty actors/buildings.
 

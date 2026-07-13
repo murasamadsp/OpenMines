@@ -336,6 +336,7 @@ fn apply_move(
     if let Some(entity) = state.get_player_entity(pid) {
         state.schedule_hazard(entity, std::time::Instant::now());
     }
+    state.seed_granular_region(nx, ny);
 
     let tail = state
         .query_player(pid, |ecs, entity| {

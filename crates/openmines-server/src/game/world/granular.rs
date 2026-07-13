@@ -1,5 +1,3 @@
-use crate::game::player::{PlayerConnection, PlayerPosition};
-use crate::game::programmator::ProgrammatorState;
 use crate::game::{
     BroadcastEffect, BroadcastQueue, GranularWakeQueue, ScheduleConfigResource, WorldResource,
 };
@@ -555,11 +553,8 @@ fn activate_woken_granular_cells(
     physics_state: &mut GranularPhysicsState,
     world: &crate::world::World,
     cell_defs: &CellDefs,
-) -> (usize, usize, usize) {
-    let mut wake_points: Vec<_> = {
-        let mut q = wake_q.0.lock();
-        std::mem::take(&mut *q).into_iter().collect()
-    };
+) -> (usize, usize, usize, usize, usize) {
+    let (mut wake_points, mut region_seeds) = wake_q.take();
     let received = wake_points.len();
     wake_points.sort_unstable_by_key(|pos| {
         let (x, y): (i32, i32) = (*pos).into();
@@ -574,7 +569,25 @@ fn activate_woken_granular_cells(
             physics_state.activate_granular_neighborhood(world, cell_defs, x, y)
         })
         .sum();
-    (received, unique, activated)
+    let region_seeds_received = region_seeds.len();
+    region_seeds.sort_unstable_by_key(|pos| {
+        let (x, y): (i32, i32) = (*pos).into();
+        (y, x)
+    });
+    region_seeds.dedup();
+    let mut region_cells_scanned = 0usize;
+    for pos in region_seeds {
+        let (x, y): (i32, i32) = pos.into();
+        let (scanned, _) = physics_state.seed_active_region(world, cell_defs, x, y, Instant::now());
+        region_cells_scanned += scanned;
+    }
+    (
+        received,
+        unique,
+        activated,
+        region_seeds_received,
+        region_cells_scanned,
+    )
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -583,40 +596,19 @@ fn granular_physics_system(
     schedule_cfg: Res<ScheduleConfigResource>,
     wake_q: Res<GranularWakeQueue>,
     mut bcast_q: ResMut<BroadcastQueue>,
-    query: Query<(
-        &PlayerPosition,
-        Option<&PlayerConnection>,
-        Option<&ProgrammatorState>,
-    )>,
     mut physics_state: Local<GranularPhysicsState>,
 ) {
     let started_at = Instant::now();
     let world = &world_res.0;
     let cell_defs = world.cell_defs();
-    let mut players_scanned = 0usize;
-    let mut cells_scanned = 0usize;
-    let mut regions_seeded = 0usize;
-
     let scan_t0 = Instant::now();
-    let (wake_points_len, wake_points_unique, wake_granular_activated) =
-        activate_woken_granular_cells(&wake_q, &mut physics_state, world, &cell_defs);
-    let now = Instant::now();
-    for (pos, conn, prog) in &query {
-        if conn.is_none() && !prog.is_some_and(|prog| prog.running) {
-            continue;
-        }
-        players_scanned += 1;
-        let (player_x, player_y) = (pos.x, pos.y);
-        let (scanned, seeded) =
-            physics_state.seed_active_region(world, &cell_defs, player_x, player_y, now);
-        cells_scanned += scanned;
-        regions_seeded += usize::from(seeded);
-    }
-
-    if players_scanned == 0 {
-        physics_state.active_cells.clear();
-        physics_state.region_seeded_at.clear();
-    }
+    let (
+        wake_points_len,
+        wake_points_unique,
+        wake_granular_activated,
+        region_seeds_received,
+        region_cells_scanned,
+    ) = activate_woken_granular_cells(&wake_q, &mut physics_state, world, &cell_defs);
 
     let frontier_before = physics_state.active_cells.len();
     let (candidates, candidates_deferred) =
@@ -650,6 +642,7 @@ fn granular_physics_system(
     let apply_granular_activated = apply_result.granular_activated;
     bcast_q.0.extend(apply_result.effects);
     let frontier_after_apply = physics_state.active_cells.len();
+    wake_q.set_active(frontier_after_apply > 0);
     let apply_time = apply_t0.elapsed();
     let total = started_at.elapsed();
     let threshold = Duration::from_millis(schedule_cfg.0.schedule_warn_threshold_ms)
@@ -657,12 +650,11 @@ fn granular_physics_system(
     if total > threshold {
         tracing::warn!(
             target: "tickprof",
-            players_scanned,
-            cells_scanned,
-            regions_seeded,
             wake_points = wake_points_len,
             wake_points_unique,
             wake_granular_activated,
+            region_seeds_received,
+            region_cells_scanned,
             frontier_before,
             frontier_after_scan,
             frontier_after_apply,
@@ -702,7 +694,6 @@ mod physics_repro {
     use crate::world::cells::{CellDefs, cell_type};
     use crate::world::{World, WorldProvider};
     use bevy_ecs::prelude::*;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     fn spawn_connected_test_player(w: &mut bevy_ecs::world::World, x: i32, y: i32) {
@@ -894,14 +885,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
-        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
-            parking_lot::Mutex::new(HashSet::new()),
-        )));
+        w.insert_resource(crate::game::GranularWakeQueue::default());
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
         spawn_connected_test_player(&mut w, 64, 65);
+        w.resource::<crate::game::GranularWakeQueue>()
+            .seed_region(64, 65);
 
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
@@ -1013,14 +1004,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
-        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
-            parking_lot::Mutex::new(HashSet::new()),
-        )));
+        w.insert_resource(crate::game::GranularWakeQueue::default());
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
         spawn_connected_test_player(&mut w, x, 60);
+        w.resource::<crate::game::GranularWakeQueue>()
+            .seed_region(x, 60);
 
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
@@ -1078,14 +1069,14 @@ mod physics_repro {
 
         let mut w = bevy_ecs::world::World::new();
         w.insert_resource(WorldResource(Arc::clone(&world)));
-        w.insert_resource(crate::game::GranularWakeQueue(Arc::new(
-            parking_lot::Mutex::new(HashSet::new()),
-        )));
+        w.insert_resource(crate::game::GranularWakeQueue::default());
         w.insert_resource(BroadcastQueue::default());
         w.insert_resource(crate::game::ScheduleConfigResource(
             crate::config::ScheduleConfig::runtime_baseline(),
         ));
         spawn_connected_test_player(&mut w, x, 56);
+        w.resource::<crate::game::GranularWakeQueue>()
+            .seed_region(x, 56);
         let mut sched = Schedule::default();
         sched.add_systems(super::granular_physics_system);
         for _ in 0..30 {

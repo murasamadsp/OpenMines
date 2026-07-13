@@ -62,6 +62,7 @@ pub(super) struct ScheduleWorkload {
     pub(super) guns_due: bool,
     pub(super) programmator_due: bool,
     pub(super) hazard_due_at: Option<Instant>,
+    pub(super) granular_work_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy)]
@@ -133,6 +134,12 @@ impl ScheduleClock {
                 }
                 continue;
             }
+            if schedule.activity == ScheduleActivity::ActiveGranular
+                && workload.granular_work_at.is_none()
+            {
+                *self.last_run_mut(idx, now) = now;
+                continue;
+            }
             let last_run = self.last_run_mut(idx, now);
             if now.duration_since(*last_run) < schedule.interval {
                 continue;
@@ -180,6 +187,12 @@ impl ScheduleClock {
                 }
                 continue;
             }
+            if schedule.activity == ScheduleActivity::ActiveGranular
+                && workload.granular_work_at.is_none()
+            {
+                *self.last_run_mut(idx, now) = now;
+                continue;
+            }
             let last_run = self.last_run_mut(idx, now);
             if schedule_due_but_idle(schedule.activity, workload) {
                 *last_run = now;
@@ -201,6 +214,7 @@ const fn schedule_due_but_idle(activity: ScheduleActivity, workload: ScheduleWor
         ScheduleActivity::DueGuns => !workload.guns_due,
         ScheduleActivity::DueProgrammator => !workload.programmator_due,
         ScheduleActivity::DueHazards => workload.hazard_due_at.is_none(),
+        ScheduleActivity::ActiveGranular => workload.granular_work_at.is_none(),
     }
 }
 
@@ -299,6 +313,7 @@ pub(super) fn run_schedule_phase(
             guns_due: online_count > 0 && state.guns_due(now),
             programmator_due: state.has_due_programmator(now),
             hazard_due_at: state.next_hazard_due_at().filter(|due_at| *due_at <= now),
+            granular_work_at: (player_entity_count > 0 && state.has_granular_work()).then_some(now),
         },
         |idx| configured_candidate(state, idx),
     );

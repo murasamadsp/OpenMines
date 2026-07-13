@@ -37,6 +37,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -115,8 +116,62 @@ impl BoxPickupQueue {
     }
 }
 
+#[derive(Default)]
+struct GranularWakeState {
+    points: HashSet<WorldPos>,
+    region_seeds: HashSet<WorldPos>,
+}
+
 #[derive(Resource, Clone)]
-pub struct GranularWakeQueue(pub Arc<Mutex<HashSet<WorldPos>>>);
+pub struct GranularWakeQueue {
+    state: Arc<Mutex<GranularWakeState>>,
+    active: Arc<AtomicBool>,
+}
+
+impl Default for GranularWakeQueue {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(GranularWakeState::default())),
+            active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl GranularWakeQueue {
+    pub fn wake_neighborhood(&self, x: i32, y: i32) {
+        let mut state = self.state.lock();
+        for dy in -3..=1 {
+            for dx in -1..=1 {
+                state.points.insert((x + dx, y + dy).into());
+            }
+        }
+    }
+
+    pub fn seed_region(&self, x: i32, y: i32) {
+        self.state.lock().region_seeds.insert((x, y).into());
+    }
+
+    pub fn take(&self) -> (Vec<WorldPos>, Vec<WorldPos>) {
+        let mut state = self.state.lock();
+        (
+            std::mem::take(&mut state.points).into_iter().collect(),
+            std::mem::take(&mut state.region_seeds)
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    pub fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::Release);
+    }
+
+    pub fn has_work(&self) -> bool {
+        self.active.load(Ordering::Acquire) || {
+            let state = self.state.lock();
+            !state.points.is_empty() || !state.region_seeds.is_empty()
+        }
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
@@ -528,6 +583,7 @@ pub enum ScheduleActivity {
     DueGuns,
     DueProgrammator,
     DueHazards,
+    ActiveGranular,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -808,7 +864,7 @@ pub struct GameState {
     box_index: Arc<DashMap<WorldPos, [i64; 6]>>,
     box_pickup_queue: BoxPickupQueue,
     death_queue: combat::DeathQueue,
-    granular_wake_q: Arc<Mutex<HashSet<WorldPos>>>,
+    granular_wake_q: GranularWakeQueue,
     /// Динамика цен кристаллов (C# `World.cryscostmod`/`summary`), в памяти.
     pub crystal_economy: Mutex<crate::game::market::CrystalEconomy>,
     /// Активные расходники-спрайты (boom/protector/razryadka) по клетке `WorldPos` →
@@ -953,7 +1009,7 @@ impl GameState {
             },
             GameSchedule {
                 name: "physics".to_string(),
-                activity: ScheduleActivity::PlayerEntities,
+                activity: ScheduleActivity::ActiveGranular,
                 schedule: RwLock::new(schedule_physics),
                 interval_ms: std::sync::atomic::AtomicU64::new(schedule_intervals.physics_ms),
             },
@@ -1050,7 +1106,7 @@ impl GameState {
             box_index: Arc::new(DashMap::new()),
             box_pickup_queue: BoxPickupQueue::default(),
             death_queue: combat::DeathQueue::default(),
-            granular_wake_q: Arc::new(Mutex::new(HashSet::new())),
+            granular_wake_q: GranularWakeQueue::default(),
             crystal_economy: Mutex::new(crate::game::market::CrystalEconomy::default()),
             consumable_packs: DashMap::new(),
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
@@ -1112,7 +1168,7 @@ impl GameState {
             ecs.insert_resource(CombatConfigResource(state.config.gameplay.combat));
             ecs.insert_resource(ScheduleConfigResource(state.config.gameplay.schedules));
             ecs.insert_resource(state.box_pickup_queue.clone());
-            ecs.insert_resource(GranularWakeQueue(state.granular_wake_q.clone()));
+            ecs.insert_resource(state.granular_wake_q.clone());
             ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
@@ -2281,12 +2337,17 @@ impl GameState {
     }
 
     pub fn wake_granular_neighborhood(&self, x: i32, y: i32) {
-        let mut q = self.granular_wake_q.lock();
-        for dy in -3..=1 {
-            for dx in -1..=1 {
-                q.insert((x + dx, y + dy).into());
-            }
-        }
+        self.granular_wake_q.wake_neighborhood(x, y);
+        self.simulation_waker.wake();
+    }
+
+    pub fn seed_granular_region(&self, x: i32, y: i32) {
+        self.granular_wake_q.seed_region(x, y);
+        self.simulation_waker.wake();
+    }
+
+    pub fn has_granular_work(&self) -> bool {
+        self.granular_wake_q.has_work()
     }
 
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {

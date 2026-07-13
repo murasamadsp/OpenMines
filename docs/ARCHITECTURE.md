@@ -100,6 +100,8 @@ flush. Crash durability это не заменяет.
 - programmator исполняется через entity-aware due heap, не periodic player scan;
 - standing-cell hazards используют deduplicated due deadlines: safe idle player
   не запускает ECS schedule, непустая клетка повторно планирует только себя;
+- granular physics запускается только по pending/active frontier: position
+  transition seed-ит region, cell transition будит локальную область;
 - внешние ECS writers из admin/web/session/shutdown;
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 
