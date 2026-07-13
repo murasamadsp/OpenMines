@@ -214,6 +214,13 @@ pub async fn handle_clan_preview(state: &Arc<GameState>, tx: &Outbox, pid: Playe
         .send(state, tx, pid, "clan");
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebitResult {
+    Ok { creds: i64, money: i64 },
+    InsufficientFunds,
+    StateError,
+}
+
 pub async fn handle_clan_create(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -226,34 +233,58 @@ pub async fn handle_clan_create(
         return;
     }
 
-    let pstats = state.query_player(pid, |ecs, entity| {
-        let player_stats = ecs.get::<crate::game::PlayerStats>(entity);
-        let flags = ecs.get::<crate::game::PlayerFlags>(entity);
-        match (player_stats, flags) {
-            (Some(player_stats), Some(_)) => Ok((player_stats.creds, player_stats.money)),
-            _ => Err(()),
-        }
-    });
+    let debited = state
+        .modify_player(pid, |ecs, entity| {
+            if ecs.get::<crate::game::PlayerStats>(entity).is_none()
+                || ecs.get::<crate::game::PlayerFlags>(entity).is_none()
+            {
+                return Some(DebitResult::StateError);
+            }
+            let (creds, money, ok) = {
+                let mut s = ecs
+                    .get_mut::<crate::game::PlayerStats>(entity)
+                    .expect("PlayerStats checked before clan create mutation");
+                if s.creds < 1000 {
+                    (0, 0, false)
+                } else {
+                    s.creds -= 1000;
+                    (s.creds, s.money, true)
+                }
+            };
+            if ok {
+                let mut flags = ecs
+                    .get_mut::<crate::game::PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before clan create mutation");
+                flags.dirty = true;
+                Some(DebitResult::Ok { creds, money })
+            } else {
+                Some(DebitResult::InsufficientFunds)
+            }
+        })
+        .flatten()
+        .unwrap_or(DebitResult::StateError);
 
-    let Some(Ok((p_creds, p_money))) = pstats else {
-        send_clan_state_error(tx);
-        return;
+    let (new_creds, p_money) = match debited {
+        DebitResult::Ok { creds, money } => (creds, money),
+        DebitResult::InsufficientFunds => {
+            send_clan_ok(tx, "Ошибка", "Недостаточно кредитов (нужно 1000)");
+            return;
+        }
+        DebitResult::StateError => {
+            send_clan_state_error(tx);
+            return;
+        }
     };
 
-    if p_creds < 1000 {
-        send_clan_ok(tx, "Ошибка", "Недостаточно кредитов (нужно 1000)");
-        return;
-    }
-
-    // id клана = номер иконки (1..=218), модель C# `Clan.id == icon`. Пул свободных
-    // ограничен 218; при исчерпании — отказ (как C# проверка занятости иконки).
     let new_id = match state.db.pick_clan_id().await {
         Ok(Some(id)) => id,
         Ok(None) => {
+            refund_clan_credits(state, pid);
             send_clan_ok(tx, "Ошибка", "Достигнут лимит кланов (218)");
             return;
         }
         Err(e) => {
+            refund_clan_credits(state, pid);
             tracing::error!(error = ?e, "Failed to pick clan ID");
             return;
         }
@@ -263,22 +294,12 @@ pub async fn handle_clan_create(
         Ok(()) => {
             let applied = state
                 .modify_player(pid, |ecs, entity| {
-                    if ecs.get::<crate::game::PlayerStats>(entity).is_none()
-                        || ecs.get::<crate::game::PlayerFlags>(entity).is_none()
-                    {
-                        send_clan_state_error(tx);
+                    if ecs.get::<crate::game::PlayerStats>(entity).is_none() {
                         return false;
                     }
-                    let mut s = ecs
-                        .get_mut::<crate::game::PlayerStats>(entity)
-                        .expect("PlayerStats checked before clan create mutation");
-                    s.creds -= 1000;
+                    let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity).unwrap();
                     s.clan_id = Some(new_id);
                     s.clan_rank = crate::db::ClanRank::Leader as i32;
-                    let mut flags = ecs
-                        .get_mut::<crate::game::PlayerFlags>(entity)
-                        .expect("PlayerFlags checked before clan create mutation");
-                    flags.dirty = true;
                     true
                 })
                 .unwrap_or(false);
@@ -290,14 +311,14 @@ pub async fn handle_clan_create(
                 );
                 return;
             }
-            send_u_packet(tx, "P$", &money(p_money, p_creds - 1000).1);
-            // cS = номер иконки = id клана (клиент: ClanSprite.sprites[id-1], 1..=218).
+            send_u_packet(tx, "P$", &money(p_money, new_creds).1);
             let cs = clan_show(new_id);
             send_u_packet(tx, cs.0, &cs.1);
             send_clan_ok(tx, "Клан", "Клан успешно создан!");
             handle_clan_info_view(state, tx, pid, new_id).await;
         }
         Err(e) => {
+            refund_clan_credits(state, pid);
             tracing::error!(error = ?e, "Failed to create clan");
             send_clan_ok(
                 tx,
@@ -306,6 +327,18 @@ pub async fn handle_clan_create(
             );
         }
     }
+}
+
+fn refund_clan_credits(state: &Arc<GameState>, pid: PlayerId) {
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut s) = ecs.get_mut::<crate::game::PlayerStats>(entity) {
+            s.creds += 1000;
+        }
+        if let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) {
+            flags.dirty = true;
+        }
+        Some(())
+    });
 }
 
 pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
@@ -721,9 +754,6 @@ pub async fn handle_clan_promote(
         send_clan_no_rights(tx);
         return;
     }
-    if !ensure_online_player_state_ready(state, tx, PlayerId(target_pid)) {
-        return;
-    }
 
     match state
         .db
@@ -810,12 +840,8 @@ pub async fn handle_clan_accept(
         send_clan_no_rights(tx);
         return;
     }
-    if !ensure_online_player_state_ready(state, tx, PlayerId(target_pid)) {
-        return;
-    }
     match state.db.accept_clan_request(clan_id, target_pid).await {
         Ok(()) => {
-            // cS = номер иконки = id клана (клиент: ClanSprite.sprites[id-1]).
             state.modify_player(target_pid.into(), |ecs, entity| {
                 let mut s = ecs.get_mut::<crate::game::PlayerStats>(entity)?;
                 s.clan_id = Some(clan_id);
@@ -896,9 +922,6 @@ pub async fn handle_clan_kick(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
         return;
     }
 
-    if !ensure_online_player_state_ready(state, tx, PlayerId(target_pid)) {
-        return;
-    }
     if let Err(e) = state.db.kick_from_clan(target_pid).await {
         tracing::error!(clan_id, player_id = target_pid, error = ?e, "Failed to kick player from clan");
         send_clan_ok(tx, "Ошибка", "Ошибка БД");
@@ -1143,5 +1166,139 @@ mod tests {
             .unwrap();
         assert_eq!(db_owner.clan_id, Some(1));
         assert_eq!(db_member.clan_id, Some(1));
+    }
+
+    #[tokio::test]
+    async fn clan_kick_offline_player_succeeds_in_db() {
+        let test = make_clan_test_state("kick_offline").await;
+        let mut owner = test.create_player("clan-owner").await;
+        let target = test.create_player("clan-member").await;
+
+        test.state
+            .db
+            .create_clan(1, "Kick Clan", "KCK", owner.id)
+            .await
+            .unwrap();
+        test.state.db.add_clan_request(1, target.id).await.unwrap();
+        test.state
+            .db
+            .accept_clan_request(1, target.id)
+            .await
+            .unwrap();
+
+        owner.clan_id = Some(1);
+        owner.clan_rank = crate::db::ClanRank::Leader as i32;
+
+        let (tx, mut rx) = test.connect_player_with_outbox(&owner, 1);
+        drain_events(&mut rx);
+
+        handle_clan_kick(&test.state, &tx, PlayerId(owner.id), target.id).await;
+
+        let db_target = test
+            .state
+            .db
+            .get_player_by_id(target.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_target.clan_id, None);
+    }
+
+    #[tokio::test]
+    async fn clan_promote_offline_player_succeeds_in_db() {
+        let test = make_clan_test_state("promote_offline").await;
+        let mut owner = test.create_player("clan-owner").await;
+        let target = test.create_player("clan-member").await;
+
+        test.state
+            .db
+            .create_clan(1, "Promote Clan", "PRM", owner.id)
+            .await
+            .unwrap();
+        test.state.db.add_clan_request(1, target.id).await.unwrap();
+        test.state
+            .db
+            .accept_clan_request(1, target.id)
+            .await
+            .unwrap();
+
+        owner.clan_id = Some(1);
+        owner.clan_rank = crate::db::ClanRank::Leader as i32;
+
+        let (tx, mut rx) = test.connect_player_with_outbox(&owner, 1);
+        drain_events(&mut rx);
+
+        handle_clan_promote(&test.state, &tx, PlayerId(owner.id), target.id).await;
+
+        let db_target = test
+            .state
+            .db
+            .get_player_by_id(target.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_target.clan_rank, crate::db::ClanRank::Officer as i32);
+    }
+
+    #[tokio::test]
+    async fn clan_accept_offline_player_succeeds_in_db() {
+        let test = make_clan_test_state("accept_offline").await;
+        let mut owner = test.create_player("clan-owner").await;
+        let target = test.create_player("clan-member").await;
+
+        test.state
+            .db
+            .create_clan(1, "Accept Clan", "ACC", owner.id)
+            .await
+            .unwrap();
+        test.state.db.add_clan_request(1, target.id).await.unwrap();
+
+        owner.clan_id = Some(1);
+        owner.clan_rank = crate::db::ClanRank::Leader as i32;
+
+        let (tx, mut rx) = test.connect_player_with_outbox(&owner, 1);
+        drain_events(&mut rx);
+
+        handle_clan_accept(&test.state, &tx, PlayerId(owner.id), target.id).await;
+
+        let db_target = test
+            .state
+            .db
+            .get_player_by_id(target.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(db_target.clan_id, Some(1));
+    }
+
+    #[tokio::test]
+    async fn clan_create_with_toctou_prevention_does_not_go_negative() {
+        let test = make_clan_test_state("create_toctou").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let pid = PlayerId(test.player.id);
+        // Задаем игроку ровно 999 кредитов
+        test.state.modify_player(pid, |ecs, entity| {
+            let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+            s.creds = 999;
+            Some(())
+        });
+
+        handle_clan_create(&test.state, &tx, pid, "ToctouClan", "TTC").await;
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "OK");
+        let msg = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(msg.contains("Недостаточно кредитов"));
+
+        let current_creds = test
+            .state
+            .query_player(pid, |ecs, entity| {
+                ecs.get::<PlayerStats>(entity).map(|s| s.creds)
+            })
+            .unwrap();
+        assert_eq!(current_creds, Some(999)); // Баланс не изменился и не ушел в минус
     }
 }
