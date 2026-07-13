@@ -522,6 +522,20 @@ guard, wire smoke и release movement stress `100/2 000`, `300/6 000` без los
 chat на typed command/apply/effects и bounded persistence/fanout, не маскируя
 проблему локальным micro-optimization.
 
+### P0, закрытый перед следующим срезом: programmator due requeue
+
+После перевода programmator на due queue один запуск обрабатывал только первый
+action без delay: `Label`/условие или переход к следующей функции не ставили
+новый deadline. Программа оставалась `running`, но больше не попадала в
+schedule. `programmator_system` теперь requeue-ит следующий step во всех
+ветках, пока program остаётся running; deadline без delay равен текущему
+monotonic time, с delay - точному `now + delay`.
+
+Тест запускает production `programmator` schedule через `ProgrammatorDueBatch`,
+проверяет requeue после action без delay и после function transition. Временно
+добавленный `PROGDIAG` dump parsed actions удалён: он создавал строки для
+каждого action при старте программы и искажал CPU trace.
+
 ## Видимые milestones
 
 | Milestone | Пользовательский результат | Статус |

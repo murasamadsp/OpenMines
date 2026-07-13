@@ -1182,22 +1182,6 @@ impl ProgrammatorState {
             Self::parse_normal(data)
         };
         if let Some((functions, order)) = parsed {
-            let total_actions: usize = functions.values().map(|f| f.actions.len()).sum();
-            tracing::info!(
-                "PROGDIAG run_program: parse OK funcs={} order={} actions={total_actions}",
-                functions.len(),
-                order.len()
-            );
-            // Дамп распарсенной последовательности — видно, ВЕРНЫЕ ли действия
-            // произвёл парсер (move/dig/if/...) или мусор.
-            for (fname, f) in &functions {
-                let seq: Vec<String> = f
-                    .actions
-                    .iter()
-                    .map(|a| format!("{:?}:{}", a.action_type, a.num))
-                    .collect();
-                tracing::info!("PROGDIAG parsed fn={fname:?} actions={seq:?}");
-            }
             self.current_prog = functions;
             self.function_order = order;
             self.delay = Instant::now();
@@ -1660,6 +1644,9 @@ pub fn programmator_system(
                 f.reset();
             }
             prog.next_function();
+            schedule_next_programmator_step(&mut prog, entity, now, None, &due_queue);
+            flags.dirty = true;
+            dirty_players.0.insert((entity, flags.incarnation));
             continue;
         }
 
@@ -1715,14 +1702,30 @@ pub fn programmator_system(
             }
         }
 
-        // Set delay
-        if let Some(delay) = delay {
-            prog.delay = now + delay;
-            due_queue.schedule(entity, prog.delay);
-        }
+        schedule_next_programmator_step(&mut prog, entity, now, delay, &due_queue);
         flags.dirty = true;
         dirty_players.0.insert((entity, flags.incarnation));
     }
+}
+
+fn schedule_next_programmator_step(
+    prog: &mut ProgrammatorState,
+    entity: Entity,
+    now: Instant,
+    delay: Option<Duration>,
+    due_queue: &crate::game::ProgrammatorDueQueue,
+) {
+    if !prog.running {
+        return;
+    }
+    prog.delay = next_programmator_deadline(now, delay);
+    due_queue.schedule(entity, prog.delay);
+}
+
+fn next_programmator_deadline(now: Instant, delay: Option<Duration>) -> Instant {
+    delay
+        .and_then(|delay| now.checked_add(delay))
+        .unwrap_or(now)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2748,6 +2751,80 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn program_step_without_delay_is_due_immediately() {
+        let now = Instant::now();
+        assert_eq!(next_programmator_deadline(now, None), now);
+        assert_eq!(
+            next_programmator_deadline(now, Some(Duration::from_millis(25))),
+            now + Duration::from_millis(25)
+        );
+    }
+
+    #[tokio::test]
+    async fn due_system_requeues_program_after_no_delay_action() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "programmator_due_requeue",
+            "programmator-due-player",
+        )
+        .await;
+        let (_tx, _rx) = test.connect_with_outbox(1);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let due_at = Instant::now();
+        let entity = test
+            .state
+            .modify_player(player_id, |ecs, entity| {
+                let mut program = PFunction::new();
+                program.actions.push(PAction {
+                    action_type: ActionType::None,
+                    label: String::new(),
+                    num: 0,
+                });
+                let mut state = ecs.get_mut::<ProgrammatorState>(entity)?;
+                state.running = true;
+                state.current_prog.clear();
+                state.current_prog.insert(String::new(), program);
+                state.function_order = vec![String::new()];
+                state.current_function.clear();
+                state.delay = due_at;
+                Some(entity)
+            })
+            .flatten()
+            .expect("connected player has programmator state");
+        test.state.schedule_programmator(entity, due_at);
+
+        let due = test.state.take_due_programmators(Instant::now());
+        assert_eq!(due, vec![(entity, due_at)]);
+        let schedule = test
+            .state
+            .schedules
+            .iter()
+            .find(|schedule| schedule.name == "programmator")
+            .expect("programmator schedule");
+        let mut ecs = test.state.ecs.write();
+        ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 = due;
+        schedule.schedule.write().run(&mut ecs);
+        drop(ecs);
+
+        assert!(test.state.next_programmator_due_at().is_some());
+        let due = test.state.take_due_programmators(Instant::now());
+        assert_eq!(due.len(), 1);
+        let mut ecs = test.state.ecs.write();
+        ecs.resource_mut::<crate::game::ProgrammatorDueBatch>().0 = due;
+        schedule.schedule.write().run(&mut ecs);
+        drop(ecs);
+
+        assert!(test.state.next_programmator_due_at().is_some());
+        assert!(
+            test.state
+                .query_player_opt(player_id, |ecs, entity| {
+                    ecs.get::<ProgrammatorState>(entity)
+                        .map(|state| state.running)
+                })
+                .unwrap_or(false)
+        );
+    }
 
     fn empty_skills() -> PlayerSkillsComp {
         PlayerSkillsComp {
