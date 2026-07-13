@@ -286,24 +286,38 @@ pub enum GuiView {
     Teleport(TeleportGuiView),
 }
 
-/// All incoming action commands from client sessions to the game tick loop.
+#[derive(Debug, Clone)]
+pub enum GameCommand {
+    Player(PlayerCommand),
+}
+
+impl GameCommand {
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Player(pc) => pc.name(),
+        }
+    }
+
+    #[must_use]
+    pub fn persistence_kind(&self) -> Option<SaveKind> {
+        match self {
+            Self::Player(pc) => pc.persistence_kind(),
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum PlayerCommand {
     /// Initial connection handshake and registration.
     Connect {
         row: Box<openmines_storage::players::PlayerRow>,
-        session_id: SessionId,
     },
     /// Clean disconnect of the player session.
-    Disconnect {
-        player_id: PlayerId,
-        session_id: SessionId,
-    },
+    Disconnect,
     /// Player movement request.
     Move {
-        player_id: PlayerId,
-        session_id: SessionId,
         time: u32,
         x: i32,
         y: i32,
@@ -311,136 +325,93 @@ pub enum PlayerCommand {
         programmatic: bool,
     },
     /// Cell digging action request.
-    Dig {
-        player_id: PlayerId,
-        direction: i32,
-        programmatic: bool,
-    },
+    Dig { direction: i32, programmatic: bool },
     /// Construction or block placement request.
     Build {
-        player_id: PlayerId,
         direction: i32,
         block_type: String,
         programmatic: bool,
     },
     /// Geology scan action request.
-    Geology {
-        player_id: PlayerId,
-        programmatic: bool,
-    },
+    Geology { programmatic: bool },
     /// Health self-healing request.
-    Heal {
-        player_id: PlayerId,
-        programmatic: bool,
-    },
+    Heal { programmatic: bool },
     /// Parsed GUI action from one concrete authenticated session.
-    Gui {
-        session_id: SessionId,
-        player_id: PlayerId,
-        command: GuiCommand,
-    },
+    Gui { command: GuiCommand },
     /// Local area chat message.
-    LocalChat {
-        player_id: PlayerId,
-        message: String,
-    },
+    LocalChat { message: String },
     /// Global channel chat message.
-    ChannelChat { player_id: PlayerId, payload: Bytes },
+    ChannelChat { payload: Bytes },
     /// Request to resynchronize chat history.
-    ChatResync { player_id: PlayerId, payload: Bytes },
+    ChatResync { payload: Bytes },
     /// Chat navigation/channel menu interaction.
-    ChatMenu { player_id: PlayerId, payload: Bytes },
+    ChatMenu { payload: Bytes },
     /// Join or select chat channel.
-    ChatChoose { player_id: PlayerId, payload: Bytes },
+    ChatChoose { payload: Bytes },
     /// Update individual chat settings.
-    ChatSettings { player_id: PlayerId, payload: Bytes },
+    ChatSettings { payload: Bytes },
     /// Send a private chat message to a user.
-    ChatPrivate { player_id: PlayerId, payload: Bytes },
+    ChatPrivate { payload: Bytes },
     /// Request nicknames for a list of player IDs.
-    Whois { player_id: PlayerId, ids: Vec<i32> },
+    Whois { ids: Vec<i32> },
     /// Toggle automatic digging status.
-    ToggleAutoDig { player_id: PlayerId },
+    ToggleAutoDig,
     /// Toggle player aggression status.
-    ToggleAggression { player_id: PlayerId },
+    ToggleAggression,
     /// Select item index in player inventory.
-    InventoryChoose { player_id: PlayerId, payload: Bytes },
+    InventoryChoose { payload: Bytes },
     /// Use currently selected inventory item.
-    InventoryUse {
-        session_id: SessionId,
-        player_id: PlayerId,
-    },
+    InventoryUse,
     /// Toggle inventory GUI visibility.
-    InventoryToggle { player_id: PlayerId },
+    InventoryToggle,
     /// Open a nearby box / chest.
-    OpenBox { player_id: PlayerId },
+    OpenBox,
     /// Claim daily connection reward.
-    ClaimBonus { player_id: PlayerId },
+    ClaimBonus,
     /// Save client settings payload.
-    SettingsSave { player_id: PlayerId, payload: Bytes },
+    SettingsSave { payload: Bytes },
     /// Trigger admin command GUI or panels.
-    AdminAction { player_id: PlayerId },
+    AdminAction,
     /// Respawn player after death.
-    Respawn { player_id: PlayerId },
+    Respawn,
     /// Open the programmer program editing GUI.
-    OpenProgrammer { player_id: PlayerId },
+    OpenProgrammer,
     /// Request list of building structures owned by the player.
-    RequestMyBuildings { player_id: PlayerId },
+    RequestMyBuildings,
     /// Open clan management GUI.
-    OpenClan { player_id: PlayerId },
+    OpenClan,
     /// Programmator program lifecycle action (save, delete, restart, rename, copy).
-    ProgramAction {
-        player_id: PlayerId,
-        session_id: SessionId,
-        event: String,
-        payload: Bytes,
-    },
+    ProgramAction { event: String, payload: Bytes },
     /// Clear deleted programmer runtime state after DB ownership/delete succeeded.
-    ApplyDeletedProgram {
-        player_id: PlayerId,
-        program_id: i32,
-    },
+    ApplyDeletedProgram { program_id: i32 },
     /// Commit an inventory building placement after DB insert succeeded.
     ApplyInventoryBuildingPlaced {
-        session_id: SessionId,
         placement: InventoryBuildingPlacement,
         db_id: i32,
     },
     /// Commit a paid GUI building placement after DB insert succeeded.
     ApplyPaidBuildingPlaced {
-        session_id: SessionId,
         placement: PaidBuildingPlacement,
         db_id: i32,
     },
     /// Refund money for a paid GUI building placement after DB insert failed.
-    RefundPaidBuildingPlacement {
-        session_id: SessionId,
-        player_id: PlayerId,
-        cost: i64,
-    },
+    RefundPaidBuildingPlacement { cost: i64 },
     /// Authoritative request to delete one building through persistence admission.
     RemovePack { remove: RemovePack },
     /// Apply a GUI program open/create after DB ownership/selection succeeded.
     ApplyProgramEditorOpen {
-        session_id: SessionId,
-        player_id: PlayerId,
         program_id: i32,
         program_name: String,
         source: String,
     },
     /// Apply a GUI program rename after DB rename succeeded.
     ApplyProgramEditorRename {
-        session_id: SessionId,
-        player_id: PlayerId,
         program_id: i32,
         program_name: String,
         source: String,
     },
     /// Known TY event that does not mutate gameplay state.
-    KnownNoopTy {
-        player_id: PlayerId,
-        event: String,
-        payload: Bytes,
-    },
+    KnownNoopTy { event: String, payload: Bytes },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -518,6 +489,9 @@ impl PlayerCommand {
         match self {
             Self::Disconnect { .. } | Self::ClaimBonus { .. } => Some(SaveKind::Player),
             Self::RemovePack { .. } => Some(SaveKind::BuildingDelete),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("createprog:") => Some(SaveKind::ProgramCreate),
             Self::ProgramAction { event, .. } if event == "PROG" => Some(SaveKind::Program),
             _ => None,
         }
@@ -538,13 +512,15 @@ impl PlayerCommand {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct QueuedPlayerCommand {
+#[derive(Clone, Debug)]
+pub struct QueuedGameCommand {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
     pub ingress_class: Option<CommandIngressClass>,
     pub sequence: CommandSeq,
     pub received_at: Instant,
     pub enqueued_at: Instant,
-    pub command: PlayerCommand,
+    pub command: GameCommand,
 }
 
 #[derive(Debug, Default)]
@@ -635,6 +611,9 @@ pub enum SaveCommand {
     Box {
         write: openmines_storage::BoxWrite,
     },
+    ProgramCreate {
+        request: ProgramCreateRequest,
+    },
     Program {
         request: ProgramSaveRequest,
     },
@@ -662,11 +641,19 @@ impl SaveCommand {
             Self::Player { .. } => SaveKind::Player,
             Self::Building { .. } => SaveKind::Building,
             Self::Box { .. } => SaveKind::Box,
+            Self::ProgramCreate { .. } => SaveKind::ProgramCreate,
             Self::Program { .. } => SaveKind::Program,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramCreateRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -679,6 +666,10 @@ pub struct ProgramSaveRequest {
 
 #[derive(Debug)]
 pub enum PersistenceCompletion {
+    ProgramCreated {
+        request: ProgramCreateRequest,
+        result: ProgramCreateResult,
+    },
     ProgramSaved {
         request: ProgramSaveRequest,
         result: ProgramSaveResult,
@@ -687,6 +678,12 @@ pub enum PersistenceCompletion {
         request: BuildingDeleteRequest,
         result: BuildingDeleteResult,
     },
+}
+
+#[derive(Debug)]
+pub enum ProgramCreateResult {
+    Created { program_id: i32 },
+    PermanentFailure { message: String },
 }
 
 #[derive(Debug)]
@@ -709,6 +706,7 @@ pub enum SaveKind {
     Building,
     Box,
     Program,
+    ProgramCreate,
     BuildingDelete,
     ChatAppend,
 }
@@ -720,6 +718,7 @@ impl SaveKind {
             Self::Building => "save_building",
             Self::Box => "save_box",
             Self::Program => "save_program",
+            Self::ProgramCreate => "create_program",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
         }

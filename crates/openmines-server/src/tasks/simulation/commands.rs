@@ -69,10 +69,13 @@ pub(super) fn run_command_phase(
         }
         let sequence = queued.sequence;
         let command = queued.command;
+        let crate::game::GameCommand::Player(player_command) = command;
         let mut command_effects =
             crate::game::logic::commands::apply_queued_player_command_with_due(
                 state,
-                command,
+                queued.player_id,
+                queued.session_id,
+                player_command,
                 sequence,
                 due_actions,
             );
@@ -139,7 +142,7 @@ fn take_next_admitted_command(
 
 fn observe_command_start(
     state: &GameState,
-    queued: &crate::game::QueuedPlayerCommand,
+    queued: &crate::game::QueuedGameCommand,
 ) -> (&'static str, Instant) {
     if let Some(class) = queued.ingress_class {
         state.record_command_dequeued(class);
@@ -168,7 +171,7 @@ fn observe_command_start(
 }
 
 pub(super) fn take_admitted_internal_building_delete(
-    pending: &mut std::collections::VecDeque<crate::game::QueuedPlayerCommand>,
+    pending: &mut std::collections::VecDeque<crate::game::QueuedGameCommand>,
     persistence: &crate::persistence::PersistenceHandle,
 ) -> Result<Option<AdmittedCommand>, &'static str> {
     let Some(queued) = pending.front() else {
@@ -193,7 +196,7 @@ pub(super) fn take_admitted_internal_building_delete(
 }
 
 pub(super) struct AdmittedCommand {
-    pub(super) queued: crate::game::QueuedPlayerCommand,
+    pub(super) queued: crate::game::QueuedGameCommand,
     pub(super) permit: Option<crate::persistence::PersistencePermit>,
 }
 

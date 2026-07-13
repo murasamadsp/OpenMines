@@ -41,10 +41,13 @@ pub async fn init_player(
         return pid;
     }
     if !state
-        .enqueue_lifecycle(crate::game::PlayerCommand::Connect {
-            row: Box::new(player.clone()),
+        .enqueue_lifecycle(
+            pid,
             session_id,
-        })
+            crate::game::PlayerCommand::Connect {
+                row: Box::new(player.clone()),
+            },
+        )
         .await
     {
         state.sessions.kick_session(session_id);
@@ -60,10 +63,7 @@ pub async fn on_disconnect(
 ) {
     state.remove_rate_limiter(pid);
     let _ = state
-        .enqueue_lifecycle(crate::game::PlayerCommand::Disconnect {
-            player_id: pid,
-            session_id,
-        })
+        .enqueue_lifecycle(pid, session_id, crate::game::PlayerCommand::Disconnect)
         .await;
 }
 
@@ -872,9 +872,10 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             state,
+            player.id.into(),
+            session_id,
             crate::game::PlayerCommand::Connect {
                 row: Box::new(player.clone()),
-                session_id,
             },
         );
 

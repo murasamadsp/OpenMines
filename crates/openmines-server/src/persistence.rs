@@ -72,14 +72,18 @@ pub enum PersistenceAdmissionError {
 impl PersistenceHandle {
     pub fn check_capacity(&self, kind: SaveKind) -> Result<(), PersistenceAdmissionError> {
         if self.tx.is_closed()
-            || (matches!(kind, SaveKind::Program | SaveKind::BuildingDelete)
-                && self.completion_tx.is_closed())
+            || (matches!(
+                kind,
+                SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+            ) && self.completion_tx.is_closed())
         {
             return Err(PersistenceAdmissionError::Closed);
         }
         if self.tx.capacity() == 0
-            || (matches!(kind, SaveKind::Program | SaveKind::BuildingDelete)
-                && self.completion_tx.capacity() == 0)
+            || (matches!(
+                kind,
+                SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+            ) && self.completion_tx.capacity() == 0)
         {
             return Err(PersistenceAdmissionError::Full);
         }
@@ -90,7 +94,10 @@ impl PersistenceHandle {
         &self,
         kind: SaveKind,
     ) -> Result<PersistencePermit, PersistenceAdmissionError> {
-        let completion = if matches!(kind, SaveKind::Program | SaveKind::BuildingDelete) {
+        let completion = if matches!(
+            kind,
+            SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete
+        ) {
             match self.completion_tx.clone().try_reserve_owned() {
                 Ok(permit) => Some(permit),
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -289,6 +296,11 @@ trait PersistenceStore: Clone + Send + Sync + 'static {
         request: &crate::game::ProgramSaveRequest,
     ) -> impl Future<Output = Result<Option<crate::db::ProgramRow>, PersistenceStoreFailure>> + Send;
 
+    fn create_program(
+        &self,
+        request: &crate::game::ProgramCreateRequest,
+    ) -> impl Future<Output = Result<i32, PersistenceStoreFailure>> + Send;
+
     fn delete_building(
         &self,
         write: &crate::db::BuildingDeleteWrite,
@@ -360,6 +372,20 @@ impl PersistenceStore for Arc<crate::db::Database> {
         })
     }
 
+    async fn create_program(
+        &self,
+        request: &crate::game::ProgramCreateRequest,
+    ) -> Result<i32, PersistenceStoreFailure> {
+        let program_id = self
+            .insert_program(request.player_id.into(), &request.name, "")
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?;
+        let _ = self
+            .set_selected_program(request.player_id.into(), Some(program_id))
+            .await;
+        Ok(program_id)
+    }
+
     async fn delete_building(
         &self,
         write: &crate::db::BuildingDeleteWrite,
@@ -421,6 +447,9 @@ async fn persist_batch<S>(
             .position(|envelope| envelope.command.kind() != kind)
             .map_or(batch.len(), |offset| start + offset);
         match kind {
+            SaveKind::ProgramCreate => {
+                persist_program_create_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::Program => {
                 persist_program_batch(store, &mut batch[start..end], simulation_waker).await;
             }
@@ -575,6 +604,63 @@ async fn persist_program_batch<S>(
     }
 }
 
+async fn persist_program_create_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::ProgramCreate { request } = &envelope.command else {
+            unreachable!("compatible program create batch");
+        };
+        let request = request.clone();
+        let oldest = envelope.enqueued_at;
+        let mut attempt = 0u64;
+        let mut backoff = RETRY_INITIAL_BACKOFF;
+        let result = loop {
+            crate::metrics::PERSISTENCE_OLDEST_AGE_SECONDS.set(oldest.elapsed().as_secs_f64());
+            match store.create_program(&request).await {
+                Ok(program_id) => {
+                    break crate::game::ProgramCreateResult::Created { program_id };
+                }
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::ProgramCreateResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    attempt = attempt.saturating_add(1);
+                    crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+                        .with_label_values(&[SaveKind::Program.name(), "retry"])
+                        .inc();
+                    tracing::warn!(
+                        attempt,
+                        ?backoff,
+                        error = ?error,
+                        player_id = %request.player_id,
+                        "Program create failed transiently; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = backoff.saturating_mul(2).min(RETRY_MAX_BACKOFF);
+                }
+            }
+        };
+
+        envelope
+            .completion
+            .take()
+            .expect("program create command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ProgramCreated { request, result });
+        simulation_waker.wake();
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::Program.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn persist_compatible_batch<S>(store: &S, kind: SaveKind, batch: &[PersistenceEnvelope])
 where
@@ -594,6 +680,7 @@ where
                         SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible player batch")
@@ -610,6 +697,7 @@ where
                         SaveCommand::Player { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible building batch")
@@ -626,6 +714,7 @@ where
                         SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible box batch")
@@ -643,6 +732,7 @@ where
                         | SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
+                        | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::BuildingDelete { .. } => {
                             unreachable!("compatible chat batch")
                         }
@@ -650,7 +740,7 @@ where
                     .collect::<Vec<_>>();
                 store.save_chat_messages_batch(&requests).await
             }
-            SaveKind::Program | SaveKind::BuildingDelete => {
+            SaveKind::Program | SaveKind::ProgramCreate | SaveKind::BuildingDelete => {
                 unreachable!("completion command routed to compatible batch")
             }
         };
@@ -775,6 +865,13 @@ mod tests {
     }
 
     impl PersistenceStore for TestStore {
+        async fn create_program(
+            &self,
+            _request: &crate::game::ProgramCreateRequest,
+        ) -> Result<i32, PersistenceStoreFailure> {
+            Ok(1)
+        }
+
         fn save_players_batch(
             &self,
             players: &[crate::db::PlayerRow],

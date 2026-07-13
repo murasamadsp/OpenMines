@@ -46,7 +46,7 @@ struct BoxPickupBacklog {
 
 struct TickPendingWork {
     commands: PendingCommandHeads,
-    building_deletes: VecDeque<crate::game::QueuedPlayerCommand>,
+    building_deletes: VecDeque<crate::game::QueuedGameCommand>,
     box_pickups: BoxPickupBacklog,
     deaths: DeathBacklog,
     persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
@@ -73,9 +73,9 @@ impl TickPendingWork {
 
 #[derive(Default)]
 struct PendingCommandHeads {
-    lifecycle: Option<crate::game::QueuedPlayerCommand>,
-    gameplay: Option<crate::game::QueuedPlayerCommand>,
-    internal: Option<crate::game::QueuedPlayerCommand>,
+    lifecycle: Option<crate::game::QueuedGameCommand>,
+    gameplay: Option<crate::game::QueuedGameCommand>,
+    internal: Option<crate::game::QueuedGameCommand>,
     next_class: usize,
 }
 
@@ -83,7 +83,7 @@ impl PendingCommandHeads {
     const fn take(
         &mut self,
         class: crate::game::CommandIngressClass,
-    ) -> Option<crate::game::QueuedPlayerCommand> {
+    ) -> Option<crate::game::QueuedGameCommand> {
         match class {
             crate::game::CommandIngressClass::Lifecycle => self.lifecycle.take(),
             crate::game::CommandIngressClass::Gameplay => self.gameplay.take(),
@@ -91,7 +91,7 @@ impl PendingCommandHeads {
         }
     }
 
-    fn put(&mut self, command: crate::game::QueuedPlayerCommand) {
+    fn put(&mut self, command: crate::game::QueuedGameCommand) {
         let slot = match command.ingress_class.expect("external command class") {
             crate::game::CommandIngressClass::Lifecycle => &mut self.lifecycle,
             crate::game::CommandIngressClass::Gameplay => &mut self.gameplay,

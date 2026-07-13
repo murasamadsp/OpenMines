@@ -900,8 +900,9 @@ mod tests {
     fn apply_heal_command(state: &Arc<GameState>, pid: PlayerId) {
         crate::game::logic::commands::apply_player_command(
             state,
+            pid,
+            crate::game::SessionId::new(1),
             crate::game::PlayerCommand::Heal {
-                player_id: pid,
                 programmatic: false,
             },
         );
@@ -1175,10 +1176,9 @@ mod tests {
         let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
         let effects = crate::game::logic::commands::apply_player_command_with_due(
             &test.state,
-            crate::game::PlayerCommand::InventoryUse {
-                session_id: crate::game::SessionId::new(1),
-                player_id: pid,
-            },
+            pid,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::InventoryUse,
             &mut due_actions,
         );
 

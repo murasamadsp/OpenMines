@@ -419,15 +419,14 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
     let (tx, gameplay_rx) = tokio::sync::mpsc::channel(2);
     let mut rx = crate::game::CommandReceivers::test_with_gameplay(gameplay_rx);
     let now = Instant::now();
-    tx.try_send(crate::game::QueuedPlayerCommand {
+    tx.try_send(crate::game::QueuedGameCommand {
+        player_id: pid,
+        session_id: crate::game::SessionId::new(41),
         ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,
-        command: crate::game::PlayerCommand::Disconnect {
-            player_id: pid,
-            session_id: crate::game::SessionId::new(41),
-        },
+        command: crate::game::GameCommand::Player(crate::game::PlayerCommand::Disconnect),
     })
     .expect("queue disconnect");
     drop(tx);
@@ -451,7 +450,13 @@ async fn disconnect_waits_for_persistence_capacity_before_mutation() {
         panic!("disconnect must be admitted after capacity is released");
     };
     let command_name = queued.command.name();
-    let mut effects = crate::game::logic::commands::apply_player_command(&state, queued.command);
+    let crate::game::GameCommand::Player(command) = queued.command;
+    let mut effects = crate::game::logic::commands::apply_player_command(
+        &state,
+        queued.player_id,
+        queued.session_id,
+        command,
+    );
     publish_command_saves(permit, &mut effects.saves, command_name);
 
     assert!(!state.is_player_active(pid));
@@ -478,28 +483,28 @@ fn saturated_gameplay_head_does_not_starve_lifecycle_command() {
     let (_internal_tx, internal_rx) = tokio::sync::mpsc::channel(1);
     let now = Instant::now();
     gameplay_tx
-        .try_send(crate::game::QueuedPlayerCommand {
+        .try_send(crate::game::QueuedGameCommand {
+            player_id: crate::game::PlayerId(1),
+            session_id: crate::game::SessionId::new(1),
             ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
             sequence: crate::game::CommandSeq::new(1),
             received_at: now,
             enqueued_at: now,
-            command: crate::game::PlayerCommand::Disconnect {
-                player_id: crate::game::PlayerId(1),
-                session_id: crate::game::SessionId::new(1),
-            },
+            command: crate::game::GameCommand::Player(crate::game::PlayerCommand::Disconnect),
         })
         .expect("queue durable gameplay command");
     lifecycle_tx
-        .try_send(crate::game::QueuedPlayerCommand {
+        .try_send(crate::game::QueuedGameCommand {
+            player_id: crate::game::PlayerId(1),
+            session_id: crate::game::SessionId::new(1),
             ingress_class: Some(crate::game::CommandIngressClass::Lifecycle),
             sequence: crate::game::CommandSeq::new(2),
             received_at: now,
             enqueued_at: now,
-            command: crate::game::PlayerCommand::KnownNoopTy {
-                player_id: crate::game::PlayerId(1),
+            command: crate::game::GameCommand::Player(crate::game::PlayerCommand::KnownNoopTy {
                 event: "lifecycle".to_owned(),
                 payload: bytes::Bytes::new(),
-            },
+            }),
         })
         .expect("queue lifecycle command");
     let mut rx =
@@ -528,16 +533,17 @@ fn exhausted_class_budget_defers_its_ingress_until_the_next_cycle() {
     let (_internal_tx, internal_rx) = tokio::sync::mpsc::channel(1);
     let now = Instant::now();
     gameplay_tx
-        .try_send(crate::game::QueuedPlayerCommand {
+        .try_send(crate::game::QueuedGameCommand {
+            player_id: crate::game::PlayerId(1),
+            session_id: crate::game::SessionId::new(1),
             ingress_class: Some(crate::game::CommandIngressClass::Gameplay),
             sequence: crate::game::CommandSeq::new(1),
             received_at: now,
             enqueued_at: now,
-            command: crate::game::PlayerCommand::KnownNoopTy {
-                player_id: crate::game::PlayerId(1),
+            command: crate::game::GameCommand::Player(crate::game::PlayerCommand::KnownNoopTy {
                 event: "gameplay".to_owned(),
                 payload: bytes::Bytes::new(),
-            },
+            }),
         })
         .expect("queue gameplay command");
     let mut rx =
@@ -567,12 +573,14 @@ async fn internal_building_delete_saturation_preserves_head_and_runtime_state() 
             },
         });
     let now = Instant::now();
-    let mut pending = VecDeque::from([crate::game::QueuedPlayerCommand {
+    let mut pending = VecDeque::from([crate::game::QueuedGameCommand {
+        player_id: crate::game::PlayerId(0),
+        session_id: crate::game::SessionId::new(0),
         ingress_class: None,
         sequence: crate::game::CommandSeq::new(1),
         received_at: now,
         enqueued_at: now,
-        command: crate::game::PlayerCommand::RemovePack {
+        command: crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack {
             remove: crate::game::RemovePack {
                 x: 10,
                 y: 10,
@@ -580,7 +588,7 @@ async fn internal_building_delete_saturation_preserves_head_and_runtime_state() 
                     trigger_player_id: None,
                 },
             },
-        },
+        }),
     }]);
 
     assert!(matches!(
@@ -610,9 +618,12 @@ async fn internal_building_delete_saturation_preserves_head_and_runtime_state() 
     assert!(pending.is_empty());
     let command_name = queued.command.name();
     let mut due_actions = crate::game::logic::due::DueActionQueue::new(4);
+    let crate::game::GameCommand::Player(command) = queued.command;
     let mut effects = crate::game::logic::commands::apply_queued_player_command_with_due(
         &test.state,
-        queued.command,
+        queued.player_id,
+        queued.session_id,
+        command,
         queued.sequence,
         &mut due_actions,
     );

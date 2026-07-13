@@ -524,9 +524,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            pid,
+            crate::game::SessionId::new(2),
             crate::game::PlayerCommand::Move {
-                player_id: pid,
-                session_id: crate::game::SessionId::new(2),
                 time: 0,
                 x: 11,
                 y: 10,
@@ -558,9 +558,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            pid,
+            session_id,
             crate::game::PlayerCommand::Move {
-                player_id: pid,
-                session_id,
                 time: 0,
                 x: 11,
                 y: 10,

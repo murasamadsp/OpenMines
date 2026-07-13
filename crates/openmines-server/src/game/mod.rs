@@ -13,9 +13,10 @@ pub use economy::market;
 pub use logic::contracts::{
     BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
     BuildingDeleteResult, BuildingIdentity, ChatAppendRequest, CommandEffects, CommandIngressClass,
-    CommandSeq, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
-    PlayerInitView, ProgramSaveRequest, ProgramSaveResult, QueuedPlayerCommand, RemovePack,
-    SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
+    CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
+    PlayerInitView, ProgramCreateRequest, ProgramCreateResult, ProgramSaveRequest,
+    ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
+    TeleportGuiView,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
@@ -340,15 +341,15 @@ pub struct BuildingInsertSpec<'a> {
 }
 
 struct CommandSenders {
-    lifecycle: mpsc::Sender<QueuedPlayerCommand>,
-    gameplay: mpsc::Sender<QueuedPlayerCommand>,
-    internal: mpsc::Sender<QueuedPlayerCommand>,
+    lifecycle: mpsc::Sender<QueuedGameCommand>,
+    gameplay: mpsc::Sender<QueuedGameCommand>,
+    internal: mpsc::Sender<QueuedGameCommand>,
 }
 
 pub struct CommandReceivers {
-    lifecycle: mpsc::Receiver<QueuedPlayerCommand>,
-    gameplay: mpsc::Receiver<QueuedPlayerCommand>,
-    internal: mpsc::Receiver<QueuedPlayerCommand>,
+    lifecycle: mpsc::Receiver<QueuedGameCommand>,
+    gameplay: mpsc::Receiver<QueuedGameCommand>,
+    internal: mpsc::Receiver<QueuedGameCommand>,
     #[cfg(test)]
     next_class: usize,
 }
@@ -357,18 +358,19 @@ pub struct CommandReceivers {
 mod command_ingress_tests {
     use super::*;
 
-    fn queued(sequence: u64) -> QueuedPlayerCommand {
+    fn queued(sequence: u64) -> QueuedGameCommand {
         let now = Instant::now();
-        QueuedPlayerCommand {
+        QueuedGameCommand {
+            player_id: PlayerId(1),
+            session_id: SessionId::new(1),
             ingress_class: Some(CommandIngressClass::Gameplay),
             sequence: CommandSeq::new(sequence),
             received_at: now,
             enqueued_at: now,
-            command: PlayerCommand::KnownNoopTy {
-                player_id: PlayerId(1),
+            command: GameCommand::Player(PlayerCommand::KnownNoopTy {
                 event: "test".to_owned(),
                 payload: bytes::Bytes::new(),
-            },
+            }),
         }
     }
 
@@ -403,20 +405,30 @@ mod command_ingress_tests {
             gameplay,
         )
         .await;
-        let gameplay_command = || PlayerCommand::KnownNoopTy {
-            player_id: PlayerId(test.player.id),
-            event: "test".to_owned(),
-            payload: bytes::Bytes::new(),
+        let gameplay_command = || {
+            GameCommand::Player(PlayerCommand::KnownNoopTy {
+                event: "test".to_owned(),
+                payload: bytes::Bytes::new(),
+            })
         };
 
-        assert!(test.state.enqueue_command(gameplay_command()));
-        assert!(!test.state.enqueue_command(gameplay_command()));
+        assert!(test.state.enqueue_command(
+            PlayerId(test.player.id),
+            SessionId::new(1),
+            gameplay_command()
+        ));
+        assert!(!test.state.enqueue_command(
+            PlayerId(test.player.id),
+            SessionId::new(1),
+            gameplay_command()
+        ));
         assert!(
             test.state
-                .enqueue_lifecycle(PlayerCommand::Disconnect {
-                    player_id: PlayerId(test.player.id),
-                    session_id: SessionId::new(1),
-                })
+                .enqueue_lifecycle(
+                    PlayerId(test.player.id),
+                    SessionId::new(1),
+                    PlayerCommand::Disconnect
+                )
                 .await
         );
     }
@@ -426,7 +438,7 @@ impl CommandReceivers {
     pub fn try_recv_class(
         &mut self,
         class: CommandIngressClass,
-    ) -> Result<QueuedPlayerCommand, mpsc::error::TryRecvError> {
+    ) -> Result<QueuedGameCommand, mpsc::error::TryRecvError> {
         match class {
             CommandIngressClass::Lifecycle => self.lifecycle.try_recv(),
             CommandIngressClass::Gameplay => self.gameplay.try_recv(),
@@ -435,7 +447,7 @@ impl CommandReceivers {
     }
 
     #[cfg(test)]
-    pub fn try_recv(&mut self) -> Result<QueuedPlayerCommand, mpsc::error::TryRecvError> {
+    pub fn try_recv(&mut self) -> Result<QueuedGameCommand, mpsc::error::TryRecvError> {
         for offset in 0..3 {
             let class = (self.next_class + offset) % 3;
             let result = self.try_recv_class(match class {
@@ -472,7 +484,7 @@ impl CommandReceivers {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_with_gameplay(gameplay: mpsc::Receiver<QueuedPlayerCommand>) -> Self {
+    pub(crate) fn test_with_gameplay(gameplay: mpsc::Receiver<QueuedGameCommand>) -> Self {
         let (lifecycle_tx, lifecycle) = mpsc::channel(1);
         let (internal_tx, internal) = mpsc::channel(1);
         drop(lifecycle_tx);
@@ -487,9 +499,9 @@ impl CommandReceivers {
 
     #[cfg(test)]
     pub(crate) const fn test_with_ingress(
-        lifecycle: mpsc::Receiver<QueuedPlayerCommand>,
-        gameplay: mpsc::Receiver<QueuedPlayerCommand>,
-        internal: mpsc::Receiver<QueuedPlayerCommand>,
+        lifecycle: mpsc::Receiver<QueuedGameCommand>,
+        gameplay: mpsc::Receiver<QueuedGameCommand>,
+        internal: mpsc::Receiver<QueuedGameCommand>,
     ) -> Self {
         Self {
             lifecycle,
@@ -1147,7 +1159,12 @@ impl GameState {
         self.rate_limiters.remove(&pid);
     }
 
-    pub async fn enqueue_lifecycle(&self, command: PlayerCommand) -> bool {
+    pub async fn enqueue_lifecycle(
+        &self,
+        player_id: PlayerId,
+        session_id: SessionId,
+        command: PlayerCommand,
+    ) -> bool {
         use std::sync::atomic::Ordering;
 
         debug_assert_eq!(command.ingress_class(), CommandIngressClass::Lifecycle);
@@ -1162,12 +1179,14 @@ impl GameState {
         let enqueued_at = Instant::now();
         let sequence = self.allocate_command_sequence();
         let class = CommandIngressClass::Lifecycle;
-        let queued = QueuedPlayerCommand {
+        let queued = QueuedGameCommand {
+            player_id,
+            session_id,
             ingress_class: Some(class),
             sequence,
             received_at,
             enqueued_at,
-            command,
+            command: GameCommand::Player(command),
         };
         let depth = self
             .command_queue_depth
@@ -1194,11 +1213,21 @@ impl GameState {
         true
     }
 
-    pub fn enqueue_command(&self, command: PlayerCommand) -> bool {
-        self.enqueue_command_received(command, Instant::now())
+    pub fn enqueue_command(
+        &self,
+        player_id: PlayerId,
+        session_id: SessionId,
+        command: GameCommand,
+    ) -> bool {
+        self.enqueue_command_received(player_id, session_id, command, Instant::now())
     }
 
-    pub async fn enqueue_internal(&self, command: PlayerCommand) -> bool {
+    pub async fn enqueue_internal(
+        &self,
+        player_id: PlayerId,
+        session_id: SessionId,
+        command: PlayerCommand,
+    ) -> bool {
         use std::sync::atomic::Ordering;
 
         debug_assert_eq!(command.ingress_class(), CommandIngressClass::Internal);
@@ -1213,12 +1242,14 @@ impl GameState {
         let enqueued_at = Instant::now();
         let sequence = self.allocate_command_sequence();
         let class = CommandIngressClass::Internal;
-        let queued = QueuedPlayerCommand {
+        let queued = QueuedGameCommand {
+            player_id,
+            session_id,
             ingress_class: Some(class),
             sequence,
             received_at,
             enqueued_at,
-            command,
+            command: GameCommand::Player(command),
         };
         let depth = self
             .command_queue_depth
@@ -1245,11 +1276,17 @@ impl GameState {
         true
     }
 
-    pub fn enqueue_command_received(&self, command: PlayerCommand, received_at: Instant) -> bool {
+    pub fn enqueue_command_received(
+        &self,
+        player_id: PlayerId,
+        session_id: SessionId,
+        command: GameCommand,
+        received_at: Instant,
+    ) -> bool {
         use std::sync::atomic::Ordering;
 
-        let kind = command.name();
-        let class = command.ingress_class();
+        let GameCommand::Player(action) = &command;
+        let (kind, class) = (action.name(), action.ingress_class());
         assert_ne!(
             class,
             CommandIngressClass::Internal,
@@ -1257,7 +1294,9 @@ impl GameState {
         );
         let enqueued_at = Instant::now();
         let sequence = self.allocate_command_sequence();
-        let queued = QueuedPlayerCommand {
+        let queued = QueuedGameCommand {
+            player_id,
+            session_id,
             ingress_class: Some(class),
             sequence,
             received_at,

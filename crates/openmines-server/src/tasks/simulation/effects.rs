@@ -364,12 +364,19 @@ fn adapt_area_consumable_effects(
         let now = Instant::now();
         pending_work
             .building_deletes
-            .push_back(crate::game::QueuedPlayerCommand {
+            .push_back(crate::game::QueuedGameCommand {
+                player_id: remove
+                    .cause
+                    .trigger_player_id()
+                    .unwrap_or(crate::game::PlayerId(0)),
+                session_id: crate::game::SessionId::new(0),
                 ingress_class: None,
                 sequence: state.allocate_command_sequence(),
                 received_at: now,
                 enqueued_at: now,
-                command: crate::game::PlayerCommand::RemovePack { remove },
+                command: crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack {
+                    remove,
+                }),
             });
     }
     broadcasts.extend(
@@ -775,10 +782,9 @@ mod tests {
         let mut due_actions = crate::game::logic::due::DueActionQueue::new(1);
         let admitted = crate::game::logic::commands::apply_player_command_with_due(
             &test.state,
-            crate::game::PlayerCommand::InventoryUse {
-                session_id: crate::game::SessionId::new(1),
-                player_id,
-            },
+            player_id,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::InventoryUse,
             &mut due_actions,
         );
         broadcast_world_effects(&test.state, admitted.broadcasts);
@@ -829,10 +835,9 @@ mod tests {
         let admitted_before = Instant::now();
         let admitted = crate::game::logic::commands::apply_player_command_with_due(
             &test.state,
-            crate::game::PlayerCommand::InventoryUse {
-                session_id: crate::game::SessionId::new(1),
-                player_id,
-            },
+            player_id,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::InventoryUse,
             &mut due_actions,
         );
         let admitted_after = Instant::now();
@@ -902,10 +907,9 @@ mod tests {
         let admitted_before = Instant::now();
         let admitted = crate::game::logic::commands::apply_player_command_with_due(
             &test.state,
-            crate::game::PlayerCommand::InventoryUse {
-                session_id: crate::game::SessionId::new(1),
-                player_id,
-            },
+            player_id,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::InventoryUse,
             &mut due_actions,
         );
         let admitted_after = Instant::now();

@@ -414,8 +414,13 @@ Release runtime gate на одном `8x8` local fixture:
 
 - [x] **M4. Thin connect.** Сузить connect до entity/index apply и вынести `PlayerInitView` encode/send в presentation task.
 - [x] **M5. Chat consistency.** Перевести чаты на `CommandEffects::Saves(ChatAppend)` + `ChatFanout`.
-- [ ] **M6. Command pipeline.** Единый `mpsc` для `GameCommand` из всех сессий.
-- [ ] **M7. Programmator consistency.** Убрать `tokio::spawn` из `create_program`, вынести в `CommandEffects::Saves`.
+- [x] **M6. Command pipeline.** Все session actions проходят через общий
+  `QueuedGameCommand { player_id, session_id, command: GameCommand }`. Три
+  bounded QoS-очереди lifecycle/gameplay/internal сохранены: это admission
+  policy M2, а не второй command contract.
+- [x] **M7. Programmator consistency.** `createprog:` возвращает
+  `SaveCommand::ProgramCreate`; persistence worker создаёт и выбирает программу,
+  затем simulation completion открывает editor только исходной current session.
 
 ## Следующий обязательный порядок
 

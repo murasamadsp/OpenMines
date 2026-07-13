@@ -8,8 +8,9 @@ mod tests {
     fn apply_geo_command(state: &Arc<GameState>, pid: PlayerId) {
         crate::game::logic::commands::apply_player_command(
             state,
+            pid,
+            crate::game::SessionId::new(1),
             crate::game::PlayerCommand::Geology {
-                player_id: pid,
                 programmatic: false,
             },
         );

@@ -67,8 +67,8 @@ TCP sessions -> typed PlayerCommand -> SimulationRuntime
 
 TY frame разбирается в session adapter до enqueue. `PlayerCommand` содержит
 typed variants (`Move`, `Dig`, `Build`, `Gui`, `InventoryUse`, `ProgramAction` и
-другие), а не сырой `Ty` payload. Перенесённые authenticated flows несут
-`SessionId`; common envelope для всех client actions ещё не завершён.
+другие), а не сырой `Ty` payload. `QueuedGameCommand` несёт общий authenticated
+envelope (`player_id`, `session_id`, `GameCommand`) для всех client actions.
 
 Command ingress разделён на bounded классы lifecycle, gameplay и internal.
 Каждый имеет отдельные capacity и item budget на active cycle; gameplay при full
@@ -88,7 +88,8 @@ flush. Crash durability это не заменяет.
 
 Не все gameplay flows уже используют owners выше. В коде ещё остаются:
 
-- direct DB tasks для части GUI/program/auction операций;
+- direct DB tasks для части GUI/auction операций; создание программы идёт через
+  `SaveCommand::ProgramCreate` и typed completion;
 - `channel_chat` всё ещё использует transitional session/async path и в ручном
   trace дал `201ms` CPU-bound dispatch;
 - periodic dirty flush использует owner-local deduplicated entity registries и

@@ -631,7 +631,9 @@ mod tests {
 
         crate::game::logic::commands::apply_player_command(
             &test.state,
-            crate::game::PlayerCommand::ToggleAutoDig { player_id: pid },
+            pid,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::ToggleAutoDig,
         );
 
         let auto_dig = test
@@ -698,7 +700,9 @@ mod tests {
         let pid = PlayerId(test.player.id);
         crate::game::logic::commands::apply_player_command(
             &test.state,
-            crate::game::PlayerCommand::ToggleAggression { player_id: pid },
+            pid,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::ToggleAggression,
         );
 
         let (aggression, dirty) = test
@@ -1155,9 +1159,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            PlayerId(test.player.id),
+            crate::game::SessionId::new(1),
             crate::game::PlayerCommand::ProgramAction {
-                player_id: PlayerId(test.player.id),
-                session_id: crate::game::SessionId::new(1),
                 event: "PROG".to_owned(),
                 payload: bytes::Bytes::from(prog_payload(0, program_id, &[], "new")),
             },

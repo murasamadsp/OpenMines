@@ -2845,9 +2845,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            player_id,
+            session_id,
             crate::game::PlayerCommand::Gui {
-                session_id,
-                player_id,
                 command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
             },
         );
@@ -2913,9 +2913,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            player_id,
+            session_id,
             crate::game::PlayerCommand::Gui {
-                session_id,
-                player_id,
                 command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
             },
         );
@@ -2947,9 +2947,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            player_id,
+            old_session,
             crate::game::PlayerCommand::Gui {
-                session_id: old_session,
-                player_id,
                 command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
             },
         );
@@ -2982,9 +2982,9 @@ mod tests {
 
         let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
+            player_id,
+            session_id,
             crate::game::PlayerCommand::Gui {
-                session_id,
-                player_id,
                 command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
             },
         );

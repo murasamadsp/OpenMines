@@ -470,18 +470,22 @@ pub fn handle_remove_building(
         send_building_error(tx, "Сессия устарела");
         return;
     };
-    if !state.enqueue_command(crate::game::PlayerCommand::RemovePack {
-        remove: crate::game::RemovePack {
-            x: bx,
-            y: by,
-            cause: crate::game::BuildingDeleteCause::PlayerRequest(
-                crate::game::BuildingDeleteOrigin {
-                    session_id,
-                    player_id: pid,
-                },
-            ),
-        },
-    }) {
+    if !state.enqueue_command(
+        pid,
+        session_id,
+        crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack {
+            remove: crate::game::RemovePack {
+                x: bx,
+                y: by,
+                cause: crate::game::BuildingDeleteCause::PlayerRequest(
+                    crate::game::BuildingDeleteOrigin {
+                        session_id,
+                        player_id: pid,
+                    },
+                ),
+            },
+        }),
+    ) {
         send_building_error(tx, "Сервер перегружен, повторите действие.");
     }
 }
@@ -717,7 +721,12 @@ mod tests {
         state: &Arc<GameState>,
         command: crate::game::PlayerCommand,
     ) -> crate::game::BuildingDeleteRequest {
-        let mut effects = crate::game::logic::commands::apply_player_command(state, command);
+        let mut effects = crate::game::logic::commands::apply_player_command(
+            state,
+            PlayerId(1),
+            crate::game::SessionId::new(1),
+            command,
+        );
         assert!(effects.events.is_empty());
         assert!(effects.broadcasts.is_empty());
         assert_eq!(effects.saves.len(), 1);
@@ -871,18 +880,19 @@ mod tests {
             Some(())
         });
 
-        assert!(
-            test.state
-                .enqueue_command(crate::game::PlayerCommand::RemovePack {
-                    remove: crate::game::RemovePack {
-                        x: 10,
-                        y: 10,
-                        cause: crate::game::BuildingDeleteCause::Damage {
-                            trigger_player_id: None,
-                        },
+        assert!(test.state.enqueue_command(
+            pid,
+            crate::game::SessionId::new(1),
+            crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack {
+                remove: crate::game::RemovePack {
+                    x: 10,
+                    y: 10,
+                    cause: crate::game::BuildingDeleteCause::Damage {
+                        trigger_player_id: None,
                     },
-                })
-        );
+                },
+            })
+        ));
         let queued = test
             .state
             .commands_rx
@@ -893,9 +903,10 @@ mod tests {
             .expect("building delete request");
         assert!(matches!(
             queued.command,
-            crate::game::PlayerCommand::RemovePack { .. }
+            crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack { .. })
         ));
-        let request = admit_building_delete(&test.state, queued.command);
+        let crate::game::GameCommand::Player(command) = queued.command;
+        let request = admit_building_delete(&test.state, command);
         assert!(test.state.get_pack_at(10, 10).is_none());
         assert!(
             test.state

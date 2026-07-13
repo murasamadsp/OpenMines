@@ -40,7 +40,9 @@ mod tests {
     ) -> crate::game::CommandEffects {
         crate::game::logic::commands::apply_player_command(
             state,
-            crate::game::PlayerCommand::ClaimBonus { player_id: pid },
+            pid,
+            crate::game::SessionId::new(1),
+            crate::game::PlayerCommand::ClaimBonus,
         )
     }
 

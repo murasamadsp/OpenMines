@@ -86,7 +86,12 @@ pub fn enqueue_ty_command(
                 command = command.name(),
                 "accepted TY command"
             );
-            if !state.enqueue_command_received(command, received_at) {
+            if !state.enqueue_command_received(
+                player_id,
+                session_id,
+                crate::game::GameCommand::Player(command),
+                received_at,
+            ) {
                 crate::metrics::COMMANDS_TOTAL
                     .with_label_values(&[class.metric_name(), "overload_notified"])
                     .inc();
@@ -145,14 +150,12 @@ fn route_ty_command(player_id: PlayerId, session_id: SessionId, packet: &TyPacke
 }
 
 fn decode_ty_command(
-    player_id: PlayerId,
-    session_id: SessionId,
+    _player_id: PlayerId,
+    _session_id: SessionId,
     packet: &TyPacket,
 ) -> Option<PlayerCommand> {
     match packet.event_str() {
         "Xmov" => decode_xmov(&packet.sub_payload).map(|direction| PlayerCommand::Move {
-            player_id,
-            session_id,
             time: packet.time,
             x: packet.x.cast_signed(),
             y: packet.y.cast_signed(),
@@ -160,91 +163,68 @@ fn decode_ty_command(
             programmatic: false,
         }),
         "Xdig" => decode_xdig(&packet.sub_payload).map(|direction| PlayerCommand::Dig {
-            player_id,
             direction,
             programmatic: false,
         }),
         "Xbld" => XbldClient::decode(&packet.sub_payload).map(|bld| PlayerCommand::Build {
-            player_id,
             direction: bld.direction,
             block_type: bld.block_type.to_owned(),
             programmatic: false,
         }),
         "Xgeo" => Some(PlayerCommand::Geology {
-            player_id,
             programmatic: false,
         }),
         "Xhea" => Some(PlayerCommand::Heal {
-            player_id,
             programmatic: false,
         }),
         "GUI_" => decode_gui_button(&packet.sub_payload).map(|button| PlayerCommand::Gui {
-            session_id,
-            player_id,
             command: crate::game::GuiCommand::parse(button.into_owned()),
         }),
         "Locl" => LoclClient::decode(&packet.sub_payload).map(|locl| PlayerCommand::LocalChat {
-            player_id,
             message: locl.message.to_owned(),
         }),
-        "INVN" => Some(PlayerCommand::InventoryToggle { player_id }),
+        "INVN" => Some(PlayerCommand::InventoryToggle),
         "INCL" => Some(PlayerCommand::InventoryChoose {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
-        "INUS" => Some(PlayerCommand::InventoryUse {
-            session_id,
-            player_id,
-        }),
-        "TADG" => Some(PlayerCommand::ToggleAutoDig { player_id }),
-        "TAGR" => Some(PlayerCommand::ToggleAggression { player_id }),
-        "Whoi" => {
-            decode_whoi(&packet.sub_payload).map(|ids| PlayerCommand::Whois { player_id, ids })
-        }
+        "INUS" => Some(PlayerCommand::InventoryUse),
+        "TADG" => Some(PlayerCommand::ToggleAutoDig),
+        "TAGR" => Some(PlayerCommand::ToggleAggression),
+        "Whoi" => decode_whoi(&packet.sub_payload).map(|ids| PlayerCommand::Whois { ids }),
         "Chat" => Some(PlayerCommand::ChannelChat {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
         "Chin" => Some(PlayerCommand::ChatResync {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
         "Cmen" => Some(PlayerCommand::ChatMenu {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
         "Choo" => Some(PlayerCommand::ChatChoose {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
         "Cset" => Some(PlayerCommand::ChatSettings {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
         "Cpri" => Some(PlayerCommand::ChatPrivate {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
-        "RESP" => Some(PlayerCommand::Respawn { player_id }),
-        "Pope" => Some(PlayerCommand::OpenProgrammer { player_id }),
-        "Blds" => Some(PlayerCommand::RequestMyBuildings { player_id }),
-        "Clan" => Some(PlayerCommand::OpenClan { player_id }),
+        "RESP" => Some(PlayerCommand::Respawn),
+        "Pope" => Some(PlayerCommand::OpenProgrammer),
+        "Blds" => Some(PlayerCommand::RequestMyBuildings),
+        "Clan" => Some(PlayerCommand::OpenClan),
         "Sett" => Some(PlayerCommand::SettingsSave {
-            player_id,
             payload: packet.sub_payload.clone(),
         }),
-        "ADMN" => Some(PlayerCommand::AdminAction { player_id }),
-        "DPBX" => Some(PlayerCommand::OpenBox { player_id }),
-        "GDon" => Some(PlayerCommand::ClaimBonus { player_id }),
+        "ADMN" => Some(PlayerCommand::AdminAction),
+        "DPBX" => Some(PlayerCommand::OpenBox),
+        "GDon" => Some(PlayerCommand::ClaimBonus),
         "PROG" | "PDEL" | "pRST" | "PREN" | "PCOP" => Some(PlayerCommand::ProgramAction {
-            player_id,
-            session_id,
             event: packet.event_str().to_owned(),
             payload: packet.sub_payload.clone(),
         }),
         "Xhur" | "FINV" | "Help" | "Miso" | "THID" | "Miss" | "Rndm" | "TAUR" => {
             Some(PlayerCommand::KnownNoopTy {
-                player_id,
                 event: packet.event_str().to_owned(),
                 payload: packet.sub_payload.clone(),
             })
@@ -308,11 +288,7 @@ mod tests {
             route,
             TyRoute::Accepted {
                 class: TyRouteClass::Gameplay,
-                command: PlayerCommand::Move {
-                    player_id: PlayerId(7),
-                    direction: 1,
-                    ..
-                }
+                command: PlayerCommand::Move { direction: 1, .. }
             }
         ));
     }
@@ -330,10 +306,8 @@ mod tests {
         assert!(matches!(
             command,
             PlayerCommand::Gui {
-                session_id,
-                player_id: PlayerId(7),
                 command: crate::game::GuiCommand::OpenPack { x: 42, y: 17 },
-            } if session_id == SessionId::new(9)
+            }
         ));
     }
 
