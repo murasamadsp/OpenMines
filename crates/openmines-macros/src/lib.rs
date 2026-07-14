@@ -107,6 +107,18 @@ fn literal_attr(el: &NodeElement, name: &str) -> Option<String> {
     }
 }
 
+fn validate_leaf(el: &NodeElement) -> Result<(), syn::Error> {
+    for child in &el.children {
+        if !matches!(child, Node::Text(text) if text.value_string().trim().is_empty()) {
+            return Err(syn::Error::new(
+                child.span(),
+                format!("<{}> cannot have children", el.name()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn get_single_child_or_value(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
     match el.children.as_slice() {
         [] => Ok(quote! { "" }),
@@ -168,6 +180,7 @@ fn expand_tabs(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error>
         match child {
             Node::Element(tab) if name_is(tab.name(), "tab") => {
                 validate_attributes(tab, &["label", "action", "active"])?;
+                validate_leaf(tab)?;
                 let label = required_attr(tab, "label")?;
                 let action = get_attr_expr(tab, "action").unwrap_or_else(|| quote! { "" });
                 let active = get_attr_expr(tab, "active").unwrap_or_else(|| quote! { false });
@@ -207,6 +220,7 @@ fn expand_buttons(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Err
         match child {
             Node::Element(button) if name_is(button.name(), "button") => {
                 validate_attributes(button, &["label", "action"])?;
+                validate_leaf(button)?;
                 let label = required_attr(button, "label")?;
                 let action = required_attr(button, "action")?;
                 buttons.push(quote! {
@@ -241,6 +255,7 @@ fn expand_list(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error>
         match child {
             Node::Element(row) if name_is(row.name(), "row") => {
                 validate_attributes(row, &["title", "subtitle", "action"])?;
+                validate_leaf(row)?;
                 let title = required_attr(row, "title")?;
                 let subtitle = get_attr_expr(row, "subtitle").unwrap_or_else(|| quote! { "" });
                 let action = get_attr_expr(row, "action").unwrap_or_else(|| quote! { "" });
@@ -270,44 +285,43 @@ fn expand_list(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error>
 }
 
 fn expand_form_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
-    match row.name().to_string().as_str() {
-        "text-row" => {
-            validate_attributes(row, &["label"])?;
-            let label = required_attr(row, "label")?;
-            Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::text(#label)) })
-        }
-        "toggle-row" => {
-            validate_attributes(row, &["label", "key", "active"])?;
-            let label = required_attr(row, "label")?;
-            let key = required_attr(row, "key")?;
-            let active = get_attr_expr(row, "active").unwrap_or_else(|| quote! { false });
-            Ok(
-                quote! { .rich_row(crate::net::session::ui::horb::RichRow::toggle(#label, #key, #active)) },
-            )
-        }
-        "uint-row" => {
-            validate_attributes(row, &["label", "key", "value"])?;
-            let label = required_attr(row, "label")?;
-            let key = required_attr(row, "key")?;
-            let value = get_attr_expr(row, "value").unwrap_or_else(|| quote! { 0 });
-            Ok(
-                quote! { .rich_row(crate::net::session::ui::horb::RichRow::uint(#label, #key, #value)) },
-            )
-        }
-        "button-row" => {
-            validate_attributes(row, &["label", "btn-label", "action"])?;
-            let label = required_attr(row, "label")?;
-            let button_label = required_attr(row, "btn-label")?;
-            let action = required_attr(row, "action")?;
-            Ok(
-                quote! { .rich_row(crate::net::session::ui::horb::RichRow::button(#label, #button_label, #action)) },
-            )
-        }
-        "dropdown-row" => expand_dropdown_row(row),
-        _ => Err(syn::Error::new(
+    if name_is(row.name(), "text-row") {
+        validate_attributes(row, &["label"])?;
+        validate_leaf(row)?;
+        let label = required_attr(row, "label")?;
+        Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::text(#label)) })
+    } else if name_is(row.name(), "toggle-row") {
+        validate_attributes(row, &["label", "key", "active"])?;
+        validate_leaf(row)?;
+        let label = required_attr(row, "label")?;
+        let key = required_attr(row, "key")?;
+        let active = get_attr_expr(row, "active").unwrap_or_else(|| quote! { false });
+        Ok(
+            quote! { .rich_row(crate::net::session::ui::horb::RichRow::toggle(#label, #key, #active)) },
+        )
+    } else if name_is(row.name(), "uint-row") {
+        validate_attributes(row, &["label", "key", "value"])?;
+        validate_leaf(row)?;
+        let label = required_attr(row, "label")?;
+        let key = required_attr(row, "key")?;
+        let value = get_attr_expr(row, "value").unwrap_or_else(|| quote! { 0 });
+        Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::uint(#label, #key, #value)) })
+    } else if name_is(row.name(), "button-row") {
+        validate_attributes(row, &["label", "btn-label", "action"])?;
+        validate_leaf(row)?;
+        let label = required_attr(row, "label")?;
+        let button_label = required_attr(row, "btn-label")?;
+        let action = required_attr(row, "action")?;
+        Ok(
+            quote! { .rich_row(crate::net::session::ui::horb::RichRow::button(#label, #button_label, #action)) },
+        )
+    } else if name_is(row.name(), "dropdown-row") {
+        expand_dropdown_row(row)
+    } else {
+        Err(syn::Error::new(
             row.name().span(),
             format!("Unknown form element <{}>", row.name()),
-        )),
+        ))
     }
 }
 
@@ -324,6 +338,7 @@ fn expand_dropdown_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, sy
         match child {
             Node::Element(option) if name_is(option.name(), "option") => {
                 validate_attributes(option, &["value", "label"])?;
+                validate_leaf(option)?;
                 options.push((
                     required_attr(option, "value")?,
                     required_attr(option, "label")?,
@@ -403,6 +418,7 @@ fn expand_canvas(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Erro
         match child {
             Node::Element(rect) if name_is(rect.name(), "rect") => {
                 validate_attributes(rect, &["x", "y", "w", "h", "color"])?;
+                validate_leaf(rect)?;
                 let x = required_attr(rect, "x")?;
                 let y = required_attr(rect, "y")?;
                 let width = required_attr(rect, "w")?;
@@ -412,6 +428,7 @@ fn expand_canvas(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Erro
             }
             Node::Element(point) if name_is(point.name(), "teleport-point") => {
                 validate_attributes(point, &["x", "y", "action"])?;
+                validate_leaf(point)?;
                 let x = required_attr(point, "x")?;
                 let y = required_attr(point, "y")?;
                 let action = required_attr(point, "action")?;
@@ -554,6 +571,25 @@ mod tests {
                 .expect_err("must require window root")
                 .to_string()
                 .contains("Expected root element <window>")
+        );
+    }
+
+    #[test]
+    fn rejects_content_inside_leaf_elements() {
+        assert!(
+            expand_buttons(&parse(
+                quote! { <buttons><button label="OK" action="ok"><text /></button></buttons> }
+            ))
+            .expect_err("must reject button children")
+            .to_string()
+            .contains("<button> cannot have children")
+        );
+
+        assert!(
+            expand_dropdown_row(&parse(quote! { <dropdown-row label="Rank" key="rank"><option value=1 label="One">bad</option></dropdown-row> }))
+                .expect_err("must reject option content")
+                .to_string()
+                .contains("<option> cannot have children")
         );
     }
 }

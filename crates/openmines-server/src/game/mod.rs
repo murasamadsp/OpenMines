@@ -684,6 +684,7 @@ pub struct StandingCellHazardContext {
 #[derive(Default)]
 struct ProgrammatorDueSchedule {
     due: BinaryHeap<Reverse<(Instant, Entity)>>,
+    scheduled: HashMap<Entity, Instant>,
 }
 
 #[derive(Default)]
@@ -769,22 +770,35 @@ mod hazard_due_schedule_tests {
 
 impl ProgrammatorDueSchedule {
     fn schedule(&mut self, entity: Entity, due_at: Instant) {
+        self.scheduled.insert(entity, due_at);
         self.due.push(Reverse((due_at, entity)));
     }
 
-    fn is_due(&self, now: Instant) -> bool {
+    fn discard_stale_head(&mut self) {
+        while let Some(&Reverse((due_at, entity))) = self.due.peek() {
+            if self.scheduled.get(&entity) == Some(&due_at) {
+                break;
+            }
+            self.due.pop();
+        }
+    }
+
+    fn is_due(&mut self, now: Instant) -> bool {
+        self.discard_stale_head();
         self.due
             .peek()
             .is_some_and(|Reverse((due_at, _))| *due_at <= now)
     }
 
-    fn next_due_at(&self) -> Option<Instant> {
+    fn next_due_at(&mut self) -> Option<Instant> {
+        self.discard_stale_head();
         self.due.peek().map(|Reverse((due_at, _))| *due_at)
     }
 
     fn pop_due(&mut self, now: Instant, limit: usize) -> Vec<(Entity, Instant)> {
-        let mut due = Vec::with_capacity(limit.min(self.due.len()));
+        let mut due = Vec::with_capacity(limit.min(self.scheduled.len()));
         while due.len() < limit {
+            self.discard_stale_head();
             let Some(&Reverse((due_at, entity))) = self.due.peek() else {
                 break;
             };
@@ -792,9 +806,34 @@ impl ProgrammatorDueSchedule {
                 break;
             }
             self.due.pop();
-            due.push((entity, due_at));
+            if self.scheduled.remove(&entity) == Some(due_at) {
+                due.push((entity, due_at));
+            }
         }
         due
+    }
+}
+
+#[cfg(test)]
+mod programmator_due_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_the_latest_deadline_per_entity() {
+        let base = Instant::now();
+        let entity = Entity::from_raw_u32(1).expect("non-placeholder entity id");
+        let mut schedule = ProgrammatorDueSchedule::default();
+
+        for delay_ms in 10..=266 {
+            schedule.schedule(entity, base + Duration::from_millis(delay_ms));
+        }
+
+        assert!(!schedule.is_due(base + Duration::from_millis(10)));
+        assert_eq!(
+            schedule.pop_due(base + Duration::from_millis(266), 256),
+            vec![(entity, base + Duration::from_millis(266))]
+        );
+        assert!(schedule.next_due_at().is_none());
     }
 }
 

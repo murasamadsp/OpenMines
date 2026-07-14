@@ -107,6 +107,8 @@ flush. Crash durability это не заменяет.
   owner; simulation `Connect` делает только entity/index apply и фиксирует
   visible-chunk list под session guard;
 - programmator исполняется через entity-aware due heap, не periodic player scan;
+  queue хранит одну актуальную deadline на entity и отбрасывает stale entries
+  перед выборкой, поэтому повторный schedule не раздувает executor batch;
 - standing-cell hazards используют deduplicated due deadlines: safe idle player
   не запускает ECS schedule, непустая клетка повторно планирует только себя;
 - granular physics запускается только по pending/active frontier: position

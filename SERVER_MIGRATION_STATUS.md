@@ -289,6 +289,13 @@ unexpected disconnects -- с `327` до `178`; предупреждения `ali
 Оставшиеся `178` -- readiness timeout loadtest, их причина пока не установлена:
 перед изменением admission/outbox нужны сохранённые session/presentation логи.
 
+`ProgrammatorDueSchedule` теперь хранит одну актуальную deadline на entity.
+Повторный schedule заменяет logical deadline, а stale heap entries удаляются
+перед выборкой; один entity не может заполнить due batch из `256` своих старых
+шагов. Regression-test планирует один entity `257` раз и получает ровно один
+последний step. Это устраняет подтверждённый источник раздувания executor batch;
+новый runtime trace ещё нужен, чтобы измерить итоговый p99.
+
 ### P2: presentation/read paths
 
 `bots_render` больше не читает ECS во время visibility walk и HB encode:
