@@ -249,7 +249,7 @@ fn apply_gameplay_command(
             programmatic,
         } => {
             if let Some(tx) = state.player_sender(player_id) {
-                crate::net::session::play::dig_build::handle_dig(
+                crate::game::logic::dig_build::handle_dig(
                     state,
                     &tx,
                     player_id,
@@ -268,7 +268,7 @@ fn apply_gameplay_command(
                     direction,
                     block_type: &block_type,
                 };
-                crate::net::session::play::dig_build::handle_build(
+                crate::game::logic::dig_build::handle_build(
                     state,
                     &tx,
                     player_id,

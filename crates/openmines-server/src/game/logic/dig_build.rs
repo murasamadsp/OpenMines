@@ -1,9 +1,33 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::significant_drop_tightening
+)]
 //! Копание клеток и установка блоков (Xdig, Xbld).
 use crate::game::skills::{
-    OnBld, OnDig, OnDigCrys, PlayerSkills as SkillHooks, get_player_skill_effect,
+    OnBld, OnDig, OnDigCrys, PlayerSkills as SkillHooks, SkillType, get_player_skill_effect,
 };
 use crate::net::session::play::death::hurt_player_pure;
-use crate::net::session::prelude::*;
+
+use crate::game::direction::dir_offset;
+use crate::game::{GameState, PlayerId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{
+    XbldClient, basket, hb_bot, hb_crystal_mine_fx, hb_dig_fx, ok_message,
+};
+use crate::world::WorldProvider;
+use crate::world::cells::cell_type;
+use std::sync::Arc;
 
 /// Делитель силы копания (C# `Player.cs`: `digPower / 500`).
 const DIG_POWER_DIVISOR: f32 = 500.0;

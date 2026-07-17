@@ -6,6 +6,7 @@ pub mod consumables;
 pub mod contracts;
 pub mod crafting;
 pub mod crystals;
+pub mod dig_build;
 pub mod due;
 pub mod geology;
 pub mod gui_views;

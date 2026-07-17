@@ -3,16 +3,6 @@ crates/openmines-server/src/net/session/play/chunks.rs >>> let ecs = state.ecs_r
 crates/openmines-server/src/net/session/play/chunks.rs >>> let ecs = state.ecs_read_profiled("initial_chunk.packs_snapshot");
 crates/openmines-server/src/net/session/play/death.rs >>> .modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/death.rs >>> let attrs = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> .query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> let mut ecs = state.ecs_write_profiled("build.pending_military_conversion");
-crates/openmines-server/src/net/session/play/dig_build.rs >>> let mutation_state = state.query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/dig_build.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/movement.rs >>> .modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/packs.rs >>> .modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/packs.rs >>> .query_player(pid, |ecs, entity| {

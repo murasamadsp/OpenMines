@@ -542,7 +542,7 @@ fn apply_programmator_action(
             session_id,
             dir,
         } => capture_programmator_packets(presentation, session_id, pid, |tx| {
-            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dir, true);
+            crate::game::logic::dig_build::handle_dig(state, tx, pid, dir, true);
         }),
         crate::game::ProgrammatorAction::Build {
             pid,
@@ -554,7 +554,7 @@ fn apply_programmator_action(
                 direction: dir,
                 block_type: &block_type,
             };
-            crate::net::session::play::dig_build::handle_build(state, tx, pid, &build, true);
+            crate::game::logic::dig_build::handle_build(state, tx, pid, &build, true);
         }),
         crate::game::ProgrammatorAction::Geo { pid, session_id } => {
             capture_programmator_packets(presentation, session_id, pid, |tx| {
