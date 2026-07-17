@@ -6,6 +6,28 @@ use std::time::{Duration, Instant};
 
 use crate::game::{SaveCommand, SaveKind};
 
+const fn needs_completion_permit(kind: SaveKind) -> bool {
+    matches!(
+        kind,
+        SaveKind::Program
+            | SaveKind::ProgramCreate
+            | SaveKind::BuildingDelete
+            | SaveKind::ChatColorCycle
+            | SaveKind::AdminMoneyAll
+            | SaveKind::AdminRole
+            | SaveKind::AdminSkill
+            | SaveKind::ClanCommand
+            | SaveKind::ChatResync
+            | SaveKind::ChatMenu
+            | SaveKind::ChatPrivate
+            | SaveKind::Whois
+            | SaveKind::ClanMenu
+            | SaveKind::ProgramMenu
+            | SaveKind::ProgramCopy
+            | SaveKind::BuildingMenu
+    )
+}
+
 pub struct PersistenceEnvelope {
     pub(crate) command: SaveCommand,
     pub(crate) enqueued_at: Instant,
@@ -68,25 +90,12 @@ pub enum PersistenceAdmissionError {
 
 impl PersistenceHandle {
     pub fn check_capacity(&self, kind: SaveKind) -> Result<(), PersistenceAdmissionError> {
-        if self.tx.is_closed()
-            || (matches!(
-                kind,
-                SaveKind::Program
-                    | SaveKind::ProgramCreate
-                    | SaveKind::BuildingDelete
-                    | SaveKind::ChatColorCycle
-            ) && self.completion_tx.is_closed())
+        if self.tx.is_closed() || (needs_completion_permit(kind) && self.completion_tx.is_closed())
         {
             return Err(PersistenceAdmissionError::Closed);
         }
         if self.tx.capacity() == 0
-            || (matches!(
-                kind,
-                SaveKind::Program
-                    | SaveKind::ProgramCreate
-                    | SaveKind::BuildingDelete
-                    | SaveKind::ChatColorCycle
-            ) && self.completion_tx.capacity() == 0)
+            || (needs_completion_permit(kind) && self.completion_tx.capacity() == 0)
         {
             return Err(PersistenceAdmissionError::Full);
         }
@@ -97,25 +106,7 @@ impl PersistenceHandle {
         &self,
         kind: SaveKind,
     ) -> Result<PersistencePermit, PersistenceAdmissionError> {
-        let completion = if matches!(
-            kind,
-            SaveKind::Program
-                | SaveKind::ProgramCreate
-                | SaveKind::BuildingDelete
-                | SaveKind::ChatColorCycle
-                | SaveKind::AdminMoneyAll
-                | SaveKind::AdminRole
-                | SaveKind::AdminSkill
-                | SaveKind::ClanCommand
-                | SaveKind::ChatResync
-                | SaveKind::ChatMenu
-                | SaveKind::ChatPrivate
-                | SaveKind::Whois
-                | SaveKind::ClanMenu
-                | SaveKind::ProgramMenu
-                | SaveKind::ProgramCopy
-                | SaveKind::BuildingMenu
-        ) {
+        let completion = if needs_completion_permit(kind) {
             match self.completion_tx.clone().try_reserve_owned() {
                 Ok(permit) => Some(permit),
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
