@@ -8,8 +8,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd 
-"$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DB="${1:-${M3R_DB_PATH:-$ROOT/data/openmines.db}}"
 
 if [[ "${2:-}" != "--yes" ]]; then

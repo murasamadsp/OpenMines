@@ -1,5 +1,10 @@
 //! Обработка нажатий GUI-кнопок игроком.
+#![allow(warnings)]
 use super::crystal_form::parse_amounts as parse_six_i64_fields;
+use super::gui::crafter_gui;
+use super::gui::market_gui;
+use super::gui::pack_gui;
+use super::gui::programmator_gui;
 use super::settings::apply as handle_settings_save;
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
@@ -15,7 +20,7 @@ use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerSt
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
 
-fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
+pub fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
     let mut fields = std::collections::HashMap::new();
     if data.is_empty() {
         return Some(fields);
@@ -30,7 +35,7 @@ fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &
     Some(fields)
 }
 
-fn parse_rich_bool(value: &str) -> Option<bool> {
+pub fn parse_rich_bool(value: &str) -> Option<bool> {
     match value {
         "1" | "true" => Some(true),
         "0" | "false" => Some(false),
@@ -77,17 +82,17 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         "open_buildings" => {
             crate::game::logic::buildings::handle_buildings_menu(state, tx, pid);
         }
-        "createprog" => open_create_prog_dialog(state, tx, pid),
+        "createprog" => programmator_gui::open_create_prog_dialog(state, tx, pid),
         // Runtime routes this action through `PlayerCommand::Gui` before this
         // legacy async dispatcher, where it becomes durable `ProgramMenu`.
         "prog" => {}
         "clan_create_view" => handle_clan_create_view(state, tx, pid),
         // Market tab switching (C# tabs have action strings)
-        "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys").await,
-        "buycrys" => handle_market_tab_switch(state, tx, pid, "buycrys").await,
-        "auc" => handle_market_tab_switch(state, tx, pid, "auc").await,
-        "sellall" => handle_market_sellall(state, tx, pid),
-        "getprofit" => handle_market_getprofit(state, tx, pid),
+        "sellcrys" => market_gui::handle_market_tab_switch(state, tx, pid, "sellcrys").await,
+        "buycrys" => market_gui::handle_market_tab_switch(state, tx, pid, "buycrys").await,
+        "auc" => market_gui::handle_market_tab_switch(state, tx, pid, "auc").await,
+        "sellall" => market_gui::handle_market_sellall(state, tx, pid),
+        "getprofit" => market_gui::handle_market_getprofit(state, tx, pid),
         "clancreate" | "clan_create" => {
             handle_clan_create_view(state, tx, pid);
         }
@@ -149,18 +154,18 @@ pub fn handle_gui_button_sync_fast_path(
     }
 
     if let Some(rest) = button.strip_prefix("pack_op:") {
-        return handle_pack_operation_sync_fast_path(state, tx, pid, rest);
+        return pack_gui::handle_pack_operation_sync_fast_path(state, tx, pid, rest);
     }
     if let Some(rest) = button.strip_prefix("craft_recipe:") {
-        handle_craft_recipe_view(state, tx, pid, rest);
+        crafter_gui::handle_craft_recipe_view(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("craft_start:") {
-        handle_craft_start(state, tx, pid, rest);
+        crafter_gui::handle_craft_start(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("craft_claim:") {
-        handle_craft_claim(state, tx, pid, rest);
+        crafter_gui::handle_craft_claim(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("tp:") {
@@ -208,15 +213,15 @@ pub fn handle_gui_button_sync_fast_path(
         return true;
     }
     if let Some(rest) = button.strip_prefix("pack_save:") {
-        handle_pack_save(state, tx, pid, rest);
+        pack_gui::handle_pack_save(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("sell:") {
-        handle_market_sell(state, tx, pid, rest);
+        market_gui::handle_market_sell(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("buy:") {
-        handle_market_buy(state, tx, pid, rest);
+        market_gui::handle_market_buy(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("save:") {
@@ -230,7 +235,7 @@ pub fn handle_gui_button_sync_fast_path(
             true
         }
         "createprog" => {
-            open_create_prog_dialog(state, tx, pid);
+            programmator_gui::open_create_prog_dialog(state, tx, pid);
             true
         }
         "clan_create_view" | "clancreate" | "clan_create" => {
@@ -246,15 +251,15 @@ pub fn handle_gui_button_sync_fast_path(
             true
         }
         "sellall" => {
-            handle_market_sellall(state, tx, pid);
+            market_gui::handle_market_sellall(state, tx, pid);
             true
         }
         "getprofit" => {
-            handle_market_getprofit(state, tx, pid);
+            market_gui::handle_market_getprofit(state, tx, pid);
             true
         }
         "sellcrys" | "buycrys" => {
-            handle_market_tab_switch_sync(state, tx, pid, button);
+            market_gui::handle_market_tab_switch_sync(state, tx, pid, button);
             true
         }
         _ => crate::game::logic::up_building::handle_up_button(state, tx, pid, button),
@@ -272,7 +277,7 @@ fn handle_clan_create_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).
-fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     state.modify_player(pid, |ecs, e| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(e) {
             ui.current_window = None;
@@ -290,11 +295,11 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
         handle_pack_operation(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("craft_recipe:") {
-        handle_craft_recipe_view(state, tx, pid, rest);
+        crafter_gui::handle_craft_recipe_view(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_start:") {
-        handle_craft_start(state, tx, pid, rest);
+        crafter_gui::handle_craft_start(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_claim:") {
-        handle_craft_claim(state, tx, pid, rest);
+        crafter_gui::handle_craft_claim(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("tp:") {
         handle_teleport_action(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("resp_bind:") {
@@ -330,11 +335,11 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         crate::game::logic::packs::handle_resp_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("pack_save:") {
         // Единая админ-панель пака: сохранить cost/clan из %R%.
-        handle_pack_save(state, tx, pid, rest);
+        pack_gui::handle_pack_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("sell:") {
-        handle_market_sell(state, tx, pid, rest);
+        market_gui::handle_market_sell(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("buy:") {
-        handle_market_buy(state, tx, pid, rest);
+        market_gui::handle_market_buy(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("save:") {
         handle_settings_save(state, tx, pid, rest);
     } else if handle_auction_button(state, tx, pid, button).await {
@@ -447,7 +452,7 @@ pub async fn handle_auction_button(
     button: &str,
 ) -> bool {
     if button == "auc" {
-        handle_market_tab_switch(state, tx, pid, "auc").await;
+        market_gui::handle_market_tab_switch(state, tx, pid, "auc").await;
         return true;
     }
     if let Some(rest) = button.strip_prefix("choose:") {

@@ -1,6 +1,7 @@
 //! Инвентарь, лечение и кнопки GUI (внутриигровые окна).
 
 mod crystal_form;
+pub mod gui;
 pub mod gui_buttons;
 pub mod settings;
 pub mod spot;
