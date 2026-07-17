@@ -9,11 +9,11 @@ use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
 };
 use crate::game::crafting;
+use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
 use crate::game::market;
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
-use crate::net::session::social::buildings::{broadcast_pack_update, modify_pack_with_db};
 
 fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
     let mut fields = std::collections::HashMap::new();
@@ -75,7 +75,7 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
 
     match button {
         "open_buildings" => {
-            crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
+            crate::game::logic::buildings::handle_buildings_menu(state, tx, pid);
         }
         "createprog" => open_create_prog_dialog(state, tx, pid),
         // Runtime routes this action through `PlayerCommand::Gui` before this
@@ -172,7 +172,7 @@ pub fn handle_gui_button_sync_fast_path(
         if parts.len() == 2
             && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
         {
-            crate::net::session::play::packs::handle_resp_bind(state, tx, pid, x, y);
+            crate::game::logic::packs::handle_resp_bind(state, tx, pid, x, y);
         }
         return true;
     }
@@ -181,7 +181,7 @@ pub fn handle_gui_button_sync_fast_path(
         if parts.len() == 3
             && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
         {
-            crate::net::session::play::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
+            crate::game::logic::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
         }
         return true;
     }
@@ -190,7 +190,7 @@ pub fn handle_gui_button_sync_fast_path(
         if parts.len() == 3
             && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
         {
-            crate::net::session::play::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
+            crate::game::logic::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
         }
         return true;
     }
@@ -199,12 +199,12 @@ pub fn handle_gui_button_sync_fast_path(
         if parts.len() == 2
             && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
         {
-            crate::net::session::play::packs::handle_resp_profit(state, tx, pid, x, y);
+            crate::game::logic::packs::handle_resp_profit(state, tx, pid, x, y);
         }
         return true;
     }
     if let Some(rest) = button.strip_prefix("resp_save:") {
-        crate::net::session::play::packs::handle_resp_save(state, tx, pid, rest);
+        crate::game::logic::packs::handle_resp_save(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("pack_save:") {
@@ -226,7 +226,7 @@ pub fn handle_gui_button_sync_fast_path(
 
     match button {
         "open_buildings" => {
-            crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
+            crate::game::logic::buildings::handle_buildings_menu(state, tx, pid);
             true
         }
         "createprog" => {
@@ -286,7 +286,7 @@ fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
 async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) {
     if handle_clan_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
-        crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest).await;
+        crate::game::logic::buildings::handle_place_building(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
         handle_pack_operation(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("craft_recipe:") {
@@ -301,33 +301,33 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 2 {
             if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-                crate::net::session::play::packs::handle_resp_bind(state, tx, pid, x, y);
+                crate::game::logic::packs::handle_resp_bind(state, tx, pid, x, y);
             }
         }
     } else if let Some(rest) = button.strip_prefix("resp_fill:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 3 {
             if let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-                crate::net::session::play::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
+                crate::game::logic::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
             }
         }
     } else if let Some(rest) = button.strip_prefix("gun_fill:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 3 {
             if let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-                crate::net::session::play::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
+                crate::game::logic::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
             }
         }
     } else if let Some(rest) = button.strip_prefix("resp_profit:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 2 {
             if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-                crate::net::session::play::packs::handle_resp_profit(state, tx, pid, x, y);
+                crate::game::logic::packs::handle_resp_profit(state, tx, pid, x, y);
             }
         }
     } else if let Some(rest) = button.strip_prefix("resp_save:") {
         // RichList data, coordinates resolved from current_window
-        crate::net::session::play::packs::handle_resp_save(state, tx, pid, rest);
+        crate::game::logic::packs::handle_resp_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("pack_save:") {
         // Единая админ-панель пака: сохранить cost/clan из %R%.
         handle_pack_save(state, tx, pid, rest);
@@ -610,7 +610,7 @@ async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         "take_money" => handle_pack_take_money(state, tx, pid, &view),
         "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
         "remove" => {
-            crate::net::session::social::buildings::handle_remove_building(state, tx, pid, x, y);
+            crate::game::logic::buildings::handle_remove_building(state, tx, pid, x, y);
         }
         _ => {}
     }
@@ -716,11 +716,11 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         // Без этой ветки респ падал в generic GUI без bind → «невозможно
         // привязаться» (репорт). `handle_pack_action` (был dead code) этот тип
         // обрабатывал, но реальный путь открытия — `open_pack_gui`.
-        crate::net::session::play::packs::open_resp_gui(state, tx, pid, view);
+        crate::game::logic::packs::open_resp_gui(state, tx, pid, view);
         return;
     }
     if view.pack_type == PackType::Gun {
-        crate::net::session::play::packs::open_gun_gui(state, tx, pid, view.x, view.y);
+        crate::game::logic::packs::open_gun_gui(state, tx, pid, view.x, view.y);
         return;
     }
     if view.pack_type == PackType::Clans {

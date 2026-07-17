@@ -937,7 +937,7 @@ pub(super) fn apply_building_completion(
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
                 return effects;
             };
-            crate::net::session::social::buildings::apply_paid_building_placed(
+            crate::game::logic::buildings::apply_paid_building_placed(
                 state, &tx, &placement, db_id,
             );
         }
@@ -945,7 +945,7 @@ pub(super) fn apply_building_completion(
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
                 return effects;
             };
-            crate::net::session::social::buildings::refund_paid_building_placement(
+            crate::game::logic::buildings::refund_paid_building_placement(
                 state, &tx, player_id, cost,
             );
         }

@@ -12,15 +12,15 @@
     clippy::significant_drop_tightening
 )]
 //! Лечение и инвентарь.
+use crate::game::logic::buildings::{
+    broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
+};
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
     PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::death::request_death;
-use crate::net::session::social::buildings::{
-    broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
-};
 
 use crate::game::buildings::{PackType, PackView};
 use crate::game::direction::dir_offset;
@@ -1257,7 +1257,7 @@ mod tests {
                 if *position == crate::game::WorldPos(10, 11)
         )));
 
-        crate::net::session::social::buildings::broadcast_block_at(&test.state, 10, 11);
+        crate::game::logic::buildings::broadcast_block_at(&test.state, 10, 11);
         assert!(
             drain_events(&mut old_rx)
                 .iter()

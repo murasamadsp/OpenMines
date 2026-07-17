@@ -181,11 +181,9 @@ fn apply_gui_button_command(
         return apply_storage_transfer(state, session_id, player_id, payload);
     }
     if let Some(type_code) = button.strip_prefix("bld_place:") {
-        if let Some(placement) =
-            crate::net::session::social::buildings::prepare_paid_building_placement(
-                state, tx, player_id, type_code,
-            )
-        {
+        if let Some(placement) = crate::game::logic::buildings::prepare_paid_building_placement(
+            state, tx, player_id, type_code,
+        ) {
             spawn_paid_building_insert_task(state, tx.clone(), placement);
         }
         return CommandEffects::default();

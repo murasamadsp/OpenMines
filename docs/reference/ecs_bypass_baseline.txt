@@ -4,30 +4,12 @@ crates/openmines-server/src/net/session/play/chunks.rs >>> let ecs = state.ecs_r
 crates/openmines-server/src/net/session/play/death.rs >>> .modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/death.rs >>> let attrs = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/play/movement.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> .query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> .query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> let Some(clan_id) = state.query_player_opt(pid, |ecs, e| {
-crates/openmines-server/src/net/session/play/packs.rs >>> let blue_crys = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> let coords = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/play/packs.rs >>> let mut ecs = state.ecs_write_profiled("packs.fill_gun");
-crates/openmines-server/src/net/session/play/packs.rs >>> let mut ecs = state.ecs_write_profiled("packs.storage_take");
-crates/openmines-server/src/net/session/play/packs.rs >>> let player_resp = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/player/init.rs >>> if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/player/init.rs >>> if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.read();
 crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.read();
 crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs.write();
 crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs_write_profiled("player.connect.reuse_entity");
-crates/openmines-server/src/net/session/social/buildings.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> let mut ecs = state.ecs_write_profiled("buildings.modify_pack_with_db");
-crates/openmines-server/src/net/session/social/buildings.rs >>> let p_data = state.query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> let p_data = state.query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> let result = state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> let result = state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/buildings.rs >>> state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
 crates/openmines-server/src/net/session/social/chat.rs >>> let Some(window_open) = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/social/chat.rs >>> let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
 crates/openmines-server/src/net/session/social/chat.rs >>> let p_data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {

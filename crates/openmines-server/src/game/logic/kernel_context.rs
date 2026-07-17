@@ -177,7 +177,7 @@ impl<'a> KernelContext<'a> {
         x: i32,
         y: i32,
     ) -> Result<(), &'static str> {
-        crate::net::session::social::buildings::validate_pack_footprint(
+        crate::game::logic::buildings::validate_pack_footprint(
             self.state,
             view,
             x,
@@ -194,7 +194,7 @@ impl<'a> KernelContext<'a> {
     ) {
         self.state
             .move_building_entity(old_view.x, old_view.y, x, y);
-        crate::net::session::social::buildings::move_pack_cells(self.state, old_view, x, y);
+        crate::game::logic::buildings::move_pack_cells(self.state, old_view, x, y);
     }
 
     pub(crate) fn geo_cooldown_ms(&self) -> u64 {

@@ -19,6 +19,9 @@
 )]
 
 use crate::db::players::{PlayerRow, Role, SkillEntry};
+use crate::game::logic::buildings::{
+    building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
+};
 use crate::game::logic::clans::{handle_clan_create, handle_clan_kick_by_name, handle_clan_leave};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::player::PlayerInventory;
@@ -31,9 +34,6 @@ use crate::net::session::outbound::player_sync::{
     send_player_speed,
 };
 use crate::net::session::play::chunks::check_chunk_changed;
-use crate::net::session::social::buildings::{
-    building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
-};
 use strum::IntoEnumIterator;
 
 use crate::game::skills::{SkillType, get_player_skill_effect};
@@ -297,7 +297,7 @@ pub fn handle_admin_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
             if parts.len() == 2
                 && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
             {
-                crate::net::session::play::packs::open_resp_admin_gui(state, tx, pid, x, y);
+                crate::game::logic::packs::open_resp_admin_gui(state, tx, pid, x, y);
                 return;
             }
         }
@@ -1038,7 +1038,7 @@ fn handle_pack_move_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str])
             state.move_building_entity(x, y, nx, ny);
             // Перенос МИРОВЫХ КЛЕТОК футпринта на новую позицию — закрывает
             // рассинхрон «index/ECS/DB на новом месте, а клетки на старом».
-            crate::net::session::social::buildings::move_pack_cells(state, &old_view, nx, ny);
+            crate::game::logic::buildings::move_pack_cells(state, &old_view, nx, ny);
             send_ok(tx, "Пак", "Позиция обновлена");
         } else {
             send_ok(tx, "Ошибка", "Здание не найдено");

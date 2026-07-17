@@ -1,7 +1,7 @@
 use crate::game::buildings::BuildingStorage;
+use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
-use crate::net::session::social::buildings::modify_pack_with_db;
 
 use super::crystal_form::parse_amounts;
 use super::pack_command::withdraw_state_ready;

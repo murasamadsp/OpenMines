@@ -1,9 +1,39 @@
 //! Меню построек и установка здания на карте.
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool
+)]
+
 use crate::game::buildings::{BuildingFlags, PackType, PackView, get_building_config};
 use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
-use crate::net::session::prelude::*;
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
+
+use std::sync::Arc;
+use crate::db::BuildingExtra;
+use crate::game::direction::dir_offset;
+use crate::game::{GameState, PlayerId};
+use crate::protocol::packets::{gu_close, hb_bundle, hb_packs, money, ok_message};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::{encode_hb_bundle, send_u_packet};
+use crate::net::session::util::net_u16_nonneg;
+use crate::net::session::ui::horb::HorbDelivery;
+use crate::world::{World, WorldProvider};
 
 fn send_building_state_error(tx: &Outbox) {
     send_u_packet(
@@ -513,10 +543,10 @@ fn gather_block_packs(state: &Arc<GameState>, block_pos: i32) -> Vec<(u8, u16, u
     }
     let mut out = Vec::new();
     for po in state.get_packs_in_chunk_area(chunk_x as u32, chunk_y as u32) {
-        if let Some(bp) = state.pack_block_pos(i32::from(po.x), i32::from(po.y)) {
-            if bp == block_pos {
-                out.push((po.code, po.x, po.y, po.clan, po.off));
-            }
+        if let Some(bp) = state.pack_block_pos(i32::from(po.x), i32::from(po.y))
+            && bp == block_pos
+        {
+            out.push((po.code, po.x, po.y, po.clan, po.off));
         }
     }
     // Активные расходники-спрайты (boom/prot/raz) того же блока. ОБЯЗАТЕЛЬНО:
@@ -619,10 +649,10 @@ pub fn validate_pack_footprint(
         {
             return Err("Нет места");
         }
-        if let Some((px, py)) = state.find_pack_covering(tx, ty) {
-            if px != old_view.x || py != old_view.y {
-                return Err("Место занято");
-            }
+        if let Some((px, py)) = state.find_pack_covering(tx, ty)
+            && (px != old_view.x || py != old_view.y)
+        {
+            return Err("Место занято");
         }
     }
     Ok(())

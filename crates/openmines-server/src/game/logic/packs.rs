@@ -1,8 +1,35 @@
 //! Логика взаимодействия с объектами (паками) на карте.
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool
+)]
+
 use crate::game::buildings::{BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage};
 use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
-use crate::net::session::prelude::*;
-use crate::net::session::social::buildings::modify_pack_with_db;
+use crate::game::logic::buildings::modify_pack_with_db;
+
+use std::sync::Arc;
+use crate::game::buildings::{PackType, PackView};
+use crate::game::{GameState, PlayerId};
+use crate::protocol::packets::{basket, money, ok_message};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
+use crate::net::session::ui::horb::HorbDelivery;
 
 fn send_resp_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("РЕСП", "Некорректное действие.").1);
@@ -729,7 +756,7 @@ pub fn handle_gun_fill(
 
     // Broadcast HB O to nearby players (C# `ResendPack`)
     if let Some(updated_view) = state.get_pack_at(pack_x, pack_y) {
-        crate::net::session::social::buildings::broadcast_pack_update(state, &updated_view);
+        crate::game::logic::buildings::broadcast_pack_update(state, &updated_view);
     }
 
     // Refresh GUI
@@ -780,7 +807,7 @@ pub fn handle_gun_fill_prog(
         return;
     }
     if let Some(updated_view) = state.get_pack_at(pack_x, pack_y) {
-        crate::net::session::social::buildings::broadcast_pack_update(state, &updated_view);
+        crate::game::logic::buildings::broadcast_pack_update(state, &updated_view);
     }
 }
 

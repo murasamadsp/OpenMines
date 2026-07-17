@@ -292,9 +292,7 @@ fn apply_gameplay_command(
         }
         crate::game::PlayerCommand::OpenBox => {
             if let Some(tx) = state.player_sender(player_id) {
-                crate::net::session::social::buildings::handle_dpbx_crystal_box(
-                    state, &tx, player_id,
-                );
+                crate::game::logic::buildings::handle_dpbx_crystal_box(state, &tx, player_id);
             }
         }
         _ => unreachable!("non-gameplay command routed to gameplay command handler"),
@@ -724,7 +722,7 @@ fn prepare_program_save(
         );
         let task_state = state.clone();
         spawn_session_async_task(state, "program_list_after_empty_save", async move {
-            crate::net::session::social::buildings::handle_programmator_pope_menu(
+            crate::game::logic::buildings::handle_programmator_pope_menu(
                 &task_state,
                 &tx,
                 player_id,

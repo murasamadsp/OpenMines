@@ -431,7 +431,7 @@ mod hb_batch_tests {
 fn resend_packs(state: &Arc<GameState>, positions: Vec<(i32, i32)>) {
     for (x, y) in positions {
         if let Some(view) = state.get_pack_at(x, y) {
-            crate::net::session::social::buildings::broadcast_pack_update(state, &view);
+            crate::game::logic::buildings::broadcast_pack_update(state, &view);
         }
     }
 }
@@ -599,7 +599,7 @@ fn apply_programmator_action(
             x,
             y,
         } => capture_programmator_packets(presentation, session_id, pid, |tx| {
-            crate::net::session::play::packs::handle_gun_fill_prog(state, tx, pid, x, y);
+            crate::game::logic::packs::handle_gun_fill_prog(state, tx, pid, x, y);
         }),
         crate::game::ProgrammatorAction::SetProgrammatorStatus {
             session_id,

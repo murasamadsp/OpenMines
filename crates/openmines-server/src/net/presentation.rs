@@ -245,7 +245,7 @@ fn deliver_world_effects(state: &Arc<GameState>, effects: Vec<crate::game::Broad
             crate::game::BroadcastEffect::BlockUpdate(pos) => {
                 flush_hb_batches(state, &mut hb_batches);
                 let (x, y): (i32, i32) = pos.into();
-                crate::net::session::social::buildings::broadcast_block_at(state, x, y);
+                crate::game::logic::buildings::broadcast_block_at(state, x, y);
             }
             crate::game::BroadcastEffect::Nearby {
                 cx,

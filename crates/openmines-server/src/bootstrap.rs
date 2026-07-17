@@ -209,7 +209,7 @@ pub async fn create_spawns(
     spawn_y: i32,
 ) -> Result<()> {
     use crate::game::buildings::PackType;
-    use crate::net::session::social::buildings::building_extra_for_pack_type;
+    use crate::game::logic::buildings::building_extra_for_pack_type;
 
     const GOLDEN_ROAD: u8 = 36;
 

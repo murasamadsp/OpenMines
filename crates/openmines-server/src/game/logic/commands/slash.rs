@@ -551,9 +551,8 @@ fn admin_pack(
             })
             .map(|()| ("Пак", "Клан обновлен")),
         crate::game::SlashPackCommand::Type { x, y, pack_type } => {
-            let extra = match crate::net::session::social::buildings::building_extra_for_pack_type(
-                pack_type,
-            ) {
+            let extra = match crate::game::logic::buildings::building_extra_for_pack_type(pack_type)
+            {
                 Ok(extra) => extra,
                 Err(error) => {
                     tracing::error!(

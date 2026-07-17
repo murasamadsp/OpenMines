@@ -54,10 +54,8 @@ pub async fn handle_prog_ty(
                         program_id = prog_id,
                         "PROG received no selected client program; opening program list"
                     );
-                    crate::net::session::social::buildings::handle_programmator_pope_menu(
-                        state, tx, pid,
-                    )
-                    .await;
+                    crate::game::logic::buildings::handle_programmator_pope_menu(state, tx, pid)
+                        .await;
                     return;
                 }
                 if let Err(e) = state.db.save_program(pid.into(), prog_id, &source).await {
@@ -228,8 +226,7 @@ pub async fn handle_prog_ty(
                 );
                 return;
             }
-            crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid)
-                .await;
+            crate::game::logic::buildings::handle_programmator_pope_menu(state, tx, pid).await;
         }
         "PREN" => {
             handle_prog_rename_prompt_ty(state, tx, pid, payload);
