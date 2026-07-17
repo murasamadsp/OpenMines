@@ -407,7 +407,7 @@ fn apply_storage_transfer(
     player_id: crate::game::PlayerId,
     payload: &str,
 ) -> CommandEffects {
-    match crate::net::session::ui::storage::transfer(state, player_id, payload) {
+    match crate::game::logic::gui::storage::transfer(state, player_id, payload) {
         Ok(Some(transfer)) => {
             let basket = crate::protocol::packets::basket(&transfer.crystals, 1);
             CommandEffects {
@@ -430,7 +430,7 @@ fn apply_storage_transfer(
             }
         }
         Ok(None) => CommandEffects::default(),
-        Err(crate::net::session::ui::storage::StorageTransferError::MissingState) => {
+        Err(crate::game::logic::gui::storage::StorageTransferError::MissingState) => {
             let packet =
                 crate::protocol::packets::ok_message("ЗДАНИЕ", "Состояние здания недоступно.");
             CommandEffects {
