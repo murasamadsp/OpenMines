@@ -1,4 +1,4 @@
-pub(super) fn parse_amounts(data: &str) -> Option<[i64; 6]> {
+pub fn parse_amounts(data: &str) -> Option<[i64; 6]> {
     let mut amounts = [0_i64; 6];
     let mut parts = data.split(':');
     for amount in &mut amounts {

@@ -1,9 +1,9 @@
 //! Обработка нажатий GUI-кнопок игроком.
-use super::gui::crafter_gui;
-use super::gui::market_gui;
-use super::gui::pack_gui;
-use super::gui::programmator_gui;
 use super::settings::apply as handle_settings_save;
+use crate::game::logic::gui::crafter_gui;
+use crate::game::logic::gui::market_gui;
+use crate::game::logic::gui::pack_gui;
+use crate::game::logic::gui::programmator_gui;
 use crate::game::player::{PlayerInventory, PlayerUI};
 use crate::net::session::prelude::*;
 
@@ -549,10 +549,10 @@ mod tests {
     use crate::game::buildings::{
         BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStorage,
     };
+    use crate::game::logic::gui::crafter_gui;
+    use crate::game::logic::gui::market_gui;
+    use crate::game::logic::gui::pack_gui;
     use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats};
-    use crate::net::session::ui::gui::crafter_gui;
-    use crate::net::session::ui::gui::market_gui;
-    use crate::net::session::ui::gui::pack_gui;
     use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
     use std::sync::Arc;
 

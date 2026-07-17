@@ -26,10 +26,10 @@
     clippy::nonminimal_bool
 )]
 
+use crate::game::logic::gui::market_gui::{market_tabs, resolve_market_window};
 use crate::game::logic::horb::{Button, Horb, HorbDelivery, ListRow};
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::ui::gui::market_gui::{market_tabs, resolve_market_window};
 use crate::tasks::auction::{credit_money, now_unix};
 
 use crate::game::logic::items::item_name as pack_name;

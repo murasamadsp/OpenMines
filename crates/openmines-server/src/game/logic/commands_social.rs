@@ -306,9 +306,7 @@ pub fn handle_admin_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
             if parts.len() >= 2
                 && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
             {
-                crate::net::session::ui::gui::market_gui::open_market_admin_gui(
-                    state, tx, pid, x, y,
-                );
+                crate::game::logic::gui::market_gui::open_market_admin_gui(state, tx, pid, x, y);
                 return;
             }
         }
@@ -326,7 +324,7 @@ pub fn handle_admin_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
             if parts.len() == 2
                 && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
             {
-                crate::net::session::ui::gui::pack_gui::open_pack_admin_gui(state, tx, pid, x, y);
+                crate::game::logic::gui::pack_gui::open_pack_admin_gui(state, tx, pid, x, y);
                 return;
             }
         }

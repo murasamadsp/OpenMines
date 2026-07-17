@@ -16,6 +16,7 @@ pub mod death;
 pub mod dig_build;
 pub mod due;
 pub mod geology;
+pub mod gui;
 pub mod gui_views;
 pub mod heal_inventory;
 pub mod healing;

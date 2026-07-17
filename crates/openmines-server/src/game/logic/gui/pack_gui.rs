@@ -18,12 +18,13 @@
     clippy::nonminimal_bool,
     clippy::collapsible_if,
     clippy::cast_possible_wrap,
-    clippy::redundant_closure_for_method_calls
+    clippy::redundant_closure_for_method_calls,
+    clippy::needless_range_loop
 )]
 
-use super::super::gui_buttons::{close_player_window, parse_rich_bool, parse_rich_key_values};
-use super::crafter_gui::open_crafter_gui;
-use super::market_gui::open_market_gui;
+use crate::net::session::ui::gui_buttons::{close_player_window, parse_rich_bool, parse_rich_key_values};
+use crate::game::logic::gui::crafter_gui::open_crafter_gui;
+use crate::game::logic::gui::market_gui::open_market_gui;
 use crate::game::buildings::{BuildingOwnership, BuildingStats, BuildingStorage};
 use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::logic::pack_command::{
