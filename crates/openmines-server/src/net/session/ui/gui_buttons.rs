@@ -1,23 +1,10 @@
 //! Обработка нажатий GUI-кнопок игроком.
-#![allow(warnings)]
-use super::crystal_form::parse_amounts as parse_six_i64_fields;
 use super::gui::crafter_gui;
 use super::gui::market_gui;
 use super::gui::pack_gui;
 use super::gui::programmator_gui;
 use super::settings::apply as handle_settings_save;
-use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
-};
-use crate::game::crafting;
-use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
-use crate::game::logic::pack_command::{
-    send_action_error as send_pack_action_error, send_state_error as send_pack_state_error,
-    withdraw_state_ready as pack_withdraw_state_ready,
-};
-use crate::game::market;
-use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
-use crate::net::session::outbound::inventory_sync::send_inventory;
+use crate::game::player::{PlayerInventory, PlayerUI};
 use crate::net::session::prelude::*;
 
 pub fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&str, &str>> {
@@ -169,7 +156,7 @@ pub fn handle_gui_button_sync_fast_path(
         return true;
     }
     if let Some(rest) = button.strip_prefix("tp:") {
-        handle_teleport_action(state, tx, pid, rest);
+        crate::game::logic::teleport::apply(state, tx, pid, rest);
         return true;
     }
     if let Some(rest) = button.strip_prefix("resp_bind:") {
@@ -293,7 +280,7 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
         crate::game::logic::buildings::handle_place_building(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
-        handle_pack_operation(state, tx, pid, rest).await;
+        pack_gui::handle_pack_operation(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("craft_recipe:") {
         crafter_gui::handle_craft_recipe_view(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_start:") {
@@ -301,7 +288,7 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if let Some(rest) = button.strip_prefix("craft_claim:") {
         crafter_gui::handle_craft_claim(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("tp:") {
-        handle_teleport_action(state, tx, pid, rest);
+        crate::game::logic::teleport::apply(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("resp_bind:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 2 {
@@ -345,16 +332,16 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if handle_auction_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("openprog:") {
         if let Ok(id) = rest.parse::<i32>() {
-            handle_open_prog(state, tx, pid, id).await;
+            programmator_gui::handle_open_prog(state, tx, pid, id).await;
         }
     } else if let Some(name) = button.strip_prefix("createprog:") {
-        handle_create_prog(state, tx, pid, name).await;
+        programmator_gui::handle_create_prog(state, tx, pid, name).await;
     } else if let Some(rest) = button.strip_prefix("rename:") {
         // format: "<id>:<name>" (сервер кодирует как `rename:{id}:%I%`, клиент подставляет ввод)
         let parts: Vec<&str> = rest.splitn(2, ':').collect();
         if let [id_str, name] = parts.as_slice() {
             if let Ok(id) = id_str.parse::<i32>() {
-                handle_rename_prog(state, tx, pid, id, name).await;
+                programmator_gui::handle_rename_prog(state, tx, pid, id, name).await;
             }
         }
     } else {
@@ -385,7 +372,7 @@ pub async fn handle_clan_button(
     match button {
         _ if button.starts_with("pack_op:open:") => {
             if let Some(rest) = button.strip_prefix("pack_op:") {
-                handle_pack_operation(state, tx, pid, rest).await;
+                pack_gui::handle_pack_operation(state, tx, pid, rest).await;
             }
             true
         }
@@ -461,7 +448,7 @@ pub async fn handle_auction_button(
             Ok(item) => crate::game::logic::auction_gui::open_item_auc(state, tx, pid, item).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction choose action");
-                send_market_action_error(tx);
+                market_gui::send_market_action_error(tx);
             }
         }
         return true;
@@ -471,7 +458,7 @@ pub async fn handle_auction_button(
             Ok(id) => crate::game::logic::auction_gui::open_order(state, tx, pid, id).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction openorder action");
-                send_market_action_error(tx);
+                market_gui::send_market_action_error(tx);
             }
         }
         return true;
@@ -481,7 +468,7 @@ pub async fn handle_auction_button(
             Ok(item) => crate::game::logic::auction_gui::open_order_creation(state, tx, pid, item),
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction create action");
-                send_market_action_error(tx);
+                market_gui::send_market_action_error(tx);
             }
         }
         return true;
@@ -500,7 +487,7 @@ pub async fn handle_auction_button(
             }
         } else {
             tracing::warn!(player_id = %pid, action = button, "Invalid auction setcost action");
-            send_market_action_error(tx);
+            market_gui::send_market_action_error(tx);
         }
         return true;
     }
@@ -517,7 +504,7 @@ pub async fn handle_auction_button(
             }
         } else {
             tracing::warn!(player_id = %pid, action = button, "Invalid auction setnum action");
-            send_market_action_error(tx);
+            market_gui::send_market_action_error(tx);
         }
         return true;
     }
@@ -526,7 +513,7 @@ pub async fn handle_auction_button(
             Ok(id) => crate::game::logic::auction_gui::place_minimal_bet(state, tx, pid, id).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction minbet action");
-                send_market_action_error(tx);
+                market_gui::send_market_action_error(tx);
             }
         }
         return true;
@@ -544,1571 +531,28 @@ pub async fn handle_auction_button(
                 }
                 (Err(e), _) => {
                     tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction bet action");
-                    send_market_action_error(tx);
+                    market_gui::send_market_action_error(tx);
                 }
             }
         } else {
             tracing::warn!(player_id = %pid, action = button, "Invalid auction bet action");
-            send_market_action_error(tx);
+            market_gui::send_market_action_error(tx);
         }
         return true;
     }
     false
 }
 
-async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, op: &str) {
-    let parts: Vec<&str> = op.split(':').collect();
-    if parts.len() < 3 {
-        send_pack_action_error(tx);
-        return;
-    }
-    let cmd = parts[0];
-    let (x, y) = match (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-        (Ok(x), Ok(y)) => (x, y),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::warn!(player_id = %pid, action = op, error = ?e, "Invalid pack operation coordinates");
-            send_pack_action_error(tx);
-            return;
-        }
-    };
-
-    let Some(view) = state.get_pack_at(x, y) else {
-        return;
-    };
-
-    let p_info = state.query_player_opt(pid, |ecs, entity| {
-        let pos = ecs.get::<PlayerPosition>(entity)?;
-        let pstats = ecs.get::<PlayerStats>(entity)?;
-        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
-    });
-
-    let Some((px, py, p_clan)) = p_info else {
-        return;
-    };
-
-    // Market allows anyone standing on it to buy/sell (like Resp).
-    // Only admin operations require ownership.
-    if view.pack_type == PackType::Market && cmd == "open" {
-        // Only proximity check for Market open
-        let Ok(cells) = view.pack_type.building_cells() else {
-            tracing::error!(pack_type = ?view.pack_type, "Missing building config for pack GUI");
-            return;
-        };
-        if !cells
-            .iter()
-            .any(|(dx, dy, _)| view.x + dx == px && view.y + dy == py)
-        {
-            return;
-        }
-    } else if validate_pack_access(&view, (px, py), p_clan, pid).is_err() {
-        return;
-    }
-
-    match cmd {
-        "open" => {
-            if view.pack_type == PackType::Clans {
-                crate::game::logic::clans::handle_clan_menu(state, tx, pid).await;
-            } else {
-                open_pack_gui(state, tx, pid, &view);
-            }
-        }
-        "take_money" => handle_pack_take_money(state, tx, pid, &view),
-        "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
-        "remove" => {
-            crate::game::logic::buildings::handle_remove_building(state, tx, pid, x, y);
-        }
-        _ => {}
-    }
-}
-
-fn handle_pack_operation_sync_fast_path(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    op: &str,
-) -> bool {
-    let parts: Vec<&str> = op.split(':').collect();
-    if parts.len() < 3 {
-        send_pack_action_error(tx);
-        return true;
-    }
-    let cmd = parts[0];
-    if cmd == "remove" {
-        return false;
-    }
-    let (x, y) = match (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-        (Ok(x), Ok(y)) => (x, y),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::warn!(player_id = %pid, action = op, error = ?e, "Invalid pack operation coordinates");
-            send_pack_action_error(tx);
-            return true;
-        }
-    };
-
-    let Some(view) = state.get_pack_at(x, y) else {
-        return true;
-    };
-    if cmd == "open" && view.pack_type == PackType::Clans {
-        return false;
-    }
-
-    let p_info = state.query_player_opt(pid, |ecs, entity| {
-        let pos = ecs.get::<PlayerPosition>(entity)?;
-        let pstats = ecs.get::<PlayerStats>(entity)?;
-        Some((pos.x, pos.y, pstats.clan_id.unwrap_or(0)))
-    });
-
-    let Some((px, py, p_clan)) = p_info else {
-        return true;
-    };
-
-    if view.pack_type == PackType::Market && cmd == "open" {
-        let Ok(cells) = view.pack_type.building_cells() else {
-            tracing::error!(pack_type = ?view.pack_type, "Missing building config for pack GUI");
-            return true;
-        };
-        if !cells
-            .iter()
-            .any(|(dx, dy, _)| view.x + dx == px && view.y + dy == py)
-        {
-            return true;
-        }
-    } else if validate_pack_access(&view, (px, py), p_clan, pid).is_err() {
-        return true;
-    }
-
-    match cmd {
-        "open" => open_pack_gui(state, tx, pid, &view),
-        "take_money" => handle_pack_take_money(state, tx, pid, &view),
-        "take_crys" => handle_pack_take_crystals(state, tx, pid, &view),
-        _ => {}
-    }
-    true
-}
-
-pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    // C# ref: Gate.GUIWin() returns null — no window opens
-    if view.pack_type == PackType::Gate {
-        close_player_window(state, tx, pid);
-        return;
-    }
-    if view.pack_type == PackType::Storage {
-        return;
-    }
-    // Teleport windows are emitted as immutable `GuiView` effects from the
-    // command/movement paths. This legacy direct-delivery helper must not
-    // reintroduce a second delivery path.
-    if view.pack_type == PackType::Teleport {
-        return;
-    }
-    if view.pack_type == PackType::Craft {
-        open_crafter_gui(state, tx, pid, view);
-        return;
-    }
-    if view.pack_type == PackType::Market {
-        open_market_gui(state, tx, pid, view, "sellcrys");
-        return;
-    }
-    if view.pack_type == PackType::Spot {
-        return;
-    }
-    if view.pack_type == PackType::Up {
-        crate::game::logic::up_building::open_up_gui(state, tx, pid, view);
-        return;
-    }
-    if view.pack_type == PackType::Resp {
-        // Респ: визитёрский GUI с кнопкой «ПРИВЯЗАТЬ» (1:1 C# `Resp.GUIWin`).
-        // Без этой ветки респ падал в generic GUI без bind → «невозможно
-        // привязаться» (репорт). `handle_pack_action` (был dead code) этот тип
-        // обрабатывал, но реальный путь открытия — `open_pack_gui`.
-        crate::game::logic::packs::open_resp_gui(state, tx, pid, view);
-        return;
-    }
-    if view.pack_type == PackType::Gun {
-        crate::game::logic::packs::open_gun_gui(state, tx, pid, view.x, view.y);
-        return;
-    }
-    if view.pack_type == PackType::Clans {
-        // Clans GUI requires DB awaits; async `pack_op:open` handles it explicitly.
-        // This sync path is also used from movement/game-loop code, where Tokio
-        // reactor is not guaranteed.
-        return;
-    }
-
-    let title = view.pack_type.name();
-
-    let text = format!(
-        "Здание: {}\nЗаряд: {}/{}\nПрочность: {}/{}",
-        title, view.charge, view.max_charge, view.hp, view.max_hp
-    );
-    use crate::game::logic::horb::{Button, Horb};
-    Horb::new(title)
-        .text(text)
-        .button(Button::new(
-            "Забрать деньги",
-            format!("pack_op:take_money:{}:{}", view.x, view.y),
-        ))
-        .button(Button::new(
-            "Забрать кристаллы",
-            format!("pack_op:take_crys:{}:{}", view.x, view.y),
-        ))
-        .button(Button::new(
-            "Удалить",
-            format!("pack_op:remove:{}:{}", view.x, view.y),
-        ))
-        .admin(view.owner_id == pid) // шестерёнка → open_pack_admin_gui
-        .close_button()
-        .send(state, tx, pid, format!("pack:{}:{}", view.x, view.y));
-}
-
-/// Единая админ-панель пака (шестерёнка): прочность/заряд/стоимость/закланить/
-/// прибыль. Открывается по `ADMN` на окне `pack:{x}:{y}`. Сохранение — `pack_save`.
-pub fn open_pack_admin_gui(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    pack_x: i32,
-    pack_y: i32,
-) {
-    use crate::game::logic::horb::{Button, Horb, RichRow};
-    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
-        return;
-    };
-    if view.owner_id != pid {
-        return;
-    }
-    let details = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
-        let st = ecs.get::<BuildingStats>(entity)?;
-        let storage = ecs.get::<BuildingStorage>(entity)?;
-        let own = ecs.get::<BuildingOwnership>(entity)?;
-        Some((st.cost, storage.money, own.clan_id))
-    });
-    let Some((cost, money, clan_id)) = details else {
-        return;
-    };
-
-    let (profit_btn, profit_act) = if money > 0 {
-        (
-            "Получить".to_string(),
-            format!("pack_op:take_money:{pack_x}:{pack_y}"),
-        )
-    } else {
-        (String::new(), String::new())
-    };
-
-    Horb::new("Управление")
-        .rich_row(RichRow::text(format!(
-            "Прочность: {}/{}",
-            view.hp, view.max_hp
-        )))
-        .rich_row(RichRow::text(format!(
-            "Заряд: {}/{}",
-            view.charge, view.max_charge
-        )))
-        .rich_row(RichRow::uint("Стоимость", "cost", i64::from(cost)))
-        .rich_row(RichRow::toggle("Закланить", "clan", clan_id != 0))
-        .rich_row(RichRow::button(
-            format!("Прибыль: {money}$"),
-            profit_btn,
-            profit_act,
-        ))
-        .button(Button::new("Сохранить", "pack_save:%R%"))
-        .send(state, tx, pid, format!("pack:{pack_x}:{pack_y}"));
-}
-
-/// `pack_save:{key:value#…}` из админ-панели (`%R%`). Ставит cost/clan,
-/// перерисовывает панель. Зеркало `handle_resp_save`, но для окна `pack:`.
-pub fn handle_pack_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, richlist_data: &str) {
-    let coords = state.query_player_opt(pid, |ecs, entity| {
-        let ui = ecs.get::<PlayerUI>(entity)?;
-        let rest = ui.current_window.as_deref()?.strip_prefix("pack:")?;
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 2 {
-            Some((parts[0].parse::<i32>().ok()?, parts[1].parse::<i32>().ok()?))
-        } else {
-            None
-        }
-    });
-    let Some((pack_x, pack_y)) = coords else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
-        return;
-    };
-    if view.owner_id != pid {
-        return;
-    }
-
-    let Some(fields) = parse_rich_key_values(richlist_data) else {
-        send_pack_action_error(tx);
-        return;
-    };
-    let cost = match fields.get("cost") {
-        Some(raw) => match raw.parse::<i32>() {
-            Ok(cost) if (0..=5000).contains(&cost) => Some(cost),
-            _ => {
-                send_pack_action_error(tx);
-                return;
-            }
-        },
-        None => None,
-    };
-    let clan_enabled = match fields.get("clan") {
-        Some(raw) => match parse_rich_bool(raw) {
-            Some(value) => Some(value),
-            None => {
-                send_pack_action_error(tx);
-                return;
-            }
-        },
-        None => None,
-    };
-    let owner_clan = state
-        .query_player_opt(pid, |ecs, e| {
-            ecs.get::<PlayerStats>(e).and_then(|s| s.clan_id)
-        })
-        .unwrap_or(0);
-
-    let updated = match modify_pack_with_db(state, pack_x, pack_y, |ecs, entity| {
-        let mut updated = false;
-        if let Some(mut st) = ecs.get_mut::<BuildingStats>(entity) {
-            if let Some(cost) = cost {
-                st.cost = cost;
-                updated = true;
-            }
-        } else if cost.is_some() {
-            return false;
-        }
-        if let Some(mut own) = ecs.get_mut::<BuildingOwnership>(entity) {
-            if let Some(clan_enabled) = clan_enabled {
-                own.clan_id = if clan_enabled { owner_clan } else { 0 };
-                updated = true;
-            }
-        } else if clan_enabled.is_some() {
-            return false;
-        }
-        updated
-    }) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = pack_x, y = pack_y, error = %e, "Pack save failed");
-            false
-        }
-    };
-    if !updated {
-        send_pack_action_error(tx);
-        return;
-    }
-
-    open_pack_admin_gui(state, tx, pid, pack_x, pack_y);
-}
-
-fn handle_pack_take_money(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
-        send_pack_state_error(tx);
-        return;
-    }
-
-    let mut amount = 0i64;
-    let updated = match modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
-        let mut storage = ecs
-            .get_mut::<BuildingStorage>(entity)
-            .expect("BuildingStorage checked before pack money withdrawal");
-        amount = storage.money;
-        storage.money = 0;
-        true
-    }) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = view.x, y = view.y, error = %e, "Pack money withdrawal failed");
-            send_pack_state_error(tx);
-            return;
-        }
-    };
-    if !updated {
-        send_pack_action_error(tx);
-        return;
-    }
-
-    if amount > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
-            let (money_now, creds_now) = {
-                let mut s = ecs
-                    .get_mut::<PlayerStats>(entity)
-                    .expect("PlayerStats checked before pack money withdrawal");
-                s.money += amount;
-                (s.money, s.creds)
-            };
-            let mut f = ecs
-                .get_mut::<PlayerFlags>(entity)
-                .expect("PlayerFlags checked before pack money withdrawal");
-            f.dirty = true;
-            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
-            Some(())
-        });
-    }
-}
-
-fn handle_pack_take_crystals(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
-        send_pack_state_error(tx);
-        return;
-    }
-
-    let mut amount = [0i64; 6];
-    let updated = match modify_pack_with_db(state, view.x, view.y, |ecs, entity| {
-        let mut storage = ecs
-            .get_mut::<BuildingStorage>(entity)
-            .expect("BuildingStorage checked before pack crystal withdrawal");
-        amount = storage.crystals;
-        storage.crystals = [0; 6];
-        true
-    }) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = view.x, y = view.y, error = %e, "Pack crystal withdrawal failed");
-            send_pack_state_error(tx);
-            return;
-        }
-    };
-    if !updated {
-        send_pack_action_error(tx);
-        return;
-    }
-
-    if amount.iter().sum::<i64>() > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
-            let crystals_now = {
-                let mut s = ecs
-                    .get_mut::<PlayerStats>(entity)
-                    .expect("PlayerStats checked before pack crystal withdrawal");
-                for i in 0..6 {
-                    s.crystals[i] += amount[i];
-                }
-                s.crystals
-            };
-            let mut f = ecs
-                .get_mut::<PlayerFlags>(entity)
-                .expect("PlayerFlags checked before pack crystal withdrawal");
-            f.dirty = true;
-            send_u_packet(tx, "@B", &basket(&crystals_now, 1).1);
-            Some(())
-        });
-    }
-}
-
-// ─── Crafter GUI ──────────────────────────────────────────────────────────
-
-fn now_ts() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
-/// Open Crafter GUI: if craft in progress show progress, else show recipe list.
-/// C# ref: `Crafter.GUIWin` -> `StaticSystem.FilledPage` / `GlobalFirstPage`.
-fn open_crafter_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    if view.owner_id != pid {
-        return;
-    }
-
-    let craft_state = state.query_building_opt(view.x, view.y, |ecs, entity| {
-        let c = ecs.get::<BuildingCrafting>(entity)?;
-        Some((c.recipe_id, c.num, c.end_ts))
-    });
-
-    let Some((recipe_id, num, end_ts)) = craft_state else {
-        return;
-    };
-
-    if let Some(rid) = recipe_id {
-        show_crafter_progress(tx, view, rid, num, end_ts);
-    } else {
-        show_crafter_recipes(tx, view);
-    }
-
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some(format!("pack:{}:{}", view.x, view.y));
-        }
-        Some(())
-    });
-}
-
-fn show_crafter_progress(tx: &Outbox, view: &PackView, recipe_id: i32, num: i32, end_ts: i64) {
-    let now = now_ts();
-    let recipe = crafting::recipe_by_id(recipe_id);
-    let recipe_name = recipe.map_or("?", |r| r.title);
-
-    let done = now >= end_ts;
-    let progress = if done {
-        100
-    } else {
-        let total_sec = recipe.map_or(1, |r| i64::from(r.time_sec) * i64::from(num));
-        let start_ts = end_ts - total_sec;
-        let elapsed = now - start_ts;
-        ((elapsed * 100) / total_sec.max(1)).clamp(0, 99) as i32
-    };
-
-    let bar_filled = progress / 2;
-    let bar_empty = 50 - bar_filled;
-    let bar = format!(
-        "{}{}",
-        "|".repeat(bar_filled as usize),
-        "-".repeat(bar_empty as usize)
-    );
-
-    let status = if done {
-        "ГОТОВО".to_string()
-    } else {
-        let remain = end_ts - now;
-        format!("осталось {remain}с")
-    };
-
-    let text = format!("Крафт: {recipe_name} x{num}\n\n[{bar}] {progress}%\n{status}");
-
-    use crate::game::logic::horb::{Button, Horb};
-    let mut win = Horb::new("Крафтер").text(text);
-    if done {
-        win = win.button(Button::new(
-            "Забрать",
-            format!("craft_claim:{}:{}", view.x, view.y),
-        ));
-    }
-    win.close_button().send_raw(tx);
-}
-
-fn show_crafter_recipes(tx: &Outbox, view: &PackView) {
-    let recipes = crafting::recipes();
-    let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
-
-    let mut text = String::from("Выберите рецепт:\n");
-    use crate::game::logic::horb::{Button, Horb};
-    let mut win = Horb::new("Крафтер");
-
-    for r in recipes {
-        let cost_str: Vec<String> = r
-            .cost_crys
-            .iter()
-            .map(|c| {
-                let name = crys_names.get(c.id as usize).unwrap_or(&"?");
-                format!("{name}x{}", c.num)
-            })
-            .collect();
-        let cost_display = if cost_str.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", cost_str.join("+"))
-        };
-
-        text.push_str(&format!(
-            "\n- {} x{} - {}с{}",
-            r.title, r.result.num, r.time_sec, cost_display
-        ));
-
-        win = win.button(Button::new(
-            r.title,
-            format!("craft_recipe:{}:{}:{}", r.id, view.x, view.y),
-        ));
-    }
-
-    win.text(text)
-        .button(Button::new(
-            "Удалить",
-            format!("pack_op:remove:{}:{}", view.x, view.y),
-        ))
-        .close_button()
-        .send_raw(tx);
-}
-
-/// Show recipe details + Start button.
-/// Called from `craft_recipe:{id}:{x}:{y}` but `handle_complex_button` parses
-/// only the prefix `craft_recipe:` and passes the rest as a string.
-fn handle_craft_recipe_view(state: &Arc<GameState>, tx: &Outbox, _pid: PlayerId, args: &str) {
-    let _ = state;
-    let parts: Vec<&str> = args.split(':').collect();
-    if parts.len() < 3 {
-        send_crafter_action_error(tx);
-        return;
-    }
-    let (recipe_id, bx, by) = match (
-        parts[0].parse::<i32>(),
-        parts[1].parse::<i32>(),
-        parts[2].parse::<i32>(),
-    ) {
-        (Ok(recipe_id), Ok(bx), Ok(by)) => (recipe_id, bx, by),
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
-            tracing::warn!(action = args, error = ?e, "Invalid craft recipe action");
-            send_crafter_action_error(tx);
-            return;
-        }
-    };
-
-    let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
-        return;
-    };
-
-    let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
-
-    let mut cost_lines = String::new();
-    for c in recipe.cost_crys {
-        let name = crys_names.get(c.id as usize).unwrap_or(&"?");
-        cost_lines.push_str(&format!("  {name} x{}\n", c.num));
-    }
-    for c in recipe.cost_res {
-        cost_lines.push_str(&format!("  предмет#{} x{}\n", c.id, c.num));
-    }
-
-    let text = format!(
-        "Рецепт: {}\nРезультат: x{}\nВремя: {}с\n\nСтоимость:\n{}",
-        recipe.title, recipe.result.num, recipe.time_sec, cost_lines
-    );
-
-    use crate::game::logic::horb::{Button, Horb};
-    Horb::new("Крафтер")
-        .text(text)
-        .button(Button::new(
-            "Запустить (x1)",
-            format!("craft_start:{recipe_id}:1:{bx}:{by}"),
-        ))
-        .close_button()
-        .send_raw(tx);
-}
-
-/// Start crafting: deduct resources, set timer.
-/// Button format: `craft_start:{recipe_id}:{num}:{x}:{y}`
-fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
-    let parts: Vec<&str> = args.split(':').collect();
-    if parts.len() < 4 {
-        send_crafter_action_error(tx);
-        return;
-    }
-    let (recipe_id, num, bx, by) = match (
-        parts[0].parse::<i32>(),
-        parts[1].parse::<i32>(),
-        parts[2].parse::<i32>(),
-        parts[3].parse::<i32>(),
-    ) {
-        (Ok(recipe_id), Ok(num), Ok(bx), Ok(by)) => (recipe_id, num.max(1), bx, by),
-        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
-            tracing::warn!(player_id = %pid, action = args, error = ?e, "Invalid craft start action");
-            send_crafter_action_error(tx);
-            return;
-        }
-    };
-
-    let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
-        return;
-    };
-
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Craft || view.owner_id != pid {
-        return;
-    }
-
-    let standing_on_crafter = state
-        .query_player_opt(pid, |ecs, entity| {
-            let pos = ecs.get::<PlayerPosition>(entity)?;
-            Some(pos.x == bx && pos.y == by)
-        })
-        .unwrap_or(false);
-    if !standing_on_crafter {
-        send_u_packet(tx, "OK", &ok_message("Недостаточно ресов", "...").1);
-        return;
-    }
-
-    let craft_state = state.query_building_opt(bx, by, |ecs, entity| {
-        let c = ecs.get::<BuildingCrafting>(entity)?;
-        Some(c.recipe_id.is_some())
-    });
-    let Some(already_crafting) = craft_state else {
-        tracing::error!(
-            x = bx,
-            y = by,
-            "Building crafting component missing for craft start"
-        );
-        send_crafter_action_error(tx);
-        return;
-    };
-    if already_crafting {
-        send_u_packet(tx, "OK", &ok_message("Крафтер", "Крафт уже запущен").1);
-        return;
-    }
-
-    let deducted = state
-        .modify_player(pid, |ecs, entity| {
-            if ecs.get::<PlayerStats>(entity).is_none()
-                || ecs.get::<PlayerFlags>(entity).is_none()
-                || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
-            {
-                send_crafter_state_error(tx);
-                return None;
-            }
-            {
-                let pstats = ecs.get::<PlayerStats>(entity)?;
-                for c in recipe.cost_crys {
-                    if pstats.crystals[c.id as usize] < i64::from(c.num) * i64::from(num) {
-                        return Some(false);
-                    }
-                }
-                if !recipe.cost_res.is_empty() {
-                    let inv = ecs.get::<PlayerInventory>(entity)?;
-                    for c in recipe.cost_res {
-                        let have = inv.items.get(&c.id).copied().unwrap_or(0);
-                        if have < c.num * num {
-                            return Some(false);
-                        }
-                    }
-                }
-            }
-
-            {
-                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-                for c in recipe.cost_crys {
-                    pstats.crystals[c.id as usize] -= i64::from(c.num) * i64::from(num);
-                }
-                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
-            }
-
-            if !recipe.cost_res.is_empty() {
-                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-                for c in recipe.cost_res {
-                    let entry = inv.items.entry(c.id).or_insert(0);
-                    *entry -= c.num * num;
-                }
-                send_inventory(tx, &mut inv);
-            }
-            let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
-            flags.dirty = true;
-
-            Some(true)
-        })
-        .flatten();
-
-    let Some(deducted) = deducted else {
-        return;
-    };
-    if !deducted {
-        send_u_packet(tx, "OK", &ok_message("Крафтер", "Недостаточно ресурсов").1);
-        return;
-    }
-
-    let end_ts = now_ts() + i64::from(recipe.time_sec) * i64::from(num);
-    let updated = match modify_pack_with_db(state, bx, by, |ecs, entity| {
-        if let Some(mut c) = ecs.get_mut::<BuildingCrafting>(entity) {
-            c.recipe_id = Some(recipe_id);
-            c.num = num;
-            c.end_ts = end_ts;
-            c.ready = false;
-            true
-        } else {
-            false
-        }
-    }) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = bx, y = by, error = %e, "Craft start failed after resource deduction");
-            false
-        }
-    };
-    if !updated {
-        state.modify_player(pid, |ecs, entity| {
-            if ecs.get::<PlayerStats>(entity).is_none()
-                || ecs.get::<PlayerFlags>(entity).is_none()
-                || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
-            {
-                send_crafter_state_error(tx);
-                return None;
-            }
-            {
-                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-                for c in recipe.cost_crys {
-                    pstats.crystals[c.id as usize] += i64::from(c.num) * i64::from(num);
-                }
-                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
-            }
-
-            if !recipe.cost_res.is_empty() {
-                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-                for c in recipe.cost_res {
-                    let entry = inv.items.entry(c.id).or_insert(0);
-                    *entry += c.num * num;
-                }
-                send_inventory(tx, &mut inv);
-            }
-
-            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-            f.dirty = true;
-            Some(())
-        });
-        send_crafter_action_error(tx);
-        return;
-    }
-
-    if let Some(entity) = state.building_entity_at(bx, by) {
-        state.schedule_crafting_completion(entity, end_ts);
-    }
-
-    broadcast_pack_update(state, &view);
-    show_crafter_progress(tx, &view, recipe_id, num, end_ts);
-}
-
-/// Claim finished craft. Button format: `craft_claim:{x}:{y}`
-fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
-    let parts: Vec<&str> = args.split(':').collect();
-    if parts.len() < 2 {
-        send_crafter_action_error(tx);
-        return;
-    }
-    let (bx, by) = match (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-        (Ok(bx), Ok(by)) => (bx, by),
-        (Err(e), _) | (_, Err(e)) => {
-            tracing::warn!(player_id = %pid, action = args, error = ?e, "Invalid craft claim action");
-            send_crafter_action_error(tx);
-            return;
-        }
-    };
-
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Craft || view.owner_id != pid {
-        return;
-    }
-
-    let craft_info = state.query_building_opt(bx, by, |ecs, entity| {
-        let c = ecs.get::<BuildingCrafting>(entity)?;
-        Some((c.recipe_id, c.num, c.end_ts))
-    });
-
-    let Some((Some(recipe_id), num, end_ts)) = craft_info else {
-        return;
-    };
-
-    if now_ts() < end_ts {
-        send_u_packet(tx, "OK", &ok_message("Крафтер", "Крафт ещё не завершён").1);
-        return;
-    }
-
-    let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
-        return;
-    };
-
-    let Some(player_entity) = state.get_player_entity(pid) else {
-        tracing::error!(player_id = %pid, "Player entity missing for craft claim");
-        send_crafter_action_error(tx);
-        return;
-    };
-    let Some(building_entity) = state.building_entity_at(bx, by) else {
-        tracing::error!(player_id = %pid, x = bx, y = by, "Craft building entity missing for claim");
-        send_crafter_action_error(tx);
-        return;
-    };
-
-    let claimed = {
-        let mut ecs = state.ecs_write_profiled("gui.craft_claim");
-        if ecs.get::<PlayerInventory>(player_entity).is_none()
-            || ecs.get::<PlayerFlags>(player_entity).is_none()
-            || ecs.get::<BuildingCrafting>(building_entity).is_none()
-            || ecs.get::<BuildingFlags>(building_entity).is_none()
-        {
-            tracing::error!(player_id = %pid, x = bx, y = by, "Required state missing for craft claim");
-            send_crafter_state_error(tx);
-            return;
-        }
-        let Some(craft) = ecs.get::<BuildingCrafting>(building_entity) else {
-            tracing::error!(player_id = %pid, x = bx, y = by, "Building crafting component missing for claim");
-            return;
-        };
-        if craft.recipe_id != Some(recipe_id) || craft.num != num || craft.end_ts != end_ts {
-            false
-        } else {
-            {
-                let mut inv = ecs
-                    .get_mut::<PlayerInventory>(player_entity)
-                    .expect("PlayerInventory checked before craft claim mutation");
-                let entry = inv.items.entry(recipe.result.id).or_insert(0);
-                *entry += recipe.result.num * num;
-                send_inventory(tx, &mut inv);
-            }
-
-            {
-                let mut craft = ecs
-                    .get_mut::<BuildingCrafting>(building_entity)
-                    .expect("BuildingCrafting checked before craft claim mutation");
-                craft.recipe_id = None;
-                craft.num = 0;
-                craft.end_ts = 0;
-                craft.ready = false;
-            }
-            let mut flags = ecs
-                .get_mut::<PlayerFlags>(player_entity)
-                .expect("PlayerFlags checked before craft claim mutation");
-            flags.dirty = true;
-            let mut flags = ecs
-                .get_mut::<BuildingFlags>(building_entity)
-                .expect("BuildingFlags checked before craft claim mutation");
-            flags.dirty = true;
-            true
-        }
-    };
-
-    if !claimed {
-        send_crafter_action_error(tx);
-        return;
-    }
-    assert!(state.mark_building_dirty(building_entity));
-
-    broadcast_pack_update(state, &view);
-    show_crafter_recipes(tx, &view);
-}
-
-use crate::game::logic::teleport::apply as handle_teleport_action;
-
-// ─── Market GUI ──────────────────────────────────────────────────────────
-
-/// Open Market GUI with tabs (1:1 with C# `Market.GUIWin`).
-/// `active_tab` is one of: "sellcrys", "buycrys", "auc".
-pub fn open_market_gui(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    view: &PackView,
-    active_tab: &str,
-) {
-    let is_owner = view.owner_id == pid;
-
-    // Fetch player money and crystals
-    let player_info = state.query_player_opt(pid, |ecs, entity| {
-        let pstats = ecs.get::<PlayerStats>(entity)?;
-        Some((pstats.money, pstats.crystals))
-    });
-
-    let Some((player_money, player_crys)) = player_info else {
-        return;
-    };
-
-    // Вкладки: активная получает пустой action, остальные — свой.
-    let tabs = market_tabs(active_tab);
-
-    let (page, window_tag) = match active_tab {
-        "buycrys" => (
-            build_market_buy_page(state, player_money, is_owner, tabs),
-            format!("market:{}:{}:buycrys", view.x, view.y),
-        ),
-        _ => (
-            build_market_sell_page(state, &player_crys, is_owner, tabs),
-            format!("market:{}:{}:sellcrys", view.x, view.y),
-        ),
-    };
-
-    page.send(state, tx, pid, window_tag);
-}
-
-/// Вкладки market как `Vec<Tab>` для `Horb`-builder.
-pub fn market_tabs(active_tab: &str) -> Vec<crate::game::logic::horb::Tab> {
-    use crate::game::logic::horb::Tab;
-    [
-        ("ПРОДАЖА", "sellcrys"),
-        ("Покупка", "buycrys"),
-        ("Auc", "auc"),
-    ]
-    .into_iter()
-    .map(|(label, action)| {
-        if active_tab == action {
-            Tab::active(label)
-        } else {
-            Tab::new(label, action)
-        }
-    })
-    .collect()
-}
-
-/// Build sell tab page JSON.
-/// C# ref: Market.BuildSelltab — `CrystalConfig` with sell prices, sliders up to player's crystals.
-fn build_market_sell_page(
-    state: &Arc<GameState>,
-    player_crys: &[i64; 6],
-    is_owner: bool,
-    tabs: Vec<crate::game::logic::horb::Tab>,
-) -> crate::game::logic::horb::Horb {
-    use crate::game::logic::horb::{Button, Horb};
-    // crys_lines format: "LeftMin:RightMin:Denominator:CurrentValue:Label"
-    // C# CrysLine(label, leftMin=0, rightMin=0, denominator=player_crys[i], currentValue=0)
-    let lines: Vec<String> = (0..6)
-        .map(|i| {
-            let cost = market::get_crystal_cost(state, i);
-            let label = format!("<color=#aaeeaa>{cost}$</color>");
-            format!("0:0:{}:0:{}", player_crys[i], label)
-        })
-        .collect();
-
-    tabs.into_iter()
-        .fold(Horb::new("Market"), Horb::tab)
-        .text("Продажа кри")
-        .crystals(" ", "цена", false, lines)
-        // Порядок: сначала «Продать», затем «Продать всё» (девиация от C#
-        // референса — явное требование пользователя).
-        .button(Button::new("Продать", "sell:%M%"))
-        .button(Button::new("Продать всё", "sellall"))
-        .close_button()
-        .admin(is_owner)
-}
-
-/// Build buy tab page JSON.
-/// C# ref: Market.BuildBuytab — `CrystalConfig` with buy prices (10x), sliders denominator =
-/// player.money / (cost * 10). `BuyMode` = true (`crys_buy: true`).
-fn build_market_buy_page(
-    state: &Arc<GameState>,
-    player_money: i64,
-    is_owner: bool,
-    tabs: Vec<crate::game::logic::horb::Tab>,
-) -> crate::game::logic::horb::Horb {
-    use crate::game::logic::horb::{Button, Horb};
-    let lines: Vec<String> = (0..6)
-        .map(|i| {
-            let buy_price = market::get_crystal_buy_price(state, i);
-            let max_can_buy = if buy_price > 0 {
-                player_money / buy_price
-            } else {
-                0
-            };
-            let label = format!("<color=#aaeeaa>{buy_price}$</color>");
-            format!("0:0:{max_can_buy}:0:{label}")
-        })
-        .collect();
-
-    tabs.into_iter()
-        .fold(Horb::new("Market"), Horb::tab)
-        .text("Покупка")
-        .crystals(" ", "цена", true, lines)
-        .button(Button::new("Купить", "buy:%M%"))
-        .close_button()
-        .admin(is_owner)
-}
-
-/// Resolve market coordinates and tab from `current_window` ("market:{x}:{y}:{tab}").
-pub fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i32, i32, String)> {
-    state.query_player_opt(pid, |ecs, entity| {
-        let ui = ecs.get::<PlayerUI>(entity)?;
-        let window = ui.current_window.as_deref()?;
-        let rest = window.strip_prefix("market:")?;
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 3 {
-            Some((
-                parts[0].parse::<i32>().ok()?,
-                parts[1].parse::<i32>().ok()?,
-                parts[2].to_string(),
-            ))
-        } else {
-            None
-        }
-    })
-}
-
-/// Handle Market tab switching.
-async fn handle_market_tab_switch(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, tab: &str) {
-    let Some((bx, by, _old_tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market {
-        return;
-    }
-    if tab == "auc" {
-        crate::game::logic::auction_gui::open_auc_grid(state, tx, pid, bx, by).await;
-    } else {
-        handle_market_tab_switch_sync(state, tx, pid, tab);
-    }
-}
-
-fn handle_market_tab_switch_sync(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, tab: &str) {
-    let Some((bx, by, _old_tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market {
-        return;
-    }
-    open_market_gui(state, tx, pid, &view, tab);
-}
-
-/// Handle "sell:%M%" — sell crystals from sliders.
-/// C# ref: `MarketSystem.Sell(sliders, p, m)`.
-fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
-    let Some(sliders) = parse_six_i64_fields(slider_data) else {
-        return;
-    };
-
-    let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market {
-        return;
-    }
-
-    do_market_sell(state, tx, pid, &sliders, bx, by);
-}
-
-/// Handle "sellall" — sell all player's crystals.
-/// C# ref: `MarketSystem.Sell(p.crys.cry, p, m)`.
-fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market {
-        return;
-    }
-
-    let Some(outcome) = crate::game::economy::market::sell_all_crystals(state, pid) else {
-        tracing::error!(player_id = %pid, "Market sellall failed");
-        send_market_action_error(tx);
-        return;
-    };
-
-    // Обновить moneyinside в здании
-    if let Some(building_entity) = state.building_entity_at(bx, by) {
-        let mut ecs = state.ecs_write_profiled("market.sellall_building");
-        if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) {
-            storage.money += outcome.earned / 10;
-        }
-        if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(building_entity) {
-            flags.dirty = true;
-        }
-        drop(ecs);
-        state.mark_building_dirty(building_entity);
-    }
-
-    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
-    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
-
-    // Re-render sell tab
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    open_market_gui(state, tx, pid, &view, "sellcrys");
-}
-
-/// Common sell logic (used by sell and sellall).
-/// C# ref: `MarketSystem.Sell`:
-///   for each i: if `RemoveCrys` succeeds, money += value * GetCrysCost(i)
-///   market.moneyinside += (long)(money * 0.1)
-fn do_market_sell(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    sliders: &[i64],
-    bx: i32,
-    by: i32,
-) {
-    // Проверить состояние здания до мутации
-    if let Some(building_entity) = state.building_entity_at(bx, by) {
-        let ecs = state.ecs_read_profiled("market.sell_check");
-        if ecs.get::<BuildingFlags>(building_entity).is_none()
-            || ecs.get::<BuildingStorage>(building_entity).is_none()
-        {
-            send_market_state_error(tx);
-            return;
-        }
-    } else {
-        send_market_state_error(tx);
-        return;
-    }
-
-    let sliders_array: [i64; 6] = sliders.try_into().unwrap_or([0; 6]);
-
-    let Some(outcome) = crate::game::economy::market::sell_crystals(state, pid, &sliders_array)
-    else {
-        tracing::error!(player_id = %pid, x = bx, y = by, "Market sell failed");
-        send_market_state_error(tx);
-        return;
-    };
-
-    // Обновить moneyinside в здании
-    if let Some(building_entity) = state.building_entity_at(bx, by) {
-        let mut ecs = state.ecs_write_profiled("market.sell_building");
-        if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) {
-            storage.money += outcome.earned / 10;
-        }
-        if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(building_entity) {
-            flags.dirty = true;
-        }
-        drop(ecs);
-        state.mark_building_dirty(building_entity);
-    }
-
-    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
-    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
-
-    // Re-render sell tab with updated crystal counts
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    open_market_gui(state, tx, pid, &view, "sellcrys");
-}
-
-/// Handle "buy:%M%" — buy crystals with money.
-/// C# ref: `MarketSystem.Buy(sliders, p, m)`.
-fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
-    let Some(sliders) = parse_six_i64_fields(slider_data) else {
-        return;
-    };
-
-    let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market {
-        return;
-    }
-
-    let Some(outcome) = crate::game::economy::market::buy_crystals(state, pid, &sliders) else {
-        tracing::error!(player_id = %pid, x = bx, y = by, "Market buy failed");
-        send_market_state_error(tx);
-        return;
-    };
-
-    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
-    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
-
-    // Re-render buy tab with updated money
-    open_market_gui(state, tx, pid, &view, "buycrys");
-}
-
-/// Handle "getprofit" — owner withdraws accumulated market profit.
-/// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
-/// then re-open the admin `RichList` page.
-fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let Some(view) = state.get_pack_at(bx, by) else {
-        return;
-    };
-    if view.pack_type != PackType::Market || view.owner_id != pid {
-        return;
-    }
-    let player_state_ready = state
-        .query_player(pid, |ecs, entity| {
-            ecs.get::<PlayerStats>(entity).is_some() && ecs.get::<PlayerFlags>(entity).is_some()
-        })
-        .unwrap_or(false);
-    if !player_state_ready {
-        send_market_state_error(tx);
-        return;
-    }
-    let building_state_ready = state
-        .query_building_opt(bx, by, |ecs, entity| {
-            Some(
-                ecs.get::<BuildingStorage>(entity).is_some()
-                    && ecs.get::<BuildingFlags>(entity).is_some(),
-            )
-        })
-        .unwrap_or(false);
-    if !building_state_ready {
-        send_market_state_error(tx);
-        return;
-    }
-
-    // Transfer profit from building to player
-    let mut amount = 0i64;
-    let updated = match modify_pack_with_db(state, bx, by, |ecs, entity| {
-        let mut storage = ecs
-            .get_mut::<BuildingStorage>(entity)
-            .expect("BuildingStorage checked before market profit mutation");
-        amount = storage.money;
-        storage.money = 0;
-        true
-    }) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = bx, y = by, error = %e, "Market profit withdrawal failed");
-            send_market_state_error(tx);
-            return;
-        }
-    };
-    if !updated {
-        send_market_action_error(tx);
-        return;
-    }
-
-    if amount > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            let (money_now, creds_now) = {
-                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-                s.money += amount;
-                (s.money, s.creds)
-            };
-            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-            f.dirty = true;
-            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
-            Some(())
-        });
-    }
-
-    // Re-open admin page with updated profit (now 0)
-    open_market_admin_gui(state, tx, pid, bx, by);
-}
-
-/// Open Market admin page with `RichList` (1:1 with C# `Market.onadmn`).
-/// Shows HP and profit withdrawal button. Called from ADMN gear icon.
-pub fn open_market_admin_gui(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    pack_x: i32,
-    pack_y: i32,
-) {
-    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
-        return;
-    };
-    if view.owner_id != pid {
-        return;
-    }
-
-    // Fetch building details from ECS
-    let details = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
-        let pstats = ecs.get::<BuildingStats>(entity)?;
-        let storage = ecs.get::<BuildingStorage>(entity)?;
-        Some((pstats.hp, storage.money))
-    });
-
-    let Some((hp, money_inside)) = details else {
-        return;
-    };
-
-    let profit_label = format!("прибыль {money_inside}$");
-    let profit_btn_label = if money_inside > 0 {
-        "Получить"
-    } else {
-        ""
-    };
-    let profit_btn_action = if money_inside > 0 { "getprofit" } else { "" };
-
-    use crate::game::logic::horb::{Horb, RichRow};
-    Horb::new("Market")
-        .text(" ")
-        .rich_row(RichRow::text(format!("hp {hp}")))
-        .rich_row(RichRow::button(
-            profit_label,
-            profit_btn_label,
-            profit_btn_action,
-        ))
-        .close_button()
-        .send(state, tx, pid, format!("market:{pack_x}:{pack_y}:admin"));
-}
-
-// ─── Программатор ────────────────────────────────────────────────────────────
-
-fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::game::logic::horb::{Button, Horb};
-
-    Horb::new("НОВАЯ ПРОГРАММА")
-        .text("Введите название программы")
-        .input("Название программы...", true)
-        .button(Button::new("Создать", "createprog:%I%"))
-        .close_button()
-        .send(state, tx, pid, "createprog");
-}
-
-fn send_market_action_error(tx: &Outbox) {
-    send_u_packet(tx, "OK", &ok_message("МАРКЕТ", "Некорректное действие.").1);
-}
-
-fn send_market_state_error(tx: &Outbox) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("МАРКЕТ", "Состояние маркета недоступно.").1,
-    );
-}
-
-fn send_crafter_action_error(tx: &Outbox) {
-    send_u_packet(tx, "OK", &ok_message("КРАФТЕР", "Некорректное действие.").1);
-}
-
-fn send_crafter_state_error(tx: &Outbox) {
-    send_u_packet(
-        tx,
-        "OK",
-        &ok_message("КРАФТЕР", "Состояние крафтера недоступно.").1,
-    );
-}
-
-fn send_programmator_error(tx: &Outbox, message: &str) {
-    send_u_packet(tx, "OK", &ok_message("ПРОГРАММАТОР", message).1);
-}
-
-pub fn send_programmator_action_error(tx: &Outbox, message: &str) {
-    send_programmator_error(tx, message);
-}
-
-fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = None;
-        }
-        Some(())
-    });
-}
-
-async fn handle_open_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, prog_id: i32) {
-    let p = match state.db.get_program(prog_id).await {
-        Ok(Some(program)) => program,
-        Ok(None) => {
-            send_programmator_error(tx, "Программа не найдена.");
-            return;
-        }
-        Err(e) => {
-            tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for openprog");
-            send_programmator_error(tx, "Не удалось прочитать программу.");
-            return;
-        }
-    };
-    if p.player_id != pid.as_i32() {
-        tracing::warn!(
-            player_id = %pid,
-            program_id = prog_id,
-            owner_id = p.player_id,
-            "Rejected foreign program open"
-        );
-        send_programmator_error(tx, "Программа недоступна.");
-        return;
-    }
-    if let Err(e) = state.db.set_selected_program(pid.into(), Some(p.id)).await {
-        tracing::error!(player_id = %pid, program_id = p.id, error = ?e, "DB selected program update failed for openprog");
-        send_programmator_error(tx, "Не удалось выбрать программу.");
-        return;
-    }
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ps) = ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity) {
-            ps.selected_id = Some(p.id);
-            ps.selected_data = Some(p.code.clone());
-        }
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = None;
-        }
-        Some(())
-    });
-    // C# `StaticGUI.OpenProg`: `win = null` (→ `Gu` закрыть список) → `OpenProg` (#P).
-    // Без `Gu` окно-список программ не закрывалось поверх редактора.
-    send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
-    send_u_packet(
-        tx,
-        "#P",
-        &crate::protocol::packets::open_programmator(p.id, &p.name, &p.code).1,
-    );
-}
-
-async fn handle_create_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, name: &str) {
-    let name = name.trim();
-    if name.is_empty() {
-        return;
-    }
-    match state.db.insert_program(pid.into(), name, "").await {
-        Ok(prog_id) => {
-            if let Err(e) = state
-                .db
-                .set_selected_program(pid.into(), Some(prog_id))
-                .await
-            {
-                tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB selected program update failed for createprog");
-                send_programmator_error(tx, "Не удалось выбрать программу.");
-                return;
-            }
-            state.modify_player(pid, |ecs, entity| {
-                if let Some(mut ps) =
-                    ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
-                {
-                    ps.selected_id = Some(prog_id);
-                    ps.selected_data = Some(String::new());
-                }
-                if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-                    ui.current_window = None;
-                }
-                Some(())
-            });
-            // C# `NewProg`: `win = null` (→ `Gu`) перед открытием редактора (#P).
-            send_u_packet(tx, "Gu", &crate::protocol::packets::gu_close().1);
-            send_u_packet(
-                tx,
-                "#P",
-                &crate::protocol::packets::open_programmator(prog_id, name, "").1,
-            );
-        }
-        Err(e) => {
-            tracing::error!(player_id = %pid, error = ?e, "DB insert failed for createprog");
-            send_programmator_error(tx, "Не удалось создать программу.");
-        }
-    }
-}
-
-async fn handle_rename_prog(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    prog_id: i32,
-    name: &str,
-) {
-    let name = name.trim();
-    if name.is_empty() {
-        return;
-    }
-    let p = match state.db.get_program(prog_id).await {
-        Ok(Some(program)) => program,
-        Ok(None) => {
-            send_programmator_error(tx, "Программа не найдена.");
-            return;
-        }
-        Err(e) => {
-            tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB get failed for rename program");
-            send_programmator_error(tx, "Не удалось прочитать программу.");
-            return;
-        }
-    };
-    if p.player_id != pid.as_i32() {
-        tracing::warn!(
-            player_id = %pid,
-            program_id = prog_id,
-            owner_id = p.player_id,
-            "Rejected foreign program rename"
-        );
-        send_programmator_error(tx, "Программа недоступна.");
-        return;
-    }
-    if let Err(e) = state.db.rename_program(prog_id, name).await {
-        tracing::error!(player_id = %pid, program_id = prog_id, error = ?e, "DB rename failed for program");
-        send_programmator_error(tx, "Не удалось переименовать программу.");
-        return;
-    }
-    clear_programmator_window(state, pid);
-    send_u_packet(
-        tx,
-        "#p",
-        &crate::protocol::packets::open_programmator(prog_id, name, &p.code).1,
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::buildings::{
+        BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStorage,
+    };
+    use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats};
+    use crate::net::session::ui::gui::crafter_gui;
+    use crate::net::session::ui::gui::market_gui;
+    use crate::net::session::ui::gui::pack_gui;
     use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
     use std::sync::Arc;
 
@@ -2168,7 +612,7 @@ mod tests {
             max_hp: 1000,
         };
 
-        open_pack_gui(&test.state, &tx, PlayerId(test.player.id), &view);
+        pack_gui::open_pack_gui(&test.state, &tx, PlayerId(test.player.id), &view);
 
         assert!(
             rx.try_recv().is_err(),
@@ -2195,7 +639,7 @@ mod tests {
         };
         test.state.insert_building_runtime(&spec).await.unwrap();
 
-        handle_pack_operation(&test.state, &tx, pid, "open:20:10").await;
+        pack_gui::handle_pack_operation(&test.state, &tx, pid, "open:20:10").await;
 
         let events = drain_events(&mut rx);
         let Some((_, payload)) = events.iter().find(|(event, _)| event == "GU") else {
@@ -2338,7 +782,7 @@ mod tests {
         let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2364,7 +808,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<BuildingCrafting>();
         }
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2387,7 +831,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerFlags>();
         }
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2406,7 +850,7 @@ mod tests {
         let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
 
         let (recipe_id, num, end_ts) = craft_state(&test.state, 10, 10);
         assert_eq!(recipe_id, Some(0));
@@ -2423,7 +867,7 @@ mod tests {
         let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
         {
             let entity = test.state.building_entity_at(10, 10).unwrap();
             let mut ecs = test.state.ecs.write();
@@ -2432,8 +876,8 @@ mod tests {
         }
         drain_events(&mut rx);
 
-        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
-        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+        crafter_gui::handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+        crafter_gui::handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
 
         assert_eq!(
             player_inventory_count(&test.state, test.player.id.into(), 0),
@@ -2448,7 +892,7 @@ mod tests {
         let (tx, mut rx) = test.connect_with_outbox(1);
         drain_events(&mut rx);
 
-        handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
+        crafter_gui::handle_craft_start(&test.state, &tx, test.player.id.into(), "0:1:10:10");
         {
             let entity = test.state.building_entity_at(10, 10).unwrap();
             let mut ecs = test.state.ecs.write();
@@ -2458,7 +902,7 @@ mod tests {
         }
         drain_events(&mut rx);
 
-        handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
+        crafter_gui::handle_craft_claim(&test.state, &tx, test.player.id.into(), "10:10");
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2489,7 +933,7 @@ mod tests {
         let before_money = player_money(&test.state, test.player.id.into());
         let before_crystals = player_crystals(&test.state, test.player.id.into());
 
-        do_market_sell(
+        market_gui::do_market_sell(
             &test.state,
             &tx,
             test.player.id.into(),
@@ -2531,7 +975,7 @@ mod tests {
         let before_money = player_money(&test.state, test.player.id.into());
         let before_crystals = player_crystals(&test.state, test.player.id.into());
 
-        handle_market_buy(&test.state, &tx, test.player.id.into(), "1:0:0:0:0:0");
+        market_gui::handle_market_buy(&test.state, &tx, test.player.id.into(), "1:0:0:0:0:0");
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2568,7 +1012,7 @@ mod tests {
         }
         let before_money = player_money(&test.state, test.player.id.into());
 
-        handle_market_getprofit(&test.state, &tx, test.player.id.into());
+        market_gui::handle_market_getprofit(&test.state, &tx, test.player.id.into());
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2601,7 +1045,7 @@ mod tests {
         let view = test.state.get_pack_at(10, 10).unwrap();
         let before_money = player_money(&test.state, test.player.id.into());
 
-        handle_pack_take_money(&test.state, &tx, test.player.id.into(), &view);
+        pack_gui::handle_pack_take_money(&test.state, &tx, test.player.id.into(), &view);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2634,7 +1078,7 @@ mod tests {
         let view = test.state.get_pack_at(10, 10).unwrap();
         let before_crystals = player_crystals(&test.state, test.player.id.into());
 
-        handle_pack_take_crystals(&test.state, &tx, test.player.id.into(), &view);
+        pack_gui::handle_pack_take_crystals(&test.state, &tx, test.player.id.into(), &view);
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);

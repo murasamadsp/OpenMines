@@ -24,7 +24,7 @@ def brace_delta(line: str) -> int:
 def collect_violations():
     violations = []
     for path in NET_DIR.rglob("*.rs"):
-        if path.name == "tests.rs" or "test" in path.name or "session/ui/gui" in path.as_posix():
+        if path.name == "tests.rs" or "test" in path.name:
             continue
             
         content = path.read_text(errors="ignore")

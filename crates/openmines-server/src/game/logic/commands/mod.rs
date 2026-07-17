@@ -1074,7 +1074,7 @@ fn apply_market_sell(
 
         // Перерисовать GUI рынка
         if let Some(view) = state.get_pack_at(building_x, building_y) {
-            crate::net::session::ui::gui_buttons::open_market_gui(
+            crate::net::session::ui::gui::market_gui::open_market_gui(
                 state, &tx, player_id, &view, "sellcrys",
             );
         }
@@ -1125,7 +1125,7 @@ fn apply_market_sell_all(
         );
 
         if let Some(view) = state.get_pack_at(building_x, building_y) {
-            crate::net::session::ui::gui_buttons::open_market_gui(
+            crate::net::session::ui::gui::market_gui::open_market_gui(
                 state, &tx, player_id, &view, "sellcrys",
             );
         }
@@ -1160,7 +1160,7 @@ fn apply_market_buy(
         );
 
         if let Some(view) = state.get_pack_at(building_x, building_y) {
-            crate::net::session::ui::gui_buttons::open_market_gui(
+            crate::net::session::ui::gui::market_gui::open_market_gui(
                 state, &tx, player_id, &view, "buycrys",
             );
         }
@@ -1416,7 +1416,7 @@ fn spawn_program_editor_open_task(
         let program = match task_state.db.get_program(program_id).await {
             Ok(Some(program)) => program,
             Ok(None) => {
-                crate::net::session::ui::gui_buttons::send_programmator_action_error(
+                crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                     &tx,
                     "Программа не найдена.",
                 );
@@ -1424,7 +1424,7 @@ fn spawn_program_editor_open_task(
             }
             Err(e) => {
                 tracing::error!(player_id = %player_id, program_id, error = ?e, "DB get failed for openprog");
-                crate::net::session::ui::gui_buttons::send_programmator_action_error(
+                crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                     &tx,
                     "Не удалось прочитать программу.",
                 );
@@ -1438,7 +1438,7 @@ fn spawn_program_editor_open_task(
                 owner_id = program.player_id,
                 "Rejected foreign program open"
             );
-            crate::net::session::ui::gui_buttons::send_programmator_action_error(
+            crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                 &tx,
                 "Программа недоступна.",
             );
@@ -1450,7 +1450,7 @@ fn spawn_program_editor_open_task(
             .await
         {
             tracing::error!(player_id = %player_id, program_id = program.id, error = ?e, "DB selected program update failed for openprog");
-            crate::net::session::ui::gui_buttons::send_programmator_action_error(
+            crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                 &tx,
                 "Не удалось выбрать программу.",
             );
@@ -1489,7 +1489,7 @@ fn spawn_program_editor_rename_task(
         let program = match task_state.db.get_program(program_id).await {
             Ok(Some(program)) => program,
             Ok(None) => {
-                crate::net::session::ui::gui_buttons::send_programmator_action_error(
+                crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                     &tx,
                     "Программа не найдена.",
                 );
@@ -1497,7 +1497,7 @@ fn spawn_program_editor_rename_task(
             }
             Err(e) => {
                 tracing::error!(player_id = %player_id, program_id, error = ?e, "DB get failed for rename program");
-                crate::net::session::ui::gui_buttons::send_programmator_action_error(
+                crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                     &tx,
                     "Не удалось прочитать программу.",
                 );
@@ -1511,7 +1511,7 @@ fn spawn_program_editor_rename_task(
                 owner_id = program.player_id,
                 "Rejected foreign program rename"
             );
-            crate::net::session::ui::gui_buttons::send_programmator_action_error(
+            crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                 &tx,
                 "Программа недоступна.",
             );
@@ -1519,7 +1519,7 @@ fn spawn_program_editor_rename_task(
         }
         if let Err(e) = task_state.db.rename_program(program_id, &name).await {
             tracing::error!(player_id = %player_id, program_id, error = ?e, "DB rename failed for program");
-            crate::net::session::ui::gui_buttons::send_programmator_action_error(
+            crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                 &tx,
                 "Не удалось переименовать программу.",
             );

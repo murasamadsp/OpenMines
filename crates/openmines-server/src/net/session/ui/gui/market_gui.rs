@@ -1,5 +1,4 @@
 #![allow(
-    warnings,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::option_if_let_else,
@@ -24,7 +23,7 @@
 
 use super::super::crystal_form::parse_amounts as parse_six_i64_fields;
 use crate::game::buildings::{BuildingFlags, BuildingStats, BuildingStorage};
-use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
+use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::market;
 use crate::game::player::{PlayerFlags, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;

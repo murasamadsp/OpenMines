@@ -1,5 +1,4 @@
 #![allow(
-    warnings,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::option_if_let_else,
@@ -22,9 +21,7 @@
     clippy::redundant_closure_for_method_calls
 )]
 
-use crate::game::buildings::{
-    BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
-};
+use crate::game::buildings::{BuildingCrafting, BuildingFlags};
 use crate::game::crafting;
 use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};

@@ -1,5 +1,4 @@
 #![allow(
-    warnings,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::option_if_let_else,
@@ -26,13 +25,12 @@ use super::super::gui_buttons::{close_player_window, parse_rich_bool, parse_rich
 use super::crafter_gui::open_crafter_gui;
 use super::market_gui::open_market_gui;
 use crate::game::buildings::{BuildingOwnership, BuildingStats, BuildingStorage};
-use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
+use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::logic::pack_command::{
     send_action_error as send_pack_action_error, send_state_error as send_pack_state_error,
     withdraw_state_ready as pack_withdraw_state_ready,
 };
-use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
-use crate::net::session::outbound::inventory_sync::send_inventory;
+use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
 
 // ─── Pack Operations ─────────────────────────────────────────────────────────

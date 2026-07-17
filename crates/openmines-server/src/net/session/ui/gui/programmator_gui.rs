@@ -1,5 +1,4 @@
 #![allow(
-    warnings,
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::option_if_let_else,

@@ -227,7 +227,7 @@ pub fn apply_persistence_completion(
                 crate::game::ProgramCreateResult::PermanentFailure { message } => {
                     tracing::error!(player_id = %request.player_id, error = message, "Program create permanently rejected by persistence");
                     if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
-                        crate::net::session::ui::gui_buttons::send_programmator_action_error(
+                        crate::net::session::ui::gui::programmator_gui::send_programmator_action_error(
                             &tx,
                             "Не удалось создать программу.",
                         );

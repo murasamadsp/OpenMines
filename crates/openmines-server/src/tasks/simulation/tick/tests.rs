@@ -1447,9 +1447,7 @@ fn test_ecs_bypass_baseline_guard() {
                 if path.is_dir() {
                     visit_dirs(&path, root, patterns, violations)?;
                 } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    if path.file_name().unwrap().to_str().unwrap().contains("test")
-                        || path.to_str().unwrap().contains("session/ui/gui")
-                    {
+                    if path.file_name().unwrap().to_str().unwrap().contains("test") {
                         continue;
                     }
                     let content = fs::read_to_string(&path)?;

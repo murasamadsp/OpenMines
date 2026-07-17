@@ -4,6 +4,33 @@ crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.r
 crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.read();
 crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs.write();
 crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs_write_profiled("player.connect.reuse_entity");
+crates/openmines-server/src/net/session/ui/gui/crafter_gui.rs >>> .modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/crafter_gui.rs >>> .query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/crafter_gui.rs >>> let mut ecs = state.ecs_write_profiled("gui.craft_claim");
+crates/openmines-server/src/net/session/ui/gui/crafter_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/crafter_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> .query_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> let ecs = state.ecs_read_profiled("market.sell_check");
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> let mut ecs = state.ecs_write_profiled("market.sell_building");
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> let mut ecs = state.ecs_write_profiled("market.sellall_building");
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> let player_info = state.query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/market_gui.rs >>> state.query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> .query_player_opt(pid, |ecs, e| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> let coords = state.query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> let p_info = state.query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> let p_info = state.query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/pack_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/programmator_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/programmator_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui/programmator_gui.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> .query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> .query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> .query_player_opt(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, entity| {
+crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, e| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let access = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let coords = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/web.rs >>> state.modify_player(pid, |ecs, entity| {

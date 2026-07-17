@@ -440,7 +440,7 @@ fn run_move_followup(
             crate::game::logic::dig_build::handle_dig(state, tx, pid, direction, programmatic);
         }
         MoveFollowup::OpenPack(view) => {
-            crate::net::session::ui::gui_buttons::open_pack_gui(state, tx, pid, &view);
+            crate::net::session::ui::gui::pack_gui::open_pack_gui(state, tx, pid, &view);
         }
     }
 }
