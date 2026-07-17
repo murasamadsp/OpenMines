@@ -120,28 +120,3 @@ quality_run_fmod_events() {
   echo "==> Checking FMOD event bank contract"
   scripts/check-fmod-events.sh
 }
-
-quality_run_feature_matrix() {
-  echo "==> Running feature matrix with cargo-hack"
-  RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo hack check --workspace --all-targets --feature-powerset --depth 2
-}
-
-quality_run_dependency_shear() {
-  echo "==> Running dependency placement check with cargo-shear"
-  cargo shear
-}
-
-quality_run_coverage() {
-  echo "==> Running LLVM coverage"
-  RUSTC_WRAPPER=sccache cargo llvm-cov nextest --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info
-}
-
-quality_run_mutants() {
-  echo "==> Running mutation tests"
-  RUSTC_WRAPPER=sccache cargo mutants --workspace --in-place
-}
-
-quality_run_vet() {
-  echo "==> Running supply-chain audit with cargo-vet"
-  cargo vet
-}

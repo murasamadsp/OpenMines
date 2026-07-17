@@ -1,6 +1,6 @@
-use crate::config::Config;
+use crate::config::{Config, Workload};
 use crate::protocol::{ty_frame, u_frame};
-use crate::stats::{ClientReport, ReaderReport, Stats};
+use crate::stats::{ActionKind, ClientReport, ReaderReport, Stats};
 use bytes::BytesMut;
 use openmines_protocol::Packet;
 use std::collections::VecDeque;
@@ -13,10 +13,16 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 struct ClientIo {
     out_tx: mpsc::UnboundedSender<Vec<u8>>,
-    pending: Arc<Mutex<VecDeque<Instant>>>,
+    pending: Arc<Mutex<VecDeque<PendingAction>>>,
     writer_shutdown_tx: Option<oneshot::Sender<()>>,
     writer: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<ReaderReport>,
+}
+
+#[derive(Clone, Copy)]
+pub struct PendingAction {
+    pub kind: ActionKind,
+    pub sent_at: Instant,
 }
 
 impl ClientIo {
@@ -47,7 +53,7 @@ impl ClientIo {
         let (ready_tx, ready_rx) = oneshot::channel::<()>();
         let stats_r = Arc::clone(stats);
         let out_tx_r = out_tx.clone();
-        let pending = Arc::new(Mutex::new(VecDeque::<Instant>::new()));
+        let pending = Arc::new(Mutex::new(VecDeque::<PendingAction>::new()));
         let pending_r = pending.clone();
         let reader = tokio::spawn(async move {
             let mut buf: Vec<u8> = Vec::with_capacity(8192);
@@ -67,6 +73,7 @@ impl ClientIo {
                     &mut sid_tx,
                     &mut ready_tx,
                     &pending_r,
+                    &stats_r,
                     &mut report.latencies_us,
                 );
                 stats_r
@@ -118,20 +125,40 @@ async fn connect_client(
     let (io, sid_rx, ready_rx) = ClientIo::spawn(stream, stats);
 
     // Regular-auth: token = MD5(hash + sid). Без auth-failure → IP не банится.
-    let Ok(Ok(sid)) = tokio::time::timeout(Duration::from_secs(10), sid_rx).await else {
-        io.abort().await;
-        stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
-        return None;
+    let sid = match tokio::time::timeout(Duration::from_secs(10), sid_rx).await {
+        Ok(Ok(sid)) => sid,
+        Ok(Err(_)) => {
+            stats.session_id_closed.fetch_add(1, Ordering::Relaxed);
+            io.abort().await;
+            stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Err(_) => {
+            stats.session_id_timeouts.fetch_add(1, Ordering::Relaxed);
+            io.abort().await;
+            stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
     };
     let token = format!("{:x}", md5::compute(format!("{hash}{sid}").as_bytes()));
     let _ = io
         .out_tx
         .send(u_frame(*b"AU", &format!("lt_{user_id}_{token}")));
-    let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(10), ready_rx).await else {
-        io.abort().await;
-        stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
-        return None;
-    };
+    match tokio::time::timeout(Duration::from_secs(10), ready_rx).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            stats.ready_closed.fetch_add(1, Ordering::Relaxed);
+            io.abort().await;
+            stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        Err(_) => {
+            stats.ready_timeouts.fetch_add(1, Ordering::Relaxed);
+            io.abort().await;
+            stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+    }
     stats.logged_in.fetch_add(1, Ordering::Relaxed);
     Some(io)
 }
@@ -140,14 +167,23 @@ async fn run_steady(
     io: &mut ClientIo,
     cfg: &Config,
     stats: &Stats,
+    phase_offset_ms: u64,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> (bool, Option<ReaderReport>) {
     if *shutdown_rx.borrow() {
         return (true, None);
     }
-    // Движение: Xmov с циклическим направлением. Даже отклонённые/корректируемые
-    // ходы нагружают dispatch+handle_move+broadcast.
     let start = Instant::now();
+    if phase_offset_ms > 0 {
+        tokio::select! {
+            biased;
+            changed = shutdown_rx.changed() => {
+                let _ = changed;
+                return (true, None);
+            }
+            () = tokio::time::sleep(Duration::from_millis(phase_offset_ms)) => {}
+        }
+    }
     let mut tick = tokio::time::interval(Duration::from_millis(cfg.move_ms));
     let mut seq: u32 = 0;
     loop {
@@ -164,17 +200,21 @@ async fn run_steady(
                 if io.out_tx.is_closed() {
                     return (false, None);
                 }
-                let dir = (seq % 4).to_string();
                 let time = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
-                io.pending.lock().expect("pending move lock").push_back(Instant::now());
-                if io.out_tx
-                    .send(ty_frame(*b"Xmov", time, 0, 0, dir.as_bytes()))
-                    .is_err()
-                {
-                    io.pending.lock().expect("pending move lock").pop_back();
+                let action = next_action(cfg.workload, seq);
+                let packet = action_packet(action, time, seq);
+                io.pending.lock().expect("pending action lock").push_back(PendingAction {
+                    kind: action,
+                    sent_at: Instant::now(),
+                });
+                if io.out_tx.send(packet).is_err() {
+                    io.pending.lock().expect("pending action lock").pop_back();
                     return (false, None);
                 }
-                stats.moves_sent.fetch_add(1, Ordering::Relaxed);
+                stats.actions.sent(action);
+                if action == ActionKind::Movement {
+                    stats.moves_sent.fetch_add(1, Ordering::Relaxed);
+                }
                 seq = seq.wrapping_add(1);
             }
         }
@@ -207,7 +247,7 @@ async fn finish_client(
 ) -> ClientReport {
     if graceful_shutdown {
         let drain_deadline = tokio::time::Instant::now() + Duration::from_secs(cfg.drain_secs);
-        while !io.pending.lock().expect("pending move lock").is_empty() {
+        while !io.pending.lock().expect("pending action lock").is_empty() {
             if tokio::time::Instant::now() >= drain_deadline {
                 stats.drain_timeouts.fetch_add(1, Ordering::Relaxed);
                 break;
@@ -239,8 +279,49 @@ async fn finish_client(
         stats.unexpected_disconnects.fetch_add(1, Ordering::Relaxed);
     }
 
+    let rejected: Vec<_> = {
+        let mut pending = io.pending.lock().expect("pending action lock");
+        pending.drain(..).collect()
+    };
+    for action in rejected {
+        stats.actions.rejected(action.kind);
+    }
+
     ClientReport {
         latencies_us: reader_report.map_or_else(Vec::new, |report| report.latencies_us),
+    }
+}
+
+pub const fn next_action(workload: Workload, sequence: u32) -> ActionKind {
+    match workload {
+        Workload::Movement => ActionKind::Movement,
+        Workload::Dig => ActionKind::Dig,
+        Workload::Build => ActionKind::Build,
+        Workload::BuildCycle => {
+            // A green block has durability 1 while baseline digging removes 0.2 per
+            // accepted hit. Twelve attempts leave room for 200ms cooldown jitter.
+            if sequence.is_multiple_of(13) {
+                ActionKind::Build
+            } else {
+                ActionKind::Dig
+            }
+        }
+        Workload::Mixed => match sequence % 4 {
+            0 | 3 => ActionKind::Movement,
+            1 => ActionKind::Dig,
+            _ => ActionKind::Build,
+        },
+    }
+}
+
+fn action_packet(action: ActionKind, time: u32, sequence: u32) -> Vec<u8> {
+    match action {
+        ActionKind::Movement => {
+            let dir = (sequence % 4).to_string();
+            ty_frame(*b"Xmov", time, 0, 0, dir.as_bytes())
+        }
+        ActionKind::Dig => ty_frame(*b"Xdig", time, 0, 0, b"0"),
+        ActionKind::Build => ty_frame(*b"Xbld", time, 0, 0, b"0G"),
     }
 }
 
@@ -258,9 +339,27 @@ pub async fn run_client(
     if !wait_for_steady_start(&mut start_rx, &mut shutdown_rx).await {
         return finish_client(io, &cfg, &stats, true, None).await;
     }
+    let phase_offset_ms = action_phase_offset_ms(user_id, cfg.move_ms, cfg.synchronized_actions);
     let (graceful_shutdown, reader_report) =
-        run_steady(&mut io, &cfg, &stats, &mut shutdown_rx).await;
+        run_steady(&mut io, &cfg, &stats, phase_offset_ms, &mut shutdown_rx).await;
     finish_client(io, &cfg, &stats, graceful_shutdown, reader_report).await
+}
+
+const fn action_phase_offset_ms(user_id: i64, move_ms: u64, synchronized: bool) -> u64 {
+    if synchronized || move_ms <= 1 {
+        0
+    } else {
+        user_id.unsigned_abs() % move_ms
+    }
+}
+
+#[cfg(test)]
+pub const fn action_phase_offset_ms_for_test(
+    user_id: i64,
+    move_ms: u64,
+    synchronized: bool,
+) -> u64 {
+    action_phase_offset_ms(user_id, move_ms, synchronized)
 }
 
 /// Вынуть из буфера все полные фреймы; ловит `sid` из AU, отвечает PO на PI.
@@ -269,7 +368,8 @@ pub fn drain_frames(
     out: &mpsc::UnboundedSender<Vec<u8>>,
     sid_tx: &mut Option<oneshot::Sender<String>>,
     ready_tx: &mut Option<oneshot::Sender<()>>,
-    pending: &Mutex<VecDeque<Instant>>,
+    pending: &Mutex<VecDeque<PendingAction>>,
+    stats: &Stats,
     latencies_us: &mut Vec<u64>,
 ) -> u64 {
     let mut effects = 0u64;
@@ -310,13 +410,99 @@ pub fn drain_frames(
             )
             .unwrap_or(u32::MAX);
             let _ = out.send(u_frame(*b"PO", &format!("0:{now}")));
-        } else if packet.event_name == *b"@T"
-            && let Some(sent_at) = pending.lock().expect("pending move lock").pop_front()
-        {
-            latencies_us.push(u64::try_from(sent_at.elapsed().as_micros()).unwrap_or(u64::MAX));
-            effects = effects.saturating_add(1);
+        } else if packet.event_name == *b"@T" {
+            effects = effects.saturating_add(acknowledge_action(
+                pending,
+                stats,
+                ActionKind::Movement,
+                latencies_us,
+            ));
+        } else if packet.event_name == *b"HB" {
+            effects = effects.saturating_add(acknowledge_first_visual_action(
+                pending,
+                stats,
+                latencies_us,
+            ));
+        } else if packet.event_name == *b"@B" {
+            effects = effects.saturating_add(acknowledge_first_economy_action(
+                pending,
+                stats,
+                latencies_us,
+            ));
         }
         let consumed = before - frames.len();
         buf.drain(..consumed);
     }
+}
+
+fn acknowledge_action(
+    pending: &Mutex<VecDeque<PendingAction>>,
+    stats: &Stats,
+    expected: ActionKind,
+    latencies_us: &mut Vec<u64>,
+) -> u64 {
+    let action = {
+        let mut pending = pending.lock().expect("pending action lock");
+        let Some(index) = pending.iter().position(|action| action.kind == expected) else {
+            return 0;
+        };
+        pending.remove(index)
+    };
+    let Some(action) = action else {
+        return 0;
+    };
+    stats.actions.acknowledged(action.kind);
+    latencies_us.push(u64::try_from(action.sent_at.elapsed().as_micros()).unwrap_or(u64::MAX));
+    1
+}
+
+fn acknowledge_first_visual_action(
+    pending: &Mutex<VecDeque<PendingAction>>,
+    stats: &Stats,
+    latencies_us: &mut Vec<u64>,
+) -> u64 {
+    let action = {
+        let mut pending = pending.lock().expect("pending action lock");
+        let Some(index) = pending
+            .iter()
+            .position(|action| matches!(action.kind, ActionKind::Movement | ActionKind::Dig))
+        else {
+            return 0;
+        };
+        pending.remove(index)
+    };
+    let Some(action) = action else {
+        return 0;
+    };
+    stats.actions.acknowledged(action.kind);
+    latencies_us.push(u64::try_from(action.sent_at.elapsed().as_micros()).unwrap_or(u64::MAX));
+    1
+}
+
+fn acknowledge_first_economy_action(
+    pending: &Mutex<VecDeque<PendingAction>>,
+    stats: &Stats,
+    latencies_us: &mut Vec<u64>,
+) -> u64 {
+    let action = {
+        let mut pending = pending.lock().expect("pending action lock");
+        let index = pending
+            .iter()
+            .position(|action| action.kind == ActionKind::Build)
+            .or_else(|| {
+                pending
+                    .iter()
+                    .position(|action| action.kind == ActionKind::Dig)
+            });
+        let Some(index) = index else {
+            return 0;
+        };
+        pending.remove(index)
+    };
+    let Some(action) = action else {
+        return 0;
+    };
+    stats.actions.acknowledged(action.kind);
+    latencies_us.push(u64::try_from(action.sent_at.elapsed().as_micros()).unwrap_or(u64::MAX));
+    1
 }

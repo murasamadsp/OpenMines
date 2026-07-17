@@ -1,7 +1,7 @@
+use crate::game::PlayerId;
+use crate::game::logic::kernel_context::KernelContext;
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::skills::OnHealth;
-use crate::game::{GameState, PlayerId};
-use std::sync::Arc;
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum HealResult {
@@ -18,9 +18,9 @@ pub enum HealResult {
     MissingEntity,
 }
 
-pub fn apply_heal(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) -> HealResult {
-    let ctx = crate::game::ExpContext::from_state(state);
-    state
+pub fn apply_heal(context: &KernelContext<'_>, pid: PlayerId, programmatic: bool) -> HealResult {
+    let ctx = context.exp_context();
+    context
         .modify_player(pid, |ecs, entity| {
             let Some(prog) = ecs.get::<crate::game::programmator::ProgrammatorState>(entity) else {
                 tracing::error!(player_id = %pid, component = "ProgrammatorState", "Player component missing for heal");

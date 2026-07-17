@@ -1,3 +1,13 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc
+)]
 use super::*;
 use crate::game::ScheduleActivity;
 use crate::tasks::simulation::commands::{
@@ -1385,4 +1395,149 @@ fn building_is_dirty(state: &Arc<GameState>, entity: bevy_ecs::prelude::Entity) 
         .read()
         .get::<crate::game::BuildingFlags>(entity)
         .is_some_and(|flags| flags.dirty)
+}
+
+#[test]
+fn test_ecs_bypass_baseline_guard() {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let net_dir = root.join("src/net");
+    let baseline_path = root
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("docs/reference/ecs_bypass_baseline.txt");
+
+    let patterns = [
+        "state.ecs",
+        "state.ecs_read_profiled",
+        "state.ecs_write_profiled",
+        "query_player",
+        "modify_player",
+    ];
+
+    let mut current_violations = Vec::new();
+
+    fn brace_delta(line: &str) -> i32 {
+        let clean = line.split("//").next().unwrap_or("");
+        let mut delta = 0;
+        for c in clean.chars() {
+            if c == '{' {
+                delta += 1;
+            } else if c == '}' {
+                delta -= 1;
+            }
+        }
+        delta
+    }
+
+    fn visit_dirs(
+        dir: &std::path::Path,
+        root: &std::path::Path,
+        patterns: &[&str],
+        violations: &mut Vec<String>,
+    ) -> std::io::Result<()> {
+        if dir.is_dir() {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    visit_dirs(&path, root, patterns, violations)?;
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    if path.file_name().unwrap().to_str().unwrap().contains("test") {
+                        continue;
+                    }
+                    let content = fs::read_to_string(&path)?;
+                    let lines: Vec<&str> = content.lines().collect();
+
+                    let mut depth = 0;
+                    let mut cfg_test_next = false;
+                    let mut test_depth = None;
+
+                    for (lineno, line) in lines.iter().enumerate() {
+                        let _ = lineno + 1;
+                        let stripped = line.trim();
+                        let delta = brace_delta(stripped);
+
+                        if test_depth.is_some() && depth < test_depth.unwrap() {
+                            test_depth = None;
+                        }
+                        if stripped.starts_with("#[cfg(test)]") {
+                            cfg_test_next = true;
+                        }
+
+                        let starts_test_mod = cfg_test_next && stripped.contains("mod tests");
+                        if starts_test_mod {
+                            test_depth = Some(depth + std::cmp::max(delta, 1));
+                            cfg_test_next = false;
+                        } else if !stripped.is_empty() && !stripped.starts_with("#[") {
+                            cfg_test_next = false;
+                        }
+
+                        let in_test_mod = test_depth.is_some() && depth >= test_depth.unwrap();
+                        if !in_test_mod
+                            && !stripped.starts_with("//")
+                            && !stripped.starts_with("/*")
+                        {
+                            for pat in patterns {
+                                if stripped.contains(pat) {
+                                    let rel_path = path
+                                        .strip_prefix(root.parent().unwrap().parent().unwrap())
+                                        .unwrap();
+                                    violations.push(format!(
+                                        "{} >>> {}",
+                                        rel_path.display(),
+                                        stripped
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                        depth += delta;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    visit_dirs(&net_dir, &root, &patterns, &mut current_violations).unwrap();
+    current_violations.sort();
+
+    if std::env::var("GENERATE_ECS_BASELINE").is_ok() || !baseline_path.exists() {
+        fs::create_dir_all(baseline_path.parent().unwrap()).unwrap();
+        let content = current_violations.join("\n") + "\n";
+        fs::write(&baseline_path, content).unwrap();
+        println!(
+            "Generated {} baseline exceptions in {}.",
+            current_violations.len(),
+            baseline_path.display()
+        );
+        return;
+    }
+
+    let baseline_content = fs::read_to_string(&baseline_path).unwrap();
+
+    let baseline_violations: Vec<String> = baseline_content
+        .lines()
+        .map(std::string::ToString::to_string)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let mut new_violations: Vec<&str> = Vec::new();
+    for v in &current_violations {
+        if !baseline_violations.contains(v) {
+            new_violations.push(v);
+        }
+    }
+
+    assert!(
+        new_violations.is_empty(),
+        "ERROR: New direct ECS accesses detected in net/ layer which are not in baseline:\n{}\n\
+         Please refactor these to use the typed command pipeline.",
+        new_violations.join("\n")
+    )
 }

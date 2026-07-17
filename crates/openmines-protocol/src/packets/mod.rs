@@ -1,8 +1,5 @@
-#[path = "packets/client.rs"]
 mod client;
-#[path = "packets/hub.rs"]
 mod hub;
-#[path = "packets/social.rs"]
 mod social;
 
 pub use client::*;
@@ -358,5 +355,4 @@ pub fn decode_whoi(data: &[u8]) -> Option<Vec<i32>> {
 }
 
 #[cfg(test)]
-#[path = "packets/tests.rs"]
 mod tests;

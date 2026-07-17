@@ -5,8 +5,6 @@ use super::pack_command::{
     withdraw_state_ready as pack_withdraw_state_ready,
 };
 use super::settings::apply as handle_settings_save;
-use super::spot::open as open_spot_gui;
-use super::storage::{apply as handle_storage_transfer, open as open_storage_gui};
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
 };
@@ -80,9 +78,9 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
             crate::net::session::social::buildings::handle_buildings_menu(state, tx, pid);
         }
         "createprog" => open_create_prog_dialog(state, tx, pid),
-        "prog" => {
-            handle_programmer_button(state, tx, pid, button).await;
-        }
+        // Runtime routes this action through `PlayerCommand::Gui` before this
+        // legacy async dispatcher, where it becomes durable `ProgramMenu`.
+        "prog" => {}
         "clan_create_view" => handle_clan_create_view(state, tx, pid),
         // Market tab switching (C# tabs have action strings)
         "sellcrys" => handle_market_tab_switch(state, tx, pid, "sellcrys").await,
@@ -152,10 +150,6 @@ pub fn handle_gui_button_sync_fast_path(
 
     if let Some(rest) = button.strip_prefix("pack_op:") {
         return handle_pack_operation_sync_fast_path(state, tx, pid, rest);
-    }
-    if let Some(rest) = button.strip_prefix("transfer:") {
-        handle_storage_transfer(state, tx, pid, rest);
-        return true;
     }
     if let Some(rest) = button.strip_prefix("craft_recipe:") {
         handle_craft_recipe_view(state, tx, pid, rest);
@@ -295,8 +289,6 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         crate::net::session::social::buildings::handle_place_building(state, tx, pid, rest).await;
     } else if let Some(rest) = button.strip_prefix("pack_op:") {
         handle_pack_operation(state, tx, pid, rest).await;
-    } else if let Some(rest) = button.strip_prefix("transfer:") {
-        handle_storage_transfer(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_recipe:") {
         handle_craft_recipe_view(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_start:") {
@@ -375,34 +367,8 @@ pub fn is_clan_button(button: &str) -> bool {
             | "clan_members"
             | "clan_invite_list"
             | "clan_invites_view"
-            | "clan_leave"
     ) || button.starts_with("clan_view:")
         || button.starts_with("pack_op:open:")
-        || button.starts_with("clan_request:")
-        || button.starts_with("clan_accept:")
-        || button.starts_with("clan_invite_send:")
-        || button.starts_with("clan_invite_accept:")
-        || button.starts_with("clan_promote:")
-        || button.starts_with("clan_kick_id:")
-        || button.starts_with("clan_decline:")
-        || button.starts_with("clan_invite_decline:")
-}
-
-pub fn is_programmer_button(button: &str) -> bool {
-    button == "prog"
-}
-
-pub async fn handle_programmer_button(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    button: &str,
-) -> bool {
-    if button != "prog" {
-        return false;
-    }
-    crate::net::session::social::buildings::handle_programmator_pope_menu(state, tx, pid).await;
-    true
 }
 
 pub async fn handle_clan_button(
@@ -438,10 +404,6 @@ pub async fn handle_clan_button(
             crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid).await;
             true
         }
-        "clan_leave" => {
-            crate::net::session::social::clans::handle_clan_leave(state, tx, pid).await;
-            true
-        }
         _ => handle_clan_button_with_id(state, tx, pid, button).await,
     }
 }
@@ -461,31 +423,6 @@ async fn handle_clan_button_with_id(
     match prefix {
         "clan_view" => {
             crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id).await;
-        }
-        "clan_request" => {
-            crate::net::session::social::clans::handle_clan_join_request(state, tx, pid, id).await;
-        }
-        "clan_accept" => {
-            crate::net::session::social::clans::handle_clan_accept(state, tx, pid, id).await;
-        }
-        "clan_invite_send" => {
-            crate::net::session::social::clans::handle_clan_invite_send(state, tx, pid, id).await;
-        }
-        "clan_invite_accept" => {
-            crate::net::session::social::clans::handle_clan_invite_accept(state, tx, pid, id).await;
-        }
-        "clan_promote" => {
-            crate::net::session::social::clans::handle_clan_promote(state, tx, pid, id).await;
-        }
-        "clan_kick_id" => {
-            crate::net::session::social::clans::handle_clan_kick(state, tx, pid, id).await;
-        }
-        "clan_decline" => {
-            crate::net::session::social::clans::handle_clan_decline(state, tx, pid, id).await;
-        }
-        "clan_invite_decline" => {
-            crate::net::session::social::clans::handle_clan_invite_decline(state, tx, pid, id)
-                .await;
         }
         _ => return false,
     }
@@ -746,11 +683,12 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         return;
     }
     if view.pack_type == PackType::Storage {
-        open_storage_gui(state, tx, pid, view);
         return;
     }
+    // Teleport windows are emitted as immutable `GuiView` effects from the
+    // command/movement paths. This legacy direct-delivery helper must not
+    // reintroduce a second delivery path.
     if view.pack_type == PackType::Teleport {
-        open_teleport_gui(state, tx, pid, view);
         return;
     }
     if view.pack_type == PackType::Craft {
@@ -762,7 +700,6 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         return;
     }
     if view.pack_type == PackType::Spot {
-        open_spot_gui(state, tx, pid, view);
         return;
     }
     if view.pack_type == PackType::Up {
@@ -1521,7 +1458,7 @@ fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: 
     show_crafter_recipes(tx, &view);
 }
 
-use super::teleport::{apply as handle_teleport_action, open as open_teleport_gui};
+use super::teleport::apply as handle_teleport_action;
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
 
@@ -2768,7 +2705,8 @@ mod tests {
     #[tokio::test]
     async fn storage_transfer_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_storage_test_state("storage_transfer_missing_player_flags").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
         drain_events(&mut rx);
 
         let player_entity = test.state.get_player_entity(test.player.id.into()).unwrap();
@@ -2783,13 +2721,31 @@ mod tests {
         }
         let before_player = player_crystals(&test.state, test.player.id.into());
 
-        handle_storage_transfer(&test.state, &tx, test.player.id.into(), "50:0:0:0:0:0");
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("transfer:50:0:0:0:0:0".to_owned()),
+            },
+        );
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
+        assert!(
+            drain_events(&mut rx).is_empty(),
+            "dispatch must not write wire"
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("missing storage state must return one error packet effect");
+        };
+        assert_eq!(packets.len(), 1);
+        let mut packet_bytes = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = crate::protocol::Packet::try_decode(&mut packet_bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.event_str(), "OK");
         assert_eq!(
-            events[0].1,
+            packet.payload,
             "ЗДАНИЕ#Состояние здания недоступно.".as_bytes()
         );
         assert_eq!(
@@ -2803,13 +2759,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn storage_transfer_returns_basket_then_refreshed_gui_effects() {
+        let test = make_storage_test_state("storage_transfer_effects").await;
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
+        test.state
+            .ecs
+            .write()
+            .get_mut::<BuildingStorage>(building_entity)
+            .unwrap()
+            .crystals = [25, 0, 0, 0, 0, 0];
+        set_current_window(&test.state, player_id, Some("blds"));
+
+        let open_effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+        assert!(matches!(
+            open_effects.events.as_slice(),
+            [crate::game::GameEvent::GuiView {
+                view: crate::game::GuiView::Storage(_),
+                ..
+            }]
+        ));
+        assert_eq!(
+            current_window(&test.state, player_id).as_deref(),
+            Some("pack:10:10")
+        );
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("transfer:50:0:0:0:0:0".to_owned()),
+            },
+        );
+
+        assert!(
+            drain_events(&mut rx).is_empty(),
+            "dispatch must not write wire"
+        );
+        let [
+            crate::game::GameEvent::SessionBatch { packets, .. },
+            crate::game::GameEvent::GuiView {
+                view: crate::game::GuiView::Storage(view),
+                ..
+            },
+        ] = effects.events.as_slice()
+        else {
+            panic!("storage transfer must return basket before refreshed GUI");
+        };
+        let mut packet_bytes = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = crate::protocol::Packet::try_decode(&mut packet_bytes)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.event_str(), "@B");
+        assert_eq!(packet.payload, b"75:0:0:0:0:0:1".as_slice());
+        assert!(view.crystal_lines.iter().any(|line| line == "0:0:125:50:"));
+        assert_eq!(player_crystals(&test.state, player_id), [75, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            market_storage_crystals(&test.state, 10, 10),
+            [50, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[tokio::test]
     async fn teleport_gui_uses_list_rows_for_many_destinations_not_horb_buttons() {
         let test = make_teleport_test_state("tp_many_destinations", 8).await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
         drain_events(&mut rx);
+        set_current_window(&test.state, player_id, Some("blds"));
 
-        let view = test.state.get_pack_at(10, 10).unwrap();
-        open_teleport_gui(&test.state, &tx, test.player.id.into(), &view);
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::OpenPack { x: 10, y: 10 },
+            },
+        );
+        let [
+            crate::game::GameEvent::GuiView {
+                view: crate::game::GuiView::Teleport(view),
+                ..
+            },
+        ] = effects.events.as_slice()
+        else {
+            panic!("teleport open must return one immutable GUI view");
+        };
+        crate::net::presentation::deliver_gui_view_for_test(
+            &test.state,
+            session_id,
+            player_id,
+            crate::game::GuiView::Teleport(view.clone()),
+        );
 
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
@@ -2921,6 +2974,49 @@ mod tests {
         );
 
         assert!(drain_events(&mut rx).is_empty());
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::GuiView {
+                session_id: event_session,
+                player_id: event_player,
+                view: crate::game::GuiView::Close,
+            }] if *event_session == session_id && *event_player == player_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn gui_exit_resets_window_state_and_returns_close_effect() {
+        let test = make_teleport_test_state("gui_exit_effect", 1).await;
+        let player_id = PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        set_current_window(&test.state, player_id, Some("pack:10:10"));
+        let _ = test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<PlayerInventory>(entity)?.selected = 3;
+            Some(())
+        });
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("exit".to_owned()),
+            },
+        );
+
+        assert!(
+            drain_events(&mut rx).is_empty(),
+            "dispatch must not write GUI wire"
+        );
+        assert_eq!(current_window(&test.state, player_id), None);
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                Some(ecs.get::<PlayerInventory>(entity)?.selected)
+            }),
+            Some(-1)
+        );
         assert!(matches!(
             effects.events.as_slice(),
             [crate::game::GameEvent::GuiView {

@@ -1,6 +1,6 @@
 # Tools Audit
 
-Дата актуализации: 2026-07-07.
+Дата актуализации: 2026-07-17.
 
 Цель: привести `scripts/` и `tools/` к понятному dev-контуру без удаления
 полезных отладочных инструментов вслепую.
@@ -15,6 +15,7 @@
 | `scripts/ci-quality.sh` | active | CI/full quality gate. | Оставить. |
 | `scripts/bootstrap-quality.sh` | active | Первичная установка cargo tooling и hooksPath. | Оставить. |
 | `scripts/dev-server.sh` | active | Локальный Unity-dev сервер в `.local/`. | Оставить. |
+| `scripts/dev-patch-config.py` | active | Патчит `configs/config.json` для локального dev-окружения (порт, chunks, log filter). Вызывается из `dev-server.sh`. | Оставить. |
 | `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
 | `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
 | `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить как явный gate sound-трека; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
@@ -26,7 +27,11 @@
 | `scripts/wipe-players.sh` | dangerous/dev | Деструктивная dev-утилита для игроков. | Требует отдельной проверки перед использованием. |
 | `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
 | `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures в сервере и sync-lock guard через `.await`. | Оставить в `arch-guard` и pre-commit. |
+| `scripts/ownership-audit-lock-guard.py` | active | Python-реализация guard-across-await детектора. Вызывается из `ownership-audit.sh`. | Оставить рядом с `ownership-audit.sh`. |
 | `scripts/ub-audit.sh` | active | Static Rust soundness guard: allowlist для `unsafe`, запрет raw pointer/FFI зон и adjacent atomics без padding в server hot structs. | Оставить в `arch-guard` и pre-commit. |
+| `scripts/ub-audit-unsafe.py` | active | Python-реализация unsafe allowlist checker. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
+| `scripts/ub-audit-atomics.py` | active | Python-реализация adjacent-atomics detector. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
+| `scripts/ecs-bypass-guard.py` | active | ECS bypass baseline checker (генерация и проверка). Вызывается из `arch-guard.sh`. | Оставить. |
 
 ## Rust Tools
 

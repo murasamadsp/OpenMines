@@ -9,23 +9,46 @@ pub async fn seed_players(
     database_path: &str,
     count: u32,
     player_prefix: &str,
+    fixture: bool,
 ) -> Result<Vec<(i64, String)>, anyhow::Error> {
     use sqlx::Row;
 
+    const FIXTURE_COLUMNS: u32 = 32;
+    const FIXTURE_CAPACITY: u32 = FIXTURE_COLUMNS * FIXTURE_COLUMNS;
+    if fixture && count > FIXTURE_CAPACITY {
+        anyhow::bail!(
+            "loadtest fixture supports at most {FIXTURE_CAPACITY} players, received {count}"
+        );
+    }
     let database = openmines_storage::Database::open(database_path).await?;
     let mut credentials = Vec::with_capacity(count as usize);
     let mut transaction = database.pool.begin().await?;
     for index in 0..count {
         let name = format!("{player_prefix}_{index}");
         let hash = format!("{player_prefix}_hash_{index}");
-        let row = sqlx::query(
-            "INSERT INTO players (name, hash) VALUES (?1, ?2) \
-             ON CONFLICT(name) DO UPDATE SET hash = excluded.hash RETURNING id",
-        )
-        .bind(&name)
-        .bind(&hash)
-        .fetch_one(&mut *transaction)
-        .await?;
+        let row = if fixture {
+            let x = 2 + i64::from(index % FIXTURE_COLUMNS) * 4;
+            let y = 2 + i64::from(index / FIXTURE_COLUMNS) * 4;
+            sqlx::query(
+                "INSERT INTO players (name, hash, x, y, dir, cry_green) VALUES (?1, ?2, ?3, ?4, 0, 100000) \
+                 ON CONFLICT(name) DO UPDATE SET hash = excluded.hash, x = excluded.x, y = excluded.y, dir = excluded.dir, cry_green = excluded.cry_green RETURNING id",
+            )
+            .bind(&name)
+            .bind(&hash)
+            .bind(x)
+            .bind(y)
+            .fetch_one(&mut *transaction)
+            .await?
+        } else {
+            sqlx::query(
+                "INSERT INTO players (name, hash) VALUES (?1, ?2) \
+                 ON CONFLICT(name) DO UPDATE SET hash = excluded.hash RETURNING id",
+            )
+            .bind(&name)
+            .bind(&hash)
+            .fetch_one(&mut *transaction)
+            .await?
+        };
         credentials.push((row.get::<i64, _>(0), hash));
     }
     transaction.commit().await?;

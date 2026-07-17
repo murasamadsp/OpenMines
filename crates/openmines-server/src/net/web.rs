@@ -36,7 +36,7 @@ struct ActivePlayerInfo {
     y: i32,
     health: i32,
     max_health: i32,
-    crystals: [i64; 6],
+    crystals: i64,
     money: i64,
     creds: i64,
     role: i32,
@@ -144,28 +144,23 @@ async fn handle_auth(
 }
 
 async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse {
-    let mut active_players = Vec::new();
-    let ecs = state.ecs.read();
-    for pid in state.active_player_ids() {
-        if let Some(entity) = state.get_player_entity(pid)
-            && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
-            && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
-            && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
-        {
-            active_players.push(ActivePlayerInfo {
-                id: pid.0,
-                name: meta.name.clone(),
-                x: pos.x,
-                y: pos.y,
-                health: p_stats.health,
-                max_health: p_stats.max_health,
-                crystals: p_stats.crystals,
-                money: p_stats.money,
-                creds: p_stats.creds,
-                role: p_stats.role,
-            });
-        }
-    }
+    let snapshot = state.web_snapshot.read().clone();
+    let active_players = snapshot
+        .players
+        .iter()
+        .map(|p| ActivePlayerInfo {
+            id: p.id.0,
+            name: p.name.clone(),
+            x: p.x,
+            y: p.y,
+            health: p.health,
+            max_health: p.max_health,
+            crystals: p.crystals,
+            money: p.money,
+            creds: p.creds,
+            role: p.role,
+        })
+        .collect::<Vec<_>>();
 
     let mut market_prices = Vec::new();
     for i in 0..6 {
@@ -191,43 +186,30 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let width = state.world.cells_width();
     let height = state.world.cells_height();
 
-    let mut ecs = state.ecs_write_profiled("web.map");
+    let snapshot = state.web_snapshot.read().clone();
+    let players = snapshot
+        .players
+        .iter()
+        .map(|p| MapPlayer {
+            id: p.id.0,
+            name: p.name.clone(),
+            x: p.x,
+            y: p.y,
+        })
+        .collect::<Vec<_>>();
 
-    let mut players = Vec::new();
-    for pid in state.active_player_ids() {
-        if let Some(entity) = state.get_player_entity(pid)
-            && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
-            && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
-        {
-            players.push(MapPlayer {
-                id: pid.0,
-                name: meta.name.clone(),
-                x: pos.x,
-                y: pos.y,
-            });
-        }
-    }
-
-    let mut b_query = ecs.query::<(
-        &crate::game::buildings::GridPosition,
-        &crate::game::buildings::BuildingMetadata,
-        &crate::game::buildings::BuildingStats,
-        &crate::game::buildings::BuildingOwnership,
-    )>();
-
-    let mut buildings = Vec::new();
-    for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
-        buildings.push(MapBuilding {
-            x: grid_pos.x,
-            y: grid_pos.y,
-            pack_type: format!("{:?}", metadata.pack_type),
-            hp: stats.hp,
-            max_hp: stats.max_hp,
-            clan_id: ownership.clan_id,
-        });
-    }
-
-    drop(ecs);
+    let buildings = snapshot
+        .buildings
+        .iter()
+        .map(|b| MapBuilding {
+            x: b.x,
+            y: b.y,
+            pack_type: format!("{:?}", b.pack_type),
+            hp: b.hp,
+            max_hp: b.max_hp,
+            clan_id: b.clan_id,
+        })
+        .collect::<Vec<_>>();
 
     Json(MapData {
         width,

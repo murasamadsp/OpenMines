@@ -188,7 +188,7 @@ impl Database {
 
         let result = sqlx::query(
             "UPDATE players SET clan_id = ?1, clan_rank = ?2
-             WHERE id = ?3 AND EXISTS (
+             WHERE id = ?3 AND clan_id IS NULL AND EXISTS (
                  SELECT 1 FROM clan_requests WHERE clan_id = ?1 AND player_id = ?3
              )",
         )
@@ -273,7 +273,45 @@ impl Database {
     }
 
     pub async fn accept_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()> {
-        self.accept_clan_request(clan_id, player_id).await
+        let mut tx = self.pool.begin().await?;
+
+        let updated = sqlx::query(
+            "UPDATE players SET clan_id = ?1, clan_rank = ?2
+             WHERE id = ?3 AND clan_id IS NULL AND EXISTS (
+                 SELECT 1 FROM clan_invites WHERE clan_id = ?1 AND player_id = ?3
+             )",
+        )
+        .bind(clan_id)
+        .bind(ClanRank::Member as i32)
+        .bind(player_id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            bail!("no pending invite for player {player_id} to clan {clan_id}");
+        }
+
+        let invite_delete =
+            sqlx::query("DELETE FROM clan_invites WHERE clan_id = ?1 AND player_id = ?2")
+                .bind(clan_id)
+                .bind(player_id)
+                .execute(&mut *tx)
+                .await?;
+        if invite_delete.rows_affected() != 1 {
+            tx.rollback().await?;
+            bail!(
+                "accept clan invite clan_id={clan_id}, player_id={player_id}: delete affected {} rows",
+                invite_delete.rows_affected()
+            );
+        }
+
+        sqlx::query("DELETE FROM clan_requests WHERE player_id = ?1")
+            .bind(player_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(())
     }
 
     pub async fn decline_clan_invite(&self, clan_id: i32, player_id: i32) -> Result<()> {
@@ -384,5 +422,34 @@ mod tests {
         database.add_clan_invite(1, player.id).await.unwrap();
         let err = database.add_clan_invite(1, player.id).await.unwrap_err();
         assert!(err.to_string().contains("UNIQUE"));
+    }
+
+    #[tokio::test]
+    async fn accepting_invite_uses_invite_edge_and_joins_player() {
+        let database = temp_database("clan_accept_invite").await;
+        let owner = database.create_player("owner", "p", "h").await.unwrap();
+        let invited = database.create_player("invited", "p", "h").await.unwrap();
+        database
+            .create_clan(1, "name", "TAG", owner.id)
+            .await
+            .unwrap();
+        database.add_clan_invite(1, invited.id).await.unwrap();
+
+        database.accept_clan_invite(1, invited.id).await.unwrap();
+
+        let invited = database
+            .get_player_by_id(invited.id)
+            .await
+            .unwrap()
+            .expect("invited player remains present");
+        assert_eq!(invited.clan_id, Some(1));
+        assert_eq!(invited.clan_rank, ClanRank::Member as i32);
+        assert!(
+            database
+                .get_player_invites(invited.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

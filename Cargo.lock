@@ -1752,9 +1752,11 @@ dependencies = [
 name = "openmines-macros"
 version = "0.0.2"
 dependencies = [
+ "openmines-protocol",
  "proc-macro2",
  "quote",
  "rstml",
+ "serde_json",
  "syn 2.0.118",
 ]
 

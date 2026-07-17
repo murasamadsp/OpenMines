@@ -1,6 +1,55 @@
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActionKind {
+    Movement,
+    Dig,
+    Build,
+}
+
+#[derive(Default)]
+pub struct ActionStats {
+    pub movement_sent: AtomicU64,
+    pub dig_sent: AtomicU64,
+    pub build_sent: AtomicU64,
+    pub movement_acked: AtomicU64,
+    pub dig_acked: AtomicU64,
+    pub build_acked: AtomicU64,
+    pub movement_rejected: AtomicU64,
+    pub dig_rejected: AtomicU64,
+    pub build_rejected: AtomicU64,
+}
+
+impl ActionStats {
+    pub fn sent(&self, action: ActionKind) {
+        let counter = match action {
+            ActionKind::Movement => &self.movement_sent,
+            ActionKind::Dig => &self.dig_sent,
+            ActionKind::Build => &self.build_sent,
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn acknowledged(&self, action: ActionKind) {
+        let counter = match action {
+            ActionKind::Movement => &self.movement_acked,
+            ActionKind::Dig => &self.dig_acked,
+            ActionKind::Build => &self.build_acked,
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn rejected(&self, action: ActionKind) {
+        let counter = match action {
+            ActionKind::Movement => &self.movement_rejected,
+            ActionKind::Dig => &self.dig_rejected,
+            ActionKind::Build => &self.build_rejected,
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 #[derive(Default)]
 pub struct Stats {
     pub phase: AtomicU64,
@@ -12,6 +61,11 @@ pub struct Stats {
     pub unexpected_disconnects: AtomicU64,
     pub drain_timeouts: AtomicU64,
     pub connect_errors: AtomicU64,
+    pub session_id_timeouts: AtomicU64,
+    pub session_id_closed: AtomicU64,
+    pub ready_timeouts: AtomicU64,
+    pub ready_closed: AtomicU64,
+    pub actions: ActionStats,
 }
 
 #[derive(Default)]

@@ -1,3 +1,13 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc
+)]
 use bytes::BytesMut;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +35,10 @@ pub struct ServerTestHarnessBuilder {
 }
 
 impl ServerTestHarness {
+    pub(crate) fn database(&self) -> &crate::db::Database {
+        &self.state.db
+    }
+
     pub(crate) async fn new(label: &str, username: &str) -> Self {
         Self::with_gameplay(
             label,

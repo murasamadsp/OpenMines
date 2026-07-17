@@ -12,6 +12,13 @@ const GRANULAR_SCAN_RADIUS: i32 = 16;
 const GRANULAR_CHUNK_SIZE: i32 = 32;
 const GRANULAR_CACHE_X_PAD: i32 = 1;
 const GRANULAR_CACHE_Y_LOOKAHEAD: i32 = 3;
+// Queue stores a changed-cell origin. This is the exact union produced by the
+// old two-stage expansion: queue (-1..=1, -3..=1), then activation
+// (-1..=1, -2..=1). Keep the coverage, avoid expanding every intermediate cell.
+const GRANULAR_WAKE_X_MIN: i32 = -2;
+const GRANULAR_WAKE_X_MAX: i32 = 2;
+const GRANULAR_WAKE_Y_MIN: i32 = -5;
+const GRANULAR_WAKE_Y_MAX: i32 = 2;
 const GRANULAR_REGION_RESEED_EVERY: Duration = Duration::from_secs(5);
 const GRANULAR_CANDIDATE_BUDGET: usize = 1_024;
 const GRANULAR_PARALLEL_CANDIDATE_MIN: usize = 256;
@@ -220,6 +227,7 @@ struct GranularAnalyzeSummary {
 struct GranularApplyResult {
     applied: usize,
     granular_activated: usize,
+    landed_cells: Vec<(i32, i32)>,
     effects: Vec<BroadcastEffect>,
 }
 
@@ -409,7 +417,9 @@ fn apply_granular_intents(
 ) -> GranularApplyResult {
     let mut applied = 0usize;
     let mut granular_activated = 0usize;
+    let mut landed_cells = Vec::with_capacity(intents.len());
     let mut effects = Vec::with_capacity(intents.len().saturating_mul(2));
+    let mut activation_anchors = HashSet::with_capacity(intents.len().saturating_mul(2));
     for intent in intents {
         if is_passable(world, intent.dest_x, intent.dest_y) {
             applied += 1;
@@ -430,6 +440,7 @@ fn apply_granular_intents(
                     durability: dur,
                 },
             );
+            landed_cells.push((intent.dest_x, intent.dest_y));
 
             effects.push(BroadcastEffect::CellUpdate(
                 (intent.src_x, intent.src_y).into(),
@@ -437,30 +448,19 @@ fn apply_granular_intents(
             effects.push(BroadcastEffect::CellUpdate(
                 (intent.dest_x, intent.dest_y).into(),
             ));
-            granular_activated += physics_state.activate_granular_neighborhood(
-                world,
-                cell_defs,
-                intent.src_x,
-                intent.src_y,
-            );
-            granular_activated += physics_state.activate_granular_neighborhood(
-                world,
-                cell_defs,
-                intent.dest_x,
-                intent.dest_y,
-            );
+            activation_anchors.insert((intent.src_x, intent.src_y));
+            activation_anchors.insert((intent.dest_x, intent.dest_y));
         } else {
-            granular_activated += physics_state.activate_granular_neighborhood(
-                world,
-                cell_defs,
-                intent.src_x,
-                intent.src_y,
-            );
+            activation_anchors.insert((intent.src_x, intent.src_y));
         }
+    }
+    for (x, y) in activation_anchors {
+        granular_activated += physics_state.activate_granular_neighborhood(world, cell_defs, x, y);
     }
     GranularApplyResult {
         applied,
         granular_activated,
+        landed_cells,
         effects,
     }
 }
@@ -566,13 +566,33 @@ fn activate_woken_granular_cells(
     });
     wake_points.dedup();
     let unique = wake_points.len();
-    let activated = wake_points
-        .into_iter()
-        .map(|pos| {
-            let (x, y): (i32, i32) = pos.into();
-            physics_state.activate_granular_neighborhood(world, cell_defs, x, y)
-        })
-        .sum();
+    let mut candidates_by_chunk = BTreeMap::<GranularChunkKey, Vec<(i32, i32)>>::new();
+    for pos in wake_points {
+        let (x, y): (i32, i32) = pos.into();
+        for dy in GRANULAR_WAKE_Y_MIN..=GRANULAR_WAKE_Y_MAX {
+            for dx in GRANULAR_WAKE_X_MIN..=GRANULAR_WAKE_X_MAX {
+                let cell = (x + dx, y + dy);
+                candidates_by_chunk
+                    .entry(GranularChunkKey::for_cell(cell.0, cell.1))
+                    .or_default()
+                    .push(cell);
+            }
+        }
+    }
+    let mut activated = 0usize;
+    for candidates in candidates_by_chunk.values_mut() {
+        candidates.sort_unstable();
+        candidates.dedup();
+        let cache = GranularScanCache::for_candidates(world, candidates);
+        for &(x, y) in candidates.iter() {
+            if cache
+                .get(x, y)
+                .is_some_and(|cell| cell_is_granular(cell_defs, cell))
+            {
+                activated += usize::from(physics_state.active_cells.insert((x, y)));
+            }
+        }
+    }
     let region_seeds_received = region_seeds.len();
     region_seeds.sort_unstable_by_key(|pos| {
         let (x, y): (i32, i32) = (*pos).into();
@@ -599,8 +619,10 @@ fn granular_physics_system(
     world_res: Res<WorldResource>,
     schedule_cfg: Res<ScheduleConfigResource>,
     wake_q: Res<GranularWakeQueue>,
+    hazard_context: Option<Res<crate::game::StandingCellHazardContext>>,
     mut bcast_q: ResMut<BroadcastQueue>,
     mut physics_state: Local<GranularPhysicsState>,
+    players: Query<(Entity, &crate::game::player::PlayerPosition)>,
 ) {
     let started_at = Instant::now();
     let world = &world_res.0;
@@ -644,6 +666,16 @@ fn granular_physics_system(
     let apply_result = apply_granular_intents(world, &cell_defs, &mut physics_state, intents);
     let applied = apply_result.applied;
     let apply_granular_activated = apply_result.granular_activated;
+    if let Some(hazard_context) = hazard_context {
+        let landed_cells: HashSet<_> = apply_result.landed_cells.into_iter().collect();
+        for (entity, position) in &players {
+            if landed_cells.contains(&(position.x, position.y)) {
+                // C# evaluates Player.Update after MoveCell: a falling cell that
+                // reaches a stationary player must run fall damage/destruction.
+                hazard_context.due_queue.schedule(entity, Instant::now());
+            }
+        }
+    }
     bcast_q.0.extend(apply_result.effects);
     let frontier_after_apply = physics_state.active_cells.len();
     wake_q.set_active(frontier_after_apply > 0);
@@ -825,6 +857,7 @@ mod physics_repro {
         assert_eq!(result.applied, 1);
         assert_eq!(world.get_cell(64, 64), cell_type::EMPTY);
         assert_eq!(world.get_cell(64, 65), SAND);
+        assert_eq!(result.landed_cells, vec![(64, 65)]);
         assert_eq!(result.effects.len(), 2);
         let positions: Vec<_> = result
             .effects
@@ -860,6 +893,61 @@ mod physics_repro {
         .unwrap();
         assert_eq!(reopened.get_cell(64, 64), cell_type::EMPTY);
         assert_eq!(reopened.get_cell(64, 65), SAND);
+    }
+
+    #[test]
+    fn falling_granular_cell_wakes_hazard_for_stationary_player() {
+        const SAND: u8 = 100;
+        let dir = std::env::temp_dir().join(format!("phys_player_hit_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let world = Arc::new(
+            World::new(
+                "phys_player_hit",
+                4,
+                4,
+                CellDefs::load(crate::test_config_path("configs/cells.json")).unwrap(),
+                &dir,
+            )
+            .unwrap(),
+        );
+        world.set_cell(64, 64, SAND);
+        world.set_cell(64, 65, cell_type::EMPTY);
+
+        let hazards = crate::game::HazardDueQueue::new(Arc::new(parking_lot::Mutex::new(
+            crate::game::HazardDueSchedule::default(),
+        )));
+        let mut ecs = bevy_ecs::world::World::new();
+        ecs.insert_resource(WorldResource(Arc::clone(&world)));
+        ecs.insert_resource(crate::game::GranularWakeQueue::default());
+        ecs.insert_resource(BroadcastQueue::default());
+        ecs.insert_resource(crate::game::ScheduleConfigResource(
+            crate::config::ScheduleConfig::runtime_baseline(),
+        ));
+        ecs.insert_resource(crate::game::StandingCellHazardContext {
+            box_pickups: crate::game::BoxPickupQueue::default(),
+            death_queue: crate::game::combat::DeathQueue::default(),
+            due_queue: hazards.clone(),
+            interval: std::time::Duration::from_millis(100),
+            slow_threshold: std::time::Duration::from_secs(1),
+        });
+        let player = ecs
+            .spawn((PlayerPosition {
+                x: 64,
+                y: 65,
+                dir: 0,
+            },))
+            .id();
+        ecs.resource::<crate::game::GranularWakeQueue>()
+            .wake_neighborhood(64, 64);
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(super::granular_physics_system);
+        schedule.run(&mut ecs);
+
+        assert_eq!(world.get_cell(64, 65), SAND);
+        let due = hazards.pop_due(std::time::Instant::now(), 1);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, player);
     }
 
     #[test]

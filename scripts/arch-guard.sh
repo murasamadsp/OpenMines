@@ -63,6 +63,9 @@ if rg -n '"COCK"|"http://pi\.door/"' crates/openmines-server/src --glob '*.rs' \
   fail=1
 fi
 
+echo "==> Checking ECS bypass baseline"
+python3 scripts/ecs-bypass-guard.py --check || fail=1
+
 scripts/ownership-audit.sh || fail=1
 scripts/ub-audit.sh || fail=1
 

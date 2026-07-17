@@ -497,8 +497,11 @@ mod tests {
     use super::{GunTickTimer, gun_damage_after_skills, hurt_fx_broadcast, is_same_gun_clan};
     use crate::db::{SkillEntry, SkillSlots};
     use crate::game::BroadcastEffect;
-    use crate::game::player::PlayerId;
+    use crate::game::player::{PlayerId, PlayerPosition, PlayerStats};
     use crate::game::skills::SkillType;
+    use crate::world::WorldProvider;
+    use crate::world::cells::cell_type;
+    use bevy_ecs::schedule::Schedule;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
 
@@ -633,6 +636,52 @@ mod tests {
                 panic!("expected nearby hurt FX broadcast");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn due_standing_cell_hurts_player_and_removes_destructible_cell() {
+        const DESTRUCTIBLE_FALLING_CELL: u8 = 48;
+        let test =
+            crate::test_support::ServerTestHarness::new("standing_hazard", "hazard-user").await;
+        let _receiver = test.connect(1);
+        let player_id = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(player_id).unwrap();
+        let (x, y, health_before) = {
+            let mut ecs = test.state.ecs.write();
+            let (x, y) = {
+                let mut pos = ecs.get_mut::<PlayerPosition>(entity).unwrap();
+                pos.x = 10;
+                pos.y = 10;
+                (pos.x, pos.y)
+            };
+            let health = ecs.get::<PlayerStats>(entity).unwrap().health;
+            drop(ecs);
+            (x, y, health)
+        };
+        test.state.world.set_cell(x, y, DESTRUCTIBLE_FALLING_CELL);
+        test.state.schedule_hazard(entity, Instant::now());
+        let due = test.state.take_due_hazards(Instant::now());
+        assert_eq!(due.len(), 1);
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(super::standing_cell_hazard_system);
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.resource_mut::<crate::game::HazardDueBatch>().0 = due;
+            schedule.run(&mut ecs);
+            drop(ecs);
+        }
+
+        assert_eq!(
+            test.state
+                .ecs
+                .read()
+                .get::<PlayerStats>(entity)
+                .unwrap()
+                .health,
+            health_before - 2
+        );
+        assert_eq!(test.state.world.get_cell(x, y), cell_type::EMPTY);
     }
 
     #[test]

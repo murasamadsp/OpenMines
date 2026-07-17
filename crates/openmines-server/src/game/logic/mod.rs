@@ -11,6 +11,7 @@ pub mod geology;
 pub mod healing;
 pub mod inventory;
 pub mod items;
+pub mod kernel_context;
 pub mod numeric;
 pub mod random;
 pub mod settings;

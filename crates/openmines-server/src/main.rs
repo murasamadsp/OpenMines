@@ -20,7 +20,7 @@ mod shutdown;
 mod simulation_waker;
 mod tasks;
 #[cfg(test)]
-mod test_support;
+pub mod test_support;
 
 use crate::world::WorldProvider;
 use anyhow::{Context as _, Result};
@@ -190,6 +190,7 @@ async fn main() -> Result<()> {
         cfg.gameplay.spawn.y,
     )
     .await?;
+    bootstrap::apply_loadtest_arena_from_env(&world, &state_dir)?;
 
     let game_state = game::GameState::new(
         std::sync::Arc::new(world),

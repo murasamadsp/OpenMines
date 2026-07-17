@@ -12,3 +12,7 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 rstml = { workspace = true }
+
+[dev-dependencies]
+openmines-protocol = { workspace = true }
+serde_json = { workspace = true }

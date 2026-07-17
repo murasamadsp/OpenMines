@@ -1,10 +1,10 @@
 //! Лечение и инвентарь.
 use crate::game::player::{
-    PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp, PlayerStats,
+    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
+    PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::death::request_death;
-use crate::net::session::play::dig_build::broadcast_cell_update;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
@@ -540,7 +540,7 @@ pub fn use_geopack(state: &Arc<GameState>, _tx: &Outbox, pid: PlayerId, item_id:
     // D26: pickup — if facing cell is ANY alive cell, pick it up and map to correct item.
     if let Some(pickup_item) = alive_cell_to_item(facing_cell) {
         state.world.destroy(fx, fy);
-        broadcast_cell_update(state, fx, fy);
+        state.queue_cell_update(fx, fy);
         // C# `ShitClass.Geopack` (ShitClass.cs): pickup делает `p.inventory[id]++`
         // и возвращает `true`, поэтому `Inventory.Use` декрементит использованный
         // geopack (`this[selected]--`). Добавляем поднятый тип и возвращаем true,
@@ -565,7 +565,7 @@ pub fn use_geopack(state: &Arc<GameState>, _tx: &Outbox, pid: PlayerId, item_id:
     };
 
     state.world.set_cell_typed(fx, fy, alive_cell);
-    broadcast_cell_update(state, fx, fy);
+    state.queue_cell_update(fx, fy);
     true
 }
 
@@ -595,7 +595,7 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
     state
         .world
         .set_cell_typed(fx, fy, crate::world::CellType(cell_type::POLYMER_ROAD));
-    broadcast_cell_update(state, fx, fy);
+    state.queue_cell_update(fx, fy);
     false
 }
 
@@ -760,7 +760,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
         net_u16_nonneg(end_x),
         net_u16_nonneg(end_y),
     );
-    state.broadcast_hb_at(px, py, &[shot_fx], None);
+    state.queue_hb_at(px, py, &[shot_fx], None);
 
     // Все 10 клеток валидны (endpoint проверен выше) — без early-break.
     let cell_defs = state.world.cell_defs();
@@ -773,7 +773,7 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
             let prop = cell_defs.get_typed(c);
             if prop.physical.is_diggable && prop.physical.is_destructible {
                 state.world.damage_cell(tgt_x, tgt_y, 50.0);
-                broadcast_cell_update(state, tgt_x, tgt_y);
+                state.queue_cell_update(tgt_x, tgt_y);
             }
         }
 
@@ -792,12 +792,9 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                 continue;
             }
 
-            let Some(conn_tx) = state.player_sender(opid) else {
-                continue;
-            };
-
-            let death_tx = state
+            let hit = state
                 .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+                    let session_id = ecs.get::<PlayerConnection>(entity)?.session_id;
                     let (prev_x, prev_y) = {
                         let p = ecs.get::<PlayerPosition>(entity)?;
                         (p.x, p.y)
@@ -822,9 +819,6 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         } else {
                             None
                         };
-                    if let Some(pkt) = skill_pkt {
-                        let _ = conn_tx.send(pkt);
-                    }
                     // Get stacks and compute damage
                     let stacks = ecs.get_mut::<PlayerCooldowns>(entity).map_or(0, |mut cd| {
                         crate::game::mechanics::combat::reset_c190_if_due(&mut cd);
@@ -841,29 +835,33 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         s_mut.health = if h > dmg { h - dmg } else { 0 };
                         s_mut.health
                     };
-                    let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes(
-                        "@L",
-                        &health(new_health, mh).1,
-                    ));
                     // Increment stacks
                     if let Some(mut cd) = ecs.get_mut::<PlayerCooldowns>(entity) {
                         cd.c190_stacks += 1;
                         cd.last_c190_hit = Some(now);
                     }
-                    if new_health <= 0 {
-                        Some(true) // died
-                    } else {
-                        Some(false) // survived
-                    }
+                    Some((
+                        session_id,
+                        skill_pkt,
+                        crate::net::session::wire::make_u_packet_bytes(
+                            "@L",
+                            &health(new_health, mh).1,
+                        ),
+                        new_health <= 0,
+                    ))
                 })
                 .flatten();
-            if let Some(died) = death_tx {
+            if let Some((session_id, skill_packet, health_packet, died)) = hit {
+                if let Some(skill_packet) = skill_packet {
+                    state.queue_direct(session_id, skill_packet);
+                }
+                state.queue_direct(session_id, health_packet);
                 if died {
                     request_death(state, opid);
                 } else {
                     // Hurt FX for survivor: SendDFToBots(6, 0, 0, id, 0)
                     let fx = hb_hurt_fx(net_u16_nonneg(opid));
-                    state.broadcast_hb_at(tgt_x, tgt_y, &[fx], None);
+                    state.queue_hb_at(tgt_x, tgt_y, &[fx], None);
                 }
             }
         }
@@ -875,8 +873,9 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::BroadcastEffect;
     use crate::game::buildings::{BuildingMetadata, BuildingOwnership};
-    use crate::test_support::{ServerTestHarness, drain_events};
+    use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -907,6 +906,46 @@ mod tests {
                 programmatic: false,
             },
         );
+    }
+
+    #[tokio::test]
+    async fn c190_queues_target_health_instead_of_writing_outbox_during_dispatch() {
+        let builder = ServerTestHarnessBuilder::new("c190_queue", "c190-shooter").await;
+        let target = builder.create_player("c190-target").await;
+        let test = builder.build().await;
+        let mut shooter_rx = test.connect(1);
+        drain_events(&mut shooter_rx);
+        let mut target_rx = test.connect_player_with_outbox(&target, 2).1;
+        drain_events(&mut target_rx);
+        let shooter_id = PlayerId(test.player.id);
+        let target_id = PlayerId(target.id);
+        let shooter = test.state.get_player_entity(shooter_id).unwrap();
+        let target = test.state.get_player_entity(target_id).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            {
+                let mut pos = ecs.get_mut::<PlayerPosition>(shooter).unwrap();
+                pos.x = 10;
+                pos.y = 10;
+                pos.dir = 0;
+            }
+            ecs.get_mut::<PlayerStats>(shooter).unwrap().clan_id = Some(1);
+            {
+                let mut pos = ecs.get_mut::<PlayerPosition>(target).unwrap();
+                pos.x = 10;
+                pos.y = 11;
+            }
+            ecs.get_mut::<PlayerStats>(target).unwrap().clan_id = Some(2);
+        }
+
+        assert!(use_c190(&test.state, shooter_id));
+        assert!(drain_events(&mut target_rx).is_empty());
+        let effects = test.state.drain_command_broadcasts();
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            BroadcastEffect::Direct { session_id, data }
+                if session_id.get() == 2 && data.get(5..7) == Some(b"@L")
+        )));
     }
 
     #[tokio::test]

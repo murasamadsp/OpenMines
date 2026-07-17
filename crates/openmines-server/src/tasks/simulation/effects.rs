@@ -67,6 +67,7 @@ pub(super) fn collect_pending_effects(
 
     let started_at = Instant::now();
     let mut broadcasts = sources.command_broadcasts;
+    broadcasts.extend(state.drain_command_broadcasts());
     adapt_due_effects(state, pending_work, sources.due_effects, &mut broadcasts);
     broadcasts.extend(sources.schedule_broadcasts);
     side_profile.broadcasts = started_at.elapsed();
@@ -151,7 +152,7 @@ pub(super) fn apply_side_effects(
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideBroadcasts);
-    broadcast_world_effects(state, broadcasts);
+    publish_world_effects(&services.presentation, broadcasts);
     side_profile.broadcasts += started_at.elapsed();
 
     let started_at = Instant::now();
@@ -166,7 +167,7 @@ pub(super) fn apply_side_effects(
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideProgrammatorActions);
-    apply_programmator_actions(state, programmator_actions);
+    apply_programmator_actions(state, &services.presentation, programmator_actions);
     side_profile.programmator_actions = started_at.elapsed();
 
     let started_at = Instant::now();
@@ -181,7 +182,7 @@ pub(super) fn apply_side_effects(
 }
 
 pub(super) fn apply_shutdown_command_effects(
-    state: &Arc<GameState>,
+    _state: &Arc<GameState>,
     presentation: &crate::net::presentation::PresentationRuntime,
     effects: crate::game::CommandEffects,
 ) {
@@ -190,7 +191,7 @@ pub(super) fn apply_shutdown_command_effects(
         "persistence completion produced durable work after shutdown admission closed"
     );
     publish_command_events(presentation, effects.events);
-    broadcast_world_effects(state, effects.broadcasts);
+    publish_world_effects(presentation, effects.broadcasts);
 }
 
 pub(super) fn apply_quiescing_effects(
@@ -239,6 +240,15 @@ fn publish_command_events(
 ) {
     for event in events {
         presentation.publish(event);
+    }
+}
+
+fn publish_world_effects(
+    presentation: &crate::net::presentation::PresentationRuntime,
+    effects: Vec<crate::game::BroadcastEffect>,
+) {
+    if !effects.is_empty() {
+        presentation.publish(crate::game::GameEvent::WorldEffects { effects });
     }
 }
 
@@ -404,29 +414,17 @@ fn nearby_hb_effect(
     }
 }
 
-fn broadcast_world_effects(state: &Arc<GameState>, effects: Vec<crate::game::BroadcastEffect>) {
-    for effect in effects {
-        match effect {
-            crate::game::BroadcastEffect::Direct { session_id, data } => {
-                if let Some(tx) = state.sessions.outbox_for_session(session_id) {
-                    let _ = tx.send(data);
-                }
-            }
-            crate::game::BroadcastEffect::CellUpdate(pos) => {
-                let (x, y): (i32, i32) = pos.into();
-                crate::game::broadcast_cell_update(state, x, y);
-            }
-            crate::game::BroadcastEffect::BlockUpdate(pos) => {
-                let (x, y): (i32, i32) = pos.into();
-                crate::net::session::social::buildings::broadcast_block_at(state, x, y);
-            }
-            crate::game::BroadcastEffect::Nearby {
-                cx,
-                cy,
-                data,
-                exclude,
-            } => state.broadcast_to_nearby(cx, cy, &data, exclude),
-        }
+#[cfg(test)]
+mod hb_batch_tests {
+    use crate::net::presentation::hb_payload;
+    use crate::net::session::wire::make_b_packet_bytes;
+
+    #[test]
+    fn hb_payload_extracts_only_complete_hb_frame() {
+        let encoded = make_b_packet_bytes("HB", &[b'F', 1, 2, 3, 4]);
+        assert_eq!(hb_payload(&encoded), Some(&[b'F', 1, 2, 3, 4][..]));
+        assert_eq!(hb_payload(&make_b_packet_bytes("BI", &[])), None);
+        assert_eq!(hb_payload(&encoded[..6]), None);
     }
 }
 
@@ -518,14 +516,19 @@ fn update_buildwar_skills(
 
 fn apply_programmator_actions(
     state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
     actions: Vec<crate::game::ProgrammatorAction>,
 ) {
     for action in actions {
-        apply_programmator_action(state, action);
+        apply_programmator_action(state, presentation, action);
     }
 }
 
-fn apply_programmator_action(state: &Arc<GameState>, action: crate::game::ProgrammatorAction) {
+fn apply_programmator_action(
+    state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
+    action: crate::game::ProgrammatorAction,
+) {
     match action {
         crate::game::ProgrammatorAction::Move {
             pid,
@@ -533,94 +536,161 @@ fn apply_programmator_action(state: &Arc<GameState>, action: crate::game::Progra
             x,
             y,
             dir,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::net::session::play::movement::handle_move(state, &tx, pid, 0, x, y, dir, true);
-        }
+        } => apply_programmator_move(state, presentation, pid, session_id, x, y, dir),
         crate::game::ProgrammatorAction::Dig {
             pid,
             session_id,
             dir,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::net::session::play::dig_build::handle_dig(state, &tx, pid, dir, true);
-        }
+        } => capture_programmator_packets(presentation, session_id, pid, |tx| {
+            crate::net::session::play::dig_build::handle_dig(state, tx, pid, dir, true);
+        }),
         crate::game::ProgrammatorAction::Build {
             pid,
             session_id,
             dir,
             block_type,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
+        } => capture_programmator_packets(presentation, session_id, pid, |tx| {
             let build = crate::protocol::packets::XbldClient {
                 direction: dir,
                 block_type: &block_type,
             };
-            crate::net::session::play::dig_build::handle_build(state, &tx, pid, &build, true);
-        }
+            crate::net::session::play::dig_build::handle_build(state, tx, pid, &build, true);
+        }),
         crate::game::ProgrammatorAction::Geo { pid, session_id } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::game::logic::commands::apply_programmator_geology(state, &tx, pid);
+            capture_programmator_packets(presentation, session_id, pid, |tx| {
+                crate::game::logic::commands::apply_programmator_geology(state, tx, pid);
+            });
         }
         crate::game::ProgrammatorAction::Heal { pid, session_id } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::game::logic::commands::apply_programmator_heal(state, &tx, pid);
+            capture_programmator_packets(presentation, session_id, pid, |tx| {
+                crate::game::logic::commands::apply_programmator_heal(state, tx, pid);
+            });
         }
         crate::game::ProgrammatorAction::SetAutoDig {
             pid,
             session_id,
             enabled,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::game::logic::commands::apply_programmator_auto_dig_set(state, &tx, pid, enabled);
-        }
+        } => capture_programmator_packets(presentation, session_id, pid, |tx| {
+            crate::game::logic::commands::apply_programmator_auto_dig_set(state, tx, pid, enabled);
+        }),
         crate::game::ProgrammatorAction::SetAggression {
             pid,
             session_id,
             enabled,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
+        } => capture_programmator_packets(presentation, session_id, pid, |tx| {
             crate::game::logic::commands::apply_programmator_aggression_set(
-                state, &tx, pid, enabled,
+                state, tx, pid, enabled,
             );
-        }
+        }),
         crate::game::ProgrammatorAction::SetHandMode {
             session_id,
             enabled,
         } => {
-            if let Some(tx) = session_id.and_then(|id| state.sessions.outbox_for_session(id)) {
-                let packet = crate::protocol::packets::hand_mode(enabled);
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                    packet.0, &packet.1,
-                ));
-            }
+            let packet = crate::protocol::packets::hand_mode(enabled);
+            publish_programmator_packet(
+                presentation,
+                session_id,
+                crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
+            );
         }
         crate::game::ProgrammatorAction::FillGun {
             pid,
             session_id,
             x,
             y,
-        } => {
-            let (tx, _rx) = programmator_action_tx(state, session_id);
-            crate::net::session::play::packs::handle_gun_fill_prog(state, &tx, pid, x, y);
-        }
+        } => capture_programmator_packets(presentation, session_id, pid, |tx| {
+            crate::net::session::play::packs::handle_gun_fill_prog(state, tx, pid, x, y);
+        }),
         crate::game::ProgrammatorAction::SetProgrammatorStatus {
             session_id,
             running,
         } => {
-            if let Some(tx) = session_id.and_then(|id| state.sessions.outbox_for_session(id)) {
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+            publish_programmator_packet(
+                presentation,
+                session_id,
+                crate::net::session::wire::make_u_packet_bytes(
                     "@P",
                     &crate::protocol::packets::programmator_status(running).1,
-                ));
-            }
+                ),
+            );
         }
         crate::game::ProgrammatorAction::Send { session_id, data } => {
-            if let Some(tx) = state.sessions.outbox_for_session(session_id) {
-                let _ = tx.send(data);
-            }
+            publish_programmator_packet(presentation, Some(session_id), data);
         }
     }
+}
+
+fn publish_programmator_packet(
+    presentation: &crate::net::presentation::PresentationRuntime,
+    session_id: Option<crate::game::SessionId>,
+    data: Vec<u8>,
+) {
+    if let Some(session_id) = session_id {
+        presentation.publish(crate::game::GameEvent::Fanout {
+            recipients: vec![session_id],
+            data,
+        });
+    }
+}
+
+fn capture_programmator_packets<F>(
+    presentation: &crate::net::presentation::PresentationRuntime,
+    session_id: Option<crate::game::SessionId>,
+    player_id: crate::game::PlayerId,
+    apply: F,
+) where
+    F: FnOnce(&crate::net::session::outbox::Outbox),
+{
+    let (tx, mut rx) = crate::net::session::outbox::channel();
+    apply(&tx);
+    let Some(session_id) = session_id else {
+        return;
+    };
+    let mut packets = Vec::new();
+    while let Ok(packet) = rx.try_recv() {
+        packets.push(packet);
+    }
+    if !packets.is_empty() {
+        presentation.publish(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        });
+    }
+}
+
+fn apply_programmator_move(
+    state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
+    player_id: crate::game::PlayerId,
+    session_id: Option<crate::game::SessionId>,
+    x: i32,
+    y: i32,
+    direction: i32,
+) {
+    let Some(session_id) = session_id else {
+        // Offline programmator actors still advance authoritative state; without
+        // a session there is no presentation target.
+        let (tx, _rx) = crate::net::session::outbox::channel();
+        crate::net::session::play::movement::handle_move(
+            state, &tx, player_id, 0, x, y, direction, true,
+        );
+        return;
+    };
+    let effects = crate::net::session::play::movement::apply_move_command(
+        state,
+        player_id,
+        session_id,
+        crate::net::session::play::movement::MoveRequest {
+            target_x: x,
+            target_y: y,
+            direction,
+            programmatic: true,
+        },
+    );
+    debug_assert!(effects.saves.is_empty());
+    debug_assert!(effects.broadcasts.is_empty());
+    publish_command_events(presentation, effects.events);
 }
 
 fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
@@ -681,24 +751,6 @@ fn render_bots(
     }
 }
 
-fn programmator_action_tx(
-    state: &Arc<GameState>,
-    session_id: Option<crate::game::SessionId>,
-) -> (
-    crate::net::session::outbox::Outbox,
-    Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
-) {
-    session_id
-        .and_then(|id| state.sessions.outbox_for_session(id))
-        .map_or_else(
-            || {
-                let (tx, rx) = crate::net::session::outbox::channel();
-                (tx, Some(rx))
-            },
-            |tx| (tx, None),
-        )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,6 +807,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn programmator_send_is_delivered_by_presentation_worker() {
+        let test =
+            crate::test_support::ServerTestHarness::new("programmator_present", "prog").await;
+        let session_id = crate::game::SessionId::new(1);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let presentation = crate::net::presentation::PresentationRuntime::start(test.state.clone());
+        let expected = crate::net::session::wire::make_u_packet_bytes("OK", b"program");
+
+        apply_programmator_action(
+            &test.state,
+            &presentation,
+            crate::game::ProgrammatorAction::Send {
+                session_id,
+                data: expected.clone(),
+            },
+        );
+
+        let delivered = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("presentation worker did not deliver programmator packet")
+            .expect("test outbox closed");
+        assert_eq!(delivered, expected);
+        presentation.shutdown();
+    }
+
+    #[tokio::test]
+    async fn nearby_hb_effects_are_batched_per_recipient() {
+        let test =
+            crate::test_support::ServerTestHarness::new("nearby_hb_batch", "batch-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let pos = test
+            .state
+            .query_player(player_id, |ecs, entity| {
+                ecs.get::<PlayerPosition>(entity)
+                    .map(|position| (position.x, position.y))
+            })
+            .flatten()
+            .expect("connected player position");
+        let (cx, cy) = crate::world::World::chunk_pos(pos.0, pos.1);
+        let first = vec![b'F', 1, 2, 3, 4];
+        let second = vec![b'Z', 5, 6, 7, 8];
+
+        crate::net::presentation::deliver_world_effects_for_test(
+            &test.state,
+            vec![
+                crate::game::BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data: crate::net::session::wire::make_b_packet_bytes("HB", &first),
+                    exclude: None,
+                },
+                crate::game::BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data: crate::net::session::wire::make_b_packet_bytes("HB", &second),
+                    exclude: None,
+                },
+            ],
+        );
+
+        let events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(event_names(&events), ["HB"]);
+        assert_eq!(events[0].1, [first, second].concat());
+    }
+
+    #[tokio::test]
+    async fn direct_effect_flushes_the_preceding_hb_batch() {
+        let test =
+            crate::test_support::ServerTestHarness::new("hb_direct_barrier", "barrier-user").await;
+        let mut receiver = test.connect(1);
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let player_id = crate::game::PlayerId(test.player.id);
+        let pos = test
+            .state
+            .query_player(player_id, |ecs, entity| {
+                ecs.get::<PlayerPosition>(entity)
+                    .map(|position| (position.x, position.y))
+            })
+            .flatten()
+            .expect("connected player position");
+        let (cx, cy) = crate::world::World::chunk_pos(pos.0, pos.1);
+        let session_id = crate::game::SessionId::new(1);
+
+        crate::net::presentation::deliver_world_effects_for_test(
+            &test.state,
+            vec![
+                crate::game::BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data: crate::net::session::wire::make_b_packet_bytes("HB", b"F"),
+                    exclude: None,
+                },
+                crate::game::BroadcastEffect::Direct {
+                    session_id,
+                    data: crate::net::session::wire::make_b_packet_bytes("BI", &[1]),
+                },
+                crate::game::BroadcastEffect::Nearby {
+                    cx,
+                    cy,
+                    data: crate::net::session::wire::make_b_packet_bytes("HB", b"Z"),
+                    exclude: None,
+                },
+            ],
+        );
+
+        let events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        assert_eq!(event_names(&events), ["HB", "BI", "HB"]);
+        assert_eq!(hb_tags(&events), [b'F', b'Z']);
+    }
+
+    #[tokio::test]
     async fn boom_flows_from_admission_through_deadline_to_ordered_wire_effects() {
         let test = crate::test_support::ServerTestHarness::new("boom_e2e", "boom-e2e-user").await;
         let mut receiver = test.connect(1);
@@ -793,7 +959,7 @@ mod tests {
             crate::game::PlayerCommand::InventoryUse,
             &mut due_actions,
         );
-        broadcast_world_effects(&test.state, admitted.broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, admitted.broadcasts);
         let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
         assert_eq!(
             admission_events
@@ -813,7 +979,7 @@ mod tests {
         let (_, completions) = tokio::sync::mpsc::channel(1);
         let mut pending_work = TickPendingWork::new(completions);
         adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
-        broadcast_world_effects(&test.state, broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, broadcasts);
 
         let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
         assert_eq!(
@@ -847,7 +1013,7 @@ mod tests {
             &mut due_actions,
         );
         let admitted_after = Instant::now();
-        broadcast_world_effects(&test.state, admitted.broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, admitted.broadcasts);
         let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
         assert_eq!(event_names(&admission_events), ["HB", "IN"]);
         assert_eq!(hb_tags(&admission_events), [b'O']);
@@ -890,14 +1056,11 @@ mod tests {
         let (_, completions) = tokio::sync::mpsc::channel(1);
         let mut pending_work = TickPendingWork::new(completions);
         adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
-        broadcast_world_effects(&test.state, broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, broadcasts);
 
         let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
-        assert_eq!(
-            event_names(&detonation_events),
-            ["@S", "@L", "HB", "HB", "HB"]
-        );
-        assert_eq!(hb_tags(&detonation_events), [b'D', b'D', b'O']);
+        assert_eq!(event_names(&detonation_events), ["@S", "@L", "HB", "HB"]);
+        assert_eq!(hb_tags(&detonation_events), [b'D', b'O']);
         assert!(!test.state.consumable_packs.contains_key(&center));
     }
 
@@ -919,7 +1082,7 @@ mod tests {
             &mut due_actions,
         );
         let admitted_after = Instant::now();
-        broadcast_world_effects(&test.state, admitted.broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, admitted.broadcasts);
         let admission_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
         assert_eq!(event_names(&admission_events), ["HB", "IN"]);
         assert_eq!(hb_tags(&admission_events), [b'O']);
@@ -962,7 +1125,7 @@ mod tests {
         let mut pending_work = TickPendingWork::new(completions);
         adapt_due_effects(&test.state, &mut pending_work, due.effects, &mut broadcasts);
         assert_eq!(test.state.drain_player_deaths(), [player_id]);
-        broadcast_world_effects(&test.state, broadcasts);
+        crate::net::presentation::deliver_world_effects_for_test(&test.state, broadcasts);
 
         let detonation_events = crate::test_support::ServerTestHarness::drain_events(&mut receiver);
         assert_eq!(event_names(&detonation_events), ["@S", "@L", "HB", "HB"]);

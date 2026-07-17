@@ -20,7 +20,7 @@ use crate::game::skills::{
     can_install_skill, exp_needed, get_skill_requirements, skill_effect,
 };
 use crate::net::session::outbound::player_sync::{
-    send_player_health, send_player_level, send_player_skills, send_player_speed,
+    send_player_level, send_player_skills, send_player_speed,
 };
 use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
@@ -46,7 +46,7 @@ pub fn open_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &Pa
                 tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while opening Up GUI");
                 return None;
             };
-            ui.current_window = Some(format!("up:{}:{}", view.x, view.y));
+            ui.current_window = Some(format!("up:{}:{}:-1:{}", view.x, view.y, view.owner_id == pid));
             Some(())
         })
         .is_some();
@@ -162,6 +162,15 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
         return;
     }
 
+    struct UpgradePackets {
+        money: i64,
+        creds: i64,
+        skills: PlayerSkillsComp,
+        health: i32,
+        max_health: i32,
+        send_speed: bool,
+    }
+
     let upgraded = state
         .modify_player(pid, |ecs, entity| {
             // Read skill code, check exp-readiness и считаем цену апгрейда (деньги).
@@ -175,11 +184,11 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 let stype = SkillType::from_code(&entry.code)?;
                 let Some(next_level) = entry.level.checked_add(1) else {
                     send_ok(tx, "Апгрейд", "Навык уже достиг максимального уровня.");
-                    return Some(false);
+                    return Some(None);
                 };
                 let need = exp_needed(stype, entry.level);
                 if need > 0.0 && entry.exp < need {
-                    return Some(false);
+                    return Some(None);
                 }
                 // Цена в деньгах: base * текущий уровень (config-driven). В C#
                 // апгрейд бесплатный — намеренная экономик-девиация (DEVIATIONS.md).
@@ -197,7 +206,7 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 };
                 if pstats.money < cost {
                     send_ok(tx, "Апгрейд", &format!("Недостаточно денег: нужно {cost}"));
-                    return Some(false);
+                    return Some(None);
                 }
                 let Some(_) = ecs.get::<crate::game::PlayerFlags>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing for Up skill upgrade");
@@ -214,7 +223,6 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                     return None;
                 };
                 pstats_mut.money -= cost;
-                send_u_packet(tx, "P$", &money(pstats_mut.money, pstats_mut.creds).1);
             }
             let Some(mut flags) = ecs.get_mut::<crate::game::PlayerFlags>(entity) else {
                 tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while applying Up skill upgrade");
@@ -244,19 +252,11 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                     send_up_state_error(tx);
                     return None;
                 };
-                send_player_skills(tx, skills);
-                send_player_level(tx, skills);
-                let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                let Some(_) = ecs.get::<PlayerStats>(entity) else {
                     tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing after Up skill upgrade");
                     send_up_state_error(tx);
                     return None;
                 };
-                send_player_health(tx, pstats);
-
-                if skill_type.effect_type() == skills::SkillEffectType::OnMove {
-                    send_player_speed(tx, skills);
-                }
-
                 if skill_type == SkillType::Health {
                     let sk_helper = PlayerSkillsHelper {
                         skills: &skills.states,
@@ -278,15 +278,38 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
                 if pstats.health > pstats.max_health {
                     pstats.health = pstats.max_health;
                 }
-                send_u_packet(tx, "@L", &health(pstats.health, pstats.max_health).1);
             }
 
-            Some(true)
+            let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing after Up skill upgrade");
+                send_up_state_error(tx);
+                return None;
+            };
+            let Some(pstats) = ecs.get::<PlayerStats>(entity) else {
+                tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing after Up skill upgrade");
+                send_up_state_error(tx);
+                return None;
+            };
+            Some(Some(UpgradePackets {
+                money: pstats.money,
+                creds: pstats.creds,
+                skills: skills.clone(),
+                health: pstats.health,
+                max_health: pstats.max_health,
+                send_speed: skill_type.effect_type() == skills::SkillEffectType::OnMove,
+            }))
         })
         .flatten()
-        .unwrap_or(false);
+        .flatten();
 
-    if upgraded {
+    if let Some(packets) = upgraded {
+        send_u_packet(tx, "P$", &money(packets.money, packets.creds).1);
+        send_player_skills(tx, &packets.skills);
+        send_player_level(tx, &packets.skills);
+        send_u_packet(tx, "@L", &health(packets.health, packets.max_health).1);
+        if packets.send_speed {
+            send_player_speed(tx, &packets.skills);
+        }
         // Re-render the page with the same slot selected
         send_up_page(state, tx, pid, selected_slot);
     }
@@ -511,20 +534,18 @@ fn send_up_page(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, selected_slo
             tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up page");
             return None;
         };
-        let coords = ecs
+        let is_owner = ecs
             .get::<PlayerUI>(entity)
             .and_then(|ui| ui.current_window.as_deref())
-            .and_then(parse_up_window_coords);
-        Some((skills.states.clone(), coords))
+            .and_then(parse_up_window_owner);
+        Some((skills.states.clone(), is_owner))
     });
 
-    let Some((skills, coords)) = page_data else {
+    let Some((skills, is_owner)) = page_data else {
         send_up_state_error(tx);
         return;
     };
-    let is_owner = coords
-        .and_then(|(x, y)| state.get_pack_at(x, y))
-        .is_some_and(|view| view.owner_id == pid);
+    let is_owner = is_owner.unwrap_or(false);
     let json_str = build_up_page_json(&skills, skills.total_slots, selected_slot, is_owner);
     send_u_packet(tx, "GU", format!("up:{json_str}").as_bytes());
 
@@ -535,13 +556,19 @@ fn send_up_page(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, selected_slo
                 tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while storing Up page state");
                 return None;
             };
-            // Preserve the "up:x:y" prefix, append selected slot
+            // Preserve the owner bit captured when the window was opened.
             let Some(window) = &ui.current_window else {
                 return Some(());
             };
             if window.starts_with("up:") {
-                let base = window.split(':').take(3).collect::<Vec<_>>().join(":");
-                ui.current_window = Some(format!("{base}:{selected_slot}"));
+                let mut parts = window.split(':');
+                let prefix = parts.next();
+                let x = parts.next();
+                let y = parts.next();
+                let owner = parts.nth(1).unwrap_or("false");
+                if let (Some(prefix), Some(x), Some(y)) = (prefix, x, y) {
+                    ui.current_window = Some(format!("{prefix}:{x}:{y}:{selected_slot}:{owner}"));
+                }
             }
             Some(())
         })
@@ -725,12 +752,8 @@ fn build_up_page_json(
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-fn parse_up_window_coords(window: &str) -> Option<(i32, i32)> {
-    let rest = window.strip_prefix("up:")?;
-    let mut parts = rest.split(':');
-    let x = parts.next()?.parse::<i32>().ok()?;
-    let y = parts.next()?.parse::<i32>().ok()?;
-    Some((x, y))
+fn parse_up_window_owner(window: &str) -> Option<bool> {
+    window.strip_prefix("up:")?.split(':').nth(3)?.parse().ok()
 }
 
 /// Get the total number of skill slots for a player from the component.

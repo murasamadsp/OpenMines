@@ -4,6 +4,111 @@ use crate::world::WorldProvider as _;
 use anyhow::Result;
 use std::path::Path;
 
+#[derive(Clone, Copy)]
+enum LoadtestArena {
+    Movement,
+    Dig,
+    BuildCycle,
+    Granular,
+}
+
+impl LoadtestArena {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "movement" => Ok(Self::Movement),
+            "dig" => Ok(Self::Dig),
+            "build-cycle" => Ok(Self::BuildCycle),
+            "granular" => Ok(Self::Granular),
+            _ => anyhow::bail!(
+                "M3R_LOADTEST_ARENA must be movement, dig, build-cycle, or granular, got {value:?}"
+            ),
+        }
+    }
+}
+
+/// Build a deterministic 4x4 world for an end-to-end gameplay benchmark.
+/// It is intentionally opt-in: production and ordinary dev worlds never use it.
+pub fn apply_loadtest_arena_from_env(world: &world::World, state_dir: &Path) -> Result<()> {
+    let Ok(value) = std::env::var("M3R_LOADTEST_ARENA") else {
+        return Ok(());
+    };
+    let confirmed_state_dir = std::env::var("M3R_LOADTEST_STATE_DIR").map_err(|_| {
+        anyhow::anyhow!(
+            "M3R_LOADTEST_ARENA mutates the world; set M3R_LOADTEST_STATE_DIR to the explicit isolated state directory"
+        )
+    })?;
+    confirm_loadtest_state_dir(&confirmed_state_dir, state_dir)?;
+    let arena = LoadtestArena::parse(&value)?;
+    apply_loadtest_arena(world, arena)?;
+    tracing::warn!(arena = value, "Applied deterministic loadtest arena");
+    Ok(())
+}
+
+fn confirm_loadtest_state_dir(confirmed_state_dir: &str, state_dir: &Path) -> Result<()> {
+    if Path::new(confirmed_state_dir.trim()) != state_dir {
+        anyhow::bail!(
+            "M3R_LOADTEST_ARENA requires M3R_LOADTEST_STATE_DIR={} to match the server state directory",
+            state_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn apply_loadtest_arena(world: &world::World, arena: LoadtestArena) -> Result<()> {
+    const SIZE: i32 = 128;
+    const SIZE_U32: u32 = 128;
+    const COLUMNS: i32 = 32;
+
+    if world.cells_width() < SIZE_U32 || world.cells_height() < SIZE_U32 {
+        anyhow::bail!(
+            "loadtest arena needs at least 4x4 world, got {}x{} cells",
+            world.cells_width(),
+            world.cells_height()
+        );
+    }
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            world.set_cell(x, y, crate::world::cells::cell_type::GOLDEN_ROAD);
+        }
+    }
+    if matches!(
+        arena,
+        LoadtestArena::Dig | LoadtestArena::BuildCycle | LoadtestArena::Granular
+    ) {
+        for row in 0..COLUMNS {
+            for column in 0..COLUMNS {
+                let x = 2 + column * 4;
+                let y = 2 + row * 4;
+                match arena {
+                    LoadtestArena::Dig => world.write_world_cell(
+                        x,
+                        y + 1,
+                        crate::world::WorldCell {
+                            cell_type: crate::world::CellType(
+                                crate::world::cells::cell_type::GREEN,
+                            ),
+                            // The benchmark exercises mining on every request instead of turning
+                            // into empty-cell rejects after the first dig.
+                            durability: 1_000_000.0,
+                        },
+                    ),
+                    LoadtestArena::BuildCycle => world.destroy_cell_and_road(x, y + 1),
+                    LoadtestArena::Granular => {
+                        // Movement cycles around this empty 2x2 square. The blocked sand remains
+                        // adjacent, so every accepted move wakes a real granular neighborhood.
+                        for (clear_x, clear_y) in [(x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1)] {
+                            world.destroy_cell_and_road(clear_x, clear_y);
+                        }
+                        world.set_cell(x + 2, y, crate::world::cells::cell_type::DARK_YELLOW_SAND);
+                    }
+                    LoadtestArena::Movement => unreachable!("movement has no target cells"),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Удаляет файлы мира для регенерации на основе конкретного имени мира.
 pub fn remove_world_files(state_dir: &Path, world_name: &str) {
     let targets = [
@@ -141,6 +246,55 @@ pub async fn create_spawns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loadtest_arena_requires_the_exact_confirmed_state_dir() {
+        let state_dir = Path::new("/tmp/openmines-loadtest");
+        assert!(confirm_loadtest_state_dir("/tmp/openmines-loadtest", state_dir).is_ok());
+        assert!(confirm_loadtest_state_dir("/tmp/openmines-dev", state_dir).is_err());
+    }
+
+    #[test]
+    fn loadtest_dig_arena_has_one_durable_crystal_in_front_of_each_fixture_slot() {
+        let dir = std::env::temp_dir();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("loadtest_arena_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 4, 4, cell_defs, &dir).unwrap();
+
+        apply_loadtest_arena(&world, LoadtestArena::Dig).unwrap();
+
+        assert_eq!(world.get_cell(2, 3), crate::world::cells::cell_type::GREEN);
+        assert_eq!(world.get_cell(6, 7), crate::world::cells::cell_type::GREEN);
+        assert!((world.get_durability(2, 3) - 1_000_000.0).abs() < f32::EPSILON);
+        assert_eq!(
+            world.get_cell(2, 2),
+            crate::world::cells::cell_type::GOLDEN_ROAD
+        );
+    }
+
+    #[test]
+    fn loadtest_granular_arena_places_blocked_sand_at_each_fixture_slot() {
+        let dir = std::env::temp_dir();
+        let cell_defs =
+            crate::world::cells::CellDefs::load(crate::test_config_path("configs/cells.json"))
+                .unwrap();
+        let world_name = format!("loadtest_granular_arena_{}", std::process::id());
+        let world = crate::world::World::new(&world_name, 4, 4, cell_defs, &dir).unwrap();
+
+        apply_loadtest_arena(&world, LoadtestArena::Granular).unwrap();
+
+        assert_eq!(
+            world.get_cell(4, 2),
+            crate::world::cells::cell_type::DARK_YELLOW_SAND
+        );
+        assert_eq!(
+            world.get_cell(4, 3),
+            crate::world::cells::cell_type::GOLDEN_ROAD
+        );
+        assert_eq!(world.get_cell(3, 2), crate::world::cells::cell_type::EMPTY);
+    }
 
     #[tokio::test]
     async fn regen_clears_world_state_and_refunds_orders() {

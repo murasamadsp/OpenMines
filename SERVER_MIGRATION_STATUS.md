@@ -1,11 +1,11 @@
 # OpenMines Server Migration Status
 
-Обновлено: 2026-07-14.
+Обновлено: 2026-07-17.
 
 Это **единственный актуальный checkpoint и handoff** по миграции сервера.
-Подробная целевая модель находится в `SIMULATION_KERNEL_PLAN.md`; правила формы
-кода - в `SERVER_CONSISTENCY_PLAN.md`; фактическая topology - в
-`docs/ARCHITECTURE.md`. Старые приоритеты в `TODO.md` и `AUDIT_STATE.md` не
+Подробная целевая модель находится в `docs/SIMULATION_KERNEL_PLAN.md`; целевой план реструктуризации на изолированные крейты — в `docs/TARGET_ARCHITECTURE_PLAN.md`; правила формы
+кода - в `docs/SERVER_CONSISTENCY_PLAN.md`; фактическая topology - в
+`docs/ARCHITECTURE.md`. Старые приоритеты в `docs/backlog/TODO.md` и `docs/backlog/AUDIT_STATE.md` не
 являются планом simulation migration.
 
 ## Как продолжить работу
@@ -18,21 +18,15 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: `bfce9d21` (`Исправить requeue шагов
-программатора`) в `main`. Документационный checkpoint может быть более новым.
+Ожидаемый code checkpoint: Настроен ecs bypass baseline, ecs-bypass-guard.py, test_ecs_bypass_baseline_guard и WebSnapshot для stats/map.
 
 Дальше:
 
-1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые
-   решения` ниже.
-2. Следующий vertical slice - перевести `Chin`/`Cmen`/`Choo`/`Cpri` и
-   slash-ветки chat на typed command/apply/effects. Обычный `Chat` уже
-   использует `ChatAppend + ChatFanout`; `Cset` уже использует bounded
-   `ChatColorCycle` persistence completion.
-   Не смешивать этот срез с ECS ownership или multicore.
-3. Перед правкой проверить указанные функции в текущем коде: номера строк могут
-   сдвинуться, имена и invariants важнее номера.
-4. После среза обновить этот файл в том же commit. Не создавать новый handoff.
+1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые решения` ниже.
+2. Изучить утвержденный [docs/TARGET_ARCHITECTURE_PLAN.md](file:///Users/murasama/Projects/games/OpenMines/docs/TARGET_ARCHITECTURE_PLAN.md) по реструктуризации на изолированные крейты (Nested Crates).
+3. Перейти к Этапу 2 плана миграции: постепенному переносу хэндлеров сессий на команды с очисткой baseline-файла `docs/reference/ecs_bypass_baseline.txt`.
+4. Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.
+5. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
@@ -103,6 +97,70 @@ lock isolation не закрыты. Chat navigation и slash-command fallback в
 каждого player оставляется последнее `HB/X`, а любой иной effect остаётся
 ordering barrier. Authoritative movement и chunk-crossing packets не меняются.
 
+### Последний воспроизведённый dig stress
+
+Локальный dev run `2026-07-14`, `300` клиентов, `20s`, один interest
+hotspot, `M3R_LOADTEST_ARENA=dig`: каждый запрос копает живую кристальную
+клетку, меняет durability/economy и получает `@B`; это не login/movement smoke.
+
+- до batching nearby `HB`: `30 295` sent / `30 259` acked, `36` rejected,
+  p50 `51.892ms`, p95 `1 509.596ms`, p99 `3 314.466ms`, p99.9 `6 511.465ms`,
+  max `8 439.488ms`;
+- после batching: `30 022/30 022` dig acked, `0` rejected/disconnect/error/drain
+  timeout; p50 `8.097ms`, p95 `78.471ms`, p99 `213.299ms`, p99.9 `273.906ms`,
+  max `274.304ms`.
+
+Причина подтверждена native sample: прямой `handle_dig -> broadcast_hb_at ->
+broadcast_to_nearby -> Outbox::send` делал один `try_send` на каждого observer
+для каждого действия. Dig теперь кладёт immutable `HB` effects в owner-local
+queue; side phase склеивает подряд идущие `HB` subpackets в один frame на
+recipient. `Direct`, cell/block update и не-HB nearby packet остаются ordering
+barriers. Authoritative state и legacy HB layout не меняются.
+
+Отдельная release-проверка после batching и per-side-phase spatial snapshot:
+`1 000` клиентов, `15s`, `5 000` sustained dig/s, `75 059/75 059` acked,
+`0` rejected/disconnect/error/drain timeout; p50 `14.275ms`, p95 `22.688ms`,
+p99 `27.722ms`, p99.9 `33.557ms`. Это текущий доказанный single-thread
+benchmark; debug/dev цифры выше используются только как сравнительный срез
+одного и того же кода, а не как release capacity claim.
+
+На том же release fixture проверен второй массовый action path: `1 000`
+клиентов, `15s`, `5 000` sustained `Xmov`/s, `75 001/75 001` acked, `0`
+rejected/disconnect/error/drain timeout; p50 `15.923ms`, p95 `21.416ms`,
+p99 `24.090ms`, p99.9 `26.266ms`. `build` и `mixed` не объявляются
+benchmark-ами, пока fixture не сможет поддерживать валидные изменения мира
+без скрытого server-side reset: несколько первых успешных placement не являются
+устойчивым gameplay workload.
+
+Теперь есть отдельный `build-cycle` fixture: на каждой private cell выполняется
+`Xbld/G`, затем двенадцать `Xdig`; это реальная смена `empty -> green block ->
+empty` с crystal spend, world journal, durability и cell-map updates. Release
+run `1 000` клиентов, `15s`, `75 101/75 101` action acked (`69 101` dig,
+`6 000` build), `0` rejected/disconnect/error/drain timeout; p50 `16.970ms`,
+p95 `43.876ms`, p99 `233.759ms`, p99.9 `237.889ms`. В первом probe именно
+этот workload выявил sync `broadcast_cell_update` в command apply; dig/build
+cell updates переведены в queued HB batch. Native sample после фикса не показал
+CPU-bound hot stack: simulation большую часть окна parked, поэтому новый
+рефакторинг без следующего evidence запрещён.
+
+Для physics добавлен отдельный arena `M3R_LOADTEST_ARENA=granular`: у каждого
+fixture-игрока лежит sand над непроходимой опорой, поэтому connect/position
+transition создаёт granular frontier. Это устраняет ложный benchmark пустого
+мира. Release run `2026-07-14`: `1 000` игроков, `5ms` bounded connect ramp,
+`15s`, `5 000 Xmov/s`; `75 000/75 000` effect, `0` rejected/disconnect/drain
+timeout, p50 `13.910ms`, p95 `18.973ms`, p99 `21.142ms`, p99.9 `23.456ms`.
+Это подтверждает, что repeated `wake_granular_neighborhood` больше не создаёт
+physics spike. Отдельный `ramp=0` connect storm теряет pre-auth sessions в
+transport/outbox (`__sendto` и mutex по native sample); это другой admission
+срез, не доказательство цены granular simulation.
+
+Release reconnect storm `2026-07-14`: `1 000` fixture clients с `ramp=0`,
+все `1 000/1 000` прошли auth/init без connect error, timeout или unexpected
+disconnect. После полной готовности тот же run держал `5 000 Xmov/s`:
+`50 002/50 002` acked, p50 `15.797ms`, p95 `21.411ms`, p99 `24.124ms`,
+p99.9 `26.745ms`. Текущий `Connect` path не является подтверждённым bottleneck
+одного simulation thread в этом масштабе.
+
 ## Это движок или нет
 
 Цель - **внутренний simulation kernel OpenMines**, а не универсальный продуктовый
@@ -158,14 +216,14 @@ event/due model и не появился injected simulation clock. Просты
 
 | Этап | Готовность | Фактическое состояние |
 | --- | ---: | --- |
-| 0. Evidence и guards | 75% | release traces, CPU/off-CPU classification, strict clippy, architecture guard; одинаковый benchmark обязателен не для каждого среза |
+| 0. Evidence и guards | 80% | release traces, CPU/off-CPU classification, strict clippy, architecture guard, ecs-bypass-guard.py, test_ecs_bypass_baseline_guard |
 | 1. Session/output owner | 80% | `SessionId`, bounded outbox, `SessionHub`, presentation-owned PlayerInit, common authenticated envelope и movement coalescing есть |
 | 2. Command/effects boundary | 45% | connect/disconnect, move, teleport-open, delayed consumables, building delete и ProgramCreate перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
 | 3. Persistence owner | 50% | bounded writer, batching, retry, writer drain и `ProgramCreate` completion есть; GUI/auction bypass и crash journal остаются |
 | 4. Admission/isolation | 60% | event-driven wait, bounded due queue, typed bounded ingress и thin connect готовы |
-| 5. Owned simulation | 15% | runtime владеет clocks/receivers/backlogs, но ECS и indexes остаются в `Arc<GameState>` под глобальным `RwLock` |
-| 6. Active/due work | 50% | granular/alive frontier, crafting/consumable/programmator/guns/hazards due queues и dirty registries есть; actor systems ещё частично scan-all |
-| 7. Interest/read model | 20% | teleport DTO, bots render, initial map/BotSpot snapshots и bounded movement fanout готовы; admin и building overlay всё ещё читают общий state |
+| 5. Owned simulation | 20% | runtime владеет clocks/receivers/backlogs, ecs bypass barrier (baseline) введён для сессий; ECS и indexes остаются в `Arc<GameState>` под RwLock |
+| 6. Active/due work | 55% | O(1) remove_botspot_runtime внедрён; granular/alive frontier, crafting/consumable/programmator/guns/hazards due queues и dirty registries есть |
+| 7. Interest/read model | 25% | WebSnapshot для stats/map полностью убрал ECS-блокировки из веб-API; teleport DTO, bots render, Map/BotSpot snapshots и movement fanout готовы |
 | 8. Spatial multicore | 0% | Rayon analysis не является ownership sharding; deterministic 1/2/4-worker model ещё не начат |
 
 ## Что реально сделано
@@ -173,8 +231,8 @@ event/due model и не появился injected simulation clock. Просты
 ### Runtime ownership
 
 - `SessionHub` владеет живыми session mappings и bounded per-session outbox.
-- `PresentationRuntime` доставляет перенесённые immutable effects вне
-  authoritative mutation.
+- `PresentationRuntime` на выделенном bounded worker доставляет immutable
+  effects вне authoritative mutation и drain-ится при shutdown.
 - `PersistenceRuntime` является bounded writer для перенесённых durable flows.
 - `SimulationRuntime` владеет command receiver, schedule clock, due queue и
   pending backlogs.
@@ -220,6 +278,14 @@ event/due model и не появился injected simulation clock. Просты
 - Shutdown, due order, saturation и persistence completion покрыты
   deterministic tests в завершённых срезах.
 
+### ECS Изоляция и Лимитирование (Июль 2026)
+
+- **Ликвидация ECS-блокировок в веб-API**: Для рутов `/stats` и `/api/map` внедрен фоновый сбор снимков `WebSnapshot` в Simulation Thread (раз в секунду). Сетевые Axum-руты теперь читают только иммутабельный `Arc<WebSnapshot>` без блокировок.
+- **Внедрение ECS Bypass Barrier**: Создан снимок текущего архитектурного долга `docs/reference/ecs_bypass_baseline.txt`.
+- **Автоматический гвард**: Написан скрипт `scripts/ecs-bypass-guard.py` и интегрирован в `scripts/arch-guard.sh`. Любой новый прямой вызов ECS из `net/session` блокируется.
+- **Интеграционный тест**: Добавлен тест `test_ecs_bypass_baseline_guard` в `tick/tests.rs` для проверки baseline на уровне `cargo test` с поддержкой автогенерации.
+- **Оптимизация Botspots**: Метод `remove_botspot_runtime` переведен с линейного сканирования O(N) чанков на точечное O(1) удаление по координатам чанка.
+
 ## Что горит
 
 ### P1: global mutable `GameState`
@@ -230,6 +296,39 @@ ECS находится под общим `RwLock`, а session/admin/web/backgrou
 Scheduler уже отпускает write-lock между runnable schedules и перед tail, поэтому
 preemption одного schedule не удерживает соседние jobs. Это mitigation, а не
 замена owned ECS runtime.
+
+### Закрыто: HB delivery вне simulation owner
+
+Release `build-cycle` `2026-07-14`, `1 000` клиентов, `20s`, `5 000` action/s:
+`100 051/100 051` dig/build effects, `0` rejected/disconnect/error/drain timeout,
+p50 `11.998ms`, p95 `212.330ms`, p99 `223.309ms`, p99.9 `230.358ms`.
+
+`BroadcastEffect` публикуется одним упорядоченным `WorldEffects` event в bounded
+`PresentationRuntime`. Его выделенный thread кодирует HB и будит outbox;
+`Direct`, cell/block update и non-HB nearby остаются strict barrier и сбрасывают
+HB batch до delivery. Первый вариант оставил consumer на Tokio executor и дал
+регрессию (`22 524` effect, p99 `3.1s`); он заменён dedicated thread, чтобы
+bulk delivery не вытесняла session tasks. Shutdown закрывает sender и join-ит
+worker после final effects.
+
+В simulation tick side broadcasts стали сотнями микросекунд (`108-712us`)
+вместо исторических `217ms`; текущие over-budget traces доминируют в dispatch
+budget или granular physics, а не в outbox delivery.
+
+Следующий build-cycle release после устранения двойного granular wake expansion:
+`100 204/100 204` effects, `0` rejected/disconnect/error/drain timeout, p50
+`11.691ms`, p95 `212.021ms`, p99 `221.588ms`, p99.9 `225.815ms`. Очередь
+теперь хранит один changed-cell origin, а physics строит тот же итоговый
+`x -2..+2`, `y -5..+2` candidate rectangle без промежуточных 15 wake points.
+На повторном run slow granular physics warnings не наблюдались; оставшиеся
+over-budget ticks - bounded dispatch с `2.4-3.1ms` CPU и `7-9ms` off-CPU.
+
+После этого loadtest получил deterministic staggered gameplay mode; он выявил,
+что бесконечное cross-side coalescing `WorldEffects` либо насыщает очередь без
+слияния, либо задерживает delivery до первого external barrier. Текущий код
+сливает не более `32` соседних streams и затем доставляет их. FIFO/barrier и
+limit покрыты unit tests, strict clippy проходит. Новый release runtime claim
+для этого bounded режима пока отсутствует: не подменять им цифры выше.
 
 ### P2: connect delivery и global lock
 
@@ -273,12 +372,28 @@ deduplicated entity registry и requeue-ят остаток при saturation. `
 проверяет entity generation против текущей player-map, поэтому старая
 incarnation после reconnect не может сохранить новую.
 
+Нулевой player ECS больше не проходит periodic player snapshot: disconnect
+резервирует и публикует final save до удаления entity, поэтому stale registry
+не имеет права брать global ECS write-lock каждые 10 секунд. Release idle
+`2026-07-14`, `70s`, `0` player entities: `0` `OVER-BUDGET`, persistence flush,
+ECS-lock и watchdog warnings. Building flush остаётся независимым для dirty
+строений.
+
 ### P2: один idle player всё ещё запускает periodic systems
 
 Programmator, guns, standing-cell hazards, granular physics и alive cells
 используют bounded active/due work. Granular/alive region seed-ятся при position
 transition, cell transition обновляет локальный frontier; sleeping player не
 запускает их schedules. Из заметных periodic read paths остаётся bots render.
+
+**Свежий live-срез 2026-07-13 (нужно повторно измерить после текущей правки):**
+на обычной карте `physics` удерживал ECS write lock до `616.84ms` при двух
+кандидатах. Внутренний профиль показывал, что время уходит не на apply
+(`3.92us`), а на granular scan. Причина: каждый wake point отдельно читал
+малые участки mmap-мира. Wake points теперь дедуплицируются и группируются по
+chunk, после чего для каждой группы снимается один snapshot. Функциональные
+granular-тесты зелёные; нельзя считать latency исправленной до live-повтора
+того же сценария.
 
 Исправлен реальный hotspot `alive` при массовом login: несколько seed-окон
 радиуса `33x33` раньше сканировались независимо и повторно обходили общие
@@ -549,15 +664,75 @@ ECS read.
 полный server suite (`370 passed`, `1 ignored`), strict clippy, architecture
 guard, wire smoke и release movement stress `100/2 000`, `300/6 000` без loss.
 
-## Следующий vertical slice
+## Текущая command boundary
 
-Chat navigation/slash-command fallback: обычный `Chat` уже использует typed
-`ChatAppend + ChatFanout`. `Cset` переведён на `ChatColorCycle`: admission
-резервирует completion до mutation, worker атомарно обновляет цвет с retry для
-transient SQLite failure, completion шлёт `mC` только current session.
-`Chin`/`Cmen`/`Choo`/`Cpri` и slash-команды ещё запускают session async tasks.
-Переносить их по одному vertical feature, не маскируя старый исторический trace
-локальным micro-optimization.
+**Chat navigation закрыт.** `Chin`/`Cmen`/`Choo`/`Cpri` больше не запускают
+session async tasks: global channels отвечают typed `SessionBatch`, а private и
+clan channels идут через `ChatResync`/`ChatMenu`/`ChatPrivate` с completion
+session guard. Incremental `Chin` передаёт `lastid` до SQL-запроса, поэтому
+reconnect не повторяет уже показанную историю. `Cset` по-прежнему использует
+`ChatColorCycle`; обычный `Chat` - `ChatAppend + ChatFanout`.
+
+Проверка: targeted chat/movement tests, strict server clippy и wire smoke.
+
+**Slash-command fallback закрыт.** `/moneyall`, `/skill`, `/role` и `/clan`
+имеют отдельные `SaveKind`, completion permit и session-guarded completion;
+остальные slash-команды возвращают typed `CommandEffects` без outbox delivery
+из simulation apply. `LocalChat` и `ChannelChat` классифицируют durable slash
+до apply, поэтому saturation не допускает мутацию без persistence reservation.
+`spawn_session_async_task` и `legacy_text` удалены из production slash-path;
+старые handlers остаются только под `cfg(test)` до переноса их тест-кейсов.
+
+Проверка: targeted command/admission tests, `cargo check -p openmines-server`,
+`cargo fmt --all` и `git diff --check`.
+
+**Programmer menu (`Pope`) закрыт.** `OpenProgrammer`, `GUI_ prog`, `PROG` без
+выбранной программы и `PCOP` резервируют typed durable work до apply.
+`ProgramMenu` читает список, `ProgramCopy` копирует owned source; их completion
+при актуальной session отдаёт `GU` или ставит следующий persistence request.
+Старые Pope/PROG handlers оставлены только под `cfg(test)`, production-входов
+к ним нет. Проверка: admission и completion tests для binary `PROG`, GUI `prog`
+и `PCOP`.
+
+**My buildings (`Blds`) закрыт.** Запрос резервирует `BuildingMenu` до apply;
+persistence worker читает owned buildings, а completion с session guard строит
+прежний `Мои здания` GU и обновляет UI state. Старый renderer оставлен только
+под `cfg(test)`, production session task удалён.
+
+**Whois (`Whoi`) закрыт.** До worker kernel снимает имена online-игроков из
+ECS; только отсутствующие ID читаются из БД. `Whois` резервирует bounded
+persistence slot и completion permit до apply, а completion для актуальной
+session строит legacy `NL` в исходном порядке, включая повторные и отсутствующие
+ID. Старый session async handler удалён.
+
+Проверка: contract admission и completion-wire regression, `cargo check -p
+openmines-server`, rustfmt и `git diff --check`.
+
+**GUI read-навигация клана закрыта.** `Clan`, `clan_menu`, `clan_back`,
+`clan_view`, `clan_members`, `clan_invite_list`, `clan_invites_view`,
+`clan_requests` и открытие кланового pack идут через bounded `ClanMenu` с
+completion permit до apply. Для pack kernel повторяет legacy проверку позиции,
+owner/clan access; `OpenPack` резервирует `ClanMenu` консервативно до world
+lookup, а не создаёт DB work после admission. Worker получает только immutable
+online invite-candidate snapshot; GUI completion строит прежний `GU` только
+актуальной session.
+
+Проверка: contract admission для всех входов, completion-wire regression,
+`cargo test -p openmines-server clan_ --all-features`, `cargo check -p
+openmines-server`, rustfmt и `git diff --check`.
+
+**GUI-мутации клана закрыты.** `clan_create` уже входил через typed slash
+command; GUI `clan_request`, invite accept/decline, invite send, request
+accept/decline, leave, promote и kick теперь создают `ClanCommand` до любой
+DB-работы. Worker повторяет capability/rank проверки и завершает mutation
+через session-guarded effect; `accept_clan_invite` использует invite edge, а не
+request edge. Старые production async branches удалены; оставшиеся legacy
+helpers существуют только в тестовой конфигурации.
+
+Проверка: ingress regression для всех mutation button IDs, stale-session join
+completion, `cargo test -p openmines-server clan_ --all-features`,
+`cargo test -p openmines-storage accepting_invite_uses_invite_edge_and_joins_player --all-features`,
+`cargo check -p openmines-server`, rustfmt и `git diff --check`.
 
 ### P0, закрытый перед следующим срезом: programmator due requeue
 

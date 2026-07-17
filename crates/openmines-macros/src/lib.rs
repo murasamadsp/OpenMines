@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use rstml::node::{Node, NodeAttribute, NodeElement, NodeName};
+use quote::{format_ident, quote};
+use rstml::node::{Node, NodeAttribute, NodeBlock, NodeElement, NodeName};
 use rstml::parse2;
 use syn::spanned::Spanned;
 
@@ -70,10 +70,30 @@ fn get_attr_expr(el: &NodeElement, name: &str) -> Option<proc_macro2::TokenStrea
         .iter()
         .find_map(|attribute| match attribute {
             NodeAttribute::Attribute(keyed) if name_is(&keyed.key, name) => {
-                keyed.value().map(|value| quote! { #value })
+                keyed.value().map(expr_tokens)
             }
             _ => None,
         })
+}
+
+fn expr_tokens(expression: &syn::Expr) -> proc_macro2::TokenStream {
+    if let syn::Expr::Block(block) = expression
+        && let [syn::Stmt::Expr(inner, _)] = block.block.stmts.as_slice()
+    {
+        quote! { #inner }
+    } else {
+        quote! { #expression }
+    }
+}
+
+fn block_tokens(block: &NodeBlock) -> proc_macro2::TokenStream {
+    if let Some(block) = block.try_block()
+        && let [syn::Stmt::Expr(expression, _)] = block.stmts.as_slice()
+    {
+        expr_tokens(expression)
+    } else {
+        quote! { #block }
+    }
 }
 
 fn required_attr(el: &NodeElement, name: &str) -> Result<proc_macro2::TokenStream, syn::Error> {
@@ -98,8 +118,15 @@ fn literal_attr(el: &NodeElement, name: &str) -> Option<String> {
     };
     match &literal.lit {
         syn::Lit::Str(value) => Some(value.value()),
-        syn::Lit::Int(value) => Some(value.base10_digits().to_owned()),
-        syn::Lit::Float(value) => Some(value.base10_digits().to_owned()),
+        syn::Lit::Int(value)
+            if value.suffix().is_empty()
+                && value
+                    .base10_digits()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit()) =>
+        {
+            Some(value.base10_digits().to_owned())
+        }
         syn::Lit::Bool(value) => Some(value.value.to_string()),
         syn::Lit::Char(value) => Some(value.value().to_string()),
         syn::Lit::Byte(value) => Some(value.value().to_string()),
@@ -126,7 +153,7 @@ fn get_single_child_or_value(el: &NodeElement) -> Result<proc_macro2::TokenStrea
             let value = text.value_string();
             Ok(quote! { #value })
         }
-        [Node::Block(block)] => Ok(quote! { #block }),
+        [Node::Block(block)] => Ok(block_tokens(block)),
         children => {
             let mut format_string = String::new();
             let mut expressions = Vec::with_capacity(children.len());
@@ -139,7 +166,7 @@ fn get_single_child_or_value(el: &NodeElement) -> Result<proc_macro2::TokenStrea
                     }
                     Node::Block(block) => {
                         format_string.push_str("{}");
-                        expressions.push(quote! { #block });
+                        expressions.push(block_tokens(block));
                     }
                     _ => {
                         return Err(syn::Error::new(
@@ -158,19 +185,59 @@ fn expand_window(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Erro
     validate_attributes(el, &["title", "style"])?;
     let title = required_attr(el, "title")?;
     let css = get_attr_expr(el, "style").map(|style| quote! { .css(#style) });
-    let children = el
-        .children
-        .iter()
-        .map(expand_node)
-        .collect::<Result<Vec<_>, _>>()?;
+    let builder = quote! { ::openmines_protocol::gui::Horb::new(#title) #css };
+    expand_window_children(&el.children, builder)
+}
 
+fn expand_window_children(
+    children: &[Node],
+    mut builder: proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    for child in children {
+        builder = match child {
+            Node::Element(element) if name_is(element.name(), "for") => {
+                expand_for(element, &builder)?
+            }
+            Node::Element(element) if name_is(element.name(), "if") => {
+                expand_if(element, &builder)?
+            }
+            _ => {
+                let operation = expand_node(child)?;
+                quote! { #builder #operation }
+            }
+        };
+    }
+    Ok(quote! { { #builder } })
+}
+
+fn expand_for(
+    el: &NodeElement,
+    builder: &proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    validate_attributes(el, &["each", "item"])?;
+    let each = required_attr(el, "each")?;
+    let binding = syn::parse2::<syn::Ident>(required_attr(el, "item")?).map_err(|_| {
+        syn::Error::new(
+            el.name().span(),
+            "Attribute 'item' for <for> must be an identifier",
+        )
+    })?;
+    let current = format_ident!("__openmines_gui");
+    let body = expand_window_children(&el.children, quote! { #current })?;
     Ok(quote! {
-        {
-            crate::net::session::ui::horb::Horb::new(#title)
-            #css
-            #(#children)*
-        }
+        (#each).into_iter().fold(#builder, |#current, #binding| #body)
     })
+}
+
+fn expand_if(
+    el: &NodeElement,
+    builder: &proc_macro2::TokenStream,
+) -> Result<proc_macro2::TokenStream, syn::Error> {
+    validate_attributes(el, &["condition"])?;
+    let condition = required_attr(el, "condition")?;
+    let body = expand_window_children(&el.children, builder.clone())?;
+
+    Ok(quote! { if #condition { #body } else { #builder } })
 }
 
 fn expand_tabs(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error> {
@@ -186,9 +253,9 @@ fn expand_tabs(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error>
                 let active = get_attr_expr(tab, "active").unwrap_or_else(|| quote! { false });
                 tabs.push(quote! {
                     .tab(if #active {
-                        crate::net::session::ui::horb::Tab::active(#label)
+                        ::openmines_protocol::gui::Tab::active(#label)
                     } else {
-                        crate::net::session::ui::horb::Tab::new(#label, #action)
+                        ::openmines_protocol::gui::Tab::new(#label, #action)
                     })
                 });
             }
@@ -224,7 +291,7 @@ fn expand_buttons(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Err
                 let label = required_attr(button, "label")?;
                 let action = required_attr(button, "action")?;
                 buttons.push(quote! {
-                    .button(crate::net::session::ui::horb::Button::new(#label, #action))
+                    .button(::openmines_protocol::gui::Button::new(#label, #action))
                 });
             }
             Node::Element(other) => {
@@ -260,7 +327,7 @@ fn expand_list(el: &NodeElement) -> Result<proc_macro2::TokenStream, syn::Error>
                 let subtitle = get_attr_expr(row, "subtitle").unwrap_or_else(|| quote! { "" });
                 let action = get_attr_expr(row, "action").unwrap_or_else(|| quote! { "" });
                 rows.push(quote! {
-                    .list_row(crate::net::session::ui::ListRow::new(#title, #subtitle, #action))
+                    .list_row(::openmines_protocol::gui::ListRow::new(#title, #subtitle, #action))
                 });
             }
             Node::Element(other) => {
@@ -289,23 +356,21 @@ fn expand_form_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, syn::E
         validate_attributes(row, &["label"])?;
         validate_leaf(row)?;
         let label = required_attr(row, "label")?;
-        Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::text(#label)) })
+        Ok(quote! { .rich_row(::openmines_protocol::gui::RichRow::text(#label)) })
     } else if name_is(row.name(), "toggle-row") {
         validate_attributes(row, &["label", "key", "active"])?;
         validate_leaf(row)?;
         let label = required_attr(row, "label")?;
         let key = required_attr(row, "key")?;
         let active = get_attr_expr(row, "active").unwrap_or_else(|| quote! { false });
-        Ok(
-            quote! { .rich_row(crate::net::session::ui::horb::RichRow::toggle(#label, #key, #active)) },
-        )
+        Ok(quote! { .rich_row(::openmines_protocol::gui::RichRow::toggle(#label, #key, #active)) })
     } else if name_is(row.name(), "uint-row") {
         validate_attributes(row, &["label", "key", "value"])?;
         validate_leaf(row)?;
         let label = required_attr(row, "label")?;
         let key = required_attr(row, "key")?;
         let value = get_attr_expr(row, "value").unwrap_or_else(|| quote! { 0 });
-        Ok(quote! { .rich_row(crate::net::session::ui::horb::RichRow::uint(#label, #key, #value)) })
+        Ok(quote! { .rich_row(::openmines_protocol::gui::RichRow::uint(#label, #key, #value)) })
     } else if name_is(row.name(), "button-row") {
         validate_attributes(row, &["label", "btn-label", "action"])?;
         validate_leaf(row)?;
@@ -313,7 +378,7 @@ fn expand_form_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, syn::E
         let button_label = required_attr(row, "btn-label")?;
         let action = required_attr(row, "action")?;
         Ok(
-            quote! { .rich_row(crate::net::session::ui::horb::RichRow::button(#label, #button_label, #action)) },
+            quote! { .rich_row(::openmines_protocol::gui::RichRow::button(#label, #button_label, #action)) },
         )
     } else if name_is(row.name(), "dropdown-row") {
         expand_dropdown_row(row)
@@ -388,7 +453,7 @@ fn expand_dropdown_row(row: &NodeElement) -> Result<proc_macro2::TokenStream, sy
     };
 
     Ok(quote! {
-        .rich_row(crate::net::session::ui::horb::RichRow::dropdown(#label, #options, #key, #selected))
+        .rich_row(::openmines_protocol::gui::RichRow::dropdown(#label, #options, #key, #selected))
     })
 }
 
@@ -478,6 +543,58 @@ fn expand_node(node: &Node) -> Result<proc_macro2::TokenStream, syn::Error> {
         Node::Element(element) if name_is(element.name(), "list") => expand_list(element),
         Node::Element(element) if name_is(element.name(), "form") => expand_form(element),
         Node::Element(element) if name_is(element.name(), "canvas") => expand_canvas(element),
+        Node::Element(element) if name_is(element.name(), "input") => {
+            validate_attributes(element, &["placeholder", "focus-console"])?;
+            validate_leaf(element)?;
+            let placeholder = required_attr(element, "placeholder")?;
+            let focus = get_attr_expr(element, "focus-console").unwrap_or_else(|| quote! { false });
+            Ok(quote! { .input(#placeholder, #focus) })
+        }
+        Node::Element(element) if name_is(element.name(), "card") => {
+            validate_attributes(element, &["value"])?;
+            validate_leaf(element)?;
+            let value = required_attr(element, "value")?;
+            Ok(quote! { .card(#value) })
+        }
+        Node::Element(element) if name_is(element.name(), "inventory") => {
+            validate_attributes(element, &["value"])?;
+            validate_leaf(element)?;
+            let value = required_attr(element, "value")?;
+            Ok(quote! { .inventory(#value) })
+        }
+        Node::Element(element) if name_is(element.name(), "admin") => {
+            validate_attributes(element, &["enabled"])?;
+            validate_leaf(element)?;
+            let enabled = get_attr_expr(element, "enabled").unwrap_or_else(|| quote! { true });
+            Ok(quote! { .admin(#enabled) })
+        }
+        Node::Element(element) if name_is(element.name(), "crystals") => {
+            validate_attributes(element, &["left", "right", "buy", "lines"])?;
+            validate_leaf(element)?;
+            let left = required_attr(element, "left")?;
+            let right = required_attr(element, "right")?;
+            let buy = get_attr_expr(element, "buy").unwrap_or_else(|| quote! { false });
+            let lines = required_attr(element, "lines")?;
+            Ok(quote! { .crystals(#left, #right, #buy, #lines) })
+        }
+        Node::Element(element) if name_is(element.name(), "close-button") => {
+            validate_attributes(element, &[])?;
+            validate_leaf(element)?;
+            Ok(quote! { .close_button() })
+        }
+        Node::Element(element) if name_is(element.name(), "minimap") => {
+            validate_attributes(
+                element,
+                &["center-x", "center-y", "radius", "cell-empty", "markers"],
+            )?;
+            validate_leaf(element)?;
+            let center_x = required_attr(element, "center-x")?;
+            let center_y = required_attr(element, "center-y")?;
+            let radius = required_attr(element, "radius")?;
+            let cell_empty = required_attr(element, "cell-empty")?;
+            let markers = required_attr(element, "markers")?;
+            Ok(quote! { .minimap(#center_x, #center_y, #radius, #cell_empty, &#markers) })
+        }
         Node::Element(element) => Err(syn::Error::new(
             element.name().span(),
             format!("Unknown element <{}>", element.name()),
@@ -486,7 +603,10 @@ fn expand_node(node: &Node) -> Result<proc_macro2::TokenStream, syn::Error> {
             let value = text.value_string();
             Ok(quote! { .text(#value) })
         }
-        Node::Block(block) => Ok(quote! { .text(#block) }),
+        Node::Block(block) => {
+            let value = block_tokens(block);
+            Ok(quote! { .text(#value) })
+        }
         _ => Ok(quote! {}),
     }
 }
@@ -534,6 +654,15 @@ mod tests {
         assert!(generated.contains("format !"));
         assert!(!generated.contains("vec !"));
         assert!(!generated.contains("join"));
+    }
+
+    #[test]
+    fn non_decimal_or_float_literals_keep_runtime_display_semantics() {
+        let row = parse(quote! {
+            <dropdown-row label="Rank" key="rank"><option value=0xff label=1.0 /></dropdown-row>
+        });
+        let generated = expand_form_row(&row).expect("expands").to_string();
+        assert!(generated.contains("format !"));
     }
 
     #[test]

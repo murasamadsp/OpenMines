@@ -1,9 +1,27 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc
+)]
 //! Application of ordered player commands inside the simulation boundary.
 //!
 //! This module is intentionally still calling legacy session handlers while the
 //! kernel migration is in progress. The important boundary is that lifecycle
 //! drains commands and this module owns command application.
 
+pub(super) mod completion;
+pub(super) mod completion_clan;
+pub(super) mod gui;
+pub(super) mod slash;
+
+pub use completion::apply_persistence_completion;
+
+use crate::game::logic::kernel_context::KernelContext;
 use crate::game::{CommandEffects, GameState, PlayerCommand};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -82,14 +100,49 @@ pub fn apply_queued_player_command_with_due(
         | PlayerCommand::SettingsSave { .. }) => {
             apply_inventory_command(state, player_id, session_id, command, due_actions)
         }
-        PlayerCommand::Gui { command } => apply_gui_command(state, session_id, player_id, command),
-        command @ (PlayerCommand::AdminAction
-        | PlayerCommand::OpenProgrammer
-        | PlayerCommand::RequestMyBuildings
-        | PlayerCommand::OpenClan) => {
-            apply_presentation_command(state, player_id, &command);
+        PlayerCommand::Gui { command } => {
+            gui::apply_gui_command(state, session_id, player_id, command)
+        }
+        PlayerCommand::AdminAction => {
+            gui::apply_presentation_command(state, player_id, &PlayerCommand::AdminAction);
             CommandEffects::default()
         }
+        PlayerCommand::OpenProgrammer => CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ProgramMenu {
+                request: crate::game::ProgramMenuRequest {
+                    player_id,
+                    session_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        },
+        PlayerCommand::RequestMyBuildings => CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::BuildingMenu {
+                request: crate::game::BuildingMenuRequest {
+                    player_id,
+                    session_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        },
+        PlayerCommand::OpenClan => CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ClanMenu {
+                request: crate::game::ClanMenuRequest {
+                    player_id,
+                    session_id,
+                    player_clan_id: state.query_player_opt(player_id, |ecs, entity| {
+                        ecs.get::<crate::game::player::PlayerStats>(entity)
+                            .and_then(|stats| stats.clan_id)
+                    }),
+                    action: crate::game::ClanMenuAction::Main,
+                    invite_candidates: Vec::new(),
+                },
+            }],
+            broadcasts: Vec::new(),
+        },
         command @ (PlayerCommand::LocalChat { .. }
         | PlayerCommand::ChannelChat { .. }
         | PlayerCommand::ChatResync { .. }
@@ -107,14 +160,20 @@ pub fn apply_queued_player_command_with_due(
         command @ (PlayerCommand::ApplyInventoryBuildingPlaced { .. }
         | PlayerCommand::ApplyPaidBuildingPlaced { .. }
         | PlayerCommand::RefundPaidBuildingPlacement { .. }) => {
-            apply_building_completion(state, player_id, session_id, command)
+            completion::apply_building_completion(state, player_id, session_id, command)
         }
-        PlayerCommand::RemovePack { remove } => apply_remove_pack(state, remove, sequence),
+        PlayerCommand::RemovePack { remove } => {
+            completion::apply_remove_pack(state, remove, sequence)
+        }
         PlayerCommand::KnownNoopTy { event, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
                 handle_known_noop_ty(&tx, player_id, &event, &payload);
             }
             CommandEffects::default()
+        }
+        PlayerCommand::Slash { command } => {
+            let context = crate::game::logic::kernel_context::KernelContext::new(state);
+            slash::apply_slash_command(&context, player_id, session_id, command)
         }
     }
 }
@@ -326,6 +385,7 @@ fn apply_inventory_use(
     effects
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
@@ -340,49 +400,74 @@ fn apply_chat_command(
             apply_channel_chat_command(state, player_id, payload)
         }
         crate::game::PlayerCommand::ChatResync { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "chat_resync", async move {
-                    crate::net::session::social::chat::handle_chat_resync(
-                        &task_state,
-                        &tx,
+            let channel_tag = state
+                .query_player_opt(player_id, |w, e| {
+                    w.get::<crate::game::player::PlayerUI>(e)
+                        .map(|ui| ui.current_chat.clone())
+                })
+                .unwrap_or_default();
+            let (channel_tag, last_id) =
+                match crate::net::session::social::chat::parse_chin_resync_payload(
+                    String::from_utf8_lossy(&payload).trim(),
+                ) {
+                    Some(crate::net::session::social::chat::ChinResync::Incremental {
+                        current,
+                        lastid,
+                    }) => (current, lastid),
+                    _ => (channel_tag, 0),
+                };
+            CommandEffects {
+                events: Vec::new(),
+                saves: vec![crate::game::SaveCommand::ChatResync {
+                    request: crate::game::ChatResyncRequest {
                         player_id,
-                        &payload,
-                    )
-                    .await;
-                });
+                        session_id,
+                        channel_tag,
+                        last_id,
+                    },
+                }],
+                broadcasts: Vec::new(),
             }
-            CommandEffects::default()
         }
-        crate::game::PlayerCommand::ChatMenu { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "chat_menu", async move {
-                    crate::net::session::social::chat::handle_chat_menu(
-                        &task_state,
-                        &tx,
-                        player_id,
-                        &payload,
-                    )
-                    .await;
-                });
-            }
-            CommandEffects::default()
-        }
+        crate::game::PlayerCommand::ChatMenu { .. } => CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ChatMenu {
+                request: crate::game::ChatMenuRequest {
+                    player_id,
+                    session_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        },
         crate::game::PlayerCommand::ChatChoose { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "chat_choose", async move {
-                    crate::net::session::social::chat::handle_chat_choose(
-                        &task_state,
-                        &tx,
-                        player_id,
-                        &payload,
-                    )
-                    .await;
+            let tag = String::from_utf8_lossy(&payload).trim().to_string();
+            let channel_tag = if tag.is_empty() {
+                state
+                    .query_player_opt(player_id, |w, e| {
+                        w.get::<crate::game::player::PlayerUI>(e)
+                            .map(|ui| ui.current_chat.clone())
+                    })
+                    .unwrap_or_default()
+            } else {
+                tag
+            };
+            if !channel_tag.is_empty() {
+                let _ = state.modify_player(player_id, |w, e| {
+                    if let Some(mut ui) = w.get_mut::<crate::game::player::PlayerUI>(e) {
+                        ui.current_chat = channel_tag.clone();
+                    }
                 });
             }
-            CommandEffects::default()
+            CommandEffects {
+                events: Vec::new(),
+                saves: vec![crate::game::SaveCommand::ChatMenu {
+                    request: crate::game::ChatMenuRequest {
+                        player_id,
+                        session_id,
+                    },
+                }],
+                broadcasts: Vec::new(),
+            }
         }
         crate::game::PlayerCommand::ChatSettings { .. } => CommandEffects {
             events: Vec::new(),
@@ -395,17 +480,45 @@ fn apply_chat_command(
             broadcasts: Vec::new(),
         },
         crate::game::PlayerCommand::ChatPrivate { payload } => {
-            apply_private_chat_command(state, player_id, payload);
-            CommandEffects::default()
+            let target_uid = String::from_utf8_lossy(&payload).trim().parse::<i32>().ok();
+            match target_uid {
+                Some(uid) => CommandEffects {
+                    events: Vec::new(),
+                    saves: vec![crate::game::SaveCommand::ChatPrivate {
+                        request: crate::game::ChatPrivateRequest {
+                            player_id,
+                            session_id,
+                            target_uid: crate::game::PlayerId::from(uid),
+                        },
+                    }],
+                    broadcasts: Vec::new(),
+                },
+                None => CommandEffects::default(),
+            }
         }
         crate::game::PlayerCommand::Whois { ids } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "whois", async move {
-                    crate::net::session::social::misc::handle_whoi(&task_state, &tx, &ids).await;
-                });
+            let online_names = state
+                .active_player_ids()
+                .into_iter()
+                .filter_map(|pid| {
+                    state.query_player_opt(pid, |ecs, e| {
+                        ecs.get::<crate::game::player::PlayerMetadata>(e)
+                            .map(|m| (pid.as_i32(), m.name.clone()))
+                    })
+                })
+                .collect();
+            CommandEffects {
+                events: Vec::new(),
+                saves: vec![crate::game::SaveCommand::Whois {
+                    request: crate::game::WhoisRequest {
+                        player_id,
+                        session_id,
+                        ids,
+                        online_names,
+                    },
+                }],
+                broadcasts: Vec::new(),
             }
-            CommandEffects::default()
         }
         _ => unreachable!("non-chat command routed to chat command handler"),
     }
@@ -503,309 +616,6 @@ fn apply_channel_chat_command(
     effects
 }
 
-fn apply_private_chat_command(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    payload: bytes::Bytes,
-) {
-    let Some(tx) = state.player_sender(player_id) else {
-        return;
-    };
-    if !state.check_chat_rate(player_id) {
-        tracing::debug!(player_id = %player_id, "chat rate limited (Cpri)");
-        return;
-    }
-    let task_state = state.clone();
-    spawn_session_async_task(state, "chat_private", async move {
-        crate::net::session::social::chat::handle_chat_private(
-            &task_state,
-            &tx,
-            player_id,
-            &payload,
-        )
-        .await;
-    });
-}
-
-fn apply_presentation_command(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    command: &PlayerCommand,
-) {
-    match command {
-        crate::game::PlayerCommand::AdminAction => {
-            if let Some(tx) = state.player_sender(player_id) {
-                crate::net::session::social::commands::handle_admin_action(state, &tx, player_id);
-            }
-        }
-        crate::game::PlayerCommand::OpenProgrammer => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "open_programmer", async move {
-                    crate::net::session::social::buildings::handle_programmator_pope_menu(
-                        &task_state,
-                        &tx,
-                        player_id,
-                    )
-                    .await;
-                });
-            }
-        }
-        crate::game::PlayerCommand::RequestMyBuildings => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "request_my_buildings", async move {
-                    crate::net::session::social::buildings::handle_my_buildings_list(
-                        &task_state,
-                        &tx,
-                        player_id,
-                    )
-                    .await;
-                });
-            }
-        }
-        crate::game::PlayerCommand::OpenClan => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "open_clan", async move {
-                    crate::net::session::social::clans::handle_clan_menu(
-                        &task_state,
-                        &tx,
-                        player_id,
-                    )
-                    .await;
-                });
-            }
-        }
-        _ => unreachable!("non-presentation command routed to presentation command handler"),
-    }
-}
-
-fn apply_gui_command(
-    state: &Arc<GameState>,
-    session_id: crate::game::SessionId,
-    player_id: crate::game::PlayerId,
-    command: crate::game::GuiCommand,
-) -> CommandEffects {
-    if state
-        .active_player_entity_for_session(player_id, session_id)
-        .is_none()
-    {
-        return CommandEffects::default();
-    }
-    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-        return CommandEffects::default();
-    };
-    if !state.check_gui_rate(player_id) {
-        tracing::debug!(player_id = %player_id, "gui rate limited (GUI_)");
-        return CommandEffects::default();
-    }
-
-    let button = match command {
-        crate::game::GuiCommand::OpenPack { x, y } => {
-            let has_window = state
-                .query_player_opt(player_id, |ecs, entity| {
-                    ecs.get::<crate::game::player::PlayerUI>(entity)
-                        .map(|ui| ui.current_window.is_some())
-                })
-                .unwrap_or(false);
-            if !has_window {
-                return gui_view_effects(session_id, player_id, crate::game::GuiView::Close);
-            }
-            if state
-                .get_pack_at(x, y)
-                .is_some_and(|view| view.pack_type == crate::game::PackType::Teleport)
-            {
-                if let Some(view) =
-                    crate::net::session::ui::teleport::prepare_view(state, player_id, x, y)
-                {
-                    return gui_view_effects(
-                        session_id,
-                        player_id,
-                        crate::game::GuiView::Teleport(view),
-                    );
-                }
-                return CommandEffects::default();
-            }
-            format!("pack_op:open:{x}:{y}")
-        }
-        crate::game::GuiCommand::Button { raw, .. } => raw,
-    };
-
-    apply_gui_button_command(state, &tx, session_id, player_id, button)
-}
-
-fn gui_view_effects(
-    session_id: crate::game::SessionId,
-    player_id: crate::game::PlayerId,
-    view: crate::game::GuiView,
-) -> CommandEffects {
-    CommandEffects {
-        events: vec![crate::game::GameEvent::GuiView {
-            session_id,
-            player_id,
-            view,
-        }],
-        saves: Vec::new(),
-        broadcasts: Vec::new(),
-    }
-}
-
-fn apply_gui_button_command(
-    state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
-    session_id: crate::game::SessionId,
-    player_id: crate::game::PlayerId,
-    button: String,
-) -> CommandEffects {
-    if let Some(type_code) = button.strip_prefix("bld_place:") {
-        if let Some(placement) =
-            crate::net::session::social::buildings::prepare_paid_building_placement(
-                state, tx, player_id, type_code,
-            )
-        {
-            spawn_paid_building_insert_task(state, tx.clone(), placement);
-        }
-        return CommandEffects::default();
-    }
-    if let Some((x, y)) = parse_pack_remove_button(&button) {
-        if !state.enqueue_command(
-            player_id,
-            session_id,
-            crate::game::GameCommand::Player(crate::game::PlayerCommand::RemovePack {
-                remove: crate::game::RemovePack {
-                    x,
-                    y,
-                    cause: crate::game::BuildingDeleteCause::PlayerRequest(
-                        crate::game::BuildingDeleteOrigin {
-                            session_id,
-                            player_id,
-                        },
-                    ),
-                },
-            }),
-        ) {
-            crate::net::session::wire::send_u_packet(
-                tx,
-                "OK",
-                &crate::protocol::packets::ok_message(
-                    "СЕРВЕР",
-                    "Сервер перегружен, повторите действие.",
-                )
-                .1,
-            );
-        }
-        return CommandEffects::default();
-    }
-    if let Some(program_id) = button
-        .strip_prefix("openprog:")
-        .and_then(|rest| rest.parse::<i32>().ok())
-    {
-        spawn_program_editor_open_task(state, tx.clone(), player_id, program_id);
-        return CommandEffects::default();
-    }
-    if let Some(name) = button.strip_prefix("createprog:") {
-        let name = name.trim();
-        if name.is_empty() {
-            return CommandEffects::default();
-        }
-        return CommandEffects {
-            events: Vec::new(),
-            saves: vec![crate::game::SaveCommand::ProgramCreate {
-                request: crate::game::ProgramCreateRequest {
-                    player_id,
-                    session_id,
-                    name: name.to_owned(),
-                },
-            }],
-            broadcasts: Vec::new(),
-        };
-    }
-    if let Some((program_id, name)) = parse_program_rename_button(&button) {
-        spawn_program_editor_rename_task(state, tx.clone(), player_id, program_id, &name);
-        return CommandEffects::default();
-    }
-    if crate::net::session::ui::gui_buttons::handle_gui_button_sync_fast_path(
-        state, tx, player_id, &button,
-    ) {
-        return CommandEffects::default();
-    }
-    spawn_gui_async_task(state, tx.clone(), player_id, button);
-    CommandEffects::default()
-}
-
-#[derive(Clone, Copy)]
-enum GuiAsyncHandler {
-    Auction,
-    Clan,
-    Programmer,
-    Other,
-}
-
-fn spawn_gui_async_task(
-    state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    button: String,
-) {
-    let handler = if crate::net::session::ui::gui_buttons::is_auction_button(&button) {
-        GuiAsyncHandler::Auction
-    } else if crate::net::session::ui::gui_buttons::is_clan_button(&button) {
-        GuiAsyncHandler::Clan
-    } else if crate::net::session::ui::gui_buttons::is_programmer_button(&button) {
-        GuiAsyncHandler::Programmer
-    } else {
-        GuiAsyncHandler::Other
-    };
-    let task_name = match handler {
-        GuiAsyncHandler::Auction => "auction_gui",
-        GuiAsyncHandler::Clan => "clan_gui",
-        GuiAsyncHandler::Programmer => "programmer_gui",
-        GuiAsyncHandler::Other => "other_gui_button",
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, task_name, async move {
-        match handler {
-            GuiAsyncHandler::Auction => {
-                crate::net::session::ui::gui_buttons::handle_auction_button(
-                    &task_state,
-                    &tx,
-                    player_id,
-                    &button,
-                )
-                .await;
-            }
-            GuiAsyncHandler::Clan => {
-                crate::net::session::ui::gui_buttons::handle_clan_button(
-                    &task_state,
-                    &tx,
-                    player_id,
-                    &button,
-                )
-                .await;
-            }
-            GuiAsyncHandler::Programmer => {
-                crate::net::session::ui::gui_buttons::handle_programmer_button(
-                    &task_state,
-                    &tx,
-                    player_id,
-                    &button,
-                )
-                .await;
-            }
-            GuiAsyncHandler::Other => {
-                crate::net::session::ui::gui_buttons::handle_gui_button(
-                    &task_state,
-                    &tx,
-                    player_id,
-                    &button,
-                )
-                .await;
-            }
-        }
-    });
-}
-
 fn apply_program_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
@@ -873,7 +683,7 @@ fn apply_program_command(
         }
         PlayerCommand::ApplyProgramEditorOpen { .. }
         | PlayerCommand::ApplyProgramEditorRename { .. } => {
-            apply_program_editor_completion(state, session_id, player_id, command);
+            completion::apply_program_editor_completion(state, session_id, player_id, command);
         }
         _ => unreachable!("non-program command routed to program command handler"),
     }
@@ -916,310 +726,6 @@ fn prepare_program_save(
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn apply_persistence_completion(
-    state: &Arc<GameState>,
-    completion: crate::game::PersistenceCompletion,
-) -> CommandEffects {
-    match completion {
-        crate::game::PersistenceCompletion::ProgramSaved { request, result } => {
-            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
-                return CommandEffects::default();
-            }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
-            match result {
-                crate::game::ProgramSaveResult::Saved { program_name } => {
-                    crate::net::session::social::misc::apply_saved_program_to_tick_state(
-                        state,
-                        &tx,
-                        request.player_id,
-                        request.program_id,
-                        &program_name,
-                        &request.source,
-                    );
-                }
-                crate::game::ProgramSaveResult::Rejected => {
-                    tracing::warn!(
-                        player_id = %request.player_id,
-                        program_id = request.program_id,
-                        "Program save rejected: missing or foreign row"
-                    );
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "OK",
-                        &crate::protocol::packets::ok_message(
-                            "ПРОГРАММАТОР",
-                            "Не удалось сохранить программу.",
-                        )
-                        .1,
-                    );
-                }
-                crate::game::ProgramSaveResult::PermanentFailure { message } => {
-                    tracing::error!(
-                        player_id = %request.player_id,
-                        program_id = request.program_id,
-                        error = message,
-                        "Program save permanently rejected by persistence"
-                    );
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "OK",
-                        &crate::protocol::packets::ok_message(
-                            "ПРОГРАММАТОР",
-                            "Не удалось сохранить программу.",
-                        )
-                        .1,
-                    );
-                }
-            }
-            CommandEffects::default()
-        }
-        crate::game::PersistenceCompletion::ProgramCreated { request, result } => {
-            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
-                return CommandEffects::default();
-            }
-            match result {
-                crate::game::ProgramCreateResult::Created { program_id } => {
-                    apply_program_editor_completion(
-                        state,
-                        request.session_id,
-                        request.player_id,
-                        PlayerCommand::ApplyProgramEditorOpen {
-                            program_id,
-                            program_name: request.name,
-                            source: String::new(),
-                        },
-                    );
-                }
-                crate::game::ProgramCreateResult::PermanentFailure { message } => {
-                    tracing::error!(player_id = %request.player_id, error = message, "Program create permanently rejected by persistence");
-                    if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
-                        crate::net::session::ui::gui_buttons::send_programmator_action_error(
-                            &tx,
-                            "Не удалось создать программу.",
-                        );
-                    }
-                }
-            }
-            CommandEffects::default()
-        }
-        crate::game::PersistenceCompletion::BuildingDeleted { request, result } => {
-            adapt_building_delete_completion(crate::game::logic::building_delete::apply_completion(
-                state, request, result,
-            ))
-        }
-        crate::game::PersistenceCompletion::ChatColorCycled { request, result } => {
-            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
-                return CommandEffects::default();
-            }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
-            match result {
-                crate::game::ChatColorCycleResult::Cycled { color } => {
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "mC",
-                        &crate::protocol::packets::chat_color(color).1,
-                    );
-                }
-                crate::game::ChatColorCycleResult::Rejected => {
-                    tracing::warn!(player_id = %request.player_id, "Chat color cycle rejected: player is missing");
-                }
-                crate::game::ChatColorCycleResult::PermanentFailure { message } => {
-                    tracing::error!(player_id = %request.player_id, error = message, "Chat color cycle failed");
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "OK",
-                        &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
-                    );
-                }
-            }
-            CommandEffects::default()
-        }
-    }
-}
-
-fn apply_remove_pack(
-    state: &Arc<GameState>,
-    remove: crate::game::RemovePack,
-    sequence: crate::game::CommandSeq,
-) -> CommandEffects {
-    match crate::game::logic::building_delete::admit(state, remove, sequence.into()) {
-        Ok(request) => CommandEffects {
-            events: Vec::new(),
-            saves: vec![crate::game::SaveCommand::BuildingDelete { request }],
-            broadcasts: Vec::new(),
-        },
-        Err(error) => building_delete_error_effects(remove.cause.origin(), error),
-    }
-}
-
-fn adapt_building_delete_completion(
-    completion: crate::game::logic::building_delete::BuildingDeleteCompletion,
-) -> CommandEffects {
-    use crate::game::logic::building_delete::BuildingDeleteCompletion;
-
-    match completion {
-        BuildingDeleteCompletion::Applied(mut applied) => {
-            let mut broadcasts = applied
-                .changed_cells
-                .into_iter()
-                .map(crate::game::BroadcastEffect::CellUpdate)
-                .collect::<Vec<_>>();
-            broadcasts.push(crate::game::BroadcastEffect::BlockUpdate(
-                (applied.view.x, applied.view.y).into(),
-            ));
-            let close = crate::protocol::packets::gu_close();
-            broadcasts.extend(applied.closed_sessions.into_iter().map(|session_id| {
-                crate::game::BroadcastEffect::Direct {
-                    session_id,
-                    data: crate::net::session::wire::make_u_packet_bytes(close.0, &close.1),
-                }
-            }));
-            if let Some(position) = applied.box_position {
-                broadcasts.push(crate::game::BroadcastEffect::CellUpdate(position));
-            }
-            if let Some(mut inventory_drop) = applied.inventory_drop.take()
-                && let Some(session_id) = inventory_drop.session_id
-            {
-                let bubble = crate::protocol::packets::hb_chat(
-                    0,
-                    crate::net::session::util::net_u16_nonneg(inventory_drop.position.0),
-                    crate::net::session::util::net_u16_nonneg(inventory_drop.position.1),
-                    "ШПАААК ВЫПАЛ",
-                );
-                broadcasts.push(crate::game::BroadcastEffect::Direct {
-                    session_id,
-                    data: crate::net::session::wire::encode_hb_bundle(
-                        &crate::protocol::packets::hb_bundle(&[bubble]).1,
-                    ),
-                });
-                let packet =
-                    crate::game::logic::inventory::inventory_packet(&mut inventory_drop.inventory);
-                broadcasts.push(crate::game::BroadcastEffect::Direct {
-                    session_id,
-                    data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
-                });
-            }
-            CommandEffects {
-                events: Vec::new(),
-                saves: Vec::new(),
-                broadcasts,
-            }
-        }
-        BuildingDeleteCompletion::Rejected { origin, error } => {
-            building_delete_error_effects(origin, error)
-        }
-        BuildingDeleteCompletion::Stale => {
-            tracing::error!("Stale building-delete completion ignored");
-            CommandEffects::default()
-        }
-    }
-}
-
-fn building_delete_error_effects(
-    origin: Option<crate::game::BuildingDeleteOrigin>,
-    error: crate::game::logic::building_delete::BuildingDeleteError,
-) -> CommandEffects {
-    let Some(origin) = origin else {
-        tracing::error!(?error, "Building delete rejected without an origin session");
-        return CommandEffects::default();
-    };
-    let packet = crate::protocol::packets::ok_message("Ошибка", error.message());
-    CommandEffects {
-        events: Vec::new(),
-        saves: Vec::new(),
-        broadcasts: vec![crate::game::BroadcastEffect::Direct {
-            session_id: origin.session_id,
-            data: crate::net::session::wire::make_u_packet_bytes(packet.0, &packet.1),
-        }],
-    }
-}
-
-fn apply_building_completion(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    command: PlayerCommand,
-) -> CommandEffects {
-    let effects = CommandEffects::default();
-    match command {
-        crate::game::PlayerCommand::ApplyInventoryBuildingPlaced { placement, db_id } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::net::session::ui::heal_inventory::apply_inventory_building_placed(
-                state, &tx, &placement, db_id,
-            );
-        }
-        crate::game::PlayerCommand::ApplyPaidBuildingPlaced { placement, db_id } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::net::session::social::buildings::apply_paid_building_placed(
-                state, &tx, &placement, db_id,
-            );
-        }
-        crate::game::PlayerCommand::RefundPaidBuildingPlacement { cost } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::net::session::social::buildings::refund_paid_building_placement(
-                state, &tx, player_id, cost,
-            );
-        }
-        _ => unreachable!("non-building command routed to building completion handler"),
-    }
-    effects
-}
-
-fn apply_program_editor_completion(
-    state: &Arc<GameState>,
-    session_id: crate::game::SessionId,
-    player_id: crate::game::PlayerId,
-    command: PlayerCommand,
-) {
-    match command {
-        crate::game::PlayerCommand::ApplyProgramEditorOpen {
-            program_id,
-            program_name,
-            source,
-        } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
-            };
-            crate::net::session::ui::programmer::apply_editor_open(
-                state,
-                &tx,
-                player_id,
-                program_id,
-                &program_name,
-                &source,
-            );
-        }
-        crate::game::PlayerCommand::ApplyProgramEditorRename {
-            program_id,
-            program_name,
-            source,
-        } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
-            };
-            crate::net::session::ui::programmer::apply_editor_rename(
-                state,
-                &tx,
-                player_id,
-                program_id,
-                &program_name,
-                &source,
-            );
-        }
-        _ => unreachable!("non-editor command routed to editor completion handler"),
-    }
-}
-
 pub fn apply_programmator_auto_dig_set(
     state: &Arc<GameState>,
     tx: &crate::net::session::outbox::Outbox,
@@ -1517,7 +1023,11 @@ fn apply_geology_command(
     player_id: crate::game::PlayerId,
     programmatic: bool,
 ) {
-    match crate::game::logic::geology::apply_geology(state, player_id, programmatic) {
+    match crate::game::logic::geology::apply_geology(
+        &crate::game::logic::kernel_context::KernelContext::new(state),
+        player_id,
+        programmatic,
+    ) {
         crate::game::logic::geology::GeologyResult::Applied {
             geo_name,
             changed_cells,
@@ -1549,7 +1059,11 @@ fn apply_heal_command(
     player_id: crate::game::PlayerId,
     programmatic: bool,
 ) {
-    match crate::game::logic::healing::apply_heal(state, player_id, programmatic) {
+    match crate::game::logic::healing::apply_heal(
+        &crate::game::logic::kernel_context::KernelContext::new(state),
+        player_id,
+        programmatic,
+    ) {
         crate::game::logic::healing::HealResult::Applied {
             health,
             max_health,

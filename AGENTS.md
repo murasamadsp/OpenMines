@@ -14,9 +14,10 @@
 1. `AGENTS.md` - ограничения и процесс работы.
 2. `SERVER_MIGRATION_STATUS.md` - текущий handoff и следующий шаг.
 3. `docs/ARCHITECTURE.md` - фактическая архитектура текущего кода.
-4. `SIMULATION_KERNEL_PLAN.md` - целевая ownership/performance модель.
-5. `SERVER_CONSISTENCY_PLAN.md` - форма feature-кода и capability guards.
-6. `TODO.md` и `AUDIT_STATE.md` - product backlog и исторический аудит; они не
+4. `docs/SIMULATION_KERNEL_PLAN.md` - целевая ownership/performance модель.
+5. `docs/SERVER_CONSISTENCY_PLAN.md` - форма feature-кода и capability guards.
+6. `docs/TARGET_ARCHITECTURE_PLAN.md` - целевой план реструктуризации на изолированные крейты.
+7. `docs/backlog/TODO.md` и `docs/backlog/AUDIT_STATE.md` - product backlog и исторический аудит; они не
    задают порядок simulation migration.
 
 ## Принципы работы
@@ -31,13 +32,9 @@
 
 ## Обязательные ограничения
 
-- **🚧 НЕТ ПРОДАКШЕНА — ЭТАП РАЗРАБОТКИ.** На сервере (ssh vps) НЕТ игроков, мир в
-  `data/` (и в volume на VPS) — **одноразовый тестовый**. Регенерация мира,
-  пересоздание БД, рестарты, `--regen` — **свободны, без «прод-осторожности»**.
-  НЕ объяснять отказ фиксить генерацию/мир/БД «это снесёт прод» — продакшена нет.
-  Уроки 4/5 ниже — про дисциплину инструментов (не запускать вслепую
-  деструктивные команды), а НЕ про «мир = ценные прод-данные». Фиксить ВСЁ.
+- **🚧 НЕТ ПРОДАКШЕНА — ЭТАП РАЗРАБОТКИ.** На сервере (ssh vps) нет активных внешних игроков, мир в `data/` и volume на VPS является тестовым и подлежит регенерации или рестартам при необходимости (`--regen`). Тем не менее, для удобства разработки и тестирования накопленные данные (игроки, здания) представляют ценность. Любые деструктивные действия с контейнерами или volumes на VPS требуют обязательного создания бэкапа и явного согласования. Локально регенерация мира и сброс БД свободны, без «прод-осторожности». Фиксить ВСЁ.
 - **НЕ ВОЗВРАЩАТЬ УДАЛЁННОЕ** — если код/файл был удалён, не восстанавливать без явной просьбы.
+- **БАРЬЕР ECS И СЕТЕВОГО СЛОЯ:** Строго запрещено добавлять новые прямые обращения к ECS (через `state.ecs`, `ecs_read_profiled`, `ecs_write_profiled`, `query_player`, `modify_player`) в сетевой слой (`crates/openmines-server/src/net/session/` и `crates/openmines-server/src/net/web.rs`). Любое новое действие должно идти через typed commands. Изменения в сетевом слое должны соответствовать `docs/reference/ecs_bypass_baseline.txt`.
 - **НЕ ТРОГАТЬ ЛИНТЕРЫ** — не менять настройки clippy/rustfmt, не подавлять warnings.
 - **НЕ ОБХОДИТЬ ХУКИ** — никогда не использовать `--no-verify`.
 - **ЛОКАЛЬНОСТЬ** — Rust код только в `crates/`, C# только в `client/`.
@@ -157,13 +154,14 @@ visibility walk и encode не берут ECS. Для каждого таког�
 - **`SERVER_MIGRATION_STATUS.md`** — единственный актуальный checkpoint/handoff
   серверной миграции
 - **`docs/ARCHITECTURE.md`** — фактическая runtime topology
-- **`SIMULATION_KERNEL_PLAN.md`** — целевая ownership/performance модель
-- **`SERVER_CONSISTENCY_PLAN.md`** — module grammar и capability guards
+- **`docs/SIMULATION_KERNEL_PLAN.md`** — целевая ownership/performance модель
+- **`docs/SERVER_CONSISTENCY_PLAN.md`** — module grammar и capability guards
+- **`docs/TARGET_ARCHITECTURE_PLAN.md`** — целевой план реструктуризации на изолированные крейты
 - **`docs/PROTOCOL.md`** — нормализованная актуальная спецификация wire-контракта
-- **`ROADMAP.md`** — только deprecated-навигация. Чекбоксы из старого roadmap удалены, потому что завышали статус.
+- **`docs/backlog/ROADMAP.md`** — только deprecated-навигация. Чекбоксы из старого roadmap удалены, потому что завышали статус.
 - **`docs/reference/server_reference/`** — обязательный, но нижестоящий C#
   reference; каталог не добавлять в Git
-- **`docs/backlog/`**, `TODO.md`, `AUDIT_STATE.md` — product backlog и
+- **`docs/backlog/`**, `docs/backlog/TODO.md`, `docs/backlog/AUDIT_STATE.md` — product backlog и
   исторические аудиты; не выбирать по ним следующий migration slice.
 - **`docs/reference/telegram_history.md`** и `docs/archive/` — evidence/archive;
   читать только по прямому вопросу, не как текущий план.
@@ -609,7 +607,7 @@ TCP Session -> QueuedGameCommand -> SimulationRuntime -> CommandEffects
 
 Текущий реестр архитектурных проблем находится в
 `SERVER_MIGRATION_STATUS.md`. Целевая модель и consistency gates находятся в
-`SIMULATION_KERNEL_PLAN.md` и `SERVER_CONSISTENCY_PLAN.md`. Не создавать новый
+`docs/SIMULATION_KERNEL_PLAN.md` и `docs/SERVER_CONSISTENCY_PLAN.md`. Не создавать новый
 общий tech-debt файл: он быстро станет конкурирующим источником правды.
 
 ### Основные архитектурные правила при разработке:

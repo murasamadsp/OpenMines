@@ -469,42 +469,6 @@ pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     }
 }
 
-pub async fn handle_clan_join_request(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    clan_id: i32,
-) {
-    if player_clan_id(state, pid).is_some() {
-        send_clan_ok(tx, "Ошибка", "Вы уже в клане");
-        return;
-    }
-
-    // Check for existing pending request (1:1 C# Clan.AddReq: reqs.FirstOrDefault(i => i.player.id == id)).
-    let existing = match state.db.get_clan_requests(clan_id).await {
-        Ok(existing) => existing,
-        Err(e) => {
-            tracing::error!(player_id = %pid, clan_id, error = ?e, "Failed to load clan requests");
-            send_clan_ok(tx, "Ошибка", "Ошибка БД");
-            return;
-        }
-    };
-    if existing.iter().any(|(req_pid, _)| *req_pid == pid) {
-        send_clan_ok(tx, "Клан", "Заявка уже подана");
-        return;
-    }
-
-    match state.db.add_clan_request(clan_id, pid.into()).await {
-        Ok(()) => {
-            send_clan_ok(tx, "Клан", "Заявка отправлена");
-        }
-        Err(e) => {
-            tracing::error!(clan_id, player_id = %pid, error = ?e, "Failed to add clan join request");
-            send_clan_ok(tx, "Ошибка", "Не удалось отправить заявку");
-        }
-    }
-}
-
 pub async fn handle_clan_members_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
@@ -602,43 +566,6 @@ pub async fn handle_clan_invite_list(state: &Arc<GameState>, tx: &Outbox, pid: P
         .send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_invite_send(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    target_pid: i32,
-) {
-    let clan_id = match player_clan_id(state, pid) {
-        Some(id) => id,
-        None => return,
-    };
-    let Some(members) =
-        load_clan_members_or_error(state, tx, pid, clan_id, "Failed to load clan members").await
-    else {
-        return;
-    };
-    let player_rank = clan_rank_for(&members, pid);
-
-    if player_rank < crate::db::ClanRank::Officer {
-        send_clan_no_rights(tx);
-        return;
-    }
-
-    match state.db.add_clan_invite(clan_id, target_pid).await {
-        Ok(()) => {
-            send_clan_ok(tx, "Клан", "Приглашение отправлено");
-            state.send_to_player(
-                target_pid.into(),
-                make_u_packet_bytes("OK", &ok_message("Клан", "Вас пригласили в клан!").1),
-            );
-        }
-        Err(e) => {
-            tracing::error!(clan_id, target_id = target_pid, error = ?e, "Failed to add clan invite");
-            send_clan_ok(tx, "Ошибка", "Не удалось отправить приглашение");
-        }
-    }
-}
-
 pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let invites = match state.db.get_player_invites(pid.into()).await {
         Ok(invites) => invites,
@@ -667,6 +594,7 @@ pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &Outbox, pid: 
         .send(state, tx, pid, "clan");
 }
 
+#[allow(dead_code)]
 pub async fn handle_clan_invite_accept(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -730,16 +658,7 @@ pub async fn handle_clan_invite_accept(
     }
 }
 
-pub async fn handle_clan_invite_decline(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    clan_id: i32,
-) {
-    let _ = state.db.decline_clan_invite(clan_id, pid.into()).await;
-    handle_clan_invites_view(state, tx, pid).await;
-}
-
+#[allow(dead_code)]
 pub async fn handle_clan_promote(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -819,6 +738,7 @@ pub async fn handle_clan_requests_view(state: &Arc<GameState>, tx: &Outbox, pid:
         .send(state, tx, pid, "clan");
 }
 
+#[allow(dead_code)]
 pub async fn handle_clan_accept(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -859,35 +779,6 @@ pub async fn handle_clan_accept(
             send_clan_ok(tx, "Ошибка", "Не удалось принять заявку");
         }
     }
-}
-
-pub async fn handle_clan_decline(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    target_pid: i32,
-) {
-    let clan_id = match player_clan_id(state, pid) {
-        Some(id) => id,
-        None => return,
-    };
-    let Some(members) =
-        load_clan_members_or_error(state, tx, pid, clan_id, "Failed to load clan members").await
-    else {
-        return;
-    };
-    let player_rank = clan_rank_for(&members, pid);
-
-    if player_rank < crate::db::ClanRank::Officer {
-        send_clan_no_rights(tx);
-        return;
-    }
-    if let Err(e) = state.db.decline_clan_request(clan_id, target_pid).await {
-        tracing::error!(clan_id, player_id = target_pid, error = ?e, "Failed to decline clan request");
-        send_clan_ok(tx, "Ошибка", "Ошибка БД");
-        return;
-    }
-    handle_clan_requests_view(state, tx, pid).await;
 }
 
 pub async fn handle_clan_kick(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, target_pid: i32) {

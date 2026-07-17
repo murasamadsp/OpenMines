@@ -4,9 +4,9 @@ use crate::game::GameState;
 use crate::net::session::connection::GuiAuthStep;
 use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
-use crate::net::session::ui::horb::{Button, Horb};
 use crate::protocol::packets::auth_hash;
 use anyhow::Context as _;
+use openmines_macros::gui;
 
 fn hash_password(passwd: &str, user_hash: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -64,21 +64,30 @@ pub async fn handle_gui_auth_flow(
 
 /// C# ref: `def` window — main auth menu with "Новый акк" and "ok" (nick input).
 pub fn send_default_auth_window(tx: &Outbox) {
-    Horb::new("ВХОД")
-        .text("Авторизация")
-        .input(" ", true)
-        .button(Button::new("Новый акк", "newakk"))
-        .button(Button::new("ok", "nick:%I%"))
-        .close_button()
-        .send_raw(tx);
+    let window = gui! {
+        <window title="ВХОД">
+            <text>"Авторизация"</text>
+            <input placeholder=" " focus-console=true />
+            <buttons>
+                <button label="Новый акк" action="newakk" />
+                <button label="ok" action="nick:%I%" />
+            </buttons>
+            <close-button />
+        </window>
+    };
+    send_u_packet(tx, "GU", &window.payload());
 }
 
 fn send_auth_input_window(tx: &Outbox, title: &str, text: &str, action: &str) {
-    Horb::new(title)
-        .text(text)
-        .input(" ", true)
-        .button(Button::new("OK", action))
-        .send_raw(tx);
+    let window = gui! {
+        <window title=title>
+            <text>{text}</text>
+            <input placeholder=" " focus-console=true />
+            <buttons><button label="OK" action=action /></buttons>
+            <close-button />
+        </window>
+    };
+    send_u_packet(tx, "GU", &window.payload());
 }
 
 /// Handle buttons on the main auth menu.

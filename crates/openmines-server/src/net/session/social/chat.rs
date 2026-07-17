@@ -1,8 +1,6 @@
 //! Чат: локальный, канальный, навигация (Cmen/Choo/Cset/Cpri), broadcast.
 //! Навигации НЕТ в `server_reference` — спец по `docs/reference/CLIENT_PROTOCOL_GAPS.md`.
-use crate::net::session::outbound::chat_sync::{
-    chat_access, parse_private_tag, send_channel_list, send_enter_channel,
-};
+use crate::net::session::outbound::chat_sync::parse_private_tag;
 use crate::net::session::prelude::*;
 
 fn send_chat_state_error(tx: &Outbox) {
@@ -30,12 +28,12 @@ pub enum ChannelChatRoute {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ChinResync<'a> {
+pub enum ChinResync {
     Initial,
-    Incremental { current: &'a str, lastid: i64 },
+    Incremental { current: String, lastid: i64 },
 }
 
-fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync<'_>> {
+pub fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync> {
     let payload = payload.trim();
     if payload == "_" {
         return Some(ChinResync::Initial);
@@ -49,7 +47,7 @@ fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync<'_>> {
     }
     if lasts.is_empty() {
         return Some(ChinResync::Incremental {
-            current,
+            current: current.to_string(),
             lastid: -1,
         });
     }
@@ -72,7 +70,10 @@ fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync<'_>> {
         }
     }
 
-    Some(ChinResync::Incremental { current, lastid })
+    Some(ChinResync::Incremental {
+        current: current.to_string(),
+        lastid,
+    })
 }
 
 pub fn handle_local_chat_non_command(
@@ -128,7 +129,9 @@ fn broadcast_player_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg
         net_u16_nonneg(py),
         msg,
     );
-    state.broadcast_hb_at(px, py, &[chat_sub], None);
+    // Delivery must stay out of simulation dispatch. The side phase batches
+    // nearby HB frames and preserves their ordering barriers.
+    state.queue_hb_at(px, py, &[chat_sub], None);
 }
 
 pub fn prepare_channel_chat_non_command(
@@ -288,144 +291,6 @@ pub fn extract_channel_message_text(payload: &[u8]) -> String {
 /// - `"1:cur:lasts"` (реконнект) → выставить `current_chat=cur`, `mO` +
 ///   `mU` ТОЛЬКО с `id > lastid[cur]` (инкремент; нет → −1 → полная).
 ///   Доступ к `cur` валидируется (`chat_access`); нет прав → drop.
-pub async fn handle_chat_resync(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    payload: &[u8],
-) {
-    let s = String::from_utf8_lossy(payload).trim().to_string();
-    let Some(cur_default) = state.query_player_opt(pid, |w, e| {
-        let Some(ui) = w.get::<crate::game::player::PlayerUI>(e) else {
-            tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for chat resync");
-            return None;
-        };
-        Some(ui.current_chat.clone())
-    }) else {
-        send_chat_state_error(tx);
-        return;
-    };
-
-    let Some(request) = parse_chin_resync_payload(&s) else {
-        tracing::warn!(player_id = %pid, payload = %s, "Malformed Chin payload");
-        return;
-    };
-
-    let ChinResync::Incremental {
-        current: cur,
-        lastid,
-    } = request
-    else {
-        match chat_access(state, pid, &cur_default).await {
-            Ok(Some((_, hist))) => send_u_packet(tx, "mU", &chat_messages(&cur_default, &hist).1),
-            Ok(None) => {}
-            Err(e) => {
-                tracing::error!(player_id = %pid, chat_tag = cur_default, error = ?e, "Chat resync failed");
-                send_u_packet(
-                    tx,
-                    "OK",
-                    &ok_message("ЧАТ", "Не удалось прочитать данные чата.").1,
-                );
-            }
-        }
-        return;
-    };
-
-    let (name, hist) = match chat_access(state, pid, cur).await {
-        Ok(Some(access)) => access,
-        Ok(None) => {
-            tracing::warn!(player_id = %pid, chat_tag = cur, "Chin resync denied");
-            return;
-        }
-        Err(e) => {
-            tracing::error!(player_id = %pid, chat_tag = cur, error = ?e, "Chin resync failed");
-            send_u_packet(
-                tx,
-                "OK",
-                &ok_message("ЧАТ", "Не удалось прочитать данные чата.").1,
-            );
-            return;
-        }
-    };
-    let updated = state
-        .modify_player(pid, |w, e| {
-            let Some(mut ui) = w.get_mut::<crate::game::player::PlayerUI>(e) else {
-                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while applying chat resync");
-                return None;
-            };
-            ui.current_chat = cur.to_string();
-            Some(())
-        })
-        .is_some();
-    if !updated {
-        send_chat_state_error(tx);
-        return;
-    }
-    let fresh: Vec<ChatMessage> = hist.into_iter().filter(|m| m.id > lastid).collect();
-    send_u_packet(tx, "mO", &chat_current(cur, &name).1);
-    send_u_packet(tx, "mU", &chat_messages(cur, &fresh).1);
-}
-
-/// TY `Cmen` (`"_"`) — открыть список каналов. Клиент `ChatManager.cs:67`
-/// `OnMenu`. Ждёт `mL`+`mN`. `docs/reference/CLIENT_PROTOCOL_GAPS.md` §3.
-pub async fn handle_chat_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, _payload: &[u8]) {
-    send_channel_list(state, tx, pid).await;
-}
-
-/// TY `Choo <tag>` — войти/переключить канал. Клиент `ChatManager.cs:176`
-/// (клик по каналу в `mL`). `send_enter_channel` валидирует доступ.
-/// `docs/reference/CLIENT_PROTOCOL_GAPS.md` §4.
-pub async fn handle_chat_choose(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    payload: &[u8],
-) {
-    let tag = String::from_utf8_lossy(payload).trim().to_string();
-    if tag.is_empty() {
-        return;
-    }
-    send_enter_channel(state, tx, pid, &tag).await;
-}
-
-/// TY `Cpri <userId>` — открыть ЛС с игроком. Клиент `ChatManager.cs:307`
-/// (клик по строке сообщения → `message.gid`). Тег `_min_max` стабилен
-/// для пары. Валидация: цель существует, не сам с собой.
-/// `docs/reference/CLIENT_PROTOCOL_GAPS.md` §6.
-pub async fn handle_chat_private(
-    state: &Arc<GameState>,
-    tx: &Outbox,
-    pid: PlayerId,
-    payload: &[u8],
-) {
-    let Ok(uid) = String::from_utf8_lossy(payload).trim().parse::<i32>() else {
-        return;
-    };
-    if uid == pid || uid <= 0 {
-        return;
-    }
-    match state.db.get_player_by_id(uid).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            tracing::warn!(
-                target_uid = uid,
-                player_id = %pid,
-                "Private chat request to unknown user ID"
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::error!(target_uid = uid, player_id = %pid, error = ?e, "Failed to load private chat target");
-            send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
-            return;
-        }
-    }
-    let uid: PlayerId = uid.into();
-    let (lo, hi) = if pid < uid { (pid, uid) } else { (uid, pid) };
-    let tag = format!("_{lo}_{hi}");
-    send_enter_channel(state, tx, pid, &tag).await;
-}
-
 fn send_mu_bytes(data: &[u8]) -> Vec<u8> {
     make_u_packet_bytes("mU", data)
 }
@@ -463,11 +328,6 @@ fn send_mu_to_users(state: &Arc<GameState>, data: &[u8], user_ids: &[i32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{ServerTestHarness, drain_events};
-
-    async fn make_test_state(label: &str) -> ServerTestHarness {
-        ServerTestHarness::new(label, "chat-user").await
-    }
 
     #[test]
     fn chin_initial_accepts_only_underscore() {
@@ -480,14 +340,14 @@ mod tests {
         assert_eq!(
             parse_chin_resync_payload("1:FED:FED#10#DNO#3"),
             Some(ChinResync::Incremental {
-                current: "FED",
+                current: "FED".to_string(),
                 lastid: 10,
             })
         );
         assert_eq!(
             parse_chin_resync_payload("1:FED:"),
             Some(ChinResync::Incremental {
-                current: "FED",
+                current: "FED".to_string(),
                 lastid: -1,
             })
         );
@@ -501,28 +361,5 @@ mod tests {
         assert_eq!(parse_chin_resync_payload("1:FED:FED#x"), None);
         assert_eq!(parse_chin_resync_payload("1:FED:#1"), None);
         assert_eq!(parse_chin_resync_payload("1:FED:FED#"), None);
-    }
-
-    #[tokio::test]
-    async fn chin_initial_missing_ui_is_explicit_error_not_fed_fallback() {
-        let test = make_test_state("chin_missing_ui").await;
-        let (tx, mut rx) = test.connect_with_outbox(1);
-        drain_events(&mut rx);
-
-        let pid = PlayerId(test.player.id);
-        let entity = test.state.get_player_entity(pid).unwrap();
-        {
-            let mut ecs = test.state.ecs.write();
-            ecs.entity_mut(entity)
-                .remove::<crate::game::player::PlayerUI>();
-        }
-
-        handle_chat_resync(&test.state, &tx, pid, b"_").await;
-
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
-        assert!(message.contains("Состояние чата недоступно."));
     }
 }

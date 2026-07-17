@@ -1,7 +1,6 @@
-use crate::game::{GameState, PlayerId};
-use crate::world::WorldProvider;
+use crate::game::PlayerId;
+use crate::game::logic::kernel_context::KernelContext;
 use rand::Rng;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Eq, PartialEq)]
@@ -16,7 +15,7 @@ pub enum GeologyResult {
 }
 
 fn place_geo_stack_cell(
-    state: &GameState,
+    context: &KernelContext<'_>,
     cell_defs: &crate::world::cells::CellDefs,
     ecs: &mut bevy_ecs::prelude::World,
     entity: bevy_ecs::prelude::Entity,
@@ -37,7 +36,7 @@ fn place_geo_stack_cell(
     } else {
         cell_defs.get_typed(place_cell).durability
     };
-    state.world.write_world_cell(
+    context.write_world_cell(
         target_x,
         target_y,
         crate::world::WorldCell {
@@ -48,9 +47,13 @@ fn place_geo_stack_cell(
     true
 }
 
-pub fn apply_geology(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) -> GeologyResult {
-    let cell_defs = state.world.cell_defs();
-    state
+pub fn apply_geology(
+    context: &KernelContext<'_>,
+    pid: PlayerId,
+    programmatic: bool,
+) -> GeologyResult {
+    let cell_defs = context.cell_defs();
+    context
         .modify_player(pid, |ecs, entity| {
             let Some(program_state) =
                 ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
@@ -68,7 +71,7 @@ pub fn apply_geology(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) 
             };
             if !programmatic
                 && cooldowns.last_geo.elapsed()
-                    < Duration::from_millis(state.config.gameplay.cooldowns.geo_ms)
+                    < Duration::from_millis(context.geo_cooldown_ms())
             {
                 return Some(GeologyResult::SilentNoop);
             }
@@ -106,25 +109,25 @@ pub fn apply_geology(state: &Arc<GameState>, pid: PlayerId, programmatic: bool) 
             let clan_id = player_stats.clan_id.unwrap_or(0);
             let mut changed_cells = Vec::new();
 
-            if state.world.valid_coord(tgt_x, tgt_y)
-                && state.access_gun_full_in_ecs(ecs, tgt_x, tgt_y, clan_id).0
+            if context.world_valid_coord(tgt_x, tgt_y)
+                && context.access_gun_full(ecs, tgt_x, tgt_y, clan_id).0
             {
-                let cell = state.world.get_cell_typed(tgt_x, tgt_y);
+                let cell = context.world_cell(tgt_x, tgt_y);
                 let cell_props = cell_defs.get_typed(cell);
                 let pickable = cell_props.nature.is_pickable && !cell_props.cell_is_empty();
                 let place_here = cell_props.cell_is_empty()
                     && cell_props.can_place_over()
-                    && state.find_pack_covering_in_ecs(ecs, tgt_x, tgt_y).is_none();
+                    && context.pack_covering(ecs, tgt_x, tgt_y).is_none();
 
                 if pickable {
                     ecs.get_mut::<crate::game::player::PlayerGeoStack>(entity)
                         .expect("PlayerGeoStack checked before geo pick")
                         .0
                         .push(cell.0);
-                    state.world.destroy(tgt_x, tgt_y);
+                    context.destroy_world_cell(tgt_x, tgt_y);
                     changed_cells.push((tgt_x, tgt_y));
                 } else if place_here
-                    && place_geo_stack_cell(state, &cell_defs, ecs, entity, tgt_x, tgt_y)
+                    && place_geo_stack_cell(context, &cell_defs, ecs, entity, tgt_x, tgt_y)
                 {
                     changed_cells.push((tgt_x, tgt_y));
                 }

@@ -46,39 +46,6 @@ pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, 
     win.send(state, tx, pid, "prog");
 }
 
-/// TY `Blds` → `Player.OpenMyBuildings()` (список построек владельца).
-pub async fn handle_my_buildings_list(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    let mine: Vec<crate::db::buildings::BuildingRow> = match state
-        .db
-        .load_buildings_by_owner(pid.into())
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!(player_id = %pid, error = ?e, "Failed to load buildings for player");
-            Vec::new()
-        }
-    };
-    // Раньше все постройки сваливались в один `text` → окно росло за экран
-    // (репорт). Теперь каждая — строка `list` (виджет в ScrollRect → ползунок).
-    use crate::net::session::ui::horb::{Horb, ListRow};
-    let mut win = Horb::new("Мои здания");
-    if mine.is_empty() {
-        win = win.text("(нет построек)");
-    } else {
-        for r in &mine {
-            // subtitle="" → клиент скрывает кнопку строки (не-кликабельно),
-            // вся инфа в title (`list[3n]`).
-            win = win.list_row(ListRow::new(
-                format!("{} {}:{}", r.type_code, r.x, r.y),
-                String::new(),
-                String::new(),
-            ));
-        }
-    }
-    win.close_button().send(state, tx, pid, "blds");
-}
-
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
 pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     use crate::net::session::ui::horb::{Button, Horb, ListRow};
@@ -697,6 +664,7 @@ pub fn spawn_botspot(
 
 /// Положить Box с кристаллами на месте снесённого здания (C# `Box.BuildBox(x,y,cry,null)`).
 /// Проверка размещения 1:1: `isEmpty && can_place_over && !PackPart`.
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use super::*;

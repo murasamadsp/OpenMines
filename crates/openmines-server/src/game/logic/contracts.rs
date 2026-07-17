@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use openmines_storage::buildings::BuildingExtra;
-use openmines_storage::players::PlayerRow;
+use openmines_storage::players::{PlayerRow, Role};
 use std::time::Instant;
 
 use crate::game::actors::player::PlayerId;
@@ -281,9 +281,24 @@ pub struct TeleportGuiView {
 }
 
 #[derive(Debug, Clone)]
+pub struct SpotGuiView {
+    pub x: i32,
+    pub y: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageGuiView {
+    pub x: i32,
+    pub y: i32,
+    pub crystal_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum GuiView {
     Close,
     Teleport(TeleportGuiView),
+    Spot(SpotGuiView),
+    Storage(StorageGuiView),
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +355,8 @@ pub enum PlayerCommand {
     Gui { command: GuiCommand },
     /// Local area chat message.
     LocalChat { message: String },
+    /// Parsed slash command from local or channel chat.
+    Slash { command: SlashCommand },
     /// Global channel chat message.
     ChannelChat { payload: Bytes },
     /// Request to resynchronize chat history.
@@ -414,6 +431,122 @@ pub enum PlayerCommand {
     KnownNoopTy { event: String, payload: Bytes },
 }
 
+#[derive(Debug, Clone)]
+pub enum SlashCommand {
+    Give {
+        item_id: i32,
+        amount: i32,
+    },
+    GiveAll,
+    Money {
+        amount: i64,
+    },
+    MoneyAll {
+        amount: i64,
+    },
+    Skill {
+        target: String,
+        code: String,
+        level: i32,
+        slot: Option<i32>,
+        exp: f32,
+    },
+    SkillHelp,
+    Teleport {
+        x: i32,
+        y: i32,
+    },
+    Heal,
+    Kick {
+        target: String,
+    },
+    Role {
+        target: String,
+        role: Role,
+    },
+    Clan {
+        action: ClanAction,
+    },
+    Pack {
+        action: SlashPackCommand,
+    },
+    Help,
+    Unknown {
+        command: String,
+    },
+    Invalid {
+        title: String,
+        message: String,
+    },
+}
+
+impl SlashCommand {
+    #[must_use]
+    pub const fn persistence_kind(&self) -> Option<SaveKind> {
+        match self {
+            Self::MoneyAll { .. } => Some(SaveKind::AdminMoneyAll),
+            Self::Role { .. } => Some(SaveKind::AdminRole),
+            Self::Skill { .. } => Some(SaveKind::AdminSkill),
+            Self::Clan { .. } => Some(SaveKind::ClanCommand),
+            Self::Give { .. }
+            | Self::GiveAll
+            | Self::Money { .. }
+            | Self::SkillHelp
+            | Self::Teleport { .. }
+            | Self::Heal
+            | Self::Kick { .. }
+            | Self::Pack { .. }
+            | Self::Help
+            | Self::Unknown { .. }
+            | Self::Invalid { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum ClanAction {
+    Create { name: String, tag: String },
+    Leave,
+    Kick { target: String },
+    AcceptInvite { clan_id: i32 },
+    DeclineInvite { clan_id: i32 },
+    AcceptRequest { target_id: PlayerId },
+    DeclineRequest { target_id: PlayerId },
+    Promote { target_id: PlayerId },
+    KickById { target_id: PlayerId },
+    Invite { target_id: PlayerId },
+    Request { clan_id: i32 },
+    Invalid { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum SlashPackCommand {
+    Owner {
+        x: i32,
+        y: i32,
+        owner_id: i32,
+    },
+    Clan {
+        x: i32,
+        y: i32,
+        clan_id: i32,
+    },
+    Move {
+        x: i32,
+        y: i32,
+        to_x: i32,
+        to_y: i32,
+    },
+    Type {
+        x: i32,
+        y: i32,
+        pack_type: PackType,
+    },
+    Invalid {
+        message: String,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommandIngressClass {
     Lifecycle,
@@ -453,6 +586,7 @@ impl PlayerCommand {
             Self::Heal { .. } => "heal",
             Self::Gui { command, .. } => command.label(),
             Self::LocalChat { .. } => "local_chat",
+            Self::Slash { .. } => "slash",
             Self::ChannelChat { .. } => "channel_chat",
             Self::ChatResync { .. } => "chat_resync",
             Self::ChatMenu { .. } => "chat_menu",
@@ -492,8 +626,60 @@ impl PlayerCommand {
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw.starts_with("createprog:") => Some(SaveKind::ProgramCreate),
-            Self::ProgramAction { event, .. } if event == "PROG" => Some(SaveKind::Program),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw == "prog" => Some(SaveKind::ProgramMenu),
+            Self::ProgramAction { event, payload } if event == "PROG" => {
+                crate::game::programmator::ProgrammatorState::decode_prog_packet(payload).map(
+                    |(program_id, _)| {
+                        if program_id <= 0 {
+                            SaveKind::ProgramMenu
+                        } else {
+                            SaveKind::Program
+                        }
+                    },
+                )
+            }
+            Self::ProgramAction { event, .. } if event == "PCOP" => Some(SaveKind::ProgramCopy),
+            Self::OpenProgrammer => Some(SaveKind::ProgramMenu),
+            Self::RequestMyBuildings => Some(SaveKind::BuildingMenu),
+            Self::OpenClan
+            // `OpenPack` is resolved against the live world during apply. Reserve the
+            // clan-menu slot conservatively so a clans pack can never create durable
+            // work after admission. Non-clan packs release this unused permit.
+            | Self::Gui {
+                command: GuiCommand::OpenPack { .. },
+            } => Some(SaveKind::ClanMenu),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if matches!(
+                raw.as_str(),
+                "clan_menu"
+                    | "clan_back"
+                    | "clan_members"
+                    | "clan_invite_list"
+                    | "clan_invites_view"
+                    | "clan_requests"
+            ) || raw.starts_with("clan_view:") =>
+            {
+                Some(SaveKind::ClanMenu)
+            }
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
+            Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
+            Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
+            Self::ChatPrivate { .. } => Some(SaveKind::ChatPrivate),
+            Self::Whois { .. } => Some(SaveKind::Whois),
+            Self::Slash { command } => command.persistence_kind(),
+            Self::LocalChat { message } => {
+                crate::net::session::social::commands::parse_slash_command(message.trim())
+                    .persistence_kind()
+            }
+            Self::ChannelChat { payload } => {
+                crate::net::session::social::commands::parse_slash_command(
+                    &crate::net::session::social::chat::extract_channel_message_text(payload),
+                )
+                .persistence_kind()
+            }
             _ => None,
         }
     }
@@ -573,6 +759,10 @@ pub enum GameEvent {
         player_id: PlayerId,
         packets: Vec<Vec<u8>>,
     },
+    RefreshChunks {
+        session_id: SessionId,
+        player_id: PlayerId,
+    },
     Fanout {
         recipients: Vec<SessionId>,
         data: Vec<u8>,
@@ -586,6 +776,11 @@ pub enum GameEvent {
         route: crate::net::session::social::chat::ChannelChatRoute,
         message: openmines_protocol::chat::ChatMessage,
     },
+    /// Ordered world updates. Presentation owns encoding and session wakeups,
+    /// while this sequence retains the legacy barriers between effect kinds.
+    WorldEffects {
+        effects: Vec<crate::game::BroadcastEffect>,
+    },
     GuiView {
         session_id: SessionId,
         player_id: PlayerId,
@@ -598,9 +793,11 @@ impl GameEvent {
         match self {
             Self::PlayerInit { .. } => "player_init",
             Self::SessionBatch { .. } => "session_batch",
+            Self::RefreshChunks { .. } => "refresh_chunks",
             Self::Fanout { .. } => "fanout",
             Self::MovementFanout { .. } => "movement_fanout",
             Self::ChatFanout { .. } => "chat_fanout",
+            Self::WorldEffects { .. } => "world_effects",
             Self::GuiView { .. } => "gui_view",
         }
     }
@@ -624,6 +821,16 @@ pub enum SaveCommand {
     Program {
         request: ProgramSaveRequest,
     },
+    ProgramMenu {
+        request: ProgramMenuRequest,
+    },
+    #[allow(dead_code)]
+    ProgramCopy {
+        request: ProgramCopyRequest,
+    },
+    BuildingMenu {
+        request: BuildingMenuRequest,
+    },
     BuildingDelete {
         request: BuildingDeleteRequest,
     },
@@ -633,6 +840,71 @@ pub enum SaveCommand {
     ChatColorCycle {
         request: ChatColorCycleRequest,
     },
+    ChatResync {
+        request: ChatResyncRequest,
+    },
+    ChatMenu {
+        request: ChatMenuRequest,
+    },
+    ChatPrivate {
+        request: ChatPrivateRequest,
+    },
+    Whois {
+        request: WhoisRequest,
+    },
+    ClanMenu {
+        request: ClanMenuRequest,
+    },
+    AdminMoneyAll {
+        request: AdminMoneyAllRequest,
+    },
+    AdminRole {
+        request: AdminRoleRequest,
+    },
+    AdminSkill {
+        request: AdminSkillRequest,
+    },
+    ClanCommand {
+        request: ClanCommandRequest,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminMoneyAllRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminRoleRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub target_name: String,
+    pub role: Role,
+}
+
+#[derive(Debug, Clone)]
+pub struct AdminSkillRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub target_id: PlayerId,
+    pub target_name: String,
+    pub target_session_id: Option<SessionId>,
+    pub skill_code: String,
+    pub level: i32,
+    pub slot: i32,
+    pub exp: f32,
+    pub packets: Vec<Vec<u8>>,
+    pub row: Box<PlayerRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClanCommandRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub action: ClanAction,
+    pub create_reserved: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -651,6 +923,57 @@ pub struct ChatColorCycleRequest {
     pub session_id: SessionId,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChatResyncRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub channel_tag: String,
+    pub last_id: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatMenuRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatPrivateRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub target_uid: PlayerId,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhoisRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    /// Original wire order, including repeated and non-existent IDs.
+    pub ids: Vec<i32>,
+    /// Names extracted from the authoritative online ECS snapshot before dispatch.
+    pub online_names: Vec<(i32, String)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClanMenuRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub player_clan_id: Option<i32>,
+    pub action: ClanMenuAction,
+    /// Eligible online invite targets extracted from ECS before the DB read.
+    pub invite_candidates: Vec<(i32, String)>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ClanMenuAction {
+    Main,
+    Preview { clan_id: i32 },
+    Members,
+    InviteList,
+    Invites,
+    Requests,
+}
+
 impl SaveCommand {
     pub const fn kind(&self) -> SaveKind {
         match self {
@@ -659,9 +982,21 @@ impl SaveCommand {
             Self::Box { .. } => SaveKind::Box,
             Self::ProgramCreate { .. } => SaveKind::ProgramCreate,
             Self::Program { .. } => SaveKind::Program,
+            Self::ProgramMenu { .. } => SaveKind::ProgramMenu,
+            Self::ProgramCopy { .. } => SaveKind::ProgramCopy,
+            Self::BuildingMenu { .. } => SaveKind::BuildingMenu,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
             Self::ChatColorCycle { .. } => SaveKind::ChatColorCycle,
+            Self::ChatResync { .. } => SaveKind::ChatResync,
+            Self::ChatMenu { .. } => SaveKind::ChatMenu,
+            Self::ChatPrivate { .. } => SaveKind::ChatPrivate,
+            Self::Whois { .. } => SaveKind::Whois,
+            Self::ClanMenu { .. } => SaveKind::ClanMenu,
+            Self::AdminMoneyAll { .. } => SaveKind::AdminMoneyAll,
+            Self::AdminRole { .. } => SaveKind::AdminRole,
+            Self::AdminSkill { .. } => SaveKind::AdminSkill,
+            Self::ClanCommand { .. } => SaveKind::ClanCommand,
         }
     }
 }
@@ -681,6 +1016,25 @@ pub struct ProgramSaveRequest {
     pub source: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProgramMenuRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramCopyRequest {
+    pub player: PlayerId,
+    pub session: SessionId,
+    pub program: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildingMenuRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+}
+
 #[derive(Debug)]
 pub enum PersistenceCompletion {
     ProgramCreated {
@@ -691,6 +1045,18 @@ pub enum PersistenceCompletion {
         request: ProgramSaveRequest,
         result: ProgramSaveResult,
     },
+    ProgramMenuLoaded {
+        request: ProgramMenuRequest,
+        result: ProgramMenuResult,
+    },
+    ProgramCopied {
+        request: ProgramCopyRequest,
+        result: ProgramCopyResult,
+    },
+    BuildingMenuLoaded {
+        request: BuildingMenuRequest,
+        result: BuildingMenuResult,
+    },
     BuildingDeleted {
         request: BuildingDeleteRequest,
         result: BuildingDeleteResult,
@@ -698,6 +1064,42 @@ pub enum PersistenceCompletion {
     ChatColorCycled {
         request: ChatColorCycleRequest,
         result: ChatColorCycleResult,
+    },
+    ChatResynced {
+        request: ChatResyncRequest,
+        result: ChatResyncResult,
+    },
+    ChatMenuLoaded {
+        request: ChatMenuRequest,
+        result: ChatMenuResult,
+    },
+    ChatPrivateOpened {
+        request: ChatPrivateRequest,
+        result: ChatPrivateResult,
+    },
+    WhoisLoaded {
+        request: WhoisRequest,
+        result: WhoisResult,
+    },
+    ClanMenuLoaded {
+        request: ClanMenuRequest,
+        result: ClanMenuResult,
+    },
+    AdminMoneyAllApplied {
+        request: AdminMoneyAllRequest,
+        result: AdminMoneyAllResult,
+    },
+    AdminRoleApplied {
+        request: AdminRoleRequest,
+        result: AdminRoleResult,
+    },
+    AdminSkillApplied {
+        request: AdminSkillRequest,
+        result: AdminSkillResult,
+    },
+    ClanCommandApplied {
+        request: ClanCommandRequest,
+        result: ClanCommandResult,
     },
 }
 
@@ -715,9 +1117,175 @@ pub enum ProgramSaveResult {
 }
 
 #[derive(Debug)]
+pub enum ProgramMenuResult {
+    Loaded {
+        programs: Vec<crate::db::ProgramRow>,
+    },
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum ProgramCopyResult {
+    Copied,
+    Rejected,
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum BuildingMenuResult {
+    Loaded {
+        buildings: Vec<crate::db::buildings::BuildingRow>,
+    },
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
 pub enum ChatColorCycleResult {
     Cycled { color: i32 },
     Rejected,
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum ChatResyncResult {
+    Success {
+        channel_name: String,
+        messages: Vec<openmines_protocol::chat::ChatMessage>,
+    },
+    #[allow(dead_code)]
+    AccessDenied,
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum ChatMenuResult {
+    Success {
+        channels: Vec<(String, bool, String, String)>,
+    },
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum ChatPrivateResult {
+    Success {
+        target_name: String,
+        channel_tag: String,
+        messages: Vec<openmines_protocol::chat::ChatMessage>,
+    },
+    TargetNotFound,
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum WhoisResult {
+    Loaded { names: Vec<(i32, String)> },
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct ClanMenuListEntry {
+    pub id: i32,
+    pub name: String,
+    pub abr: String,
+    pub member_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClanMemberEntry {
+    pub player_id: i32,
+    pub name: String,
+    pub rank: i32,
+}
+
+#[derive(Debug)]
+pub enum ClanMenuResult {
+    Browse {
+        invites: Vec<(i32, String)>,
+        clans: Vec<ClanMenuListEntry>,
+    },
+    #[allow(dead_code)]
+    Info {
+        clan: ClanMenuListEntry,
+        owner_name: String,
+        player_rank: i32,
+        request_count: Option<usize>,
+        can_leave: bool,
+    },
+    Preview {
+        clan: ClanMenuListEntry,
+        owner_name: String,
+        can_request_join: bool,
+    },
+    Members {
+        members: Vec<ClanMemberEntry>,
+        player_rank: i32,
+    },
+    InviteList {
+        allowed: bool,
+        candidates: Vec<(i32, String)>,
+    },
+    Invites {
+        invites: Vec<(i32, String)>,
+    },
+    Requests {
+        allowed: bool,
+        requests: Vec<(i32, String)>,
+    },
+    NotFound,
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum AdminMoneyAllResult {
+    Applied { affected_players: u64 },
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum AdminRoleResult {
+    Applied {
+        target_id: PlayerId,
+        target_name: String,
+    },
+    TargetNotFound {
+        target_name: String,
+    },
+    PermanentFailure {
+        message: String,
+    },
+}
+
+#[derive(Debug)]
+pub enum AdminSkillResult {
+    Saved,
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum ClanCommandResult {
+    Created { clan_id: i32 },
+    Left { clan_id: i32, disbanded: bool },
+    Kicked { clan_id: i32, target_id: PlayerId },
+    Joined { clan_id: i32 },
+    InviteDeclined,
+    RequestAccepted { clan_id: i32, target_id: PlayerId },
+    RequestDeclined,
+    Promoted { clan_id: i32, target_id: PlayerId },
+    Invited { target_id: PlayerId },
+    RequestSent,
+    Rejected { title: String, message: String },
     PermanentFailure { message: String },
 }
 
@@ -735,9 +1303,21 @@ pub enum SaveKind {
     Box,
     Program,
     ProgramCreate,
+    ProgramMenu,
+    ProgramCopy,
+    BuildingMenu,
     BuildingDelete,
     ChatAppend,
     ChatColorCycle,
+    ChatResync,
+    ChatMenu,
+    ChatPrivate,
+    Whois,
+    ClanMenu,
+    AdminMoneyAll,
+    AdminRole,
+    AdminSkill,
+    ClanCommand,
 }
 
 impl SaveKind {
@@ -748,9 +1328,143 @@ impl SaveKind {
             Self::Box => "save_box",
             Self::Program => "save_program",
             Self::ProgramCreate => "create_program",
+            Self::ProgramMenu => "program_menu",
+            Self::ProgramCopy => "program_copy",
+            Self::BuildingMenu => "building_menu",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
             Self::ChatColorCycle => "cycle_chat_color",
+            Self::ChatResync => "chat_resync",
+            Self::ChatMenu => "chat_menu",
+            Self::ChatPrivate => "chat_private",
+            Self::Whois => "whois",
+            Self::ClanMenu => "clan_menu",
+            Self::AdminMoneyAll => "admin_money_all",
+            Self::AdminRole => "admin_role",
+            Self::AdminSkill => "admin_skill",
+            Self::ClanCommand => "clan_command",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PlayerCommand, SaveKind};
+    use bytes::Bytes;
+
+    #[test]
+    fn chat_slash_commands_reserve_their_durable_kind_before_apply() {
+        for (message, kind) in [
+            ("/moneyall 7", SaveKind::AdminMoneyAll),
+            ("/skill me U 1", SaveKind::AdminSkill),
+            ("/role me admin", SaveKind::AdminRole),
+            ("/clan create Kernel KRN", SaveKind::ClanCommand),
+        ] {
+            assert_eq!(
+                PlayerCommand::LocalChat {
+                    message: message.to_string(),
+                }
+                .persistence_kind(),
+                Some(kind)
+            );
+            assert_eq!(
+                PlayerCommand::ChannelChat {
+                    payload: Bytes::from(format!("GLOBAL:0#{message}")),
+                }
+                .persistence_kind(),
+                Some(kind)
+            );
+        }
+        assert_eq!(
+            PlayerCommand::LocalChat {
+                message: "ordinary chat".to_string(),
+            }
+            .persistence_kind(),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_program_selection_reserves_program_menu_before_apply() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+        assert_eq!(
+            PlayerCommand::ProgramAction {
+                event: "PROG".to_string(),
+                payload: Bytes::from(payload),
+            }
+            .persistence_kind(),
+            Some(SaveKind::ProgramMenu)
+        );
+    }
+
+    #[test]
+    fn gui_programmer_button_reserves_program_menu_before_apply() {
+        assert_eq!(
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("prog".to_string()),
+            }
+            .persistence_kind(),
+            Some(SaveKind::ProgramMenu)
+        );
+    }
+
+    #[test]
+    fn program_copy_reserves_its_durable_kind_before_apply() {
+        assert_eq!(
+            PlayerCommand::ProgramAction {
+                event: "PCOP".to_string(),
+                payload: Bytes::from_static(b"42"),
+            }
+            .persistence_kind(),
+            Some(SaveKind::ProgramCopy)
+        );
+    }
+
+    #[test]
+    fn building_menu_reserves_its_durable_kind_before_apply() {
+        assert_eq!(
+            PlayerCommand::RequestMyBuildings.persistence_kind(),
+            Some(SaveKind::BuildingMenu)
+        );
+    }
+
+    #[test]
+    fn whois_reserves_its_durable_kind_before_apply() {
+        assert_eq!(
+            PlayerCommand::Whois { ids: vec![1] }.persistence_kind(),
+            Some(SaveKind::Whois)
+        );
+    }
+
+    #[test]
+    fn clan_menu_entries_reserve_before_world_or_gui_apply() {
+        for command in [
+            PlayerCommand::OpenClan,
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_menu".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_view:42".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_members".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_invite_list".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_invites_view".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("clan_requests".to_string()),
+            },
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse("pack_op:open:3:7".to_string()),
+            },
+        ] {
+            assert_eq!(command.persistence_kind(), Some(SaveKind::ClanMenu));
         }
     }
 }

@@ -3,7 +3,7 @@
 Этот файл описывает фактическую topology текущего кода. Текущая готовность,
 runtime evidence и следующий срез находятся в
 [`SERVER_MIGRATION_STATUS.md`](../SERVER_MIGRATION_STATUS.md); целевая модель - в
-[`SIMULATION_KERNEL_PLAN.md`](../SIMULATION_KERNEL_PLAN.md).
+[`SIMULATION_KERNEL_PLAN.md`](SIMULATION_KERNEL_PLAN.md).
 
 ## Общая модель
 
@@ -60,13 +60,20 @@ TCP sessions -> QueuedGameCommand -> SimulationRuntime
   Raz используют единый stable deadline/admission/apply/effects contract.
   Authoritative ECS пока находится в `Arc<GameState>` под `RwLock`; это
   переходное состояние, а не целевая граница.
-- `PresentationRuntime` принимает bounded `GameEvent` и доставляет immutable
-  packet/view data. Initial chunk map/BotSpot snapshot уже строится там после
+- `PresentationRuntime` принимает bounded `GameEvent` на выделенном worker
+  thread и доставляет immutable packet/view data. Initial chunk map/BotSpot snapshot уже строится там после
   owner-side visibility commit; building overlay временно читает ECS только как
   read-only snapshot по одному чанку до следующего per-chunk read-model slice.
   Непрерывные `MovementFanout` схлопываются до последнего `HB/X` на player;
   первый иной effect остаётся delivery barrier, а порядок последних updates
-  сохраняется.
+  сохраняется. Command-path копания передаёт nearby `HB` в owner-local effect
+  queue; cell update из dig/build идёт через ту же queue. Side phase склеивает
+  соседние `HB` subpackets в один frame на recipient. Весь ordered stream
+  `WorldEffects` выполняется этим worker-ом, поэтому encode/outbox wake не
+  удерживают simulation owner. Не более 32 соседних streams объединяются перед
+  delivery: это сохраняет batching, но не допускает starvation непрерывного
+  потока.
+  `Direct`, cell/block update и иной nearby packet остаются delivery barrier.
 - `PersistenceRuntime` принимает bounded `SaveCommand`, batch-ит совместимые
   записи, делает retry и публикует typed completion.
 
@@ -127,9 +134,9 @@ flush. Crash durability это не заменяет.
 - legacy handlers, которые мутируют state и отправляют wire в одном вызове.
 
 Новый код не должен копировать эти paths. Исполняемый порядок их удаления
-находится только в `SERVER_MIGRATION_STATUS.md`; целевые gates - в
-`SIMULATION_KERNEL_PLAN.md`, единая форма feature-кода - в
-`SERVER_CONSISTENCY_PLAN.md`.
+находится только в [`SERVER_MIGRATION_STATUS.md`](../SERVER_MIGRATION_STATUS.md); целевые gates - в
+[`SIMULATION_KERNEL_PLAN.md`](SIMULATION_KERNEL_PLAN.md), единая форма feature-кода - в
+[`SERVER_CONSISTENCY_PLAN.md`](SERVER_CONSISTENCY_PLAN.md).
 
 ### Параметры active cycle и schedules
 

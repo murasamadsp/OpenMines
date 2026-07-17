@@ -453,6 +453,61 @@ pub fn apply_move_command(
     let direct_packets = direct_packets.into_packets();
 
     if let Some(followup) = application.followup.take() {
+        if let MoveFollowup::OpenPack(pack) = &followup {
+            let view = match pack.pack_type {
+                PackType::Teleport => {
+                    crate::net::session::ui::teleport::prepare_view(state, pid, pack.x, pack.y)
+                        .map(crate::game::GuiView::Teleport)
+                }
+                PackType::Spot => {
+                    crate::net::session::ui::spot::prepare_view(state, pid, pack.x, pack.y)
+                        .map(crate::game::GuiView::Spot)
+                }
+                PackType::Storage => {
+                    crate::net::session::ui::storage::prepare_view(state, pid, pack.x, pack.y)
+                        .map(crate::game::GuiView::Storage)
+                }
+                _ => None,
+            };
+            if let Some(view) = view {
+                let activated = match &view {
+                    crate::game::GuiView::Teleport(view) => {
+                        crate::net::session::ui::teleport::activate_window(
+                            state,
+                            pid,
+                            view.source.0,
+                            view.source.1,
+                        )
+                    }
+                    crate::game::GuiView::Spot(view) => {
+                        crate::net::session::ui::spot::activate_window(state, pid, view.x, view.y)
+                    }
+                    crate::game::GuiView::Storage(view) => {
+                        crate::net::session::ui::storage::activate_window(
+                            state, pid, view.x, view.y,
+                        )
+                    }
+                    crate::game::GuiView::Close => false,
+                };
+                if !activated {
+                    return crate::game::CommandEffects::default();
+                }
+                let mut effects = crate::game::CommandEffects::default();
+                append_move_output_effects(
+                    &mut effects,
+                    session_id,
+                    pid,
+                    direct_packets,
+                    application,
+                );
+                effects.events.push(crate::game::GameEvent::GuiView {
+                    session_id,
+                    player_id: pid,
+                    view,
+                });
+                return effects;
+            }
+        }
         // Пока auto-dig/open-pack сами не возвращают effects, весь редкий путь
         // доставляется синхронно. Иначе GUI/dig output обгонит queued move output.
         for packet in direct_packets {
@@ -466,16 +521,27 @@ pub fn apply_move_command(
     }
 
     let mut effects = crate::game::CommandEffects::default();
+    append_move_output_effects(&mut effects, session_id, pid, direct_packets, application);
+    effects
+}
+
+fn append_move_output_effects(
+    effects: &mut crate::game::CommandEffects,
+    session_id: crate::game::SessionId,
+    player_id: PlayerId,
+    direct_packets: Vec<Vec<u8>>,
+    application: MoveApplication,
+) {
     if !direct_packets.is_empty() {
         effects.events.push(crate::game::GameEvent::SessionBatch {
             session_id,
-            player_id: pid,
+            player_id,
             packets: direct_packets,
         });
     }
     if let Some(fanout) = application.movement_fanout {
         effects.events.push(crate::game::GameEvent::MovementFanout {
-            player_id: pid,
+            player_id,
             recipients: fanout.recipients,
             data: fanout.data,
         });
@@ -483,7 +549,7 @@ pub fn apply_move_command(
     if !application.chunk_packets.is_empty() {
         effects.events.push(crate::game::GameEvent::SessionBatch {
             session_id,
-            player_id: pid,
+            player_id,
             packets: application.chunk_packets,
         });
     }
@@ -495,7 +561,6 @@ pub fn apply_move_command(
                 data: fanout.data,
             }
         }));
-    effects
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -621,7 +686,9 @@ mod tests {
                     test.state.sessions.fanout(&recipients, &data);
                 }
                 crate::game::GameEvent::GuiView { .. }
-                | crate::game::GameEvent::ChatFanout { .. } => {
+                | crate::game::GameEvent::RefreshChunks { .. }
+                | crate::game::GameEvent::ChatFanout { .. }
+                | crate::game::GameEvent::WorldEffects { .. } => {
                     panic!("ordinary move cannot produce this event")
                 }
             }
@@ -630,6 +697,124 @@ mod tests {
             drain_events(&mut rx).iter().any(|(event, _)| event == "HB"),
             "presentation delivery must emit the movement HB"
         );
+    }
+
+    #[tokio::test]
+    async fn moving_onto_teleport_returns_gui_view_without_direct_delivery() {
+        let test = make_test_state("move_teleport_gui_effect").await;
+        test.state.world.set_cell(11, 10, cell_type::EMPTY);
+        let extra = crate::db::BuildingExtra {
+            charge: 100,
+            max_charge: 100,
+            cost: 0,
+            hp: 1_000,
+            max_hp: 1_000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        let spec = crate::game::BuildingInsertSpec {
+            type_code: "T",
+            pack_type: PackType::Teleport,
+            x: 11,
+            y: 10,
+            owner_id: PlayerId(test.player.id),
+            clan_id: 0,
+            extra: &extra,
+        };
+        test.state.insert_building_runtime(&spec).await.unwrap();
+
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        let player_id = PlayerId(test.player.id);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Move {
+                time: 0,
+                x: 11,
+                y: 10,
+                direction: 3,
+                programmatic: false,
+            },
+        );
+
+        assert!(rx.try_recv().is_err(), "dispatch must not write GUI wire");
+        assert!(matches!(
+            effects.events.last(),
+            Some(crate::game::GameEvent::GuiView {
+                session_id: event_session,
+                player_id: event_player,
+                view: crate::game::GuiView::Teleport(_),
+            }) if *event_session == session_id && *event_player == player_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn moving_onto_owned_spot_returns_gui_view_without_direct_delivery() {
+        let test = make_test_state("move_spot_gui_effect").await;
+        test.state.world.set_cell(11, 10, cell_type::EMPTY);
+        let extra = crate::db::BuildingExtra {
+            charge: 0,
+            max_charge: 0,
+            cost: 0,
+            hp: 1_000,
+            max_hp: 1_000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        let spec = crate::game::BuildingInsertSpec {
+            type_code: "O",
+            pack_type: PackType::Spot,
+            x: 11,
+            y: 10,
+            owner_id: PlayerId(test.player.id),
+            clan_id: 0,
+            extra: &extra,
+        };
+        test.state.insert_building_runtime(&spec).await.unwrap();
+
+        let session_id = crate::game::SessionId::new(1);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        let player_id = PlayerId(test.player.id);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Move {
+                time: 0,
+                x: 11,
+                y: 10,
+                direction: 3,
+                programmatic: false,
+            },
+        );
+
+        assert!(rx.try_recv().is_err(), "dispatch must not write GUI wire");
+        assert!(matches!(
+            effects.events.last(),
+            Some(crate::game::GameEvent::GuiView {
+                session_id: event_session,
+                player_id: event_player,
+                view: crate::game::GuiView::Spot(_),
+            }) if *event_session == session_id && *event_player == player_id
+        ));
     }
 
     #[tokio::test]
@@ -720,8 +905,12 @@ mod tests {
         handle_move(&test.state, &tx, pid, 0, 10, 11, -1, true);
 
         assert_eq!(test.state.world.get_cell(10, 11), cell_type::EMPTY);
+        assert!(drain_events(&mut rx).iter().all(|(event, _)| event != "@T"));
+        crate::net::presentation::deliver_world_effects_for_test(
+            &test.state,
+            test.state.drain_command_broadcasts(),
+        );
         let events = drain_events(&mut rx);
-        assert!(events.iter().all(|(event, _)| event != "@T"));
         assert!(
             events.iter().any(|(event, _)| event == "HB"),
             "programmatic autodig must notify the owning client through HB"

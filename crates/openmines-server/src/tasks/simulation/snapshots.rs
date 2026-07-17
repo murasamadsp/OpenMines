@@ -17,9 +17,14 @@ pub(super) fn flush_due_dirty_snapshots(
     let player_due = now >= pending.next_player_flush;
     if player_due {
         pending.next_player_flush = now + PLAYER_DIRTY_FLUSH_INTERVAL;
-        let accepted = flush_dirty_players_once(state, persistence);
-        if accepted > 0 {
-            tracing::debug!(accepted, "Periodic player snapshots admitted");
+        // Disconnect reserves and publishes the final player save before removing its ECS entity.
+        // With no player entities, any remaining registry entries are stale and must not acquire
+        // the global ECS write lock every ten seconds.
+        if state.player_entity_count() > 0 {
+            let accepted = flush_dirty_players_once(state, persistence);
+            if accepted > 0 {
+                tracing::debug!(accepted, "Periodic player snapshots admitted");
+            }
         }
     }
     let building_due = now >= pending.next_building_flush;
@@ -38,7 +43,7 @@ pub(super) fn flush_dirty_players_once(
     persistence: &crate::persistence::PersistenceHandle,
 ) -> usize {
     let mut dirty_entities = state.take_dirty_player_entities();
-    let mut accepted = 0usize;
+    let mut admitted = Vec::with_capacity(dirty_entities.len());
     while let Some((entity, incarnation)) = dirty_entities.pop() {
         let permit = match persistence.try_reserve(crate::game::SaveKind::Player) {
             Ok(permit) => permit,
@@ -51,7 +56,16 @@ pub(super) fn flush_dirty_players_once(
                 panic!("persistence worker closed during periodic player flush");
             }
         };
-        let row = state.snapshot_dirty_player(entity, incarnation);
+        admitted.push((entity, incarnation, permit));
+    }
+
+    let entities: Vec<_> = admitted
+        .iter()
+        .map(|(entity, incarnation, _)| (*entity, *incarnation))
+        .collect();
+    let rows = state.snapshot_dirty_players(&entities);
+    let mut accepted = 0usize;
+    for ((_, _, permit), row) in admitted.into_iter().zip(rows) {
         if let Some(row) = row {
             permit.publish(crate::game::SaveCommand::Player { row: Box::new(row) });
             accepted = accepted.saturating_add(1);

@@ -270,7 +270,7 @@ pub fn handle_dig(
         u16::try_from(actual_dir).unwrap_or(0),
     );
     let exclude_self = if programmatic { None } else { Some(pid) };
-    state.broadcast_hb_at(px, py, &[fx], exclude_self);
+    state.queue_hb_at(px, py, &[fx], exclude_self);
 
     // BOX pickup применяется lifecycle только после persistence admission.
     if cell.0 == cell_type::BOX {
@@ -298,7 +298,7 @@ pub fn handle_dig(
     if cell.0 == cell_type::MILITARY_BLOCK {
         let destroyed = state.world.damage_cell(tgt_x, tgt_y, 1.0);
         if destroyed {
-            broadcast_cell_update(state, tgt_x, tgt_y);
+            queue_cell_update(state, tgt_x, tgt_y);
         }
         let bot = hb_bot(
             net_u16_nonneg(pid),
@@ -309,7 +309,7 @@ pub fn handle_dig(
             net_u16_nonneg(clan_id),
             tail,
         );
-        state.broadcast_hb_at(px, py, &[bot], exclude_self);
+        state.queue_hb_at(px, py, &[bot], exclude_self);
         return;
     }
 
@@ -442,7 +442,7 @@ pub fn handle_dig(
         // свой (Entity.cs:43, центр входит), т.е. сам копающий тоже получает FX
         // добычи кристаллов. Раньше exclude=Some(pid) → игрок не видел анимацию
         // «сколько выкопал». Включаем себя (None).
-        state.broadcast_hb_at(px, py, &[mine_fx], None);
+        state.queue_hb_at(px, py, &[mine_fx], None);
 
         mined_yield.final_amount
     });
@@ -461,7 +461,7 @@ pub fn handle_dig(
             // durability читаем ПОСЛЕ damage_cell (как C# GetDurability после DamageCell).
             let dur = state.world.get_durability(tgt_x, tgt_y);
             state.world.destroy(tgt_x, tgt_y);
-            broadcast_cell_update(state, tgt_x, tgt_y);
+            queue_cell_update(state, tgt_x, tgt_y);
             state.world.write_world_cell(
                 bx,
                 by,
@@ -470,7 +470,7 @@ pub fn handle_dig(
                     durability: dur,
                 },
             );
-            broadcast_cell_update(state, bx, by);
+            queue_cell_update(state, bx, by);
             true
         } else {
             false
@@ -510,7 +510,7 @@ pub fn handle_dig(
             Some(())
         });
 
-        broadcast_cell_update(state, tgt_x, tgt_y);
+        queue_cell_update(state, tgt_x, tgt_y);
     } else if cry_idx.is_none() {
         // Mark dirty on non-destroying, non-crystal hits too (for save consistency).
         state.modify_player(pid, |ecs, entity| {
@@ -531,7 +531,7 @@ pub fn handle_dig(
         net_u16_nonneg(clan_id),
         tail,
     );
-    state.broadcast_hb_at(px, py, &[bot], exclude_self);
+    state.queue_hb_at(px, py, &[bot], exclude_self);
 }
 
 pub fn handle_build(
@@ -805,15 +805,15 @@ pub fn try_spend_crystal(
     }
 }
 
-pub fn broadcast_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
-    state.broadcast_cell_update(x, y);
+fn queue_cell_update(state: &Arc<GameState>, x: i32, y: i32) {
+    state.queue_cell_update(x, y);
 }
 
 fn place_block(state: &Arc<GameState>, x: i32, y: i32, cell: u8) {
     state
         .world
         .set_cell_typed(x, y, crate::world::CellType(cell));
-    broadcast_cell_update(state, x, y);
+    queue_cell_update(state, x, y);
 }
 
 fn place_world_cell(state: &Arc<GameState>, x: i32, y: i32, cell: u8, durability: f32) {
@@ -825,7 +825,7 @@ fn place_world_cell(state: &Arc<GameState>, x: i32, y: i32, cell: u8, durability
             durability,
         },
     );
-    broadcast_cell_update(state, x, y);
+    queue_cell_update(state, x, y);
 }
 
 pub const fn is_truly_empty(cell: crate::world::CellType) -> bool {
@@ -867,6 +867,26 @@ mod tests {
             i += 10;
         }
         None
+    }
+
+    fn queued_hb_payloads(state: &GameState) -> Vec<Vec<u8>> {
+        state
+            .drain_command_broadcasts()
+            .into_iter()
+            .filter_map(|effect| match effect {
+                crate::game::BroadcastEffect::Nearby { data, .. } => {
+                    let mut data = bytes::BytesMut::from(data.as_slice());
+                    let packet = crate::protocol::Packet::try_decode(&mut data)
+                        .expect("queued HB must decode")
+                        .expect("queued HB must be complete");
+                    assert_eq!(packet.event_name, *b"HB");
+                    Some(packet.payload.to_vec())
+                }
+                crate::game::BroadcastEffect::Direct { .. }
+                | crate::game::BroadcastEffect::CellUpdate(_)
+                | crate::game::BroadcastEffect::BlockUpdate(_) => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1021,8 +1041,10 @@ mod tests {
             "programmatic Dig must call Bz even while programmator GUI state is open"
         );
         assert!(
-            events.iter().any(|(event, _)| event == "HB"),
-            "programmatic Dig must send self HB for programmator visual sync"
+            queued_hb_payloads(&test.state)
+                .iter()
+                .any(|payload| !payload.is_empty()),
+            "programmatic Dig must queue self HB for programmator visual sync"
         );
     }
 
@@ -1072,10 +1094,9 @@ mod tests {
             .find(|(event, _)| event == "@B")
             .map(|(_, payload)| basket_green(payload))
             .expect("@B after crystal mine");
-        let fx_amount = events
+        let fx_amount = queued_hb_payloads(&test.state)
             .iter()
-            .filter(|(event, _)| event == "HB")
-            .find_map(|(_, payload)| directed_mine_fx_amount(payload))
+            .find_map(|payload| directed_mine_fx_amount(payload))
             .expect("mine D FX after crystal mine");
 
         assert!(
@@ -1511,6 +1532,59 @@ mod tests {
 
         let events = drain_events(&mut rx);
         assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn baseline_build_cycle_can_destroy_and_replace_a_green_block() {
+        let test = make_test_state("build_cycle").await;
+        let (tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+        let pid = PlayerId(test.player.id);
+        let entity = test.state.get_player_entity(pid).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            let mut pos = ecs
+                .get_mut::<crate::game::player::PlayerPosition>(entity)
+                .unwrap();
+            pos.x = 10;
+            pos.y = 10;
+            pos.dir = 0;
+            ecs.get_mut::<crate::game::player::PlayerStats>(entity)
+                .unwrap()
+                .crystals[0] = 10;
+            ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)
+                .unwrap()
+                .last_build -= Duration::from_millis(500);
+        }
+        test.state.world.destroy_cell_and_road(10, 11);
+        let build = XbldClient {
+            direction: 0,
+            block_type: "G",
+        };
+
+        handle_build(&test.state, &tx, pid, &build, false);
+        assert_eq!(test.state.world.get_cell(10, 11), cell_type::GREEN_BLOCK);
+        for _ in 0..12 {
+            test.state
+                .modify_player(pid, |ecs, entity| {
+                    ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)?
+                        .last_dig -= Duration::from_millis(500);
+                    Some(())
+                })
+                .unwrap();
+            handle_dig(&test.state, &tx, pid, 0, false);
+        }
+        assert!(is_truly_empty(test.state.world.get_cell_typed(10, 11)));
+
+        test.state
+            .modify_player(pid, |ecs, entity| {
+                ecs.get_mut::<crate::game::player::PlayerCooldowns>(entity)?
+                    .last_build -= Duration::from_millis(500);
+                Some(())
+            })
+            .unwrap();
+        handle_build(&test.state, &tx, pid, &build, false);
+        assert_eq!(test.state.world.get_cell(10, 11), cell_type::GREEN_BLOCK);
     }
 
     fn player_crystal(state: &Arc<GameState>, pid: PlayerId, idx: usize) -> i64 {

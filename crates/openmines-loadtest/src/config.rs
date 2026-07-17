@@ -1,4 +1,13 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum Workload {
+    Movement,
+    Dig,
+    Build,
+    BuildCycle,
+    Mixed,
+}
 
 #[derive(Clone)]
 pub struct Config {
@@ -7,6 +16,9 @@ pub struct Config {
     pub clients: u32,
     pub secs: u64,
     pub move_ms: u64,
+    pub synchronized_actions: bool,
+    pub workload: Workload,
+    pub fixture: bool,
     pub ramp_ms: u64,
     pub drain_secs: u64,
     pub db: String,
@@ -31,6 +43,17 @@ struct Args {
     #[arg(long, default_value_t = 200)]
     move_ms: u64,
 
+    /// Start every client action interval on the same tick for burst-stress.
+    #[arg(long)]
+    synchronized_actions: bool,
+
+    #[arg(long, value_enum, default_value_t = Workload::Movement)]
+    workload: Workload,
+
+    /// Require the matching `M3R_LOADTEST_ARENA` server fixture.
+    #[arg(long)]
+    fixture: bool,
+
     #[arg(long, default_value_t = 3)]
     ramp_ms: u64,
 
@@ -52,6 +75,9 @@ impl From<Args> for Config {
             clients: args.clients,
             secs: args.secs,
             move_ms: args.move_ms,
+            synchronized_actions: args.synchronized_actions,
+            workload: args.workload,
+            fixture: args.fixture,
             ramp_ms: args.ramp_ms,
             drain_secs: args.drain_secs,
             db: args.db,

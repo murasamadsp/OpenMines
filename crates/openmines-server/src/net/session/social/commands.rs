@@ -1,8 +1,10 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
 use crate::db::players::{PlayerRow, Role, SkillEntry};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
-use crate::game::player::{PlayerFlags, PlayerInventory, PlayerSkillsComp, PlayerStats};
+use crate::game::player::PlayerInventory;
+use crate::game::player::{PlayerFlags, PlayerSkillsComp, PlayerStats};
 use crate::game::skills::MAX_SKILL_SLOTS;
+use crate::game::{ClanAction, SlashCommand, SlashPackCommand};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
@@ -39,9 +41,206 @@ const CMD_USAGE_CLAN: &str = "Команды: /clan create ИМЯ ТЕГ | /clan
 
 const ADMIN_COMMAND_NO_RIGHTS: &str = "Нет прав на админ-команду";
 
+pub fn parse_slash_command(message: &str) -> SlashCommand {
+    let parts = message.split_whitespace().collect::<Vec<_>>();
+    let Some((&command, args)) = parts.split_first() else {
+        return invalid_slash("Ошибка", "Неизвестная команда");
+    };
+    match crate::admin::AdminCommandName::from_slash(command) {
+        Some(crate::admin::AdminCommandName::Give) => {
+            let Some(item_id) = args.first().and_then(|raw| raw.parse().ok()) else {
+                return invalid_slash("Ошибка", CMD_USAGE_GIVE);
+            };
+            let amount = match args.get(1) {
+                Some(raw) => match raw.parse() {
+                    Ok(value) => value,
+                    Err(_) => return invalid_slash("Ошибка", CMD_USAGE_GIVE),
+                },
+                None => 1,
+            };
+            SlashCommand::Give { item_id, amount }
+        }
+        Some(crate::admin::AdminCommandName::GiveAll) => SlashCommand::GiveAll,
+        Some(crate::admin::AdminCommandName::Money) => {
+            args.first().and_then(|raw| raw.parse().ok()).map_or_else(
+                || invalid_slash("Ошибка", CMD_USAGE_MONEY),
+                |amount| SlashCommand::Money { amount },
+            )
+        }
+        Some(crate::admin::AdminCommandName::MoneyAll) => {
+            args.first().and_then(|raw| raw.parse().ok()).map_or_else(
+                || invalid_slash("Ошибка", CMD_USAGE_MONEY_ALL),
+                |amount| SlashCommand::MoneyAll { amount },
+            )
+        }
+        Some(crate::admin::AdminCommandName::Skill) => parse_skill_command(args),
+        Some(crate::admin::AdminCommandName::Teleport) => match (
+            args.first().and_then(|raw| raw.parse().ok()),
+            args.get(1).and_then(|raw| raw.parse().ok()),
+        ) {
+            (Some(x), Some(y)) => SlashCommand::Teleport { x, y },
+            _ => invalid_slash("Ошибка", CMD_USAGE_TP),
+        },
+        Some(crate::admin::AdminCommandName::Heal) => SlashCommand::Heal,
+        Some(crate::admin::AdminCommandName::Kick) => args.first().map_or_else(
+            || invalid_slash("Кик", CMD_USAGE_KICK),
+            |target| SlashCommand::Kick {
+                target: (*target).to_string(),
+            },
+        ),
+        Some(crate::admin::AdminCommandName::Role) => parse_role_command(args),
+        Some(crate::admin::AdminCommandName::Clan) => SlashCommand::Clan {
+            action: parse_clan_command(args),
+        },
+        Some(crate::admin::AdminCommandName::Pack) => SlashCommand::Pack {
+            action: parse_pack_command(args),
+        },
+        Some(crate::admin::AdminCommandName::Help) => SlashCommand::Help,
+        Some(_) => invalid_slash("Ошибка", "Команда недоступна в чате"),
+        None => SlashCommand::Unknown {
+            command: command.to_string(),
+        },
+    }
+}
+
+fn invalid_slash(title: &str, message: &str) -> SlashCommand {
+    SlashCommand::Invalid {
+        title: title.to_string(),
+        message: message.to_string(),
+    }
+}
+
+fn parse_skill_command(args: &[&str]) -> SlashCommand {
+    if args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("codes") || arg.eq_ignore_ascii_case("help"))
+    {
+        return SlashCommand::SkillHelp;
+    }
+    let (Some(&target), Some(&code), Some(level_raw)) = (args.first(), args.get(1), args.get(2))
+    else {
+        return invalid_slash("Скилл", CMD_USAGE_SKILL);
+    };
+    let Ok(level) = level_raw.parse::<i64>() else {
+        return invalid_slash(
+            "Скилл",
+            &format!("LEVEL должен быть целым числом от 1 до {}", i32::MAX),
+        );
+    };
+    if !(1..=i64::from(i32::MAX)).contains(&level) {
+        return invalid_slash(
+            "Скилл",
+            &format!("LEVEL должен быть целым числом от 1 до {}", i32::MAX),
+        );
+    }
+    let slot = match args.get(3).map(|raw| raw.parse::<i32>()) {
+        Some(Ok(slot)) if (0..MAX_SKILL_SLOTS).contains(&slot) => Some(slot),
+        Some(_) => {
+            return invalid_slash(
+                "Скилл",
+                &format!(
+                    "SLOT должен быть целым числом от 0 до {}",
+                    MAX_SKILL_SLOTS - 1
+                ),
+            );
+        }
+        None => None,
+    };
+    let exp = match args.get(4).map(|raw| raw.parse::<f32>()) {
+        Some(Ok(exp)) if exp > MAX_ADMIN_SKILL_EXP => {
+            return invalid_slash(
+                "Скилл",
+                &format!("EXP слишком большое. Максимум: {MAX_ADMIN_SKILL_EXP}"),
+            );
+        }
+        Some(Ok(exp)) if exp >= 0.0 && exp.is_finite() => exp,
+        Some(_) => return invalid_slash("Скилл", "EXP должен быть конечным числом >= 0"),
+        None => 0.0,
+    };
+    SlashCommand::Skill {
+        target: target.to_string(),
+        code: code.to_string(),
+        level: i32::try_from(level).unwrap_or(i32::MAX),
+        slot,
+        exp,
+    }
+}
+
+fn parse_role_command(args: &[&str]) -> SlashCommand {
+    let (Some(&target), Some(&role)) = (args.first(), args.get(1)) else {
+        return invalid_slash("Роль", CMD_USAGE_ROLE);
+    };
+    let role = match role {
+        "admin" => Role::Admin,
+        "mod" | "moderator" => Role::Moderator,
+        "player" => Role::Player,
+        _ => return invalid_slash("Ошибка", "Роль: admin|mod|player"),
+    };
+    SlashCommand::Role {
+        target: target.to_string(),
+        role,
+    }
+}
+
+fn parse_clan_command(args: &[&str]) -> ClanAction {
+    match args {
+        ["create", name, tag, ..] if !name.is_empty() && !tag.is_empty() => ClanAction::Create {
+            name: (*name).to_string(),
+            tag: (*tag).to_string(),
+        },
+        ["leave", ..] => ClanAction::Leave,
+        ["kick", target, ..] if !target.is_empty() => ClanAction::Kick {
+            target: (*target).to_string(),
+        },
+        _ => ClanAction::Invalid {
+            message: CMD_USAGE_CLAN.to_string(),
+        },
+    }
+}
+
+fn parse_pack_command(args: &[&str]) -> SlashPackCommand {
+    let int = |index: usize| args.get(index).and_then(|raw| raw.parse::<i32>().ok());
+    match args.first().copied() {
+        Some("owner") => match (int(1), int(2), int(3)) {
+            (Some(x), Some(y), Some(owner_id)) => SlashPackCommand::Owner { x, y, owner_id },
+            _ => SlashPackCommand::Invalid {
+                message: CMD_USAGE_PACK_OWNER.to_string(),
+            },
+        },
+        Some("clan") => match (int(1), int(2), int(3)) {
+            (Some(x), Some(y), Some(clan_id)) => SlashPackCommand::Clan { x, y, clan_id },
+            _ => SlashPackCommand::Invalid {
+                message: CMD_USAGE_PACK_CLAN.to_string(),
+            },
+        },
+        Some("move") => match (int(1), int(2), int(3), int(4)) {
+            (Some(x), Some(y), Some(to_x), Some(to_y)) => {
+                SlashPackCommand::Move { x, y, to_x, to_y }
+            }
+            _ => SlashPackCommand::Invalid {
+                message: CMD_USAGE_PACK_MOVE.to_string(),
+            },
+        },
+        Some("type") => match (
+            int(1),
+            int(2),
+            args.get(3)
+                .and_then(|raw| crate::game::buildings::PackType::from_str(raw)),
+        ) {
+            (Some(x), Some(y), Some(pack_type)) => SlashPackCommand::Type { x, y, pack_type },
+            _ => SlashPackCommand::Invalid {
+                message: CMD_USAGE_PACK_TYPE.to_string(),
+            },
+        },
+        _ => SlashPackCommand::Invalid {
+            message: CMD_USAGE_PACK.to_string(),
+        },
+    }
+}
+
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
-pub fn send_ok(tx: &Outbox, title: &str, text: &str) {
+pub fn send_ok(tx: &dyn crate::net::session::wire::PacketSink, title: &str, text: &str) {
     send_u_packet(tx, "OK", &ok_message(title, text).1);
 }
 
@@ -49,7 +248,7 @@ pub fn send_admin_help(tx: &Outbox) {
     send_ok(tx, "Админ-команды", &crate::admin::slash_help());
 }
 
-fn send_command_state_error(tx: &Outbox) {
+fn send_command_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_ok(tx, "КОМАНДА", "Состояние игрока недоступно.");
 }
 
@@ -430,9 +629,15 @@ async fn handle_chat_skill_command(
         None => 0.0,
     };
 
-    let Some((target_name, chosen_slot, row)) =
-        apply_admin_skill_set(state, tx, target_pid, skill_type, level, slot, exp)
-    else {
+    let Some((target_name, chosen_slot, row)) = apply_admin_skill_set(
+        &crate::game::logic::kernel_context::KernelContext::new(state),
+        tx,
+        target_pid,
+        skill_type,
+        level,
+        slot,
+        exp,
+    ) else {
         return;
     };
     if let Err(e) = state.db.save_player(&row).await {
@@ -458,7 +663,7 @@ async fn handle_chat_skill_command(
     );
 }
 
-fn admin_skill_codes_help() -> String {
+pub fn admin_skill_codes_help() -> String {
     SkillType::iter()
         .map(|skill| format!("{}={skill:?}", skill.code()))
         .collect::<Vec<_>>()
@@ -486,16 +691,16 @@ fn resolve_online_player_arg(
     })
 }
 
-fn apply_admin_skill_set(
-    state: &Arc<GameState>,
-    tx: &Outbox,
+pub fn apply_admin_skill_set(
+    context: &crate::game::logic::kernel_context::KernelContext<'_>,
+    tx: &dyn crate::net::session::wire::PacketSink,
     target_pid: PlayerId,
     skill_type: SkillType,
     level: i32,
     slot: Option<i32>,
     exp: f32,
 ) -> Option<(String, i32, PlayerRow)> {
-    state
+    context
         .modify_player(target_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
             if ecs.get::<PlayerSkillsComp>(entity).is_none()
                 || ecs.get::<PlayerStats>(entity).is_none()

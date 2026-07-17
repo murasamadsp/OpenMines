@@ -110,9 +110,9 @@ prune_known_bloat() {
     return 1
   fi
 
-  echo "==> soft-prune candidates"
-  print_soft_prune_candidates
   if [[ "$dry_run" == "1" ]]; then
+    echo "==> soft-prune candidates (dry-run)"
+    print_soft_prune_candidates
     echo
     echo "dry-run: no files deleted"
     return

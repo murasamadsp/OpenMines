@@ -88,6 +88,8 @@ struct ConnectProfile {
     reuse_existing: Duration,
     spawn_prepare: Duration,
     spawn_ecs: Duration,
+    spawn_ecs_lock_wait: Duration,
+    spawn_ecs_insert: Duration,
     spawn_entity: Duration,
     register: Duration,
     health_recalc: Duration,
@@ -119,6 +121,8 @@ fn log_connect_profile_if_slow(
         reuse_existing = ?profile.reuse_existing,
         spawn_prepare = ?profile.spawn_prepare,
         spawn_ecs = ?profile.spawn_ecs,
+        spawn_ecs_lock_wait = ?profile.spawn_ecs_lock_wait,
+        spawn_ecs_insert = ?profile.spawn_ecs_insert,
         spawn_entity = ?profile.spawn_entity,
         register = ?profile.register,
         health_recalc = ?profile.health_recalc,
@@ -338,7 +342,13 @@ fn connect_entity_in_tick_inner(
     profile.spawn_prepare = section_t0.elapsed();
 
     let section_t0 = Instant::now();
-    let entity = state.ecs.write().spawn(components).id();
+    let lock_started_at = Instant::now();
+    let mut ecs = state.ecs.write();
+    profile.spawn_ecs_lock_wait = lock_started_at.elapsed();
+    let spawn_started_at = Instant::now();
+    let entity = ecs.spawn(components).id();
+    profile.spawn_ecs_insert = spawn_started_at.elapsed();
+    drop(ecs);
     profile.spawn_ecs = section_t0.elapsed();
     profile.spawn_entity = profile.spawn_prepare + profile.spawn_ecs;
 
@@ -510,7 +520,10 @@ pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, 
             } => {
                 state.sessions.fanout(&recipients, &data);
             }
-            crate::game::GameEvent::GuiView { .. } | crate::game::GameEvent::ChatFanout { .. } => {
+            crate::game::GameEvent::RefreshChunks { .. }
+            | crate::game::GameEvent::GuiView { .. }
+            | crate::game::GameEvent::ChatFanout { .. }
+            | crate::game::GameEvent::WorldEffects { .. } => {
                 unreachable!("connect flow cannot produce GUI view or chat events")
             }
         }
@@ -585,8 +598,10 @@ pub fn deliver_player_init(
             }
             crate::game::GameEvent::PlayerInit { .. }
             | crate::game::GameEvent::MovementFanout { .. }
+            | crate::game::GameEvent::RefreshChunks { .. }
             | crate::game::GameEvent::GuiView { .. }
-            | crate::game::GameEvent::ChatFanout { .. } => {
+            | crate::game::GameEvent::ChatFanout { .. }
+            | crate::game::GameEvent::WorldEffects { .. } => {
                 unreachable!("Player.Init builder only produces packet/fanout effects")
             }
         }
@@ -938,8 +953,10 @@ mod tests {
                 crate::game::GameEvent::SessionBatch { .. }
                 | crate::game::GameEvent::Fanout { .. }
                 | crate::game::GameEvent::MovementFanout { .. }
+                | crate::game::GameEvent::RefreshChunks { .. }
                 | crate::game::GameEvent::GuiView { .. }
-                | crate::game::GameEvent::ChatFanout { .. } => None,
+                | crate::game::GameEvent::ChatFanout { .. }
+                | crate::game::GameEvent::WorldEffects { .. } => None,
             })
             .expect("initial presentation event");
         let _ = disconnect_in_tick(state, PlayerId(player.id), session_id);

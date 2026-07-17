@@ -11,33 +11,35 @@ pub mod world;
 pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
-    BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
-    BuildingDeleteResult, BuildingIdentity, ChatAppendRequest, ChatColorCycleRequest,
-    ChatColorCycleResult, CommandEffects, CommandIngressClass, CommandSeq, GameCommand, GameEvent,
-    GuiCommand, GuiView, PersistenceCompletion, PlayerCommand, PlayerInitView,
-    ProgramCreateRequest, ProgramCreateResult, ProgramSaveRequest, ProgramSaveResult,
-    QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick, TeleportGuiView,
+    AdminMoneyAllRequest, AdminMoneyAllResult, AdminRoleRequest, AdminRoleResult,
+    AdminSkillRequest, AdminSkillResult, BuildingDeleteCause, BuildingDeleteOperationId,
+    BuildingDeleteOrigin, BuildingDeleteRequest, BuildingDeleteResult, BuildingIdentity,
+    BuildingMenuRequest, BuildingMenuResult, ChatAppendRequest, ChatColorCycleRequest,
+    ChatColorCycleResult, ChatMenuRequest, ChatMenuResult, ChatPrivateRequest, ChatPrivateResult,
+    ChatResyncRequest, ChatResyncResult, ClanAction, ClanCommandRequest, ClanCommandResult,
+    ClanMemberEntry, ClanMenuAction, ClanMenuListEntry, ClanMenuRequest, ClanMenuResult,
+    CommandEffects, CommandIngressClass, CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView,
+    PersistenceCompletion, PlayerCommand, PlayerInitView, ProgramCopyRequest, ProgramCopyResult,
+    ProgramCreateRequest, ProgramCreateResult, ProgramMenuRequest, ProgramMenuResult,
+    ProgramSaveRequest, ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind,
+    SessionId, SimTick, SlashCommand, SlashPackCommand, SpotGuiView, StorageGuiView,
+    TeleportGuiView, WhoisRequest, WhoisResult,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
 pub use structures::buildings;
 pub use world::{direction, granular};
 
-use crate::config::CombatConfig;
 use crate::config::Config;
-use crate::config::ProgrammatorConfig;
-use crate::config::ScheduleConfig;
-use crate::db::{Database, buildings::BuildingExtra};
+use crate::db::Database;
+use crate::game::kernel::guards::ECS_LOCK_PROFILE_THRESHOLD;
 use crate::world::{World, WorldProvider};
 use anyhow::Context as _;
-use bevy_ecs::prelude::{Entity, Resource, Schedule, World as EcsWorld};
+use bevy_ecs::prelude::{Entity, Schedule, World as EcsWorld};
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
-use std::ops::{Deref, DerefMut};
+use parking_lot::{Mutex, RwLock};
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -51,827 +53,37 @@ pub use structures::buildings::{
 };
 pub use world::coords::{ChunkPos, WorldPos};
 
-// ─── ECS Resources (вместо Arc<GameState> для ECS-систем) ───────────────────
+pub mod kernel;
+pub use kernel::*;
 
-/// Мир (карта/клетки) — выделен из `GameState`, чтобы ECS-системы не зависели
-/// от всего `GameState`. Каждая система берёт только то, что реально использует.
-#[derive(Resource)]
-pub struct WorldResource(pub Arc<crate::world::World>);
-
-#[derive(Resource, Clone, Copy)]
-pub struct ProgrammatorConfigResource(pub ProgrammatorConfig);
-
-#[derive(Resource, Clone, Copy)]
-pub struct CombatConfigResource(pub CombatConfig);
-
-#[derive(Resource, Clone, Copy)]
-pub struct ScheduleConfigResource(pub ScheduleConfig);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BoxPickupSource {
-    Standing,
-    Dig {
-        session_id: Option<SessionId>,
-        direction: i32,
-        skin: i32,
-        clan_id: i32,
-        tail: u8,
-        exclude_self: bool,
-    },
+#[derive(Clone, Debug, Default)]
+pub struct WebSnapshot {
+    pub players: Vec<WebPlayerInfo>,
+    pub buildings: Vec<WebBuildingInfo>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BoxPickupIntent {
-    pub player_id: PlayerId,
-    pub player_pos: WorldPos,
-    pub box_pos: WorldPos,
-    pub source: BoxPickupSource,
-}
-
-#[derive(Default)]
-struct BoxPickupQueueState {
-    queue: VecDeque<BoxPickupIntent>,
-    players: HashSet<PlayerId>,
-}
-
-#[derive(Resource, Clone, Default)]
-pub struct BoxPickupQueue(Arc<Mutex<BoxPickupQueueState>>);
-
-impl BoxPickupQueue {
-    pub fn push(&self, intent: BoxPickupIntent) {
-        let mut state = self.0.lock();
-        if state.players.insert(intent.player_id) {
-            state.queue.push_back(intent);
-        }
-    }
-
-    pub fn drain(&self) -> Vec<BoxPickupIntent> {
-        let mut state = self.0.lock();
-        state.players.clear();
-        state.queue.drain(..).collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.lock().queue.is_empty()
-    }
-}
-
-#[derive(Default)]
-struct GranularWakeState {
-    points: HashSet<WorldPos>,
-    region_seeds: HashSet<WorldPos>,
-}
-
-#[derive(Resource, Clone)]
-pub struct GranularWakeQueue {
-    state: Arc<Mutex<GranularWakeState>>,
-    active: Arc<AtomicBool>,
-}
-
-impl Default for GranularWakeQueue {
-    fn default() -> Self {
-        Self {
-            state: Arc::new(Mutex::new(GranularWakeState::default())),
-            active: Arc::new(AtomicBool::new(false)),
-        }
-    }
-}
-
-impl GranularWakeQueue {
-    pub fn wake_neighborhood(&self, x: i32, y: i32) {
-        let mut state = self.state.lock();
-        for dy in -3..=1 {
-            for dx in -1..=1 {
-                state.points.insert((x + dx, y + dy).into());
-            }
-        }
-    }
-
-    pub fn seed_region(&self, x: i32, y: i32) {
-        self.state.lock().region_seeds.insert((x, y).into());
-    }
-
-    pub fn take(&self) -> (Vec<WorldPos>, Vec<WorldPos>) {
-        let mut state = self.state.lock();
-        (
-            std::mem::take(&mut state.points).into_iter().collect(),
-            std::mem::take(&mut state.region_seeds)
-                .into_iter()
-                .collect(),
-        )
-    }
-
-    pub fn set_active(&self, active: bool) {
-        self.active.store(active, Ordering::Release);
-    }
-
-    pub fn has_work(&self) -> bool {
-        self.active.load(Ordering::Acquire) || {
-            let state = self.state.lock();
-            !state.points.is_empty() || !state.region_seeds.is_empty()
-        }
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct BroadcastQueue(pub Vec<BroadcastEffect>);
-
-const ECS_LOCK_PROFILE_THRESHOLD: Duration = Duration::from_millis(25);
-
-pub struct ProfiledEcsReadGuard<'a> {
-    label: &'static str,
-    acquired_at: Instant,
-    guard: Option<RwLockReadGuard<'a, EcsWorld>>,
-}
-
-impl Deref for ProfiledEcsReadGuard<'_> {
-    type Target = EcsWorld;
-
-    fn deref(&self) -> &Self::Target {
-        self.guard
-            .as_deref()
-            .expect("profiled ECS read guard already dropped")
-    }
-}
-
-impl Drop for ProfiledEcsReadGuard<'_> {
-    fn drop(&mut self) {
-        let held = self.acquired_at.elapsed();
-        drop(self.guard.take());
-        if held > ECS_LOCK_PROFILE_THRESHOLD {
-            tracing::warn!(
-                target: "tickprof",
-                label = self.label,
-                held = ?held,
-                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
-                "ECS read lock held over threshold"
-            );
-        }
-    }
-}
-
-pub struct ProfiledEcsWriteGuard<'a> {
-    label: &'static str,
-    acquired_at: Instant,
-    guard: Option<RwLockWriteGuard<'a, EcsWorld>>,
-}
-
-impl Deref for ProfiledEcsWriteGuard<'_> {
-    type Target = EcsWorld;
-
-    fn deref(&self) -> &Self::Target {
-        self.guard
-            .as_deref()
-            .expect("profiled ECS write guard already dropped")
-    }
-}
-
-impl DerefMut for ProfiledEcsWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.guard
-            .as_deref_mut()
-            .expect("profiled ECS write guard already dropped")
-    }
-}
-
-impl Drop for ProfiledEcsWriteGuard<'_> {
-    fn drop(&mut self) {
-        let held = self.acquired_at.elapsed();
-        drop(self.guard.take());
-        if held > ECS_LOCK_PROFILE_THRESHOLD {
-            tracing::warn!(
-                target: "tickprof",
-                label = self.label,
-                held = ?held,
-                threshold = ?ECS_LOCK_PROFILE_THRESHOLD,
-                "ECS write lock held over threshold"
-            );
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum BroadcastEffect {
-    Direct {
-        session_id: SessionId,
-        data: Vec<u8>,
-    },
-    CellUpdate(WorldPos),
-    BlockUpdate(WorldPos),
-    Nearby {
-        cx: u32,
-        cy: u32,
-        data: Vec<u8>,
-        exclude: Option<PlayerId>,
-    },
-}
-
-#[derive(Resource, Default)]
-pub struct ProgrammatorQueue(pub Vec<ProgrammatorAction>);
-
-pub enum ProgrammatorAction {
-    Move {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        x: i32,
-        y: i32,
-        dir: i32,
-    },
-    Dig {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        dir: i32,
-    },
-    Build {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        dir: i32,
-        block_type: String,
-    },
-    Geo {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-    },
-    Heal {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-    },
-    SetAutoDig {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        enabled: bool,
-    },
-    SetAggression {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        enabled: bool,
-    },
-    SetHandMode {
-        session_id: Option<SessionId>,
-        enabled: bool,
-    },
-    FillGun {
-        pid: PlayerId,
-        session_id: Option<SessionId>,
-        x: i32,
-        y: i32,
-    },
-    SetProgrammatorStatus {
-        session_id: Option<SessionId>,
-        running: bool,
-    },
-    Send {
-        session_id: SessionId,
-        data: Vec<u8>,
-    },
-}
-
-#[derive(Resource, Default)]
-pub struct PendingCellConversions(pub Vec<PendingConversion>);
-
-/// Координаты зданий, которым нужен HB O re-broadcast после обнуления charge (C# `ResendPack`).
-#[derive(Resource, Default)]
-pub struct PackResendQueue(pub Vec<(i32, i32)>);
-
-pub struct PendingConversion {
-    pub pos: WorldPos,
-    pub target_cell: crate::world::CellType,
-    pub required_cell: crate::world::CellType,
-    pub durability: f32,
-    pub ticks_left: u32,
-    /// Игрок, поставивший блок — для начисления 2-го build-exp при конвертации
-    /// (1:1 C# `Player.Build("V")`: `AddExp` на frame И внутри `StupidAction`-колбэка).
-    pub owner_pid: PlayerId,
-}
-
-/// Запись персистенции бокса: (координата, `Some`=upsert | `None`=delete).
-/// Пакет в HB-overlay здания: поля именованы для читаемости (IR-3).
-#[derive(Clone, Copy, Debug)]
-pub struct PackOverlay {
-    /// Код типа здания (`PackType::code()`).
-    pub code: u8,
-    /// X-координата здания (сетевой u16, `rem_euclid(65536)`).
-    pub x: u16,
-    /// Y-координата здания (сетевой u16).
-    pub y: u16,
-    /// Клановый ID (`clan_id.clamp(0,255) as u8`).
-    pub clan: u8,
-    /// HB `O` entry off-byte. For charge-based packs: `charge > 0`; for Craft:
-    /// `1 + recipe.result.id`, plus 50 when ready.
-    pub off: u8,
-}
-
-fn pack_overlay_off(
-    pack_type: PackType,
-    charge: i32,
-    craft: Option<&structures::buildings::BuildingCrafting>,
-    now: i64,
-) -> u8 {
-    if pack_type != PackType::Craft {
-        return u8::from(charge > 0);
-    }
-    let Some(recipe_id) = craft.and_then(|c| c.recipe_id) else {
-        return 0;
-    };
-    let Some(recipe) = crafting::recipe_by_id(recipe_id) else {
-        return 0;
-    };
-    let ready_bonus = if craft.is_some_and(|c| c.end_ts > 0 && now >= c.end_ts) {
-        50
-    } else {
-        0
-    };
-    u8::try_from(1 + recipe.result.id + ready_bonus)
-        .expect("craft recipe overlay item id must fit HB O off byte")
-}
-
-pub struct BuildingInsertSpec<'a> {
-    pub type_code: &'a str,
-    pub pack_type: PackType,
-    pub x: i32,
-    pub y: i32,
-    pub owner_id: PlayerId,
-    pub clan_id: i32,
-    pub extra: &'a BuildingExtra,
-}
-
-struct CommandSenders {
-    lifecycle: mpsc::Sender<QueuedGameCommand>,
-    gameplay: mpsc::Sender<QueuedGameCommand>,
-    internal: mpsc::Sender<QueuedGameCommand>,
-}
-
-pub struct CommandReceivers {
-    lifecycle: mpsc::Receiver<QueuedGameCommand>,
-    gameplay: mpsc::Receiver<QueuedGameCommand>,
-    internal: mpsc::Receiver<QueuedGameCommand>,
-    #[cfg(test)]
-    next_class: usize,
-}
-
-#[cfg(test)]
-mod command_ingress_tests {
-    use super::*;
-
-    fn queued(sequence: u64) -> QueuedGameCommand {
-        let now = Instant::now();
-        QueuedGameCommand {
-            player_id: PlayerId(1),
-            session_id: SessionId::new(1),
-            ingress_class: Some(CommandIngressClass::Gameplay),
-            sequence: CommandSeq::new(sequence),
-            received_at: now,
-            enqueued_at: now,
-            command: GameCommand::Player(PlayerCommand::KnownNoopTy {
-                event: "test".to_owned(),
-                payload: bytes::Bytes::new(),
-            }),
-        }
-    }
-
-    #[test]
-    fn command_receivers_rotate_ready_workload_classes() {
-        let (lifecycle_tx, lifecycle) = mpsc::channel(2);
-        let (gameplay_tx, gameplay) = mpsc::channel(2);
-        let (internal_tx, internal) = mpsc::channel(2);
-        lifecycle_tx.try_send(queued(1)).unwrap();
-        gameplay_tx.try_send(queued(2)).unwrap();
-        internal_tx.try_send(queued(3)).unwrap();
-        let mut receivers = CommandReceivers {
-            lifecycle,
-            gameplay,
-            internal,
-            next_class: 0,
-        };
-
-        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 1);
-        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 2);
-        assert_eq!(receivers.try_recv().unwrap().sequence.get(), 3);
-    }
-
-    #[tokio::test]
-    async fn full_gameplay_ingress_rejects_without_consuming_lifecycle_reserve() {
-        let mut gameplay = crate::config::GameplayConfig::runtime_baseline();
-        gameplay.simulation.gameplay_ingress_capacity = 1;
-        gameplay.simulation.lifecycle_ingress_capacity = 1;
-        let test = crate::test_support::ServerTestHarness::with_gameplay(
-            "bounded_ingress",
-            "bounded-ingress-user",
-            gameplay,
-        )
-        .await;
-        let gameplay_command = || {
-            GameCommand::Player(PlayerCommand::KnownNoopTy {
-                event: "test".to_owned(),
-                payload: bytes::Bytes::new(),
-            })
-        };
-
-        assert!(test.state.enqueue_command(
-            PlayerId(test.player.id),
-            SessionId::new(1),
-            gameplay_command()
-        ));
-        assert!(!test.state.enqueue_command(
-            PlayerId(test.player.id),
-            SessionId::new(1),
-            gameplay_command()
-        ));
-        assert!(
-            test.state
-                .enqueue_lifecycle(
-                    PlayerId(test.player.id),
-                    SessionId::new(1),
-                    PlayerCommand::Disconnect
-                )
-                .await
-        );
-    }
-}
-
-impl CommandReceivers {
-    pub fn try_recv_class(
-        &mut self,
-        class: CommandIngressClass,
-    ) -> Result<QueuedGameCommand, mpsc::error::TryRecvError> {
-        match class {
-            CommandIngressClass::Lifecycle => self.lifecycle.try_recv(),
-            CommandIngressClass::Gameplay => self.gameplay.try_recv(),
-            CommandIngressClass::Internal => self.internal.try_recv(),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn try_recv(&mut self) -> Result<QueuedGameCommand, mpsc::error::TryRecvError> {
-        for offset in 0..3 {
-            let class = (self.next_class + offset) % 3;
-            let result = self.try_recv_class(match class {
-                0 => CommandIngressClass::Lifecycle,
-                1 => CommandIngressClass::Gameplay,
-                2 => CommandIngressClass::Internal,
-                _ => unreachable!(),
-            });
-            if let Ok(command) = result {
-                self.next_class = (class + 1) % 3;
-                return Ok(command);
-            }
-        }
-        Err(mpsc::error::TryRecvError::Empty)
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.lifecycle
-            .len()
-            .saturating_add(self.gameplay.len())
-            .saturating_add(self.internal.len())
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub fn close(&mut self) {
-        self.lifecycle.close();
-        self.gameplay.close();
-        self.internal.close();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn test_with_gameplay(gameplay: mpsc::Receiver<QueuedGameCommand>) -> Self {
-        let (lifecycle_tx, lifecycle) = mpsc::channel(1);
-        let (internal_tx, internal) = mpsc::channel(1);
-        drop(lifecycle_tx);
-        drop(internal_tx);
-        Self {
-            lifecycle,
-            gameplay,
-            internal,
-            next_class: 0,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn test_with_ingress(
-        lifecycle: mpsc::Receiver<QueuedGameCommand>,
-        gameplay: mpsc::Receiver<QueuedGameCommand>,
-        internal: mpsc::Receiver<QueuedGameCommand>,
-    ) -> Self {
-        Self {
-            lifecycle,
-            gameplay,
-            internal,
-            next_class: 0,
-        }
-    }
-}
-
-pub struct GameSchedule {
+#[derive(Clone, Debug)]
+pub struct WebPlayerInfo {
+    pub id: PlayerId,
     pub name: String,
-    pub activity: ScheduleActivity,
-    pub schedule: RwLock<Schedule>,
-    pub interval_ms: std::sync::atomic::AtomicU64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScheduleActivity {
-    Always,
-    OnlinePlayers,
-    DueCrafting,
-    DueGuns,
-    DueProgrammator,
-    DueHazards,
-    ActiveGranular,
-    ActiveAlive,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct BotSpotView {
-    pub bot_id: i32,
     pub x: i32,
     pub y: i32,
-    pub dir: i32,
-    pub clan_id: i32,
+    pub health: i32,
+    pub max_health: i32,
+    pub crystals: i64,
+    pub money: i64,
+    pub creds: i64,
+    pub role: i32,
 }
 
-/// Immutable attributes required for the legacy `HB/X` player packet.
-/// This read model keeps periodic presentation outside the authoritative ECS lock.
-#[derive(Clone, Copy, Debug)]
-pub struct BotsRenderPlayer {
+#[derive(Clone, Debug)]
+pub struct WebBuildingInfo {
     pub x: i32,
     pub y: i32,
-    pub dir: i32,
-    pub skin: i32,
+    pub pack_type: PackType,
+    pub hp: i32,
+    pub max_hp: i32,
     pub clan_id: i32,
-    pub tail: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BotsRenderDue {
-    pub due_at: Instant,
-    pub player_id: PlayerId,
-    pub session_token: u64,
-}
-
-#[derive(Default)]
-struct BotsRenderSchedule {
-    due: BinaryHeap<Reverse<(Instant, PlayerId, u64)>>,
-}
-
-impl BotsRenderSchedule {
-    fn schedule(&mut self, due: BotsRenderDue) {
-        self.due
-            .push(Reverse((due.due_at, due.player_id, due.session_token)));
-    }
-
-    fn pop_due(&mut self, now: Instant) -> Option<BotsRenderDue> {
-        let Reverse((due_at, player_id, session_token)) = *self.due.peek()?;
-        if due_at > now {
-            return None;
-        }
-        self.due.pop();
-        Some(BotsRenderDue {
-            due_at,
-            player_id,
-            session_token,
-        })
-    }
-
-    fn next_due_at(&self) -> Option<Instant> {
-        self.due.peek().map(|Reverse((due_at, _, _))| *due_at)
-    }
-}
-
-#[derive(Default)]
-struct CraftingDueSchedule {
-    due: BinaryHeap<Reverse<(i64, Entity)>>,
-}
-
-#[derive(Resource, Clone)]
-pub struct ProgrammatorDueQueue(Arc<Mutex<ProgrammatorDueSchedule>>);
-
-impl ProgrammatorDueQueue {
-    pub fn schedule(&self, entity: Entity, due_at: Instant) {
-        self.0.lock().schedule(entity, due_at);
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct ProgrammatorDueBatch(pub Vec<(Entity, Instant)>);
-
-#[derive(Resource, Clone)]
-pub struct HazardDueQueue(Arc<Mutex<HazardDueSchedule>>);
-
-impl HazardDueQueue {
-    pub fn schedule(&self, entity: Entity, due_at: Instant) {
-        self.0.lock().schedule(entity, due_at);
-    }
-}
-
-#[derive(Resource, Default)]
-pub struct HazardDueBatch(pub Vec<(Entity, Instant)>);
-
-#[derive(Resource, Clone)]
-pub struct StandingCellHazardContext {
-    pub box_pickups: BoxPickupQueue,
-    pub death_queue: combat::DeathQueue,
-    pub due_queue: HazardDueQueue,
-    pub interval: Duration,
-    pub slow_threshold: Duration,
-}
-
-#[derive(Default)]
-struct ProgrammatorDueSchedule {
-    due: BinaryHeap<Reverse<(Instant, Entity)>>,
-    scheduled: HashMap<Entity, Instant>,
-}
-
-#[derive(Default)]
-struct HazardDueSchedule {
-    due: BinaryHeap<Reverse<(Instant, Entity)>>,
-    scheduled: HashMap<Entity, Instant>,
-}
-
-impl HazardDueSchedule {
-    fn schedule(&mut self, entity: Entity, due_at: Instant) {
-        let Some(previous) = self.scheduled.insert(entity, due_at) else {
-            self.due.push(Reverse((due_at, entity)));
-            return;
-        };
-        if due_at < previous {
-            self.due.push(Reverse((due_at, entity)));
-        } else {
-            self.scheduled.insert(entity, previous);
-        }
-    }
-
-    fn discard_stale_head(&mut self) {
-        while let Some(&Reverse((due_at, entity))) = self.due.peek() {
-            if self
-                .scheduled
-                .get(&entity)
-                .is_some_and(|current| *current == due_at)
-            {
-                break;
-            }
-            self.due.pop();
-        }
-    }
-
-    fn next_due_at(&mut self) -> Option<Instant> {
-        self.discard_stale_head();
-        self.due.peek().map(|Reverse((due_at, _))| *due_at)
-    }
-
-    fn pop_due(&mut self, now: Instant, limit: usize) -> Vec<(Entity, Instant)> {
-        let mut due = Vec::with_capacity(limit.min(self.scheduled.len()));
-        while due.len() < limit {
-            self.discard_stale_head();
-            let Some(&Reverse((due_at, entity))) = self.due.peek() else {
-                break;
-            };
-            if due_at > now {
-                break;
-            }
-            self.due.pop();
-            self.scheduled.remove(&entity);
-            due.push((entity, due_at));
-        }
-        due
-    }
-}
-
-#[cfg(test)]
-mod hazard_due_schedule_tests {
-    use super::*;
-
-    #[test]
-    fn keeps_one_earliest_deadline_per_entity() {
-        let base = Instant::now();
-        let entity = Entity::from_raw_u32(1).expect("non-placeholder entity id");
-        let mut schedule = HazardDueSchedule::default();
-
-        schedule.schedule(entity, base + Duration::from_millis(20));
-        schedule.schedule(entity, base + Duration::from_millis(10));
-        schedule.schedule(entity, base + Duration::from_millis(30));
-
-        assert_eq!(
-            schedule.next_due_at(),
-            Some(base + Duration::from_millis(10))
-        );
-        assert_eq!(
-            schedule.pop_due(base + Duration::from_millis(10), 1),
-            vec![(entity, base + Duration::from_millis(10))]
-        );
-        assert!(schedule.next_due_at().is_none());
-    }
-}
-
-impl ProgrammatorDueSchedule {
-    fn schedule(&mut self, entity: Entity, due_at: Instant) {
-        self.scheduled.insert(entity, due_at);
-        self.due.push(Reverse((due_at, entity)));
-    }
-
-    fn discard_stale_head(&mut self) {
-        while let Some(&Reverse((due_at, entity))) = self.due.peek() {
-            if self.scheduled.get(&entity) == Some(&due_at) {
-                break;
-            }
-            self.due.pop();
-        }
-    }
-
-    fn is_due(&mut self, now: Instant) -> bool {
-        self.discard_stale_head();
-        self.due
-            .peek()
-            .is_some_and(|Reverse((due_at, _))| *due_at <= now)
-    }
-
-    fn next_due_at(&mut self) -> Option<Instant> {
-        self.discard_stale_head();
-        self.due.peek().map(|Reverse((due_at, _))| *due_at)
-    }
-
-    fn pop_due(&mut self, now: Instant, limit: usize) -> Vec<(Entity, Instant)> {
-        let mut due = Vec::with_capacity(limit.min(self.scheduled.len()));
-        while due.len() < limit {
-            self.discard_stale_head();
-            let Some(&Reverse((due_at, entity))) = self.due.peek() else {
-                break;
-            };
-            if due_at > now {
-                break;
-            }
-            self.due.pop();
-            if self.scheduled.remove(&entity) == Some(due_at) {
-                due.push((entity, due_at));
-            }
-        }
-        due
-    }
-}
-
-#[cfg(test)]
-mod programmator_due_schedule_tests {
-    use super::*;
-
-    #[test]
-    fn keeps_only_the_latest_deadline_per_entity() {
-        let base = Instant::now();
-        let entity = Entity::from_raw_u32(1).expect("non-placeholder entity id");
-        let mut schedule = ProgrammatorDueSchedule::default();
-
-        for delay_ms in 10..=266 {
-            schedule.schedule(entity, base + Duration::from_millis(delay_ms));
-        }
-
-        assert!(!schedule.is_due(base + Duration::from_millis(10)));
-        assert_eq!(
-            schedule.pop_due(base + Duration::from_millis(266), 256),
-            vec![(entity, base + Duration::from_millis(266))]
-        );
-        assert!(schedule.next_due_at().is_none());
-    }
-}
-
-impl CraftingDueSchedule {
-    fn schedule(&mut self, entity: Entity, end_ts: i64) {
-        if end_ts > 0 {
-            self.due.push(Reverse((end_ts, entity)));
-        }
-    }
-
-    fn is_due(&self, now_ts: i64) -> bool {
-        self.due
-            .peek()
-            .is_some_and(|Reverse((end_ts, _))| *end_ts <= now_ts)
-    }
-
-    fn next_due_ts(&self) -> Option<i64> {
-        self.due.peek().map(|Reverse((end_ts, _))| *end_ts)
-    }
-
-    fn pop_due(&mut self, now_ts: i64, limit: usize) -> Vec<building_damage::CraftingDue> {
-        let mut due = Vec::with_capacity(limit.min(self.due.len()));
-        while due.len() < limit {
-            let Some(&Reverse((end_ts, entity))) = self.due.peek() else {
-                break;
-            };
-            if end_ts > now_ts {
-                break;
-            }
-            self.due.pop();
-            due.push(building_damage::CraftingDue { entity, end_ts });
-        }
-        due
-    }
-
-    fn len(&self) -> usize {
-        self.due.len()
-    }
 }
 
 // ─── GameState ───────────────────────────────────────────────────────────────
@@ -904,6 +116,7 @@ pub struct GameState {
     command_queue_high_water: std::sync::atomic::AtomicUsize,
     command_ingress_depth: [std::sync::atomic::AtomicUsize; 3],
     command_ingress_ages: [Mutex<VecDeque<Instant>>; 3],
+    command_broadcasts: Mutex<Vec<BroadcastEffect>>,
     simulation_waker: crate::simulation_waker::SimulationWaker,
     crafting_due_schedule: Mutex<CraftingDueSchedule>,
     programmator_due_schedule: Arc<Mutex<ProgrammatorDueSchedule>>,
@@ -932,6 +145,8 @@ pub struct GameState {
     /// Per-player GCRA rate limiters (чат, GUI). Создаются лениво при первом пакете,
     /// удаляются при дисконнекте через `remove_rate_limiter`.
     pub rate_limiters: DashMap<PlayerId, crate::net::session::rate_limit::PlayerLimiters>,
+    /// Неизменяемый `ReadSnapshot` для веб-API (stats/map), обновляемый симулятором.
+    pub web_snapshot: RwLock<Arc<WebSnapshot>>,
 }
 
 impl GameState {
@@ -940,6 +155,11 @@ impl GameState {
     pub const BOTS_RENDER_OBSERVER_BUDGET: usize = 32;
     pub const BOTS_RENDER_BYTE_BUDGET: usize = 1024 * 1024;
     pub const CRAFTING_DUE_BATCH_BUDGET: usize = 256;
+
+    pub fn persistence_pending_task_count(&self) -> usize {
+        self.db_pending_tasks
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
     pub const PROGRAMMATOR_DUE_BATCH_BUDGET: usize = 256;
     pub const HAZARD_DUE_BATCH_BUDGET: usize = 256;
 
@@ -947,6 +167,56 @@ impl GameState {
         self.chat_id_seq
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1
+    }
+
+    pub fn update_web_snapshot(&self) {
+        let mut ecs = self.ecs_write_profiled("web.update_snapshot");
+
+        let mut players = Vec::new();
+        for pid in self.active_player_ids() {
+            if let Some(entity) = self.get_player_entity(pid)
+                && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
+                && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
+                && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
+            {
+                players.push(WebPlayerInfo {
+                    id: pid,
+                    name: meta.name.clone(),
+                    x: pos.x,
+                    y: pos.y,
+                    health: p_stats.health,
+                    max_health: p_stats.max_health,
+                    crystals: p_stats.crystals.iter().sum(),
+                    money: p_stats.money,
+                    creds: p_stats.creds,
+                    role: p_stats.role,
+                });
+            }
+        }
+
+        let mut b_query = ecs.query::<(
+            &crate::game::buildings::GridPosition,
+            &crate::game::buildings::BuildingMetadata,
+            &crate::game::buildings::BuildingStats,
+            &crate::game::buildings::BuildingOwnership,
+        )>();
+
+        let mut buildings = Vec::new();
+        for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
+            buildings.push(WebBuildingInfo {
+                x: grid_pos.x,
+                y: grid_pos.y,
+                pack_type: metadata.pack_type,
+                hp: stats.hp,
+                max_hp: stats.max_hp,
+                clan_id: ownership.clan_id,
+            });
+        }
+
+        drop(ecs);
+
+        let snapshot = Arc::new(WebSnapshot { players, buildings });
+        *self.web_snapshot.write() = snapshot;
     }
 
     pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
@@ -1143,7 +413,6 @@ impl GameState {
                 lifecycle: lifecycle_rx,
                 gameplay: gameplay_rx,
                 internal: internal_rx,
-                #[cfg(test)]
                 next_class: 0,
             })),
             command_seq: std::sync::atomic::AtomicU64::new(1),
@@ -1151,6 +420,7 @@ impl GameState {
             command_queue_high_water: std::sync::atomic::AtomicUsize::new(0),
             command_ingress_depth: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)),
             command_ingress_ages: std::array::from_fn(|_| Mutex::new(VecDeque::new())),
+            command_broadcasts: Mutex::new(Vec::new()),
             simulation_waker: crate::simulation_waker::SimulationWaker::default(),
             crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
             programmator_due_schedule,
@@ -1169,6 +439,7 @@ impl GameState {
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
             rate_limiters: DashMap::new(),
             chat_id_seq: std::sync::atomic::AtomicI64::new(max_chat_id),
+            web_snapshot: RwLock::new(Arc::new(WebSnapshot::default())),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
@@ -1230,7 +501,7 @@ impl GameState {
             ecs.insert_resource(state.death_queue.clone());
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
-            ecs.insert_resource(ProgrammatorDueQueue(
+            ecs.insert_resource(ProgrammatorDueQueue::new(
                 state.programmator_due_schedule.clone(),
             ));
             ecs.insert_resource(ProgrammatorDueBatch::default());
@@ -1238,7 +509,7 @@ impl GameState {
             ecs.insert_resource(StandingCellHazardContext {
                 box_pickups: state.box_pickup_queue.clone(),
                 death_queue: state.death_queue.clone(),
-                due_queue: HazardDueQueue(state.hazard_due_schedule.clone()),
+                due_queue: HazardDueQueue::new(state.hazard_due_schedule.clone()),
                 interval: Duration::from_millis(state.config.gameplay.schedules.hazards_ms),
                 slow_threshold: Duration::from_millis(
                     state.config.gameplay.schedules.schedule_warn_threshold_ms,
@@ -1788,6 +1059,14 @@ impl GameState {
     }
 
     pub fn take_dirty_player_entities(&self) -> Vec<(Entity, crate::game::SessionId)> {
+        if self
+            .ecs_read_profiled("game.peek_dirty_players")
+            .resource::<DirtyPlayers>()
+            .0
+            .is_empty()
+        {
+            return Vec::new();
+        }
         let mut ecs = self.ecs_write_profiled("game.take_dirty_players");
         std::mem::take(&mut ecs.resource_mut::<DirtyPlayers>().0)
             .into_iter()
@@ -1804,12 +1083,25 @@ impl GameState {
             .extend(entities);
     }
 
-    pub fn snapshot_dirty_player(
+    pub fn snapshot_dirty_players(
         &self,
+        entities: &[(Entity, crate::game::SessionId)],
+    ) -> Vec<Option<crate::db::PlayerRow>> {
+        let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_players");
+        entities
+            .iter()
+            .map(|&(entity, incarnation)| {
+                self.snapshot_dirty_player_in_ecs(&mut ecs, entity, incarnation)
+            })
+            .collect()
+    }
+
+    fn snapshot_dirty_player_in_ecs(
+        &self,
+        ecs: &mut EcsWorld,
         entity: Entity,
         incarnation: crate::game::SessionId,
     ) -> Option<crate::db::PlayerRow> {
-        let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_player");
         if !ecs.entities().contains(entity) {
             return None;
         }
@@ -1821,9 +1113,8 @@ impl GameState {
         if self.get_player_entity(player_id) != Some(entity) {
             return None;
         }
-        let row = crate::game::player::extract_player_row(&ecs, entity)?;
+        let row = crate::game::player::extract_player_row(ecs, entity)?;
         ecs.get_mut::<PlayerFlags>(entity)?.dirty = false;
-        drop(ecs);
         Some(row)
     }
 
@@ -1869,6 +1160,14 @@ impl GameState {
     }
 
     pub fn take_dirty_building_entities(&self) -> Vec<Entity> {
+        if self
+            .ecs_read_profiled("game.peek_dirty_buildings")
+            .resource::<DirtyBuildings>()
+            .0
+            .is_empty()
+        {
+            return Vec::new();
+        }
         let mut ecs = self.ecs_write_profiled("game.take_dirty_buildings");
         std::mem::take(&mut ecs.resource_mut::<DirtyBuildings>().0)
             .into_iter()
@@ -1937,7 +1236,7 @@ impl GameState {
     pub fn get_pack_at(&self, x: i32, y: i32) -> Option<PackView> {
         let entity = self.building_entity_at(x, y)?;
         let view = {
-            let ecs = self.ecs.read();
+            let ecs = self.ecs_read_profiled("game.get_pack_at");
             if ecs.get::<BuildingDeletePending>(entity).is_some() {
                 return None;
             }
@@ -2310,21 +1609,25 @@ impl GameState {
         cy: u32,
         exclude_id: Option<PlayerId>,
     ) -> Vec<SessionId> {
-        let mut player_ids = Vec::new();
+        self.nearby_player_sessions(cx, cy)
+            .into_iter()
+            .filter(|(player_id, _)| Some(*player_id) != exclude_id)
+            .map(|(_, session_id)| session_id)
+            .collect()
+    }
+
+    pub fn nearby_player_sessions(&self, cx: u32, cy: u32) -> Vec<(PlayerId, SessionId)> {
+        let mut sessions = Vec::new();
         for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
             if let Some(players) = self.chunk_players.get(&(ncx, ncy).into()) {
-                player_ids.extend(players.iter().copied());
+                sessions.extend(players.iter().filter_map(|player_id| {
+                    self.active_players
+                        .get(player_id)
+                        .map(|active| (*player_id, active.session_id))
+                }));
             }
         }
-        player_ids
-            .into_iter()
-            .filter(|player_id| Some(*player_id) != exclude_id)
-            .filter_map(|player_id| {
-                self.active_players
-                    .get(&player_id)
-                    .map(|active| active.session_id)
-            })
-            .collect()
+        sessions
     }
 
     pub fn session_ids_in_chunk(
@@ -2510,18 +1813,27 @@ impl GameState {
     }
 
     pub fn broadcast_cell_update(&self, x: i32, y: i32) {
+        if let Some(sub) = self.cell_update_subpacket(x, y) {
+            self.broadcast_hb_at(x, y, &[sub], None);
+        }
+    }
+
+    pub fn queue_cell_update(&self, x: i32, y: i32) {
+        if let Some(sub) = self.cell_update_subpacket(x, y) {
+            self.queue_hb_at(x, y, &[sub], None);
+        }
+    }
+
+    fn cell_update_subpacket(&self, x: i32, y: i32) -> Option<Vec<u8>> {
         use crate::protocol::packets::hb_cell;
         self.wake_granular_neighborhood(x, y);
-        let Some(cell) = self.world.read_world_cell(x, y) else {
-            return;
-        };
+        let cell = self.world.read_world_cell(x, y)?;
         self.alive_work_q.note_cell(x, y, cell.cell_type);
-        let sub = hb_cell(
+        Some(hb_cell(
             u16::try_from(x.rem_euclid(65536)).unwrap_or(0),
             u16::try_from(y.rem_euclid(65536)).unwrap_or(0),
             cell.cell_type.0,
-        );
-        self.broadcast_hb_at(x, y, &[sub], None);
+        ))
     }
 
     /// Зарегистрировать building entity в обоих runtime-индексах.
@@ -2619,7 +1931,7 @@ impl GameState {
     ) -> Option<Vec<WorldPos>> {
         let entity = self.remove_building_entity_if(view.x, view.y, expected_entity)?;
         if view.pack_type == PackType::Spot {
-            self.remove_botspot_runtime(view.owner_id);
+            self.remove_botspot_runtime(view.owner_id, view.x, view.y);
         }
         self.ecs_write_profiled("game.remove_building_runtime")
             .despawn(entity);
@@ -2627,16 +1939,16 @@ impl GameState {
     }
 
     /// Runtime removal `BotSpot`, связанного со Spot-зданием.
-    pub fn remove_botspot_runtime(&self, owner_id: PlayerId) -> Option<Entity> {
+    pub fn remove_botspot_runtime(&self, owner_id: PlayerId, x: i32, y: i32) -> Option<Entity> {
         let (_, entity) = self.botspot_index.remove(&owner_id)?;
-        self.chunk_botspots
-            .iter_mut()
-            .for_each(|mut e| e.value_mut().retain(|&ent| ent != entity));
-        self.bots_render_botspots.iter_mut().for_each(|mut spots| {
-            spots
-                .value_mut()
-                .retain(|spot| spot.bot_id != -i32::from(owner_id));
-        });
+        let (cx, cy) = World::chunk_pos(x, y);
+        let chunk_pos = ChunkPos::from((cx, cy));
+        if let Some(mut spots) = self.chunk_botspots.get_mut(&chunk_pos) {
+            spots.retain(|&ent| ent != entity);
+        }
+        if let Some(mut spots) = self.bots_render_botspots.get_mut(&chunk_pos) {
+            spots.retain(|spot| spot.bot_id != -i32::from(owner_id));
+        }
         self.ecs_write_profiled("game.remove_botspot_runtime")
             .despawn(entity);
         Some(entity)
@@ -2869,6 +2181,32 @@ impl GameState {
         use crate::protocol::packets::hb_bundle;
         let (cx, cy) = World::chunk_pos(x, y);
         self.broadcast_to_nearby(cx, cy, &encode_hb_bundle(&hb_bundle(subs).1), exclude_id);
+    }
+
+    /// Отложенная delivery только для command-path: authoritative apply уже завершён,
+    /// а одинаковые `HB` соседям можно склеить в один frame на сессию в side phase.
+    pub fn queue_hb_at(&self, x: i32, y: i32, subs: &[Vec<u8>], exclude_id: Option<PlayerId>) {
+        use crate::net::session::wire::encode_hb_bundle;
+        use crate::protocol::packets::hb_bundle;
+        let (cx, cy) = World::chunk_pos(x, y);
+        self.command_broadcasts
+            .lock()
+            .push(BroadcastEffect::Nearby {
+                cx,
+                cy,
+                data: encode_hb_bundle(&hb_bundle(subs).1),
+                exclude: exclude_id,
+            });
+    }
+
+    pub fn queue_direct(&self, session_id: SessionId, data: Vec<u8>) {
+        self.command_broadcasts
+            .lock()
+            .push(BroadcastEffect::Direct { session_id, data });
+    }
+
+    pub fn drain_command_broadcasts(&self) -> Vec<BroadcastEffect> {
+        std::mem::take(&mut *self.command_broadcasts.lock())
     }
 
     pub fn generate_hash() -> String {

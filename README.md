@@ -9,13 +9,13 @@
 - [SERVER_MIGRATION_STATUS.md](SERVER_MIGRATION_STATUS.md) - текущий checkpoint,
   проверенные результаты и ровно один следующий серверный срез.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - фактическая runtime topology.
-- [SIMULATION_KERNEL_PLAN.md](SIMULATION_KERNEL_PLAN.md) - целевая модель
+- [docs/SIMULATION_KERNEL_PLAN.md](docs/SIMULATION_KERNEL_PLAN.md) - целевая модель
   ownership, active work и spatial multicore.
-- [SERVER_CONSISTENCY_PLAN.md](SERVER_CONSISTENCY_PLAN.md) - форма feature-кода и
+- [docs/SERVER_CONSISTENCY_PLAN.md](docs/SERVER_CONSISTENCY_PLAN.md) - форма feature-кода и
   architecture guards.
 - [docs/PROTOCOL.md](docs/PROTOCOL.md) - неизменяемый wire-контракт клиента.
 
-`TODO.md` и `AUDIT_STATE.md` содержат product backlog и исторический аудит. Они
+`docs/backlog/TODO.md` и `docs/backlog/AUDIT_STATE.md` содержат product backlog и исторический аудит. Они
 не являются handoff или порядком simulation migration.
 
 ## Быстрый старт

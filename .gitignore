@@ -66,15 +66,7 @@ yarn-error.log*
 # ======================================================================
 # Клиент Unity (client/)
 # ======================================================================
-# Исключаем временные папки Unity в подкаталоге client/
-/client/[Ll]ibrary/
-/client/[Tt]emp/
-/client/[Oo]bj/
-/client/[Ll]ogs/
-/client/[Uu]serSettings/
-/client/[Mm]emoryCaptures/
-/client/[Bb]uild/
-/client/[Bb]uilds/
+/client/
 
 # Сборки клиента
 /client-builds/

@@ -18,4 +18,7 @@ echo "==> OpenMines dev run"
 echo "    admin: http://127.0.0.1:${ADMIN_PORT}/?token=${M3R_ADMIN_TOKEN}"
 echo
 
-exec cargo run --bin openmines-server -- "$@"
+exec env \
+  -u M3R_LOADTEST_ARENA \
+  -u M3R_LOADTEST_STATE_DIR \
+  cargo run --bin openmines-server -- "$@"

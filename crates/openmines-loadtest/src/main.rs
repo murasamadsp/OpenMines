@@ -1,10 +1,12 @@
 //! Нагрузочный замер `OpenMines`: N синтетических клиентов коннектятся по TCP,
-//! логинятся (Regular-auth по пред-засеянным игрокам) и двигаются.
+//! логинятся (Regular-auth по пред-засеянным игрокам) и выполняют выбранный
+//! игровой workload.
 //!
 //! ЦЕЛЬ — найти реальный потолок ОДНОГО процесса. Замер делает СЕРВЕР через
 //! свой tickprof: запускай сервер с `M3R_LOG=warn` (или `RUST_LOG=warn`) и
 //! смотри строки `OVER-BUDGET tick` / `SLOW schedule`. Этот тул генерирует
-//! трафик и печатает клиентскую статистику (коннекты/логины/ходы/обрывы).
+//! трафик и печатает action-specific statistics. Движение без fixture -- это
+//! transport baseline, а не доказательство gameplay throughput.
 //!
 //! АВТОРИЗАЦИЯ: пред-засеваем N игроков прямо в БД сервера (`loadtest_<i>` с
 //! детерминированным хэшем), затем каждый бот логинится Regular-токеном
@@ -17,10 +19,10 @@
 //! подними лимит дескрипторов: `ulimit -n 65535` (по умолчанию 256).
 //!
 //! Запуск:
-//!   cargo run --release --bin loadtest -- --clients 1000 --port 8090 --secs 60
+//!   cargo run --release --bin loadtest -- --workload movement --clients 1000 --port 8090 --secs 60
 //!
-//! Флаги: --clients N, --host H, --port P, --secs S (длительность движения),
-//!        --move-ms M (период `Xmov`), --ramp-ms R (задержка между стартами),
+//! Флаги: --workload movement|dig|build|build-cycle|mixed, --clients N, --host H, --port P,
+//!        --secs S, --move-ms M (период action), --ramp-ms R (задержка между стартами),
 //!        --drain-secs D (ожидание effects перед half-close),
 //!        --db PATH (файл БД сервера, по умолчанию data/openmines.db).
 
@@ -31,7 +33,7 @@ mod scenario;
 mod stats;
 
 use client::run_client;
-use config::parse_args;
+use config::{Workload, parse_args};
 use scenario::{monitor_loop, seed_players, wait_for_ramp};
 use stats::{Stats, print_latency_summary};
 use std::sync::Arc;
@@ -60,13 +62,30 @@ use tokio::sync::mpsc;
 async fn main() {
     let cfg = parse_args();
     println!(
-        "loadtest: {} клиентов → {}:{}, движение {}с (Xmov каждые {}мс), ramp {}мс/клиент, drain {}с",
-        cfg.clients, cfg.host, cfg.port, cfg.secs, cfg.move_ms, cfg.ramp_ms, cfg.drain_secs
+        "loadtest: {:?}, fixture={}, {} клиентов → {}:{}, {}с (action каждые {}мс), ramp {}мс/клиент, drain {}с",
+        cfg.workload,
+        cfg.fixture,
+        cfg.clients,
+        cfg.host,
+        cfg.port,
+        cfg.secs,
+        cfg.move_ms,
+        cfg.ramp_ms,
+        cfg.drain_secs
     );
+    if cfg.fixture
+        && !matches!(
+            cfg.workload,
+            Workload::Movement | Workload::Dig | Workload::BuildCycle
+        )
+    {
+        eprintln!("fixture benchmark currently supports movement, dig, or build-cycle");
+        return;
+    }
 
     // Пред-засев игроков в БД сервера; (user_id, hash) для Regular-auth.
     print!("  пред-засев {} игроков в {} ... ", cfg.clients, cfg.db);
-    let creds = match seed_players(&cfg.db, cfg.clients, &cfg.player_prefix).await {
+    let creds = match seed_players(&cfg.db, cfg.clients, &cfg.player_prefix, cfg.fixture).await {
         Ok(c) => {
             println!("ok ({} строк)", c.len());
             c
@@ -79,10 +98,11 @@ async fn main() {
     };
     println!("  → смотри tickprof СЕРВЕРА (M3R_LOG=warn): 'OVER-BUDGET tick' / 'SLOW schedule'");
 
-    let stats = Arc::new(Stats::default());
-    let cfg = Arc::new(cfg);
-    let creds = Arc::new(creds);
+    run_workload(Arc::new(cfg), Arc::new(creds)).await;
+}
 
+async fn run_workload(cfg: Arc<config::Config>, creds: Arc<Vec<(i64, String)>>) {
+    let stats = Arc::new(Stats::default());
     let monitor = tokio::spawn(monitor_loop(stats.clone(), cfg.clone()));
     let (start_tx, start_rx) = watch::channel(false);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -133,15 +153,27 @@ async fn main() {
     latencies_us.sort_unstable();
 
     println!(
-        "\n=== ИТОГ ===\n  коннектов: {}\n  логинов: {}\n  ходов отправлено: {}\n  effects получено: {}\n  graceful disconnect: {}\n  неожиданных обрывов: {}\n  drain timeout: {}\n  ошибок коннекта: {}",
+        "\n=== ИТОГ ===\n  коннектов: {}\n  логинов: {}\n  actions sent (move/dig/build): {}/{}/{}\n  actions acked (move/dig/build): {}/{}/{}\n  actions rejected (move/dig/build): {}/{}/{}\n  effects получено: {}\n  graceful disconnect: {}\n  неожиданных обрывов: {}\n  drain timeout: {}\n  ошибок коннекта: {}\n  sid timeout/closed: {}/{}\n  ready timeout/closed: {}/{}",
         stats.connected.load(Ordering::Relaxed),
         stats.logged_in.load(Ordering::Relaxed),
-        stats.moves_sent.load(Ordering::Relaxed),
+        stats.actions.movement_sent.load(Ordering::Relaxed),
+        stats.actions.dig_sent.load(Ordering::Relaxed),
+        stats.actions.build_sent.load(Ordering::Relaxed),
+        stats.actions.movement_acked.load(Ordering::Relaxed),
+        stats.actions.dig_acked.load(Ordering::Relaxed),
+        stats.actions.build_acked.load(Ordering::Relaxed),
+        stats.actions.movement_rejected.load(Ordering::Relaxed),
+        stats.actions.dig_rejected.load(Ordering::Relaxed),
+        stats.actions.build_rejected.load(Ordering::Relaxed),
         stats.effects_received.load(Ordering::Relaxed),
         stats.graceful_disconnects.load(Ordering::Relaxed),
         stats.unexpected_disconnects.load(Ordering::Relaxed),
         stats.drain_timeouts.load(Ordering::Relaxed),
         stats.connect_errors.load(Ordering::Relaxed),
+        stats.session_id_timeouts.load(Ordering::Relaxed),
+        stats.session_id_closed.load(Ordering::Relaxed),
+        stats.ready_timeouts.load(Ordering::Relaxed),
+        stats.ready_closed.load(Ordering::Relaxed),
     );
     print_latency_summary(&latencies_us);
 }
@@ -159,6 +191,9 @@ mod tests {
         assert_eq!(cfg.clients, 500);
         assert_eq!(cfg.secs, 30);
         assert_eq!(cfg.move_ms, 200);
+        assert!(!cfg.synchronized_actions);
+        assert_eq!(cfg.workload, crate::config::Workload::Movement);
+        assert!(!cfg.fixture);
         assert_eq!(cfg.ramp_ms, 3);
         assert_eq!(cfg.drain_secs, 5);
         assert_eq!(cfg.db, "data/openmines.db");
@@ -178,6 +213,10 @@ mod tests {
             "45",
             "--move-ms",
             "150",
+            "--workload",
+            "mixed",
+            "--synchronized-actions",
+            "--fixture",
             "--ramp-ms",
             "12",
             "--drain-secs",
@@ -193,6 +232,9 @@ mod tests {
         assert_eq!(cfg.clients, 123);
         assert_eq!(cfg.secs, 45);
         assert_eq!(cfg.move_ms, 150);
+        assert!(cfg.synchronized_actions);
+        assert_eq!(cfg.workload, crate::config::Workload::Mixed);
+        assert!(cfg.fixture);
         assert_eq!(cfg.ramp_ms, 12);
         assert_eq!(cfg.drain_secs, 7);
         assert_eq!(cfg.db, "custom.db");
@@ -236,7 +278,11 @@ mod tests {
         let (out_tx, _out_rx) = mpsc::unbounded_channel();
         let mut sid_tx = None;
         let mut ready_tx = None;
-        let pending = Mutex::new(VecDeque::from([Instant::now()]));
+        let pending = Mutex::new(VecDeque::from([client::PendingAction {
+            kind: stats::ActionKind::Movement,
+            sent_at: Instant::now(),
+        }]));
+        let stats = Stats::default();
         let mut latencies = Vec::new();
 
         let effects = drain_frames(
@@ -245,11 +291,91 @@ mod tests {
             &mut sid_tx,
             &mut ready_tx,
             &pending,
+            &stats,
             &mut latencies,
         );
 
         assert_eq!(effects, 1);
         assert!(pending.lock().unwrap().is_empty());
         assert_eq!(latencies.len(), 1);
+    }
+
+    #[test]
+    fn build_basket_ack_does_not_consume_an_older_dig() {
+        let mut buf = u_frame(*b"@B", "1:0:0:0:0:0:100000");
+        let (out_tx, _out_rx) = mpsc::unbounded_channel();
+        let mut sid_tx = None;
+        let mut ready_tx = None;
+        let pending = Mutex::new(VecDeque::from([
+            client::PendingAction {
+                kind: stats::ActionKind::Dig,
+                sent_at: Instant::now(),
+            },
+            client::PendingAction {
+                kind: stats::ActionKind::Build,
+                sent_at: Instant::now(),
+            },
+        ]));
+        let stats = Stats::default();
+        let mut latencies = Vec::new();
+
+        assert_eq!(
+            drain_frames(
+                &mut buf,
+                &out_tx,
+                &mut sid_tx,
+                &mut ready_tx,
+                &pending,
+                &stats,
+                &mut latencies,
+            ),
+            1
+        );
+        assert_eq!(stats.actions.build_acked.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.actions.dig_acked.load(Ordering::Relaxed), 0);
+        assert_eq!(pending.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn build_cycle_has_one_build_for_twelve_digs() {
+        assert_eq!(
+            client::next_action(crate::config::Workload::BuildCycle, 0),
+            stats::ActionKind::Build
+        );
+        assert!((1..13).all(|sequence| client::next_action(
+            crate::config::Workload::BuildCycle,
+            sequence
+        ) == stats::ActionKind::Dig));
+        assert_eq!(
+            client::next_action(crate::config::Workload::BuildCycle, 13),
+            stats::ActionKind::Build
+        );
+    }
+
+    #[test]
+    fn action_phase_is_stable_and_can_be_forced_to_burst() {
+        assert_eq!(client::action_phase_offset_ms_for_test(201, 200, false), 1);
+        assert_eq!(client::action_phase_offset_ms_for_test(-201, 200, false), 1);
+        assert_eq!(client::action_phase_offset_ms_for_test(201, 200, true), 0);
+    }
+
+    #[test]
+    fn mixed_workload_is_repeatable() {
+        assert_eq!(
+            client::next_action(crate::config::Workload::Mixed, 0),
+            stats::ActionKind::Movement
+        );
+        assert_eq!(
+            client::next_action(crate::config::Workload::Mixed, 1),
+            stats::ActionKind::Dig
+        );
+        assert_eq!(
+            client::next_action(crate::config::Workload::Mixed, 2),
+            stats::ActionKind::Build
+        );
+        assert_eq!(
+            client::next_action(crate::config::Workload::Mixed, 3),
+            stats::ActionKind::Movement
+        );
     }
 }

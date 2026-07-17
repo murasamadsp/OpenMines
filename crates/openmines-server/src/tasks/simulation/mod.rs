@@ -341,6 +341,7 @@ struct SimulationRuntime {
     tick_budget: Duration,
     previous_tick_started_at: Option<Instant>,
     planned_deadline: Option<Instant>,
+    last_web_snapshot_at: Instant,
 }
 
 impl SimulationRuntime {
@@ -368,6 +369,7 @@ impl SimulationRuntime {
             tick_budget,
             previous_tick_started_at: None,
             planned_deadline: None,
+            last_web_snapshot_at: now,
         }
     }
 
@@ -416,6 +418,7 @@ impl SimulationRuntime {
             &presentation,
             &mut self.pending_work.persistence_completions,
         );
+        presentation.shutdown();
         tracing::info!(completions, "Simulation persistence completions drained");
     }
 
@@ -635,6 +638,12 @@ impl SimulationRuntime {
                 std::process::exit(101);
             }
         }
+
+        let now = Instant::now();
+        if now.saturating_duration_since(self.last_web_snapshot_at) >= Duration::from_secs(1) {
+            self.last_web_snapshot_at = now;
+            self.state.update_web_snapshot();
+        }
     }
 }
 
@@ -808,7 +817,7 @@ fn spawn_game_tick_watchdog(
                     stage = tick_stage_name(stage_id),
                     schedule,
                     active_players = state.active_player_ids().len(),
-                    pending_db_tasks = state.db_pending_tasks.load(Ordering::SeqCst),
+                    pending_persistence_tasks = state.persistence_pending_task_count(),
                     "GAME TICK WATCHDOG: no progress heartbeat"
                 );
             }
@@ -1008,7 +1017,7 @@ mod shutdown_tests {
         completion_tx.send(completion).await.unwrap();
         let state_for_drain = test.state.clone();
         let presentation = crate::net::presentation::PresentationRuntime::start(test.state.clone());
-        let drain = tokio::task::spawn_blocking(move || {
+        let drain = std::thread::spawn(move || {
             drain_persistence_completions(&state_for_drain, &presentation, &mut completion_rx)
         });
 
@@ -1024,7 +1033,7 @@ mod shutdown_tests {
             "drain must wait until the persistence completion channel closes"
         );
         drop(completion_tx);
-        assert_eq!(drain.await.unwrap(), 1);
+        assert_eq!(drain.join().unwrap(), 1);
 
         crate::shutdown::shutdown_flush(&test.state).await;
         let player = test
@@ -1035,7 +1044,13 @@ mod shutdown_tests {
             .unwrap()
             .unwrap();
         assert_eq!((player.resp_x, player.resp_y), (None, None));
-        assert!(test.state.db.load_all_buildings().await.unwrap().is_empty());
+        assert!(
+            test.database()
+                .load_all_buildings()
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             test.state.world.get_cell_typed(10, 10),
             crate::world::CellType(crate::world::cells::cell_type::EMPTY)

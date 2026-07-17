@@ -27,13 +27,6 @@ pub fn prepare_view(
     let mut destinations = nearby_destinations(state, &view);
     destinations.sort_unstable();
     let map_tiles = capture_map(state, (view.x, view.y).into());
-    state
-        .modify_player(pid, |ecs, entity| {
-            ecs.get_mut::<PlayerUI>(entity)?.current_window = Some(format!("pack:{x}:{y}"));
-            Some(())
-        })
-        .flatten()?;
-
     Some(crate::game::TeleportGuiView {
         source: (view.x, view.y).into(),
         charge: view.charge,
@@ -42,6 +35,16 @@ pub fn prepare_view(
         destinations,
         map_tiles,
     })
+}
+
+pub fn activate_window(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i32) -> bool {
+    state
+        .modify_player(pid, |ecs, entity| {
+            ecs.get_mut::<PlayerUI>(entity)?.current_window = Some(format!("pack:{x}:{y}"));
+            Some(())
+        })
+        .flatten()
+        .is_some()
 }
 
 fn can_open(view: &PackView, player_pos: (i32, i32), player_clan: i32) -> bool {
@@ -129,7 +132,7 @@ fn capture_map(state: &Arc<GameState>, center: crate::game::WorldPos) -> Vec<Opt
 }
 
 pub fn render(view: &crate::game::TeleportGuiView) -> Vec<u8> {
-    use super::horb::{Button, Horb, ListRow};
+    use openmines_macros::gui;
 
     let text = if view.destinations.is_empty() {
         format!(
@@ -148,34 +151,34 @@ pub fn render(view: &crate::game::TeleportGuiView) -> Vec<u8> {
         .iter()
         .map(|pos| (pos.0, pos.1, format!("tp:{}:{}", pos.0, pos.1)))
         .collect();
-    let mut win = Horb::new("Тп").text(text).minimap(
-        view.source.0,
-        view.source.1,
-        MAP_RADIUS_CHUNKS,
-        |x, y| map_tile(view, x, y),
-        &markers,
-    );
-
-    for destination in &view.destinations {
-        win = win.list_row(ListRow::new(
-            format!("TP {}:{}", destination.0, destination.1),
-            "ТЕЛЕПОРТ",
-            format!("tp:{}:{}", destination.0, destination.1),
-        ));
+    let destinations = &view.destinations;
+    gui! {
+        <window title="Тп">
+            <text>{text}</text>
+            <minimap
+                center-x=view.source.0
+                center-y=view.source.1
+                radius=MAP_RADIUS_CHUNKS
+                cell-empty={|x, y| map_tile(view, x, y)}
+                markers=markers
+            />
+            <for each=destinations item=destination>
+                <list>
+                    <row
+                        title={format!("TP {}:{}", destination.0, destination.1)}
+                        subtitle="ТЕЛЕПОРТ"
+                        action={format!("tp:{}:{}", destination.0, destination.1)}
+                    />
+                </list>
+            </for>
+            <buttons>
+                <button label="Забрать деньги" action={format!("pack_op:take_money:{}:{}", view.source.0, view.source.1)} />
+                <button label="Забрать кристаллы" action={format!("pack_op:take_crys:{}:{}", view.source.0, view.source.1)} />
+                <button label="Удалить" action={format!("pack_op:remove:{}:{}", view.source.0, view.source.1)} />
+            </buttons>
+            <close-button />
+        </window>
     }
-    win.button(Button::new(
-        "Забрать деньги",
-        format!("pack_op:take_money:{}:{}", view.source.0, view.source.1),
-    ))
-    .button(Button::new(
-        "Забрать кристаллы",
-        format!("pack_op:take_crys:{}:{}", view.source.0, view.source.1),
-    ))
-    .button(Button::new(
-        "Удалить",
-        format!("pack_op:remove:{}:{}", view.source.0, view.source.1),
-    ))
-    .close_button()
     .payload()
 }
 
@@ -189,13 +192,6 @@ fn map_tile(view: &crate::game::TeleportGuiView, x: i32, y: i32) -> Option<bool>
     let side = MAP_RADIUS_CHUNKS * 2 + 1;
     let index = (dy + MAP_RADIUS_CHUNKS) * side + dx + MAP_RADIUS_CHUNKS;
     view.map_tiles.get(usize::try_from(index).ok()?).copied()?
-}
-
-pub(super) fn open(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
-    let Some(view) = prepare_view(state, pid, view.x, view.y) else {
-        return;
-    };
-    send_u_packet(tx, "GU", &render(&view));
 }
 
 pub(super) fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, coords: &str) {

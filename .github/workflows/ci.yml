@@ -138,12 +138,27 @@ jobs:
       contents: read
       packages: read
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Read compose template
+        id: tmpl
+        run: |
+          # Юникод-safe передача multiline-файла через GITHUB_OUTPUT
+          {
+            echo 'content<<TMPL_EOF'
+            cat ops/compose.prod.yml.template
+            echo 'TMPL_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1
         env:
           IMAGE_SHA: ${{ needs.build.outputs.sha }}
           IMAGE: ${{ env.IMAGE }}
           WIPE: ${{ github.event.inputs.wipe }}
+          COMPOSE_TEMPLATE: ${{ steps.tmpl.outputs.content }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
@@ -151,7 +166,7 @@ jobs:
           # Пин host-key (анти-MITM). Снять один раз:
           #   ssh-keyscan -t ed25519 <VPS_HOST>
           fingerprint: ${{ secrets.VPS_HOST_FINGERPRINT }}
-          envs: IMAGE_SHA,IMAGE,WIPE
+          envs: IMAGE_SHA,IMAGE,WIPE,COMPOSE_TEMPLATE
           script: |
             set -euo pipefail
             # Инфра-пути — в секретах (репо публичный, не хардкодить).
@@ -189,31 +204,11 @@ jobs:
 
             cd "$STACK"
             # Самодостаточный prod-compose (image-based — VPS не собирает Rust).
-            # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды.
+            # ПЕРЕЗАПИСЫВАЕМ его на каждом деплое: единый источник правды — ops/compose.prod.yml.template.
             # Публичный 8090 временно держит сам сервер: proxy отключён, пока
             # его auth-ordering не доказан wire-smoke тестом.
-            echo "[deploy] write compose.yml (server-only, 1337 admin)"
-            cat > compose.yml <<COMPOSE
-            services:
-              server:
-                image: ${IMAGE}:${IMAGE_SHA}
-                init: true
-                restart: unless-stopped
-                ports:
-                  - "8090:8090"
-                environment:
-                  - RUST_BACKTRACE=1
-                  - M3R_DATA_DIR=/data
-                  - M3R_ADMIN_TOKEN=${ADMIN_TOKEN}
-                  - M3R_GRANT_ADMIN=1337
-                  - M3R_REGEN_WORLD=0
-                  - M3R_USE_CTRL_C=false
-                volumes:
-                  - server_data:/data
-            volumes:
-              server_data:
-                name: openmines_server_data
-            COMPOSE
+            echo "[deploy] write compose.yml from template"
+            printf '%s' "$COMPOSE_TEMPLATE" | envsubst '${IMAGE} ${IMAGE_SHA} ${ADMIN_TOKEN}' > compose.yml
 
             echo "[deploy] pull image"
             docker compose pull

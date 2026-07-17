@@ -1,4 +1,4 @@
-//! Мелкие обработчики: auto-dig, whoi, программатор TY, настройки.
+//! Мелкие обработчики: auto-dig, программатор TY, настройки.
 use crate::net::session::prelude::*;
 use crate::protocol::packets::open_programmator;
 
@@ -401,36 +401,6 @@ pub fn handle_prog_rename_prompt_ty(
             .unwrap_or(false);
         send_u_packet(tx, "@P", &programmator_status(running).1);
     }
-}
-
-pub async fn handle_whoi(state: &Arc<GameState>, tx: &Outbox, ids: &[i32]) {
-    let mut parts = Vec::new();
-    for &id in ids.iter().take(64) {
-        let mut name_opt =
-            state.query_player_opt(id.into(), |ecs: &bevy_ecs::prelude::World, entity| {
-                ecs.get::<crate::game::player::PlayerMetadata>(entity)
-                    .map(|m| m.name.clone())
-            });
-        if name_opt.is_none() {
-            match state.db.get_player_by_id(id).await {
-                Ok(Some(p)) => name_opt = Some(p.name),
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::error!(player_id = id, error = ?e, "DB get failed for Whoi");
-                    send_u_packet(
-                        tx,
-                        "OK",
-                        &ok_message("НИКИ", "Не удалось прочитать имя игрока.").1,
-                    );
-                    return;
-                }
-            }
-        }
-        // Wire-контракт NL допускает пустое имя для реально отсутствующего id.
-        let name = name_opt.unwrap_or_default();
-        parts.push(format!("{id}:{name}"));
-    }
-    send_u_packet(tx, "NL", parts.join(",").as_bytes());
 }
 
 #[cfg(test)]

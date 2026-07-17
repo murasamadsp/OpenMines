@@ -76,6 +76,8 @@ env \
   -u M3R_PORT \
   -u M3R_DATA_DIR \
   -u M3R_REGEN_WORLD \
+  -u M3R_LOADTEST_ARENA \
+  -u M3R_LOADTEST_STATE_DIR \
   -u M3R_USE_CTRL_C \
   -u M3R_ABORT_ON_PANIC \
   -u M3R_LOG \
@@ -350,8 +352,8 @@ try:
     write_gui("open_buildings")
     buildings_packets = wait_for_events(["GU"], timeout=8)
     buildings_payload = first_payload(buildings_packets, "GU").decode("utf-8", errors="replace")
-    if "bld_place:O" not in buildings_payload:
-        raise RuntimeError(f"buildings menu missing Spot placement route: {buildings_payload!r}")
+    if "bld_place:O" not in buildings_payload or "bld_place:U" not in buildings_payload:
+        raise RuntimeError(f"buildings menu missing Spot/Up placement routes: {buildings_payload!r}")
 
     write_gui("bld_place:O")
     placed_packets = wait_for_events(["P$", "HB", "Gu"], timeout=8)
@@ -364,6 +366,44 @@ try:
         write_ty("Xmov", x + step, y, "3", int(time.time() * 1000))
         wait_for_events([expected_event], timeout=8)
     x += 3
+
+    write_gui("open_buildings")
+    wait_for_events(["GU"], timeout=8)
+    write_gui("bld_place:U")
+    wait_for_events(["P$", "HB", "Gu"], timeout=8)
+
+    # Up has a 3x4 footprint: its west side is wall (cell 106), so approach
+    # the walkable origin from below instead of walking through the wall.
+    up_path = [
+        (x, y + 1), (x, y + 2), (x + 1, y + 2), (x + 2, y + 2),
+        (x + 3, y + 2), (x + 3, y + 1), (x + 3, y),
+    ]
+    for step, (next_x, next_y) in enumerate(up_path, start=1):
+        expected_event = "GU" if step == len(up_path) else "HB"
+        write_ty("Xmov", next_x, next_y, "3", int(time.time() * 1000))
+        up_open_packets = wait_for_events([expected_event], timeout=8)
+    up_open_payload = first_payload(up_open_packets, "GU").decode("utf-8", errors="replace")
+    if not up_open_payload.startswith("up:"):
+        raise RuntimeError(f"Up building did not open UpPage: {up_open_payload!r}")
+
+    write_gui("skill:0")
+    up_packets = wait_for_events(["GU"], timeout=8)
+    up_payload = first_payload(up_packets, "GU").decode("utf-8", errors="replace")
+    if not up_payload.startswith("up:") or '"sl":0' not in up_payload:
+        raise RuntimeError(f"Up skill selection did not render selected slot: {up_payload!r}")
+
+    # Return to the Spot before exercising its owner-admin page. GUI movement is
+    # blocked by the client contract, so close Up first.
+    write_gui("exit")
+    wait_for_events(["Gu"], timeout=8)
+    spot_return_path = [
+        (x + 3, y + 1), (x + 3, y + 2), (x + 2, y + 2), (x + 1, y + 2),
+        (x, y + 2), (x, y + 1), (x, y),
+    ]
+    for step, (next_x, next_y) in enumerate(spot_return_path, start=1):
+        expected_event = "GU" if step == len(spot_return_path) else "HB"
+        write_ty("Xmov", next_x, next_y, "3", int(time.time() * 1000))
+        wait_for_events([expected_event], timeout=8)
 
     write_ty("ADMN", x, y)
     admin_packets = wait_for_events(["GU"], timeout=8)
@@ -499,7 +539,7 @@ print("    initial: ST AU PI")
 print("    auth-failure: cf BI HB GU")
 print("    gui-register: AH cf Gu + init packets")
 print("    gameplay: PO/Xdig/Xmov kept session responsive")
-print("    building/admin: Blds/open_buildings/bld_place/ADMN HORB wire contract")
+print("    building/admin: Blds/open_buildings/bld_place/Up/ADMN HORB wire contract")
 print("    programmator: Pope/create/open/rename/copy/delete/PROG/pRST wire contract")
 print("    settings: TAGR and settings save wire contract")
 print("    reconnect: selected program restored with post-status #p hydration")

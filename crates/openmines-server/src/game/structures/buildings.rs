@@ -574,6 +574,36 @@ pub struct PackView {
     pub max_hp: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackAccessError {
+    NotAtObject,
+    NoRights,
+    ConfigMissing,
+}
+
+#[inline]
+pub fn validate_pack_access(
+    view: &PackView,
+    player_pos: (i32, i32),
+    player_clan: i32,
+    player_id: PlayerId,
+) -> Result<(), PackAccessError> {
+    let Ok(cells) = view.pack_type.building_cells() else {
+        return Err(PackAccessError::ConfigMissing);
+    };
+    if !cells
+        .iter()
+        .any(|(dx, dy, _)| view.x + dx == player_pos.0 && view.y + dy == player_pos.1)
+    {
+        return Err(PackAccessError::NotAtObject);
+    }
+    if view.owner_id == player_id || (view.clan_id != 0 && view.clan_id == player_clan) {
+        Ok(())
+    } else {
+        Err(PackAccessError::NoRights)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::db::buildings::BuildingRow;
