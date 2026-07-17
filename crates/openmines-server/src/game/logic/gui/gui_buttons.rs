@@ -1,5 +1,26 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool,
+    clippy::collapsible_if,
+    clippy::cast_possible_wrap,
+    clippy::redundant_closure_for_method_calls
+)]
 //! Обработка нажатий GUI-кнопок игроком.
-use super::settings::apply as handle_settings_save;
 use crate::game::logic::gui::crafter_gui;
 use crate::game::logic::gui::market_gui;
 use crate::game::logic::gui::pack_gui;
@@ -212,7 +233,7 @@ pub fn handle_gui_button_sync_fast_path(
         return true;
     }
     if let Some(rest) = button.strip_prefix("save:") {
-        handle_settings_save(state, tx, pid, rest);
+        crate::net::session::ui::settings::apply(state, tx, pid, rest);
         return true;
     }
 
@@ -328,7 +349,7 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if let Some(rest) = button.strip_prefix("buy:") {
         market_gui::handle_market_buy(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("save:") {
-        handle_settings_save(state, tx, pid, rest);
+        crate::net::session::ui::settings::apply(state, tx, pid, rest);
     } else if handle_auction_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("openprog:") {
         if let Ok(id) = rest.parse::<i32>() {
@@ -753,7 +774,7 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerFlags>();
         }
 
-        handle_settings_save(&test.state, &tx, pid, "isca:5#mous:1#");
+        crate::net::session::ui::settings::apply(&test.state, &tx, pid, "isca:5#mous:1#");
 
         let saved_settings = test
             .state

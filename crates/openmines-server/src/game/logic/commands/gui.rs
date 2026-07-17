@@ -245,7 +245,7 @@ fn apply_gui_button_command(
         spawn_program_editor_rename_task(state, tx.clone(), player_id, program_id, &name);
         return CommandEffects::default();
     }
-    if crate::net::session::ui::gui_buttons::handle_gui_button_sync_fast_path(
+    if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
         return CommandEffects::default();
@@ -461,9 +461,9 @@ fn spawn_gui_async_task(
     player_id: crate::game::PlayerId,
     button: String,
 ) {
-    let handler = if crate::net::session::ui::gui_buttons::is_auction_button(&button) {
+    let handler = if crate::game::logic::gui::gui_buttons::is_auction_button(&button) {
         GuiAsyncHandler::Auction
-    } else if crate::net::session::ui::gui_buttons::is_clan_button(&button) {
+    } else if crate::game::logic::gui::gui_buttons::is_clan_button(&button) {
         GuiAsyncHandler::Clan
     } else {
         GuiAsyncHandler::Other
@@ -477,7 +477,7 @@ fn spawn_gui_async_task(
     spawn_session_async_task(state, task_name, async move {
         match handler {
             GuiAsyncHandler::Auction => {
-                crate::net::session::ui::gui_buttons::handle_auction_button(
+                crate::game::logic::gui::gui_buttons::handle_auction_button(
                     &task_state,
                     &tx,
                     player_id,
@@ -486,7 +486,7 @@ fn spawn_gui_async_task(
                 .await;
             }
             GuiAsyncHandler::Clan => {
-                crate::net::session::ui::gui_buttons::handle_clan_button(
+                crate::game::logic::gui::gui_buttons::handle_clan_button(
                     &task_state,
                     &tx,
                     player_id,
@@ -495,7 +495,7 @@ fn spawn_gui_async_task(
                 .await;
             }
             GuiAsyncHandler::Other => {
-                crate::net::session::ui::gui_buttons::handle_gui_button(
+                crate::game::logic::gui::gui_buttons::handle_gui_button(
                     &task_state,
                     &tx,
                     player_id,

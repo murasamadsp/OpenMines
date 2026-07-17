@@ -1,6 +1,6 @@
 use crate::net::session::prelude::*;
 
-pub(super) fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
+pub fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
     use crate::game::logic::settings::SettingsSaveError;
 
     match crate::game::logic::settings::save_settings(state, pid, data) {

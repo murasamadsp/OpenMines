@@ -21,12 +21,12 @@
     clippy::redundant_closure_for_method_calls
 )]
 
-use crate::net::session::ui::crystal_form::parse_amounts as parse_six_i64_fields;
 use crate::game::buildings::{BuildingFlags, BuildingStats, BuildingStorage};
 use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::market;
 use crate::game::player::{PlayerFlags, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
+use crate::net::session::ui::crystal_form::parse_amounts as parse_six_i64_fields;
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
 
