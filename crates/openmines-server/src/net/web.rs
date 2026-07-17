@@ -246,15 +246,7 @@ async fn handle_set_role(
     match state.db.set_player_role(pid_val, role).await {
         Ok(true) => {
             let pid = crate::game::player::PlayerId(pid_val);
-            state.modify_player(pid, |ecs, entity| {
-                if let Some(mut stats) = ecs.get_mut::<crate::game::player::PlayerStats>(entity) {
-                    stats.role = role as i32;
-                }
-                if let Some(mut flags) = ecs.get_mut::<crate::game::player::PlayerFlags>(entity) {
-                    flags.dirty = true;
-                }
-                Some(())
-            });
+            crate::game::logic::admin_web::apply_role_to_ecs(&state, pid, role as i32);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "success": true, "role": role as i32 })),

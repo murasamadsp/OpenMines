@@ -1,3 +1,4 @@
+pub mod admin_web;
 pub mod auction_gui;
 pub mod bonus;
 pub mod boxes;
