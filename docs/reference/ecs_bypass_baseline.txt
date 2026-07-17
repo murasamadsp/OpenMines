@@ -137,14 +137,4 @@ crates/openmines-server/src/net/session/ui/storage.rs >>> let coords = state.que
 crates/openmines-server/src/net/session/ui/teleport.rs >>> let src_coords = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> let has_up_window = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> let page_data = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/up_building.rs >>> let selected = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/web.rs >>> state.modify_player(pid, |ecs, entity| {

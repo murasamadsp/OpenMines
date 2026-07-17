@@ -257,7 +257,7 @@ pub fn handle_gui_button_sync_fast_path(
             handle_market_tab_switch_sync(state, tx, pid, button);
             true
         }
-        _ => super::up_building::handle_up_button(state, tx, pid, button),
+        _ => crate::game::logic::up_building::handle_up_button(state, tx, pid, button),
     }
 }
 
@@ -354,7 +354,7 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         }
     } else {
         // Up building buttons (skill:N, upgrade, delete:N, install:code#N, buyslot)
-        super::up_building::handle_up_button(state, tx, pid, button);
+        crate::game::logic::up_building::handle_up_button(state, tx, pid, button);
     }
 }
 
@@ -703,7 +703,7 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         return;
     }
     if view.pack_type == PackType::Up {
-        super::up_building::open_up_gui(state, tx, pid, view);
+        crate::game::logic::up_building::open_up_gui(state, tx, pid, view);
         return;
     }
     if view.pack_type == PackType::Resp {

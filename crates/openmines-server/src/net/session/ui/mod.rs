@@ -11,4 +11,3 @@ pub mod settings;
 pub mod spot;
 pub mod storage;
 pub mod teleport;
-pub mod up_building;

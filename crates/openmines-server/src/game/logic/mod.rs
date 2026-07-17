@@ -17,3 +17,4 @@ pub mod numeric;
 pub mod random;
 pub mod settings;
 pub mod skills;
+pub mod up_building;

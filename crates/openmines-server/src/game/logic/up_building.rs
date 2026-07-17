@@ -1,3 +1,14 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss
+)]
 //! Up building (`PackType::Up`) — skill management GUI.
 //!
 //! 1:1 with C# `Buildings/Up.cs` + `GUI/UP/UpPage.cs` + `PlayerSkillsComp.cs`.
@@ -22,8 +33,14 @@ use crate::game::skills::{
 use crate::net::session::outbound::player_sync::{
     send_player_level, send_player_skills, send_player_speed,
 };
-use crate::net::session::prelude::*;
 use crate::net::session::social::commands::send_ok;
+
+use crate::game::buildings::PackView;
+use crate::game::{GameState, PlayerId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{health, money, ok_message};
+use std::sync::Arc;
 
 /// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
