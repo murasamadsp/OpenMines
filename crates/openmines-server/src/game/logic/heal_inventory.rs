@@ -15,12 +15,12 @@
 use crate::game::logic::buildings::{
     broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
 };
+use crate::game::logic::death::request_death;
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
     PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::play::death::request_death;
 
 use crate::game::buildings::{PackType, PackView};
 use crate::game::direction::dir_offset;

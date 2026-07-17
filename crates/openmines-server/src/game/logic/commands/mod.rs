@@ -221,11 +221,11 @@ fn apply_session_command(
             direction,
             programmatic,
         } => {
-            effects.append(crate::net::session::play::movement::apply_move_command(
+            effects.append(crate::game::logic::movement::apply_move_command(
                 state,
                 player_id,
                 session_id,
-                crate::net::session::play::movement::MoveRequest {
+                crate::game::logic::movement::MoveRequest {
                     target_x: x,
                     target_y: y,
                     direction,
@@ -288,7 +288,7 @@ fn apply_gameplay_command(
             }
         }
         crate::game::PlayerCommand::Respawn => {
-            crate::net::session::play::death::request_death(state, player_id);
+            crate::game::logic::death::request_death(state, player_id);
         }
         crate::game::PlayerCommand::OpenBox => {
             if let Some(tx) = state.player_sender(player_id) {
@@ -422,16 +422,14 @@ fn apply_chat_command(
                         .map(|ui| ui.current_chat.clone())
                 })
                 .unwrap_or_default();
-            let (channel_tag, last_id) =
-                match crate::net::session::social::chat::parse_chin_resync_payload(
-                    String::from_utf8_lossy(&payload).trim(),
-                ) {
-                    Some(crate::net::session::social::chat::ChinResync::Incremental {
-                        current,
-                        lastid,
-                    }) => (current, lastid),
-                    _ => (channel_tag, 0),
-                };
+            let (channel_tag, last_id) = match crate::game::logic::chat::parse_chin_resync_payload(
+                String::from_utf8_lossy(&payload).trim(),
+            ) {
+                Some(crate::game::logic::chat::ChinResync::Incremental { current, lastid }) => {
+                    (current, lastid)
+                }
+                _ => (channel_tag, 0),
+            };
             CommandEffects {
                 events: Vec::new(),
                 saves: vec![crate::game::SaveCommand::ChatResync {
@@ -553,9 +551,7 @@ fn apply_local_chat_command(
         tracing::debug!(player_id = %player_id, "chat rate limited (Locl)");
         return effects;
     }
-    if crate::net::session::social::chat::handle_local_chat_non_command(
-        state, &tx, player_id, &message,
-    ) {
+    if crate::game::logic::chat::handle_local_chat_non_command(state, &tx, player_id, &message) {
         return effects;
     }
     let task_state = state.clone();
@@ -585,7 +581,7 @@ fn apply_channel_chat_command(
         tracing::debug!(player_id = %player_id, "chat rate limited (Chat)");
         return effects;
     }
-    let text = crate::net::session::social::chat::extract_channel_message_text(&payload);
+    let text = crate::game::logic::chat::extract_channel_message_text(&payload);
     if text.trim().starts_with('/') {
         let task_state = state.clone();
         spawn_session_async_task(state, "channel_chat_command", async move {
@@ -600,9 +596,9 @@ fn apply_channel_chat_command(
         return effects;
     }
 
-    if let Some(prepared) = crate::net::session::social::chat::prepare_channel_chat_non_command(
-        state, &tx, player_id, &text,
-    ) {
+    if let Some(prepared) =
+        crate::game::logic::chat::prepare_channel_chat_non_command(state, &tx, player_id, &text)
+    {
         let msg_id = state.next_chat_id();
         let msg = openmines_protocol::chat::ChatMessage {
             id: msg_id,
@@ -653,16 +649,14 @@ fn apply_program_command(
                         }
                     }
                     "PDEL" => spawn_program_delete_task(state, tx, player_id, payload),
-                    "pRST" => crate::net::session::social::misc::handle_prog_reset_ty(
-                        state, &tx, player_id,
-                    ),
-                    "PREN" => crate::net::session::social::misc::handle_prog_rename_prompt_ty(
+                    "pRST" => crate::game::logic::misc::handle_prog_reset_ty(state, &tx, player_id),
+                    "PREN" => crate::game::logic::misc::handle_prog_rename_prompt_ty(
                         state, &tx, player_id, &payload,
                     ),
                     "PCOP" => {
                         let task_state = state.clone();
                         spawn_session_async_task(state, "program_copy", async move {
-                            crate::net::session::social::misc::handle_prog_ty(
+                            crate::game::logic::misc::handle_prog_ty(
                                 &task_state,
                                 &tx,
                                 player_id,
@@ -681,7 +675,7 @@ fn apply_program_command(
             }
         }
         crate::game::PlayerCommand::ApplyDeletedProgram { program_id } => {
-            let cleared = crate::net::session::social::misc::clear_deleted_program_runtime(
+            let cleared = crate::game::logic::misc::clear_deleted_program_runtime(
                 state, player_id, program_id,
             );
             if cleared {

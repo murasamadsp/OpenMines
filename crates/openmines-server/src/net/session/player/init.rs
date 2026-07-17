@@ -711,7 +711,7 @@ fn build_initial_presentation(
     let section_t0 = Instant::now();
     // C# calls MoveToChunk before the Player.Init sync packets. The command has
     // already committed its visibility; packet construction belongs to presentation.
-    crate::net::session::play::chunks::build_initial_chunk_packets(
+    crate::game::logic::chunks::build_initial_chunk_packets(
         state,
         tx,
         pid,
@@ -1312,7 +1312,7 @@ mod tests {
 
         let building_entities = state.building_entities_snapshot();
         let mut ecs = state.ecs.write();
-        let result = crate::net::session::play::death::apply_player_death_core(
+        let result = crate::game::logic::death::apply_player_death_core(
             state,
             &mut ecs,
             &building_entities,

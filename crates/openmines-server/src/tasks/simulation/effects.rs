@@ -672,16 +672,14 @@ fn apply_programmator_move(
         // Offline programmator actors still advance authoritative state; without
         // a session there is no presentation target.
         let (tx, _rx) = crate::net::session::outbox::channel();
-        crate::net::session::play::movement::handle_move(
-            state, &tx, player_id, 0, x, y, direction, true,
-        );
+        crate::game::logic::movement::handle_move(state, &tx, player_id, 0, x, y, direction, true);
         return;
     };
-    let effects = crate::net::session::play::movement::apply_move_command(
+    let effects = crate::game::logic::movement::apply_move_command(
         state,
         player_id,
         session_id,
-        crate::net::session::play::movement::MoveRequest {
+        crate::game::logic::movement::MoveRequest {
             target_x: x,
             target_y: y,
             direction,
@@ -700,9 +698,9 @@ fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
         }
         state.seed_granular_region(respawn_x, respawn_y);
         state.seed_alive_region(respawn_x, respawn_y);
-        crate::net::session::play::death::run_death_broadcasts(state, &broadcasts, player_id);
+        crate::game::logic::death::run_death_broadcasts(state, &broadcasts, player_id);
         if let Some(tx) = state.player_sender(player_id) {
-            crate::net::session::play::death::send_respawn_after_death(
+            crate::game::logic::death::send_respawn_after_death(
                 &tx,
                 player_id,
                 respawn_x,
@@ -710,10 +708,10 @@ fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
                 max_health,
                 &broadcasts,
             );
-            crate::net::session::play::death::broadcast_self_after_respawn(
+            crate::game::logic::death::broadcast_self_after_respawn(
                 state, player_id, respawn_x, respawn_y,
             );
-            crate::net::session::play::chunks::check_chunk_changed(state, &tx, player_id);
+            crate::game::logic::chunks::check_chunk_changed(state, &tx, player_id);
         }
     }
 }
@@ -724,7 +722,7 @@ fn render_bots(
     tick_budget: Duration,
 ) {
     state.refresh_active_bots_render_players();
-    let result = crate::net::session::play::chunks::bots_render_batch(
+    let result = crate::game::logic::chunks::bots_render_batch(
         state,
         due,
         crate::game::GameState::BOTS_RENDER_BYTE_BUDGET,

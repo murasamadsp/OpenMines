@@ -1,5 +1,25 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool
+)]
 use crate::game::player::PlayerUI;
 use crate::net::session::prelude::*;
+use std::sync::Arc;
 
 pub fn apply_editor_open(
     state: &Arc<GameState>,

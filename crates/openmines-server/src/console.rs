@@ -293,7 +293,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                     if let Some(tx) = state.player_sender(pid) {
                         let pkt = crate::protocol::packets::tp(x, y);
                         let _ = tx.send(make_u_packet_bytes(pkt.0, &pkt.1));
-                        crate::net::session::play::chunks::check_chunk_changed(&state, &tx, pid);
+                        crate::game::logic::chunks::check_chunk_changed(&state, &tx, pid);
                     }
                     Some(())
                 });
@@ -332,7 +332,7 @@ pub async fn run_repl(state: Arc<GameState>, shutdown_tx: broadcast::Sender<()>)
                 };
                 let conn_tx = state.player_sender(pid);
                 if conn_tx.is_some() {
-                    crate::net::session::play::death::request_death(&state, pid);
+                    crate::game::logic::death::request_death(&state, pid);
                     tracing::info!(target: "console", player_id = %pid, "Killed player");
                     println!("Killed player {pid}.");
                 } else {

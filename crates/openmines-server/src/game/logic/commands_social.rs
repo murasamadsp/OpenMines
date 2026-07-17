@@ -22,6 +22,7 @@ use crate::db::players::{PlayerRow, Role, SkillEntry};
 use crate::game::logic::buildings::{
     building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
 };
+use crate::game::logic::chunks::check_chunk_changed;
 use crate::game::logic::clans::{handle_clan_create, handle_clan_kick_by_name, handle_clan_leave};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::player::PlayerInventory;
@@ -33,7 +34,6 @@ use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
     send_player_speed,
 };
-use crate::net::session::play::chunks::check_chunk_changed;
 use strum::IntoEnumIterator;
 
 use crate::game::skills::{SkillType, get_player_skill_effect};

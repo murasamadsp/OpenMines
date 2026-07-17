@@ -1,7 +1,30 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool,
+    clippy::collapsible_if,
+    clippy::cast_possible_wrap,
+    clippy::redundant_closure_for_method_calls
+)]
 //! Чат: локальный, канальный, навигация (Cmen/Choo/Cset/Cpri), broadcast.
 //! Навигации НЕТ в `server_reference` — спец по `docs/reference/CLIENT_PROTOCOL_GAPS.md`.
 use crate::net::session::outbound::chat_sync::parse_private_tag;
 use crate::net::session::prelude::*;
+use std::sync::Arc;
 
 fn send_chat_state_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("ЧАТ", "Состояние чата недоступно.").1);
@@ -245,23 +268,23 @@ pub fn deliver_chat_fanout(
                 let mut channels = state.chat_channels.write();
                 if let Some(ch) = channels.iter_mut().find(|c| c.tag == *wire_tag) {
                     ch.messages.push_back(msg.clone());
-                    if ch.messages.len() > crate::net::session::social::chat::CHAT_HISTORY_LIMIT {
+                    if ch.messages.len() > crate::game::logic::chat::CHAT_HISTORY_LIMIT {
                         ch.messages.pop_front();
                     }
                 }
             }
             let pkt =
                 crate::protocol::packets::chat_messages(wire_tag, std::slice::from_ref(msg)).1;
-            crate::net::session::social::chat::send_mu_to_all(state, &pkt);
+            crate::game::logic::chat::send_mu_to_all(state, &pkt);
         }
         ChannelChatRoute::Clan(clan_id) => {
             let pkt = crate::protocol::packets::chat_messages("CLAN", std::slice::from_ref(msg)).1;
-            crate::net::session::social::chat::send_mu_to_clan(state, &pkt, *clan_id);
+            crate::game::logic::chat::send_mu_to_clan(state, &pkt, *clan_id);
         }
         ChannelChatRoute::Private(wire_tag, users) => {
             let pkt =
                 crate::protocol::packets::chat_messages(wire_tag, std::slice::from_ref(msg)).1;
-            crate::net::session::social::chat::send_mu_to_users(state, &pkt, users);
+            crate::game::logic::chat::send_mu_to_users(state, &pkt, users);
         }
     }
 }
@@ -308,10 +331,10 @@ fn send_mu_to_clan(state: &Arc<GameState>, data: &[u8], clan_id: i32) {
     let pkt = send_mu_bytes(data);
     for pid in state.active_player_ids() {
         state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-            if let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity) {
-                if s.clan_id == Some(clan_id) {
-                    state.send_to_player(pid, pkt.clone());
-                }
+            if let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity)
+                && s.clan_id == Some(clan_id)
+            {
+                state.send_to_player(pid, pkt.clone());
             }
         });
     }

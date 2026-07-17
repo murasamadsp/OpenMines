@@ -24,16 +24,16 @@ use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
 use bevy_ecs::prelude::{Entity, World as EcsWorld};
 use std::collections::HashMap;
 
-use std::sync::Arc;
 use crate::db::BuildingExtra;
 use crate::game::direction::dir_offset;
 use crate::game::{GameState, PlayerId};
-use crate::protocol::packets::{gu_close, hb_bundle, hb_packs, money, ok_message};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::wire::{encode_hb_bundle, send_u_packet};
-use crate::net::session::util::net_u16_nonneg;
 use crate::net::session::ui::horb::HorbDelivery;
+use crate::net::session::util::net_u16_nonneg;
+use crate::net::session::wire::{encode_hb_bundle, send_u_packet};
+use crate::protocol::packets::{gu_close, hb_bundle, hb_packs, money, ok_message};
 use crate::world::{World, WorldProvider};
+use std::sync::Arc;
 
 fn send_building_state_error(tx: &Outbox) {
     send_u_packet(

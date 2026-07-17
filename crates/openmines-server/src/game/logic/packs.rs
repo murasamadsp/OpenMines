@@ -20,16 +20,16 @@
 )]
 
 use crate::game::buildings::{BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage};
-use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
 use crate::game::logic::buildings::modify_pack_with_db;
+use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
 
-use std::sync::Arc;
 use crate::game::buildings::{PackType, PackView};
 use crate::game::{GameState, PlayerId};
-use crate::protocol::packets::{basket, money, ok_message};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::wire::send_u_packet;
 use crate::net::session::ui::horb::HorbDelivery;
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{basket, money, ok_message};
+use std::sync::Arc;
 
 fn send_resp_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("РЕСП", "Некорректное действие.").1);

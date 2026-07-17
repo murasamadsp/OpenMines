@@ -12,10 +12,10 @@
     clippy::significant_drop_tightening
 )]
 //! Копание клеток и установка блоков (Xdig, Xbld).
+use crate::game::logic::death::hurt_player_pure;
 use crate::game::skills::{
     OnBld, OnDig, OnDigCrys, PlayerSkills as SkillHooks, SkillType, get_player_skill_effect,
 };
-use crate::net::session::play::death::hurt_player_pure;
 
 use crate::game::direction::dir_offset;
 use crate::game::{GameState, PlayerId};

@@ -157,7 +157,7 @@ type PendingDeathEffect = (
     i32,
     i32,
     i32,
-    crate::net::session::play::death::DeathBroadcasts,
+    crate::game::logic::death::DeathBroadcasts,
 );
 
 impl DeathBacklog {
@@ -253,7 +253,7 @@ fn apply_pending_deaths(
     {
         let mut ecs = state.ecs_write_profiled("death.apply_admitted_batch");
         for (player_id, permit) in admitted {
-            match crate::net::session::play::death::apply_player_death_core(
+            match crate::game::logic::death::apply_player_death_core(
                 state,
                 &mut ecs,
                 &building_entities,
@@ -278,7 +278,7 @@ fn apply_pending_deaths(
     for (player_id, error) in errors {
         tracing::error!(player_id = %player_id, ?error, "Queued player death aborted");
         if let Some(tx) = state.player_sender(player_id) {
-            crate::net::session::play::death::send_death_state_error(&tx);
+            crate::game::logic::death::send_death_state_error(&tx);
         }
     }
     effects

@@ -693,7 +693,7 @@ impl PlayerCommand {
             }
             Self::ChannelChat { payload } => {
                 crate::game::logic::commands_social::parse_slash_command(
-                    &crate::net::session::social::chat::extract_channel_message_text(payload),
+                    &crate::game::logic::chat::extract_channel_message_text(payload),
                 )
                 .persistence_kind()
             }
@@ -790,7 +790,7 @@ pub enum GameEvent {
         data: Vec<u8>,
     },
     ChatFanout {
-        route: crate::net::session::social::chat::ChannelChatRoute,
+        route: crate::game::logic::chat::ChannelChatRoute,
         message: openmines_protocol::chat::ChatMessage,
     },
     /// Ordered world updates. Presentation owns encoding and session wakeups,

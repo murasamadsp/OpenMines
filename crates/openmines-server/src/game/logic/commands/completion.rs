@@ -162,7 +162,7 @@ pub fn apply_persistence_completion(
             };
             match result {
                 crate::game::ProgramSaveResult::Saved { program_name } => {
-                    crate::net::session::social::misc::apply_saved_program_to_tick_state(
+                    crate::game::logic::misc::apply_saved_program_to_tick_state(
                         state,
                         &tx,
                         request.player_id,
@@ -969,7 +969,7 @@ pub(super) fn apply_program_editor_completion(
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
                 return;
             };
-            crate::net::session::ui::programmer::apply_editor_open(
+            crate::game::logic::programmer::apply_editor_open(
                 state,
                 &tx,
                 player_id,
@@ -986,7 +986,7 @@ pub(super) fn apply_program_editor_completion(
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
                 return;
             };
-            crate::net::session::ui::programmer::apply_editor_rename(
+            crate::game::logic::programmer::apply_editor_rename(
                 state,
                 &tx,
                 player_id,

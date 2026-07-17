@@ -21,7 +21,7 @@
 
 mod constants;
 pub mod outbound;
-mod prelude;
+pub mod prelude;
 pub mod rate_limit;
 mod ty_command;
 pub mod util;

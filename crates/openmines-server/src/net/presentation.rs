@@ -203,7 +203,7 @@ fn deliver(state: &Arc<GameState>, event: GameEvent) {
             if state.sessions.session_for_player(player_id) == Some(session_id)
                 && let Some(outbox) = state.sessions.outbox_for_session(session_id)
             {
-                crate::net::session::play::chunks::check_chunk_changed(state, &outbox, player_id);
+                crate::game::logic::chunks::check_chunk_changed(state, &outbox, player_id);
             }
         }
         GameEvent::Fanout { recipients, data }
@@ -213,7 +213,7 @@ fn deliver(state: &Arc<GameState>, event: GameEvent) {
             state.sessions.fanout(&recipients, &data);
         }
         GameEvent::ChatFanout { route, message } => {
-            crate::net::session::social::chat::deliver_chat_fanout(state, &route, &message);
+            crate::game::logic::chat::deliver_chat_fanout(state, &route, &message);
         }
         GameEvent::WorldEffects { effects } => deliver_world_effects(state, effects),
         GameEvent::GuiView {

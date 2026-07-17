@@ -1,10 +1,29 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool
+)]
 //! Движение робота по миру и рассылка HB соседям.
 //! Референс: C# `Player.Move` — БЕЗ серверного cooldown внутри Move
 //! (тайминг движения клиентский, `SpeedPacket`). Серверный silent-drop
 //! cooldown ломал client-prediction → rubber-band, убран (1:1 C#).
-use crate::game::buildings::PackType;
 use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats};
 use crate::net::session::prelude::*;
+use std::sync::Arc;
 
 /// Исход `Move` внутри ECS-лока. `Autodig` сигнализирует, что нужно копнуть
 /// ПОСЛЕ освобождения лока (`handle_dig` сам берёт `modify_player` —
@@ -39,9 +58,9 @@ enum MoveFollowup {
 
 #[derive(Default)]
 struct MoveApplication {
-    movement_fanout: Option<crate::net::session::play::chunks::ChunkFanout>,
+    movement_fanout: Option<crate::game::logic::chunks::ChunkFanout>,
     chunk_packets: Vec<Vec<u8>>,
-    chunk_fanouts: Vec<crate::net::session::play::chunks::ChunkFanout>,
+    chunk_fanouts: Vec<crate::game::logic::chunks::ChunkFanout>,
     followup: Option<MoveFollowup>,
 }
 
@@ -364,14 +383,14 @@ fn apply_move(
         net_u16_nonneg(clan),
         tail,
     );
-    let movement_fanout = crate::net::session::play::chunks::ChunkFanout {
+    let movement_fanout = crate::game::logic::chunks::ChunkFanout {
         recipients: state.nearby_session_ids(cx, cy, None),
         data: encode_hb_bundle(&hb_bundle(&[bot]).1),
     };
 
     let chunk_packets = crate::net::session::wire::PacketBatch::default();
     let chunk_fanouts = if chunk_changed {
-        crate::net::session::play::chunks::prepare_chunk_changed(state, &chunk_packets, pid)
+        crate::game::logic::chunks::prepare_chunk_changed(state, &chunk_packets, pid)
     } else {
         Vec::new()
     };
