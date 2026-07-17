@@ -1,7 +1,30 @@
 //! Меню и действия клана.
 #![allow(clippy::uninlined_format_args)]
-use crate::net::session::prelude::*;
-use crate::net::session::ui::horb::{Button, Horb};
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string
+)]
+
+use crate::game::{GameState, PlayerId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::ui::horb::{Button, Horb, HorbDelivery};
+use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
+use crate::net::session::wire::{encode_hb_bundle, make_u_packet_bytes, send_u_packet};
+use crate::protocol::packets::{clan_hide, clan_show, hb_bot, hb_bundle, money, ok_message};
+use std::sync::Arc;
 
 // ─── Clans ─────────────────────────────────────────────────────────────
 

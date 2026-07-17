@@ -385,23 +385,23 @@ pub async fn handle_clan_button(
             true
         }
         "clan_menu" | "clan_back" => {
-            crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
+            crate::game::logic::clans::handle_clan_menu(state, tx, pid).await;
             true
         }
         "clan_requests" => {
-            crate::net::session::social::clans::handle_clan_requests_view(state, tx, pid).await;
+            crate::game::logic::clans::handle_clan_requests_view(state, tx, pid).await;
             true
         }
         "clan_members" => {
-            crate::net::session::social::clans::handle_clan_members_view(state, tx, pid).await;
+            crate::game::logic::clans::handle_clan_members_view(state, tx, pid).await;
             true
         }
         "clan_invite_list" => {
-            crate::net::session::social::clans::handle_clan_invite_list(state, tx, pid).await;
+            crate::game::logic::clans::handle_clan_invite_list(state, tx, pid).await;
             true
         }
         "clan_invites_view" => {
-            crate::net::session::social::clans::handle_clan_invites_view(state, tx, pid).await;
+            crate::game::logic::clans::handle_clan_invites_view(state, tx, pid).await;
             true
         }
         _ => handle_clan_button_with_id(state, tx, pid, button).await,
@@ -422,7 +422,7 @@ async fn handle_clan_button_with_id(
     };
     match prefix {
         "clan_view" => {
-            crate::net::session::social::clans::handle_clan_preview(state, tx, pid, id).await;
+            crate::game::logic::clans::handle_clan_preview(state, tx, pid, id).await;
         }
         _ => return false,
     }
@@ -597,7 +597,7 @@ async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     match cmd {
         "open" => {
             if view.pack_type == PackType::Clans {
-                crate::net::session::social::clans::handle_clan_menu(state, tx, pid).await;
+                crate::game::logic::clans::handle_clan_menu(state, tx, pid).await;
             } else {
                 open_pack_gui(state, tx, pid, &view);
             }

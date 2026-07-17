@@ -32,21 +32,6 @@ crates/openmines-server/src/net/session/social/chat.rs >>> let Some(window_open)
 crates/openmines-server/src/net/session/social/chat.rs >>> let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
 crates/openmines-server/src/net/session/social/chat.rs >>> let p_data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
 crates/openmines-server/src/net/session/social/chat.rs >>> state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> .query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> .query_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> let _ = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> let _ = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> let target_data = state.query_player_opt(target_pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(target_pid, |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(target_pid.into(), |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(target_pid.into(), |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.modify_player(target_pid.into(), |ecs, entity| {
-crates/openmines-server/src/net/session/social/clans.rs >>> state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/social/commands.rs >>> .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
 crates/openmines-server/src/net/session/social/commands.rs >>> .modify_player(target_pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
 crates/openmines-server/src/net/session/social/commands.rs >>> .query_player(candidate, |ecs, entity| {

@@ -2,6 +2,5 @@
 
 pub mod buildings;
 pub mod chat;
-pub mod clans;
 pub mod commands;
 pub mod misc;

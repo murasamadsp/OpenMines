@@ -22,16 +22,16 @@ use crate::net::session::social::buildings::{
     broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
 };
 
-use std::sync::Arc;
 use crate::game::buildings::{PackType, PackView};
 use crate::game::direction::dir_offset;
 use crate::game::{GameState, PlayerId};
-use crate::protocol::packets::{hb_gun_shot_fx, hb_hurt_fx, health, ok_message};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::wire::send_u_packet;
 use crate::net::session::util::net_u16_nonneg;
-use crate::world::cells::cell_type;
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{hb_gun_shot_fx, hb_hurt_fx, health, ok_message};
 use crate::world::WorldProvider;
+use crate::world::cells::cell_type;
+use std::sync::Arc;
 
 // ─── Inventory ──────────────────────────────────────────────────────────────
 

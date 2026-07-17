@@ -1,6 +1,7 @@
 pub mod bonus;
 pub mod boxes;
 pub mod building_delete;
+pub mod clans;
 pub mod commands;
 pub mod consumables;
 pub mod contracts;

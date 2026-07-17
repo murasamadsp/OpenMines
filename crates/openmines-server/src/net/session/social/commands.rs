@@ -1,5 +1,6 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
 use crate::db::players::{PlayerRow, Role, SkillEntry};
+use crate::game::logic::clans::{handle_clan_create, handle_clan_kick_by_name, handle_clan_leave};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
 use crate::game::player::PlayerInventory;
 use crate::game::player::{PlayerFlags, PlayerSkillsComp, PlayerStats};
@@ -14,9 +15,6 @@ use crate::net::session::play::chunks::check_chunk_changed;
 use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
-};
-use crate::net::session::social::clans::{
-    handle_clan_create, handle_clan_kick_by_name, handle_clan_leave,
 };
 use strum::IntoEnumIterator;
 
