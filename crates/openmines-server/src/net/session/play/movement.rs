@@ -455,16 +455,16 @@ pub fn apply_move_command(
     if let Some(followup) = application.followup.take() {
         if let MoveFollowup::OpenPack(pack) = &followup {
             let view = match pack.pack_type {
-                PackType::Teleport => {
-                    crate::net::session::ui::teleport::prepare_view(state, pid, pack.x, pack.y)
-                        .map(crate::game::GuiView::Teleport)
-                }
+                PackType::Teleport => crate::game::logic::gui_views::teleport::prepare_view(
+                    state, pid, pack.x, pack.y,
+                )
+                .map(crate::game::GuiView::Teleport),
                 PackType::Spot => {
-                    crate::net::session::ui::spot::prepare_view(state, pid, pack.x, pack.y)
+                    crate::game::logic::gui_views::spot::prepare_view(state, pid, pack.x, pack.y)
                         .map(crate::game::GuiView::Spot)
                 }
                 PackType::Storage => {
-                    crate::net::session::ui::storage::prepare_view(state, pid, pack.x, pack.y)
+                    crate::game::logic::gui_views::storage::prepare_view(state, pid, pack.x, pack.y)
                         .map(crate::game::GuiView::Storage)
                 }
                 _ => None,
@@ -472,7 +472,7 @@ pub fn apply_move_command(
             if let Some(view) = view {
                 let activated = match &view {
                     crate::game::GuiView::Teleport(view) => {
-                        crate::net::session::ui::teleport::activate_window(
+                        crate::game::logic::gui_views::teleport::activate_window(
                             state,
                             pid,
                             view.source.0,
@@ -480,10 +480,12 @@ pub fn apply_move_command(
                         )
                     }
                     crate::game::GuiView::Spot(view) => {
-                        crate::net::session::ui::spot::activate_window(state, pid, view.x, view.y)
+                        crate::game::logic::gui_views::spot::activate_window(
+                            state, pid, view.x, view.y,
+                        )
                     }
                     crate::game::GuiView::Storage(view) => {
-                        crate::net::session::ui::storage::activate_window(
+                        crate::game::logic::gui_views::storage::activate_window(
                             state, pid, view.x, view.y,
                         )
                     }

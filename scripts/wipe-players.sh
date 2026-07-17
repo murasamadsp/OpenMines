@@ -31,13 +31,14 @@ fi
 sqlite3 "$DB" <<'SQL'
 PRAGMA foreign_keys = OFF;
 BEGIN;
+DELETE FROM programs;
 DELETE FROM buildings;
 DELETE FROM chat_messages;
 DELETE FROM clan_requests;
 DELETE FROM clans;
 DELETE FROM players;
-DELETE FROM sqlite_sequence WHERE name IN ('players', 'buildings', 'clans', 'clan_requests', 'chat_messages');
+DELETE FROM sqlite_sequence WHERE name IN ('players', 'buildings', 'clans', 'clan_requests', 'chat_messages', 'programs');
 COMMIT;
 SQL
 
-echo "OK: players + buildings + clans + clan_requests + chat_messages очищены в $DB"
+echo "OK: programs + players + buildings + clans + clan_requests + chat_messages очищены в $DB"

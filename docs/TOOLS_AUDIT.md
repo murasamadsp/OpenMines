@@ -1,6 +1,6 @@
 # Tools Audit
 
-Дата актуализации: 2026-07-17.
+Дата актуализации: 2026-07-17 (rev 2).
 
 Цель: привести `scripts/` и `tools/` к понятному dev-контуру без удаления
 полезных отладочных инструментов вслепую.
@@ -19,12 +19,12 @@
 | `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
 | `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
 | `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить как явный gate sound-трека; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
-| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/coverage/mutants/vet/fmod/cache. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
+| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/deps/coverage/mutants/vet/fmod/arch/outdated/geiger/bloat/cache. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
 | `scripts/arch-guard.sh` | active | Static architecture gate. | Оставить в CI/full gate. |
 | `scripts/arch-audit.sh` | diagnostic | Read-only отчёт по архитектурным leakage. | Оставить как manual audit. |
 | `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`; `--prune` удаляет incremental cache и может замедлить следующий `cargo run`. | Оставить ручным; в pre-commit запускать только через `PRE_COMMIT_PRUNE_TARGET=1`. |
 | `scripts/build-client.sh` | explicit client task | Unity client compile gate. | Оставить; запускать только при client-задачах. |
-| `scripts/wipe-players.sh` | dangerous/dev | Деструктивная dev-утилита для игроков. | Требует отдельной проверки перед использованием. |
+| `scripts/wipe-players.sh` | dangerous/dev | Деструктивный dev-вайп игроков из SQLite (players, programs, buildings, clans, clan_requests, chat_messages). | Требует отдельной проверки перед использованием. |
 | `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
 | `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures в сервере и sync-lock guard через `.await`. | Оставить в `arch-guard` и pre-commit. |
 | `scripts/ownership-audit-lock-guard.py` | active | Python-реализация guard-across-await детектора. Вызывается из `ownership-audit.sh`. | Оставить рядом с `ownership-audit.sh`. |
@@ -76,3 +76,7 @@ untracked и игнорироваться Git:
    основного repo tooling.
 2. Добавить быстрый `scripts/toolbox.sh` или `cargo xtask` только если список
    ручных команд начнёт снова расползаться.
+
+## Changelog
+
+- **2026-07-17 rev 2**: исправлен баг — `quality-extra.sh features|deps|coverage|mutants|vet` падал с `command not found`; добавлены 5 функций в `quality-common.sh`. Добавлены субкоманды `arch/outdated/geiger/bloat` в `quality-extra.sh`. `wipe-players.sh` теперь чистит таблицу `programs`.

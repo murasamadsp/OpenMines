@@ -8,6 +8,7 @@ pub mod crafting;
 pub mod crystals;
 pub mod due;
 pub mod geology;
+pub mod gui_views;
 pub mod healing;
 pub mod inventory;
 pub mod items;

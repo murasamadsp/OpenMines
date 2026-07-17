@@ -18,6 +18,10 @@ Usage:
   scripts/quality-extra.sh vet        Run cargo-vet
   scripts/quality-extra.sh fmod       Check FMOD event bank contract
   scripts/quality-extra.sh ub         Run unsafe/soundness boundary audit
+  scripts/quality-extra.sh arch       Read-only architecture leak report
+  scripts/quality-extra.sh outdated   Check outdated dependencies
+  scripts/quality-extra.sh geiger     Audit unsafe via cargo-geiger
+  scripts/quality-extra.sh bloat      Report binary bloat
   scripts/quality-extra.sh cache      Show sccache stats
   scripts/quality-extra.sh stop-cache Stop sccache server
 EOF
@@ -49,6 +53,18 @@ case "${1:-}" in
     ;;
   ub)
     scripts/ub-audit.sh
+    ;;
+  arch)
+    scripts/arch-audit.sh
+    ;;
+  outdated)
+    quality_run_outdated_if_available
+    ;;
+  geiger)
+    quality_run_geiger_if_available
+    ;;
+  bloat)
+    quality_run_bloat_if_available
     ;;
   cache)
     sccache --show-stats

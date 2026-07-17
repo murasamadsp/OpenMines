@@ -92,31 +92,33 @@ fn apply_open_pack_gui(
     match state.get_pack_at(x, y).map(|view| view.pack_type) {
         Some(crate::game::PackType::Teleport) => {
             let Some(view) =
-                crate::net::session::ui::teleport::prepare_view(state, player_id, x, y)
+                crate::game::logic::gui_views::teleport::prepare_view(state, player_id, x, y)
             else {
                 return CommandEffects::default();
             };
-            if !crate::net::session::ui::teleport::activate_window(state, player_id, x, y) {
+            if !crate::game::logic::gui_views::teleport::activate_window(state, player_id, x, y) {
                 return CommandEffects::default();
             }
             gui_view_effects(session_id, player_id, crate::game::GuiView::Teleport(view))
         }
         Some(crate::game::PackType::Spot) => {
-            let Some(view) = crate::net::session::ui::spot::prepare_view(state, player_id, x, y)
+            let Some(view) =
+                crate::game::logic::gui_views::spot::prepare_view(state, player_id, x, y)
             else {
                 return gui_view_effects(session_id, player_id, crate::game::GuiView::Close);
             };
-            if !crate::net::session::ui::spot::activate_window(state, player_id, x, y) {
+            if !crate::game::logic::gui_views::spot::activate_window(state, player_id, x, y) {
                 return CommandEffects::default();
             }
             gui_view_effects(session_id, player_id, crate::game::GuiView::Spot(view))
         }
         Some(crate::game::PackType::Storage) => {
-            let Some(view) = crate::net::session::ui::storage::prepare_view(state, player_id, x, y)
+            let Some(view) =
+                crate::game::logic::gui_views::storage::prepare_view(state, player_id, x, y)
             else {
                 return gui_view_effects(session_id, player_id, crate::game::GuiView::Close);
             };
-            if !crate::net::session::ui::storage::activate_window(state, player_id, x, y) {
+            if !crate::game::logic::gui_views::storage::activate_window(state, player_id, x, y) {
                 return CommandEffects::default();
             }
             gui_view_effects(session_id, player_id, crate::game::GuiView::Storage(view))

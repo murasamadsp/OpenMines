@@ -116,6 +116,31 @@ quality_run_docs() {
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo doc --no-deps --all-features
 }
 
+quality_run_feature_matrix() {
+  echo "==> Running cargo-hack feature matrix"
+  cargo hack check --feature-powerset --no-dev-deps
+}
+
+quality_run_dependency_shear() {
+  echo "==> Running cargo-shear (unused deps)"
+  cargo shear
+}
+
+quality_run_coverage() {
+  echo "==> Running cargo-llvm-cov"
+  cargo llvm-cov nextest --all-features --lcov --output-path lcov.info
+}
+
+quality_run_mutants() {
+  echo "==> Running cargo-mutants"
+  cargo mutants
+}
+
+quality_run_vet() {
+  echo "==> Running cargo-vet"
+  cargo vet
+}
+
 quality_run_fmod_events() {
   echo "==> Checking FMOD event bank contract"
   scripts/check-fmod-events.sh

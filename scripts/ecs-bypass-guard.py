@@ -12,8 +12,8 @@ PATTERNS = [
     re.compile(r"\bstate\s*\.\s*ecs\b"),
     re.compile(r"\bstate\s*\.\s*ecs_read_profiled\b"),
     re.compile(r"\bstate\s*\.\s*ecs_write_profiled\b"),
-    re.compile(r"\bquery_player\b"),
-    re.compile(r"\bmodify_player\b"),
+    re.compile(r"\bquery_player"),
+    re.compile(r"\bmodify_player"),
 ]
 
 def brace_delta(line: str) -> int:

@@ -132,15 +132,8 @@ crates/openmines-server/src/net/session/ui/horb.rs >>> state.modify_player(pid, 
 crates/openmines-server/src/net/session/ui/pack_command.rs >>> .query_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/programmer.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/programmer.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/spot.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/spot.rs >>> let (player_x, player_y, player_clan) = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/storage.rs >>> .modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let access = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let coords = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/storage.rs >>> state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> let (px, py, player_clan) = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> let ecs = state.ecs_read_profiled("gui.teleport_view");
 crates/openmines-server/src/net/session/ui/teleport.rs >>> let src_coords = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
