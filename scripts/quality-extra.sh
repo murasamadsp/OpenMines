@@ -55,7 +55,7 @@ case "${1:-}" in
     scripts/ub-audit.sh
     ;;
   arch)
-    scripts/arch-audit.sh
+    scripts/arch-guard.sh --report
     ;;
   outdated)
     quality_run_outdated_if_available

@@ -1,6 +1,6 @@
 # Tools Audit
 
-Дата актуализации: 2026-07-17 (rev 2).
+Дата актуализации: 2026-07-17 (rev 3).
 
 Цель: привести `scripts/` и `tools/` к понятному dev-контуру без удаления
 полезных отладочных инструментов вслепую.
@@ -20,18 +20,20 @@
 | `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
 | `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить как явный gate sound-трека; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
 | `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/deps/coverage/mutants/vet/fmod/arch/outdated/geiger/bloat/cache. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
-| `scripts/arch-guard.sh` | active | Static architecture gate. | Оставить в CI/full gate. |
-| `scripts/arch-audit.sh` | diagnostic | Read-only отчёт по архитектурным leakage. | Оставить как manual audit. |
+| `scripts/arch-guard.sh` | active | Static architecture gate + `--report` для read-only отчёта (впитывает `arch-audit.sh`). | Оставить в CI/full gate. |
+| `scripts/dev-server.sh` | active | Локальный Unity-dev сервер в `.local/`. Патчит конфиг inline (бывший `dev-patch-config.py` встроен). | Оставить. |
+| `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
+| `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
+| `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
+| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
 | `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`; `--prune` удаляет incremental cache и может замедлить следующий `cargo run`. | Оставить ручным; в pre-commit запускать только через `PRE_COMMIT_PRUNE_TARGET=1`. |
 | `scripts/build-client.sh` | explicit client task | Unity client compile gate. | Оставить; запускать только при client-задачах. |
 | `scripts/wipe-players.sh` | dangerous/dev | Деструктивный dev-вайп игроков из SQLite (players, programs, buildings, clans, clan_requests, chat_messages). | Требует отдельной проверки перед использованием. |
 | `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
-| `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures в сервере и sync-lock guard через `.await`. | Оставить в `arch-guard` и pre-commit. |
-| `scripts/ownership-audit-lock-guard.py` | active | Python-реализация guard-across-await детектора. Вызывается из `ownership-audit.sh`. | Оставить рядом с `ownership-audit.sh`. |
-| `scripts/ub-audit.sh` | active | Static Rust soundness guard: allowlist для `unsafe`, запрет raw pointer/FFI зон и adjacent atomics без padding в server hot structs. | Оставить в `arch-guard` и pre-commit. |
-| `scripts/ub-audit-unsafe.py` | active | Python-реализация unsafe allowlist checker. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
-| `scripts/ub-audit-atomics.py` | active | Python-реализация adjacent-atomics detector. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
+| `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures и sync-lock guard через `.await` (Python инлайн). | Оставить в `arch-guard` и pre-commit. |
+| `scripts/ub-audit.sh` | active | Static Rust soundness guard: allowlist для `unsafe`, запрет raw pointer/FFI зон и adjacent atomics без padding. Вызывает `ub-audit.py`. | Оставить в `arch-guard` и pre-commit. |
 | `scripts/ecs-bypass-guard.py` | active | ECS bypass baseline checker (генерация и проверка). Вызывается из `arch-guard.sh`. | Оставить. |
+| `scripts/ub-audit.py` | active | Python-реализация unsafe allowlist + adjacent atomics детекторов. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
 
 ## Rust Tools
 

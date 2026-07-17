@@ -19,9 +19,22 @@ LOG_FILTER="${M3R_DEV_LOG:-openmines_server=info,openmines_runtime=info,openmine
 mkdir -p "$CONFIG_DIR" "$STATE_DIR"
 ln -sfn "$ROOT/configs/cells.json" "$CONFIG_DIR/cells.json"
 ln -sfn "$ROOT/configs/buildings.json" "$CONFIG_DIR/buildings.json"
-python3 "$ROOT/scripts/dev-patch-config.py" \
-  "$ROOT/configs/config.json" "$CONFIG_DIR/config.json" \
-  "$PORT" "$WORLD_CHUNKS_W" "$WORLD_CHUNKS_H" "$LOG_FILTER"
+python3 - "$ROOT/configs/config.json" "$CONFIG_DIR/config.json" \
+  "$PORT" "$WORLD_CHUNKS_W" "$WORLD_CHUNKS_H" "$LOG_FILTER" <<'PYEOF'
+import json, sys
+src, dst, port, chunks_w, chunks_h, log_filter = sys.argv[1:]
+with open(src, encoding="utf-8") as f:
+    cfg = json.load(f)
+cfg["world_name"] = "local-dev"
+cfg["port"] = int(port)
+cfg["world_chunks_w"] = int(chunks_w)
+cfg["world_chunks_h"] = int(chunks_h)
+cfg["data_dir"] = "data"
+cfg["logging"] = {"filter": log_filter, "format": "compact", "file": None}
+with open(dst, "w", encoding="utf-8") as f:
+    json.dump(cfg, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PYEOF
 
 echo "==> OpenMines local dev server"
 echo "    root:      $ROOT"
