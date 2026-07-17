@@ -96,28 +96,6 @@ crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_playe
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, e| {
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> .modify_player(opid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> .modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let Some(cid) = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let c_info = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let gate_passed = state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let gate_passed = state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let gate_passed = state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let info = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let o_info = state.query_player_opt(opid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let pos = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let pos = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let pos = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let position = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let position = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let selected = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let selected = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> let selected = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/heal_inventory.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/horb.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/pack_command.rs >>> .query_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/programmer.rs >>> state.modify_player(pid, |ecs, entity| {

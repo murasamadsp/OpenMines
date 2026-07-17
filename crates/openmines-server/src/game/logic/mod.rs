@@ -10,6 +10,7 @@ pub mod dig_build;
 pub mod due;
 pub mod geology;
 pub mod gui_views;
+pub mod heal_inventory;
 pub mod healing;
 pub mod inventory;
 pub mod items;

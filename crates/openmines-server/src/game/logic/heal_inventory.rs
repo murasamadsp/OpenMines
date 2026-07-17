@@ -1,3 +1,16 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::significant_drop_tightening
+)]
 //! Лечение и инвентарь.
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
@@ -5,10 +18,20 @@ use crate::game::player::{
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::play::death::request_death;
-use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
 };
+
+use std::sync::Arc;
+use crate::game::buildings::{PackType, PackView};
+use crate::game::direction::dir_offset;
+use crate::game::{GameState, PlayerId};
+use crate::protocol::packets::{hb_gun_shot_fx, hb_hurt_fx, health, ok_message};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
+use crate::net::session::util::net_u16_nonneg;
+use crate::world::cells::cell_type;
+use crate::world::WorldProvider;
 
 // ─── Inventory ──────────────────────────────────────────────────────────────
 
@@ -803,10 +826,10 @@ pub fn use_c190(state: &Arc<GameState>, pid: PlayerId) -> bool {
                         return None;
                     }
                     // Check protection
-                    if let Some(cd) = ecs.get::<PlayerCooldowns>(entity) {
-                        if cd.protection_until.is_some_and(|u| now < u) {
-                            return None;
-                        }
+                    if let Some(cd) = ecs.get::<PlayerCooldowns>(entity)
+                        && cd.protection_until.is_some_and(|u| now < u)
+                    {
+                        return None;
                     }
                     // Health skill exp (C# Player.Hurt → AddExp("l"))
                     let skill_pkt =

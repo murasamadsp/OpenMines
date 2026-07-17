@@ -385,7 +385,7 @@ fn apply_inventory_use(
         return CommandEffects::default();
     };
     let mut effects = CommandEffects::default();
-    if crate::net::session::ui::heal_inventory::handle_inventory_use_sync_nonbuilding(
+    if crate::game::logic::heal_inventory::handle_inventory_use_sync_nonbuilding(
         state,
         &tx,
         player_id,
@@ -395,9 +395,9 @@ fn apply_inventory_use(
     ) {
         return effects;
     }
-    if let Some(placement) = crate::net::session::ui::heal_inventory::prepare_inventory_building_use(
-        state, &tx, player_id,
-    ) {
+    if let Some(placement) =
+        crate::game::logic::heal_inventory::prepare_inventory_building_use(state, &tx, player_id)
+    {
         spawn_inventory_building_insert_task(state, tx, placement);
     }
     effects

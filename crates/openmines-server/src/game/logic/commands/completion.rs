@@ -929,7 +929,7 @@ pub(super) fn apply_building_completion(
             let Some(tx) = state.sessions.outbox_for_session(session_id) else {
                 return effects;
             };
-            crate::net::session::ui::heal_inventory::apply_inventory_building_placed(
+            crate::game::logic::heal_inventory::apply_inventory_building_placed(
                 state, &tx, &placement, db_id,
             );
         }
