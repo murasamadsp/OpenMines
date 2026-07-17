@@ -3,7 +3,8 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd 
+"$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TARGET="$ROOT/target"
 MAX_SIZE_GIB="${OPENMINES_TARGET_MAX_GIB:-8}"
 

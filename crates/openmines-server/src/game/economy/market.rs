@@ -61,6 +61,182 @@ pub fn add_dob(state: &GameState, t: usize, dob: i64) {
     }
 }
 
+/// Результат продажи кристаллов.
+#[derive(Debug, Clone)]
+pub struct SellOutcome {
+    pub crystals: [i64; 6],
+    pub money: i64,
+    pub creds: i64,
+    pub earned: i64,
+}
+
+/// Результат покупки кристаллов.
+#[derive(Debug, Clone)]
+pub struct BuyOutcome {
+    pub crystals: [i64; 6],
+    pub money: i64,
+    pub creds: i64,
+    #[allow(dead_code)]
+    pub spent: i64,
+}
+
+/// Оценка прибыли от продажи всех кристаллов.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ProfitEstimate {
+    pub total: i64,
+    pub per_type: [i64; 6],
+}
+
+/// Продать кристаллы по слайдерам. Возвращает ошибку если игрок не найден.
+/// C# ref: `MarketSystem.Sell(sliders, p, m)`.
+#[allow(dead_code)]
+#[allow(clippy::significant_drop_tightening)]
+pub fn sell_crystals(
+    state: &GameState,
+    pid: crate::game::PlayerId,
+    sliders: &[i64; 6],
+) -> Option<SellOutcome> {
+    let entity = state.get_player_entity(pid)?;
+    let mut ecs = state.ecs_write_profiled("market.sell");
+
+    // Проверяем наличие PlayerFlags перед мутацией
+    ecs.get::<crate::game::player::PlayerFlags>(entity)?;
+
+    let (crystals_now, money_now, creds_now) = {
+        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        (pstats.crystals, pstats.money, pstats.creds)
+    };
+
+    let mut new_crystals = crystals_now;
+    let mut total_earned: i64 = 0;
+
+    for i in 0..6 {
+        let to_sell = sliders[i];
+        if to_sell <= 0 {
+            continue;
+        }
+        if new_crystals[i] >= to_sell {
+            let price = get_crystal_cost(state, i);
+            if let Some(earned) = to_sell.checked_mul(price) {
+                new_crystals[i] -= to_sell;
+                total_earned = total_earned.saturating_add(earned);
+            }
+        }
+    }
+
+    if total_earned <= 0 {
+        return None;
+    }
+
+    {
+        let mut pstats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        pstats.crystals = new_crystals;
+        pstats.money = pstats.money.saturating_add(total_earned);
+        let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+        flags.dirty = true;
+    }
+
+    Some(SellOutcome {
+        crystals: new_crystals,
+        money: money_now.saturating_add(total_earned),
+        creds: creds_now,
+        earned: total_earned,
+    })
+}
+
+/// Продать все кристаллы игрока.
+/// C# ref: `MarketSystem.Sell(p.crys.cry, p, m)`.
+#[allow(clippy::significant_drop_tightening)]
+pub fn sell_all_crystals(state: &GameState, pid: crate::game::PlayerId) -> Option<SellOutcome> {
+    let entity = state.get_player_entity(pid)?;
+    let sliders = {
+        let ecs = state.ecs_read_profiled("market.sellall");
+        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        pstats.crystals
+    };
+    sell_crystals(state, pid, &sliders)
+}
+
+/// Купить кристаллы по слайдерам.
+/// C# ref: `MarketSystem.Buy(sliders, p, m)`.
+#[allow(clippy::significant_drop_tightening)]
+pub fn buy_crystals(
+    state: &GameState,
+    pid: crate::game::PlayerId,
+    sliders: &[i64; 6],
+) -> Option<BuyOutcome> {
+    let entity = state.get_player_entity(pid)?;
+    let mut ecs = state.ecs_write_profiled("market.buy");
+
+    // Проверяем наличие PlayerFlags перед мутацией
+    ecs.get::<crate::game::player::PlayerFlags>(entity)?;
+
+    let (crystals_now, money_now, creds_now) = {
+        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        (pstats.crystals, pstats.money, pstats.creds)
+    };
+
+    let mut new_crystals = crystals_now;
+    let mut total_spent: i64 = 0;
+
+    for i in 0..6 {
+        let to_buy = sliders[i];
+        if to_buy <= 0 {
+            continue;
+        }
+        let price = get_crystal_buy_price(state, i);
+        let cost = to_buy.checked_mul(price)?;
+        if money_now.saturating_sub(total_spent) >= cost {
+            new_crystals[i] += to_buy;
+            total_spent = total_spent.saturating_add(cost);
+        }
+    }
+
+    if total_spent <= 0 {
+        return None;
+    }
+
+    {
+        let mut pstats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+        pstats.crystals = new_crystals;
+        pstats.money = pstats.money.saturating_sub(total_spent);
+        let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+        flags.dirty = true;
+    }
+
+    Some(BuyOutcome {
+        crystals: new_crystals,
+        money: money_now.saturating_sub(total_spent),
+        creds: creds_now,
+        spent: total_spent,
+    })
+}
+
+/// Рассчитать прибыль от продажи всех кристаллов.
+#[allow(dead_code)]
+#[allow(clippy::significant_drop_tightening)]
+pub fn estimate_profit(state: &GameState, pid: crate::game::PlayerId) -> Option<ProfitEstimate> {
+    let entity = state.get_player_entity(pid)?;
+    let crystals = {
+        let ecs = state.ecs_read_profiled("market.profit");
+        let pstats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+        pstats.crystals
+    };
+
+    let mut per_type = [0_i64; 6];
+    let mut total = 0_i64;
+
+    for i in 0..6 {
+        let price = get_crystal_cost(state, i);
+        let earned = crystals[i].checked_mul(price).unwrap_or(0);
+        per_type[i] = earned;
+        total = total.saturating_add(earned);
+    }
+
+    Some(ProfitEstimate { total, per_type })
+}
+
 /// Ежечасный пересчёт цен (C# `World.Update` блок `lastcryupdate`).
 /// p = (summary\[i\] + Σsummary) / 100; p>20 → mod−1 (пока mod>0); p<10 → mod+1 (пока cost<70).
 pub fn tick_crystal_prices(state: &GameState) {

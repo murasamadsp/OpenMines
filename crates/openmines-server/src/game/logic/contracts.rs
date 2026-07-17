@@ -427,6 +427,20 @@ pub enum PlayerCommand {
         program_name: String,
         source: String,
     },
+    /// Sell crystals at market.
+    MarketSell {
+        sliders: [i64; 6],
+        building_x: i32,
+        building_y: i32,
+    },
+    /// Sell all crystals at market.
+    MarketSellAll { building_x: i32, building_y: i32 },
+    /// Buy crystals at market.
+    MarketBuy {
+        sliders: [i64; 6],
+        building_x: i32,
+        building_y: i32,
+    },
     /// Known TY event that does not mutate gameplay state.
     KnownNoopTy { event: String, payload: Bytes },
 }
@@ -615,6 +629,9 @@ impl PlayerCommand {
             Self::RemovePack { .. } => "remove_pack",
             Self::ApplyProgramEditorOpen { .. } => "apply_program_editor_open",
             Self::ApplyProgramEditorRename { .. } => "apply_program_editor_rename",
+            Self::MarketSell { .. } => "market_sell",
+            Self::MarketSellAll { .. } => "market_sell_all",
+            Self::MarketBuy { .. } => "market_buy",
             Self::KnownNoopTy { .. } => "known_noop_ty",
         }
     }

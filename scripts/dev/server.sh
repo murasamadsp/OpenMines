@@ -5,7 +5,8 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd 
+"$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK_DIR="$ROOT/.local/openmines-dev"
 CONFIG_DIR="$WORK_DIR/configs"
 STATE_DIR="$WORK_DIR/data"

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="$ROOT/target/debug/openmines-server"
 RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openmines-dev-smoke.XXXXXX")"
 WORK_DIR="$RUN_DIR/work"

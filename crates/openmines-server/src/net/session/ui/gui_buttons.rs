@@ -1464,7 +1464,7 @@ use super::teleport::apply as handle_teleport_action;
 
 /// Open Market GUI with tabs (1:1 with C# `Market.GUIWin`).
 /// `active_tab` is one of: "sellcrys", "buycrys", "auc".
-fn open_market_gui(
+pub fn open_market_gui(
     state: &Arc<GameState>,
     tx: &Outbox,
     pid: PlayerId,
@@ -1665,18 +1665,33 @@ fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
         return;
     }
 
-    // Get player's full crystal array
-    let player_crys = state.query_player_opt(pid, |ecs, entity| {
-        ecs.get::<PlayerStats>(entity).map(|s| s.crystals)
-    });
-    let Some(player_crys) = player_crys else {
-        tracing::error!(player_id = %pid, "Player stats missing for market sellall");
+    let Some(outcome) = crate::game::economy::market::sell_all_crystals(state, pid) else {
+        tracing::error!(player_id = %pid, "Market sellall failed");
         send_market_action_error(tx);
         return;
     };
 
-    let sliders: Vec<i64> = player_crys.to_vec();
-    do_market_sell(state, tx, pid, &sliders, bx, by);
+    // Обновить moneyinside в здании
+    if let Some(building_entity) = state.building_entity_at(bx, by) {
+        let mut ecs = state.ecs_write_profiled("market.sellall_building");
+        if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) {
+            storage.money += outcome.earned / 10;
+        }
+        if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(building_entity) {
+            flags.dirty = true;
+        }
+        drop(ecs);
+        state.mark_building_dirty(building_entity);
+    }
+
+    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
+    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
+
+    // Re-render sell tab
+    let Some(view) = state.get_pack_at(bx, by) else {
+        return;
+    };
+    open_market_gui(state, tx, pid, &view, "sellcrys");
 }
 
 /// Common sell logic (used by sell and sellall).
@@ -1691,81 +1706,44 @@ fn do_market_sell(
     bx: i32,
     by: i32,
 ) {
-    let Some(player_entity) = state.get_player_entity(pid) else {
-        tracing::error!(player_id = %pid, "Player entity missing for market sell");
-        send_market_action_error(tx);
-        return;
-    };
-    let Some(building_entity) = state.building_entity_at(bx, by) else {
-        tracing::error!(x = bx, y = by, "Market building entity missing for sell");
-        send_market_action_error(tx);
-        return;
-    };
-
-    let sell_result = 'sell: {
-        let mut ecs = state.ecs_write_profiled("gui.market_sell");
-        if ecs.get::<PlayerStats>(player_entity).is_none()
-            || ecs.get::<PlayerFlags>(player_entity).is_none()
+    // Проверить состояние здания до мутации
+    if let Some(building_entity) = state.building_entity_at(bx, by) {
+        let ecs = state.ecs_read_profiled("market.sell_check");
+        if ecs.get::<BuildingFlags>(building_entity).is_none()
             || ecs.get::<BuildingStorage>(building_entity).is_none()
-            || ecs.get::<BuildingFlags>(building_entity).is_none()
         {
-            break 'sell None;
+            send_market_state_error(tx);
+            return;
         }
+    } else {
+        send_market_state_error(tx);
+        return;
+    }
 
-        let mut total_money: i64 = 0;
-        let Some((crystals, money_now, creds_now)) = ({
-            let Some(mut pstats) = ecs.get_mut::<PlayerStats>(player_entity) else {
-                break 'sell None;
-            };
-            for i in 0..6 {
-                let to_sell = sliders[i];
-                if to_sell <= 0 {
-                    continue;
-                }
-                // C# RemoveCrys: only succeeds if player has enough.
-                if pstats.crystals[i] >= to_sell {
-                    let price = market::get_crystal_cost(state, i);
-                    let Some(earned) = to_sell.checked_mul(price) else {
-                        continue;
-                    };
-                    pstats.crystals[i] -= to_sell;
-                    total_money = total_money.saturating_add(earned);
-                }
-            }
-            pstats.money = pstats.money.saturating_add(total_money);
-            Some((pstats.crystals, pstats.money, pstats.creds))
-        }) else {
-            break 'sell None;
-        };
+    let sliders_array: [i64; 6] = sliders.try_into().unwrap_or([0; 6]);
 
-        if total_money > 0 {
-            let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) else {
-                break 'sell None;
-            };
-            storage.money += total_money / 10;
-            let mut flags = ecs
-                .get_mut::<BuildingFlags>(building_entity)
-                .expect("BuildingFlags checked before market sell mutation");
-            flags.dirty = true;
-            let mut flags = ecs
-                .get_mut::<PlayerFlags>(player_entity)
-                .expect("PlayerFlags checked before market sell mutation");
-            flags.dirty = true;
-        }
-
-        Some((crystals, money_now, creds_now, total_money > 0))
-    };
-    let Some((crystals, money_now, creds_now, building_changed)) = sell_result else {
-        tracing::error!(player_id = %pid, x = bx, y = by, "Market sell failed before mutation");
+    let Some(outcome) = crate::game::economy::market::sell_crystals(state, pid, &sliders_array)
+    else {
+        tracing::error!(player_id = %pid, x = bx, y = by, "Market sell failed");
         send_market_state_error(tx);
         return;
     };
-    if building_changed {
-        assert!(state.mark_building_dirty(building_entity));
+
+    // Обновить moneyinside в здании
+    if let Some(building_entity) = state.building_entity_at(bx, by) {
+        let mut ecs = state.ecs_write_profiled("market.sell_building");
+        if let Some(mut storage) = ecs.get_mut::<BuildingStorage>(building_entity) {
+            storage.money += outcome.earned / 10;
+        }
+        if let Some(mut flags) = ecs.get_mut::<BuildingFlags>(building_entity) {
+            flags.dirty = true;
+        }
+        drop(ecs);
+        state.mark_building_dirty(building_entity);
     }
 
-    send_u_packet(tx, "@B", &basket(&crystals, 1).1);
-    send_u_packet(tx, "P$", &money(money_now, creds_now).1);
+    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
+    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
 
     // Re-render sell tab with updated crystal counts
     let Some(view) = state.get_pack_at(bx, by) else {
@@ -1791,51 +1769,14 @@ fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_
         return;
     }
 
-    // Buy crystals: deduct money, add crystals
-    // C# ref: for each i: if sliders[i] > 0 && player can afford -> deduct money, add crystals
-    let bought = state
-        .modify_player(pid, |ecs, entity| {
-            if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
-            {
-                send_market_state_error(tx);
-                return Some(false);
-            }
-            let (crystals, money_now, creds_now) = {
-                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-                for i in 0..6 {
-                    let to_buy = sliders[i];
-                    if to_buy <= 0 {
-                        continue;
-                    }
-                    // checked_mul: protect against overflow in release mode (wrapping mul could yield
-                    // negative cost, bypassing the affordability check and granting free crystals/money).
-                    let Some(cost) = to_buy.checked_mul(market::get_crystal_buy_price(state, i))
-                    else {
-                        continue;
-                    };
-                    // C# ref: if p.money - (sliders[i] * World.GetCrysCost(i) * 10) < 0 continue
-                    if pstats.money < cost {
-                        continue;
-                    }
-                    pstats.money -= cost;
-                    pstats.crystals[i] = pstats.crystals[i].saturating_add(to_buy);
-                }
-                (pstats.crystals, pstats.money, pstats.creds)
-            };
-            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-            f.dirty = true;
-            send_u_packet(tx, "@B", &basket(&crystals, 1).1);
-            send_u_packet(tx, "P$", &money(money_now, creds_now).1);
-            Some(true)
-        })
-        .flatten();
-    let Some(bought) = bought else {
+    let Some(outcome) = crate::game::economy::market::buy_crystals(state, pid, &sliders) else {
+        tracing::error!(player_id = %pid, x = bx, y = by, "Market buy failed");
         send_market_state_error(tx);
         return;
     };
-    if !bought {
-        return;
-    }
+
+    send_u_packet(tx, "@B", &basket(&outcome.crystals, 1).1);
+    send_u_packet(tx, "P$", &money(outcome.money, outcome.creds).1);
 
     // Re-render buy tab with updated money
     open_market_gui(state, tx, pid, &view, "buycrys");

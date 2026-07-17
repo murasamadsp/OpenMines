@@ -3,9 +3,9 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/quality-common.sh
-source "$ROOT_DIR/scripts/quality-common.sh"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/quality/common.sh
+source "$ROOT_DIR/scripts/quality/common.sh"
 
 usage() {
   cat <<EOF
@@ -52,10 +52,10 @@ case "${1:-}" in
     quality_run_fmod_events
     ;;
   ub)
-    scripts/ub-audit.sh
+    scripts/guards/soundness.sh
     ;;
   arch)
-    scripts/arch-guard.sh --report
+    scripts/guards/arch.sh --report
     ;;
   outdated)
     quality_run_outdated_if_available

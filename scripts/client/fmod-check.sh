@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd 
+"$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 bank="${1:-$root/client/Assets/StreamingAssets/Master.strings.bank}"
 sound_manager="$root/client/Assets/Scripts/Utility/SoundManager.cs"
 manifest="$root/docs/reference/FMOD_EVENTS.txt"

@@ -43,7 +43,7 @@
   клиента: сервер обязан воспроизвести ожидаемый wire и поведение.
 - **ИСХОДНИК КЛИЕНТА НЕ ЗАМОРОЖЕН.** `client/` — декомпилированный Unity-проект под собственным вложенным git-репо (без remote, на origin не уходит). Его МОЖНО рефакторить по явному запросу. Wire-формат при этом неизменен (клиент legacy). Любое изменение `client/` верифицируется компиляцией: Roslyn против Unity 6000.3.17f1 DLL, 0 ошибок — обязательное условие.
 - **НЕ ТРОГАТЬ** `bin`, `obj`. `target/` — Cargo build cache: исходники туда не
-  класть, но чистить можно через `scripts/target-cache.sh --prune` или `--clean`.
+  класть, но чистить можно через `scripts/quality/target-cache.sh --prune` или `--clean`.
 - **ЕДИНАЯ ВЕТКА (РАБОТАЕМ ТОЛЬКО В МЕЙНЕ)** — работать только в локальном `main` и `origin/main`. Не создавать новые git-ветки, worktree, fork-ветки или временные branch-based потоки без прямой явной просьбы пользователя. Запрещены `git switch -c`, `git checkout -b`, `git branch <name>` и аналоги. Если внешний инструмент уже создал лишние ветки — не использовать их; после завершения всех правок и отдельного подтверждения пользователя удалить все локальные и remote-ветки, кроме локального `main`, `origin/main` и служебного `origin/HEAD`.
 - **ЗАПРЕЩАЮ СПИХИВАТЬ НА НЕ ЗАДЕПЛОЕН** — все фичи, доработки и баги должны реализовываться и фикситься локально в кодовой базе. Запрещено оправдывать неработающий функционал или отказы фразами в духе «это ещё не задеплоено на сервер» или «на проде это не проверить».
 - **КОММИТИТЬ ВСЁ.** Перед коммитом — `git status`. Если есть untracked или modified файлы относящиеся к задаче (включая `.Codex/`, конфиги, документацию) — включить в тот же коммит. Не оставлять ничего незакоммиченным после завершения задачи.
@@ -174,9 +174,9 @@ OpenMines — MMORPG sandbox-майнинг игра завязанная на �
 
 ```bash
 cargo build --release
-scripts/dev-run.sh                            # быстрый локальный запуск с явным dev-token
-scripts/dev-server.sh                         # локальный Unity-dev: quiet logs, isolated .local state
-scripts/dev-smoke.sh                          # быстрый wire smoke без Unity/VPS
+scripts/dev/run.sh                            # быстрый локальный запуск с явным dev-token
+scripts/dev/server.sh                         # локальный Unity-dev: quiet logs, isolated .local state
+scripts/dev/smoke.sh                          # быстрый wire smoke без Unity/VPS
 cargo test --all-targets --all-features
 cargo test <test_name> -- --nocapture          # один тест
 cargo test -p openmines-protocol --all-features # wire/golden-тесты протокола
@@ -184,7 +184,7 @@ cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W 
 cargo fmt --all
 ```
 
-Регенерация мира: `scripts/dev-run.sh --regen` или `M3R_REGEN_WORLD=1 scripts/dev-run.sh`
+Регенерация мира: `scripts/dev/run.sh --regen` или `M3R_REGEN_WORLD=1 scripts/dev/run.sh`
 
 Конфиг: `configs/config.json` обязателен. Отсутствующий или неполный конфиг — ошибка старта, автогенерации дефолтов нет. Порт берётся из конфига или явного `--port`/`M3R_PORT`.
 

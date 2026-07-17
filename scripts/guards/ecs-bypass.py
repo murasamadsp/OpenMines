@@ -3,7 +3,7 @@ import sys
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 NET_DIR = ROOT / "crates/openmines-server/src/net"
 BASELINE_PATH = ROOT / "docs/reference/ecs_bypass_baseline.txt"
 

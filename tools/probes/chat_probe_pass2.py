@@ -19,6 +19,8 @@
 import argparse, hashlib, json, os, sys, time
 from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(__file__))
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from om_net import OpenMinesClient, frame, ty
 
 CREDS = os.path.join(os.path.dirname(__file__), ".repro_creds.json")

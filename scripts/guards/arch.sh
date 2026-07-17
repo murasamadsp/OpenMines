@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Static architecture guard for runtime layering.
+# Static architecture gate + --report для read-only отчёта.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 fail=0
@@ -77,9 +77,9 @@ if rg -n '"COCK"|"http://pi\.door/"' crates/openmines-server/src --glob '*.rs' \
 fi
 
 echo "==> Checking ECS bypass baseline"
-python3 scripts/ecs-bypass-guard.py --check || fail=1
+python3 scripts/guards/ecs-bypass.py --check || fail=1
 
-scripts/ownership-audit.sh || fail=1
-scripts/ub-audit.sh || fail=1
+scripts/guards/ownership.sh || fail=1
+scripts/guards/soundness.sh || fail=1
 
 exit "$fail"

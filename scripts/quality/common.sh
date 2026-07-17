@@ -34,12 +34,12 @@ quality_run_doctor() {
 
 quality_run_arch_guard() {
   echo "==> Running architecture guard"
-  scripts/arch-guard.sh
+  scripts/guards/arch.sh
 }
 
 quality_run_tools_audit() {
   echo "==> Running tools hygiene audit"
-  scripts/tools-audit.sh
+  scripts/guards/hygiene.sh
 }
 
 quality_run_deny_if_available() {
@@ -103,12 +103,12 @@ quality_run_tests() {
 
 quality_run_wire_smoke() {
   echo "==> Running local wire smoke"
-  scripts/dev-smoke.sh
+  scripts/dev/smoke.sh
 }
 
 quality_prune_target_cache() {
   echo "==> Pruning Cargo target cache"
-  scripts/target-cache.sh --prune
+  scripts/quality/target-cache.sh --prune
 }
 
 quality_run_docs() {
@@ -143,5 +143,5 @@ quality_run_vet() {
 
 quality_run_fmod_events() {
   echo "==> Checking FMOD event bank contract"
-  scripts/check-fmod-events.sh
+  scripts/client/fmod-check.sh
 }

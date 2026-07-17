@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/quality-common.sh
-source "$ROOT_DIR/scripts/quality-common.sh"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/quality/common.sh
+source "$ROOT_DIR/scripts/quality/common.sh"
 
 quality_run_rustfmt_check
 quality_run_arch_guard

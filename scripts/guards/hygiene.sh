@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 fail=0
@@ -20,7 +20,7 @@ err() {
 tracked_shell_tools() {
   {
     [[ -e ".githooks/pre-commit" ]] && printf '%s\n' ".githooks/pre-commit"
-    find scripts -maxdepth 1 -type f -name '*.sh' | sort
+    find scripts -type f -name '*.sh' | sort
   }
 }
 
@@ -61,7 +61,7 @@ else
     if ! rg -Fq "\`$path\`" "$registry"; then
       warn "tracked tool is missing from $registry: $path"
     fi
-  done < <(git ls-files 'tools/*.py' 'tools/requirements.txt' 'crates/openmines-loadtest/Cargo.toml' 'crates/openmines-proxy/Cargo.toml')
+  done < <(git ls-files 'tools/**/*.py' 'tools/requirements.txt' 'crates/openmines-loadtest/Cargo.toml' 'crates/openmines-proxy/Cargo.toml')
 fi
 
 echo "==> Checking tracked generated Python artifacts"

@@ -165,6 +165,24 @@ pub fn apply_queued_player_command_with_due(
         PlayerCommand::RemovePack { remove } => {
             completion::apply_remove_pack(state, remove, sequence)
         }
+        PlayerCommand::MarketSell {
+            sliders,
+            building_x,
+            building_y,
+        } => apply_market_sell(
+            state, player_id, session_id, &sliders, building_x, building_y,
+        ),
+        PlayerCommand::MarketSellAll {
+            building_x,
+            building_y,
+        } => apply_market_sell_all(state, player_id, session_id, building_x, building_y),
+        PlayerCommand::MarketBuy {
+            sliders,
+            building_x,
+            building_y,
+        } => apply_market_buy(
+            state, player_id, session_id, &sliders, building_x, building_y,
+        ),
         PlayerCommand::KnownNoopTy { event, payload } => {
             if let Some(tx) = state.player_sender(player_id) {
                 handle_known_noop_ty(&tx, player_id, &event, &payload);
@@ -1014,6 +1032,148 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
             );
         }
     }
+    effects
+}
+
+fn apply_market_sell(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    sliders: &[i64; 6],
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let effects = CommandEffects::default();
+    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
+        return effects;
+    };
+
+    // Обновить moneyinside в здании рынка
+    if let (Some(building_entity), Some(outcome)) = (
+        state.building_entity_at(building_x, building_y),
+        crate::game::economy::market::sell_crystals(state, player_id, sliders),
+    ) {
+        // Обновить moneyinside в здании
+        {
+            let mut ecs = state.ecs_write_profiled("market.sell_building");
+            if let Some(mut storage) =
+                ecs.get_mut::<crate::game::buildings::BuildingStorage>(building_entity)
+            {
+                storage.money += outcome.earned / 10;
+            }
+            if let Some(mut flags) =
+                ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+            {
+                flags.dirty = true;
+            }
+        }
+
+        // Отправить wire ответы
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "@B",
+            &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+        );
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "P$",
+            &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+        );
+
+        // Перерисовать GUI рынка
+        if let Some(view) = state.get_pack_at(building_x, building_y) {
+            crate::net::session::ui::gui_buttons::open_market_gui(
+                state, &tx, player_id, &view, "sellcrys",
+            );
+        }
+    }
+
+    effects
+}
+
+fn apply_market_sell_all(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let effects = CommandEffects::default();
+    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
+        return effects;
+    };
+
+    if let (Some(building_entity), Some(outcome)) = (
+        state.building_entity_at(building_x, building_y),
+        crate::game::economy::market::sell_all_crystals(state, player_id),
+    ) {
+        {
+            let mut ecs = state.ecs_write_profiled("market.sell_all_building");
+            if let Some(mut storage) =
+                ecs.get_mut::<crate::game::buildings::BuildingStorage>(building_entity)
+            {
+                storage.money += outcome.earned / 10;
+            }
+            if let Some(mut flags) =
+                ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+            {
+                flags.dirty = true;
+            }
+        }
+
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "@B",
+            &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+        );
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "P$",
+            &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+        );
+
+        if let Some(view) = state.get_pack_at(building_x, building_y) {
+            crate::net::session::ui::gui_buttons::open_market_gui(
+                state, &tx, player_id, &view, "sellcrys",
+            );
+        }
+    }
+
+    effects
+}
+
+fn apply_market_buy(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    sliders: &[i64; 6],
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let effects = CommandEffects::default();
+    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
+        return effects;
+    };
+
+    if let Some(outcome) = crate::game::economy::market::buy_crystals(state, player_id, sliders) {
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "@B",
+            &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+        );
+        crate::net::session::wire::send_u_packet(
+            &tx,
+            "P$",
+            &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+        );
+
+        if let Some(view) = state.get_pack_at(building_x, building_y) {
+            crate::net::session::ui::gui_buttons::open_market_gui(
+                state, &tx, player_id, &view, "buycrys",
+            );
+        }
+    }
+
     effects
 }
 

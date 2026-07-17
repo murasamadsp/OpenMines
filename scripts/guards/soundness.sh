@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 echo "==> Checking raw pointer / UnsafeCell / PhantomData / FFI boundaries"
@@ -12,4 +12,4 @@ if rg -n 'UnsafeCell|PhantomData|NonNull|MaybeUninit|ManuallyDrop|\*mut\s|\*cons
   exit 1
 fi
 
-python3 scripts/ub-audit.py
+python3 scripts/guards/soundness.py

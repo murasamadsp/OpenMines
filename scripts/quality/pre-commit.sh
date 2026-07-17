@@ -11,9 +11,9 @@ _abort() {
 }
 trap '_abort' SIGTERM SIGINT SIGHUP
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/quality-common.sh
-source "$ROOT_DIR/scripts/quality-common.sh"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/quality/common.sh
+source "$ROOT_DIR/scripts/quality/common.sh"
 
 quality_run_rustfmt_apply_staged
 quality_run_rustfmt_check

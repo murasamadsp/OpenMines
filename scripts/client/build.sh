@@ -9,7 +9,8 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd 
+"$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CLIENT_DIR="$ROOT_DIR/client"
 VERSION_FILE="$CLIENT_DIR/ProjectSettings/ProjectVersion.txt"
 OUT_ROOT="${CLIENT_BUILD_ROOT:-$ROOT_DIR/client-builds}"

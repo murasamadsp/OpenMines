@@ -1,64 +1,94 @@
 # Tools Audit
 
-Дата актуализации: 2026-07-17 (rev 3).
+Дата актуализации: 2026-07-17 (rev 4).
 
 Цель: привести `scripts/` и `tools/` к понятному dev-контуру без удаления
 полезных отладочных инструментов вслепую.
 
 ## Scripts
 
-| Файл | Статус | Назначение | Действие |
-|---|---|---|---|
-| `scripts/pre-commit.sh` | active | Единый tracked pre-commit pipeline. | Оставить. |
-| `.githooks/pre-commit` | active wrapper | Единственный Git hook entrypoint через `core.hooksPath=.githooks`. | Оставить. |
-| `scripts/quality-common.sh` | active | Общие quality steps для pre-commit/CI/manual tools. | Оставить, держать DRY. |
-| `scripts/ci-quality.sh` | active | CI/full quality gate. | Оставить. |
-| `scripts/bootstrap-quality.sh` | active | Первичная установка cargo tooling и hooksPath. | Оставить. |
-| `scripts/dev-server.sh` | active | Локальный Unity-dev сервер в `.local/`. | Оставить. |
-| `scripts/dev-patch-config.py` | active | Патчит `configs/config.json` для локального dev-окружения (порт, chunks, log filter). Вызывается из `dev-server.sh`. | Оставить. |
-| `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
-| `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
-| `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить как явный gate sound-трека; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
-| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки: nextest/features/deps/coverage/mutants/vet/fmod/arch/outdated/geiger/bloat/cache. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
-| `scripts/arch-guard.sh` | active | Static architecture gate + `--report` для read-only отчёта (впитывает `arch-audit.sh`). | Оставить в CI/full gate. |
-| `scripts/dev-server.sh` | active | Локальный Unity-dev сервер в `.local/`. Патчит конфиг inline (бывший `dev-patch-config.py` встроен). | Оставить. |
-| `scripts/dev-smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. | Оставить. |
-| `scripts/dev-run.sh` | active | Упрощённый `cargo run` с optional `sccache`. | Оставить. |
-| `scripts/check-fmod-events.sh` | active manual | Проверяет, что FMOD bank содержит все `event:/...` из `docs/reference/FMOD_EVENTS.txt`, и что они есть в `SoundManager.cs`. | Оставить; вызывается через `scripts/quality-extra.sh fmod` и `PRE_COMMIT_EXTENDED=1`. |
-| `scripts/quality-extra.sh` | active manual | Тяжёлые/ручные проверки. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. | Оставить; `fmod` пока ожидаемо падает до сборки настоящих FMOD events. |
-| `scripts/target-cache.sh` | dangerous/manual | Показывает или удаляет `target/`; `--prune` удаляет incremental cache и может замедлить следующий `cargo run`. | Оставить ручным; в pre-commit запускать только через `PRE_COMMIT_PRUNE_TARGET=1`. |
-| `scripts/build-client.sh` | explicit client task | Unity client compile gate. | Оставить; запускать только при client-задачах. |
-| `scripts/wipe-players.sh` | dangerous/dev | Деструктивный dev-вайп игроков из SQLite (players, programs, buildings, clans, clan_requests, chat_messages). | Требует отдельной проверки перед использованием. |
-| `scripts/tools-audit.sh` | active | Read-only hygiene guard для scripts/tools. | Оставить в CI/full gate. |
-| `scripts/ownership-audit.sh` | active | Static Rust ownership/cancellation guard: запрещает `async_trait`, boxed futures и sync-lock guard через `.await` (Python инлайн). | Оставить в `arch-guard` и pre-commit. |
-| `scripts/ub-audit.sh` | active | Static Rust soundness guard: allowlist для `unsafe`, запрет raw pointer/FFI зон и adjacent atomics без padding. Вызывает `ub-audit.py`. | Оставить в `arch-guard` и pre-commit. |
-| `scripts/ecs-bypass-guard.py` | active | ECS bypass baseline checker (генерация и проверка). Вызывается из `arch-guard.sh`. | Оставить. |
-| `scripts/ub-audit.py` | active | Python-реализация unsafe allowlist + adjacent atomics детекторов. Вызывается из `ub-audit.sh`. | Оставить рядом с `ub-audit.sh`. |
+Структура: `scripts/<группа>/<имя>`.
+
+### `scripts/dev/` — локальный dev-loop
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `scripts/dev/run.sh` | active | `cargo run` + sccache + dev-token. Основной локальный запуск. |
+| `scripts/dev/server.sh` | active | Изолированный Unity-dev контур в `.local/`. Патчит конфиг inline. |
+| `scripts/dev/smoke.sh` | active | Быстрый local wire smoke без Unity/VPS. |
+| `scripts/dev/wipe-players.sh` | dangerous/dev | Деструктивный dev-вайп (players, programs, buildings, clans, clan_requests, chat_messages). Требует `--yes`. |
+
+### `scripts/quality/` — quality gate
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `.githooks/pre-commit` | active wrapper | Git hook entrypoint через `core.hooksPath=.githooks`. Вызывает `scripts/quality/pre-commit.sh`. |
+| `scripts/quality/pre-commit.sh` | active | Единый tracked pre-commit pipeline. |
+| `scripts/quality/ci.sh` | active | CI/full quality gate. |
+| `scripts/quality/common.sh` | active | Shared функции для pre-commit/CI/manual tools. **Ядро.** |
+| `scripts/quality/extra.sh` | active manual | Тяжёлые/ручные проверки. Субкоманды: `test features deps coverage mutants vet fmod ub arch outdated geiger bloat cache stop-cache`. |
+| `scripts/quality/bootstrap.sh` | active | Одноразовая установка cargo tooling + hooksPath. |
+| `scripts/quality/target-cache.sh` | dangerous/manual | Inspect/prune Cargo `target/`. `--prune` удаляет incremental cache. |
+
+### `scripts/guards/` — static guards (вызываются из quality gate)
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `scripts/guards/arch.sh` | active | Architecture fail-fast gate + `--report` для read-only отчёта. |
+| `scripts/guards/ownership.sh` | active | Rust ownership guard: `async_trait`, boxed futures, sync-lock через `.await` (Python heredoc). |
+| `scripts/guards/soundness.sh` | active | Rust soundness guard: unsafe allowlist, raw pointer/FFI, adjacent atomics. |
+| `scripts/guards/hygiene.sh` | active | Hygiene guard: git hook topology, exec bits, registry coverage. |
+| `scripts/guards/ecs-bypass.py` | active | ECS bypass baseline checker. Вызывается из `guards/arch.sh`. |
+| `scripts/guards/soundness.py` | active | Python: unsafe allowlist + adjacent atomics detector. Вызывается из `guards/soundness.sh`. |
+
+### `scripts/client/` — клиентские задачи
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `scripts/client/build.sh` | explicit client task | Headless Unity build (Win64/macOS). |
+| `scripts/client/fmod-check.sh` | active manual | FMOD bank contract check. Вызывается через `scripts/quality/extra.sh fmod`. |
 
 ## Rust Tools
 
-| Файл | Статус | Назначение | Действие |
-|---|---|---|---|
-| `crates/openmines-loadtest` | active | Rust loadtest crate. | Оставить. |
-| `crates/openmines-loadtest/Cargo.toml` | active | Manifest Rust loadtest crate. | Оставить. |
-| `crates/openmines-proxy` | active | Rust proxy crate. | Оставить. |
-| `crates/openmines-proxy/Cargo.toml` | active | Manifest Rust proxy crate. | Оставить. |
-| `tools/proxy_smoke.py` | active | E2E smoke для proxy restart/replay. | Оставить. |
+| Файл | Статус | Назначение |
+|---|---|---|
+| `crates/openmines-loadtest/Cargo.toml` | active | Manifest Rust loadtest crate. |
+| `crates/openmines-proxy/Cargo.toml` | active | Manifest Rust proxy crate. |
 
-## Python Diagnostics
+## Python Tools
 
-| Файл | Статус | Назначение | Действие |
-|---|---|---|---|
-| `tools/mapdump.py` | active diagnostic | Read-only dump `_v2.map`. | Оставить. |
-| `tools/ui_layout_audit.py` | active diagnostic | Read-only Unity UI layout audit. | Оставить. |
-| `tools/repro_freeze.py` | live repro | TCP repro фриза через auth/keepalive/move/dig. | Оставить, требует локальных creds. |
-| `tools/sim_players.py` | live load repro | Multi-player TCP simulator. | Оставить, требует локальных creds. |
-| `tools/chat_probe.py` | live probe | FED/chat wire probe. | Оставить, требует локальных creds. |
-| `tools/chat_probe_pass2.py` | live probe | Chat persistence pass-2 probe. | Оставить, требует local ref/cache. |
-| `tools/download_fodinae.py` | reference fetch | Скачивает JS reference assets. | Manual only; не pre-commit. |
-| `tools/tg_parser.py` | external data tool | Telegram parser. | Под вопросом: не игровой dev-loop, требует секреты/session. |
-| `tools/om_net.py` | active | Shared Python network utilities. | Оставить. |
-| `tools/requirements.txt` | active | Python deps (`telethon`). | Оставить пока есть `tg_parser.py`. |
+Структура: `tools/<группа>/<имя>` + shared lib в корне `tools/`.
+
+### `tools/` (корень) — shared
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `tools/om_net.py` | active | Shared Python сетевые утилиты. Импортируется из `tools/probes/`. |
+| `tools/requirements.txt` | active | Python deps (`telethon`). |
+
+### `tools/probes/` — живые TCP-репро (требуют creds)
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `tools/probes/chat_probe.py` | live probe | FED/chat wire probe. |
+| `tools/probes/chat_probe_pass2.py` | live probe | Chat persistence pass-2 probe. |
+| `tools/probes/repro_freeze.py` | live repro | TCP repro фриза через auth/keepalive/move/dig. |
+| `tools/probes/sim_players.py` | live load repro | Multi-player TCP simulator. |
+| `tools/probes/proxy_smoke.py` | active | E2E smoke для proxy restart/replay. |
+
+### `tools/audit/` — read-only статические анализаторы
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `tools/audit/mapdump.py` | active diagnostic | Read-only dump `_v2.map`. |
+| `tools/audit/ui_layout_audit.py` | active diagnostic | Read-only Unity UI layout audit. |
+
+### `tools/external/` — внешние данные, не часть dev-loop
+
+| Файл | Статус | Назначение |
+|---|---|---|
+| `tools/external/tg_parser.py` | external data tool | Telegram parser. Требует секреты/session. |
+| `tools/external/download_fodinae.py` | reference fetch | Скачивает JS reference assets. Manual only. |
 
 ## Tracked State Risk
 
@@ -68,17 +98,10 @@ untracked и игнорироваться Git:
 - `tools/.repro_creds.json`
 - `tools/.sim_creds.json`
 - `tools/.p2_ref.json`
-
-`tools/tg_parser_session.session`, `tools/tg_config.json`, `tools/tg_state.json`
-уже игнорируются и не должны попадать в Git.
-
-## Следующий срез
-
-1. Решить судьбу `tg_parser.py`: оставить как external-data tool или вынести из
-   основного repo tooling.
-2. Добавить быстрый `scripts/toolbox.sh` или `cargo xtask` только если список
-   ручных команд начнёт снова расползаться.
+- `tools/tg_parser_session.session`, `tools/tg_config.json`, `tools/tg_state.json`
 
 ## Changelog
 
-- **2026-07-17 rev 2**: исправлен баг — `quality-extra.sh features|deps|coverage|mutants|vet` падал с `command not found`; добавлены 5 функций в `quality-common.sh`. Добавлены субкоманды `arch/outdated/geiger/bloat` в `quality-extra.sh`. `wipe-players.sh` теперь чистит таблицу `programs`.
+- **2026-07-17 rev 2**: исправлен баг — `quality/extra.sh features|deps|coverage|mutants|vet` падал с `command not found`.
+- **2026-07-17 rev 3**: консолидация 22 → 17 файлов: удалены `arch-audit.sh`, `dev-patch-config.py`, `ownership-audit-lock-guard.py`, `ub-audit-unsafe.py`; `ub-audit-atomics.py` → `ub-audit.py`.
+- **2026-07-17 rev 4**: реструктуризация в подпапки + единый конвент имён. `scripts/` → 4 группы (dev/quality/guards/client). `tools/` → 3 группы (probes/audit/external).
