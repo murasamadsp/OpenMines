@@ -92,7 +92,7 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
             handle_clan_create_view(state, tx, pid);
         }
         "clan_create_input" => {
-            crate::net::session::social::commands::send_ok(
+            crate::game::logic::commands_social::send_ok(
                 tx,
                 "КЛАНЫ",
                 "Введите /clan create НАЗВАНИЕ ТЕГ в чате",
@@ -238,7 +238,7 @@ pub fn handle_gui_button_sync_fast_path(
             true
         }
         "clan_create_input" => {
-            crate::net::session::social::commands::send_ok(
+            crate::game::logic::commands_social::send_ok(
                 tx,
                 "КЛАНЫ",
                 "Введите /clan create НАЗВАНИЕ ТЕГ в чате",

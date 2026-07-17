@@ -1,4 +1,23 @@
 //! Слэш-команды чата: /give, /money, /tp, /heal, /kick, /role, /clan, /pack, /admin.
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else
+)]
+
 use crate::db::players::{PlayerRow, Role, SkillEntry};
 use crate::game::logic::clans::{handle_clan_create, handle_clan_kick_by_name, handle_clan_leave};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
@@ -12,11 +31,18 @@ use crate::net::session::outbound::player_sync::{
     send_player_speed,
 };
 use crate::net::session::play::chunks::check_chunk_changed;
-use crate::net::session::prelude::*;
 use crate::net::session::social::buildings::{
     building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
 };
 use strum::IntoEnumIterator;
+
+use crate::game::skills::{SkillType, get_player_skill_effect};
+use crate::game::{GameState, PlayerId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{money, ok_message, tp};
+use crate::world::WorldProvider;
+use std::sync::Arc;
 
 const CMD_USAGE_GIVE: &str = "Использование: /give ITEM_ID AMOUNT";
 const CMD_USAGE_MONEY: &str = "Использование: /money AMOUNT";

@@ -25,6 +25,7 @@
 //! - `exit` / `exit:0` — close window (handled upstream)
 
 use crate::db::{SkillEntry, SkillSlots};
+use crate::game::logic::commands_social::send_ok;
 use crate::game::player::{PlayerSkillsComp, PlayerStats, PlayerUI};
 use crate::game::skills::{
     self, MAX_SKILL_SLOTS, OnHealth, PlayerSkills as PlayerSkillsHelper, SkillType,
@@ -33,7 +34,6 @@ use crate::game::skills::{
 use crate::net::session::outbound::player_sync::{
     send_player_level, send_player_skills, send_player_speed,
 };
-use crate::net::session::social::commands::send_ok;
 
 use crate::game::buildings::PackView;
 use crate::game::{GameState, PlayerId};

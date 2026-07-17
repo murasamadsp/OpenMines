@@ -562,7 +562,7 @@ fn apply_local_chat_command(
     }
     let task_state = state.clone();
     spawn_session_async_task(state, "local_chat_command", async move {
-        crate::net::session::social::commands::handle_chat_command(
+        crate::game::logic::commands_social::handle_chat_command(
             &task_state,
             &tx,
             player_id,
@@ -591,7 +591,7 @@ fn apply_channel_chat_command(
     if text.trim().starts_with('/') {
         let task_state = state.clone();
         spawn_session_async_task(state, "channel_chat_command", async move {
-            crate::net::session::social::commands::handle_chat_command(
+            crate::game::logic::commands_social::handle_chat_command(
                 &task_state,
                 &tx,
                 player_id,
@@ -919,7 +919,7 @@ fn handle_known_noop_ty(
             }
         }
         "Help" => {
-            crate::net::session::social::commands::send_ok(
+            crate::game::logic::commands_social::send_ok(
                 tx,
                 "Справка",
                 "Справка пока не подключена на сервере.",
@@ -1007,7 +1007,7 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
                 &crate::protocol::packets::money(new_money, creds).1,
             );
             crate::net::session::wire::send_u_packet(&tx, "DR", b"0");
-            crate::net::session::social::commands::send_ok(
+            crate::game::logic::commands_social::send_ok(
                 &tx,
                 "Бонус",
                 &format!(
@@ -1018,7 +1018,7 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
             effects.saves.push(crate::game::SaveCommand::Player { row });
         }
         crate::game::logic::bonus::BonusClaim::NotReady { hours, minutes } => {
-            crate::net::session::social::commands::send_ok(
+            crate::game::logic::commands_social::send_ok(
                 &tx,
                 "Бонус",
                 &format!("Бонус ещё не готов.\nПриходите через {hours}ч {minutes}м."),

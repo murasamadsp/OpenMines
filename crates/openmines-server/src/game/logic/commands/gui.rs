@@ -12,7 +12,7 @@ pub(super) fn apply_presentation_command(
     match command {
         crate::game::PlayerCommand::AdminAction => {
             if let Some(tx) = state.player_sender(player_id) {
-                crate::net::session::social::commands::handle_admin_action(state, &tx, player_id);
+                crate::game::logic::commands_social::handle_admin_action(state, &tx, player_id);
             }
         }
         _ => unreachable!("non-presentation command routed to presentation command handler"),

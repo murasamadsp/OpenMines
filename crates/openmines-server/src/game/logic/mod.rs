@@ -3,6 +3,7 @@ pub mod boxes;
 pub mod building_delete;
 pub mod clans;
 pub mod commands;
+pub mod commands_social;
 pub mod consumables;
 pub mod contracts;
 pub mod crafting;

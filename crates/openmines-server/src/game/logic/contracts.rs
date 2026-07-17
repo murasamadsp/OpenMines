@@ -688,11 +688,11 @@ impl PlayerCommand {
             Self::Whois { .. } => Some(SaveKind::Whois),
             Self::Slash { command } => command.persistence_kind(),
             Self::LocalChat { message } => {
-                crate::net::session::social::commands::parse_slash_command(message.trim())
+                crate::game::logic::commands_social::parse_slash_command(message.trim())
                     .persistence_kind()
             }
             Self::ChannelChat { payload } => {
-                crate::net::session::social::commands::parse_slash_command(
+                crate::game::logic::commands_social::parse_slash_command(
                     &crate::net::session::social::chat::extract_channel_message_text(payload),
                 )
                 .persistence_kind()

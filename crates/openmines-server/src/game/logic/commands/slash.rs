@@ -364,7 +364,7 @@ fn admin_skill_help(
         session_id,
         player_id,
         "Скиллы",
-        &crate::net::session::social::commands::admin_skill_codes_help(),
+        &crate::game::logic::commands_social::admin_skill_codes_help(),
     )
 }
 
@@ -408,7 +408,7 @@ fn admin_skill(
     };
     let batch = crate::net::session::wire::PacketBatch::default();
     let Some((target_name, chosen_slot, row)) =
-        crate::net::session::social::commands::apply_admin_skill_set(
+        crate::game::logic::commands_social::apply_admin_skill_set(
             context, &batch, target_id, skill_type, args.level, args.slot, args.exp,
         )
     else {

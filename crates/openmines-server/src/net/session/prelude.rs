@@ -12,7 +12,6 @@ pub use crate::game::buildings::validate_pack_access;
 pub use crate::game::buildings::{PackType, PackView};
 pub use crate::game::chat::{CHAT_HISTORY_LIMIT, dotnet_epoch_minutes};
 pub use crate::game::direction::dir_offset;
-pub use crate::game::skills::{SkillType, get_player_skill_effect};
 pub use crate::game::{GameState, PlayerId, SessionId};
 pub use crate::protocol::Packet;
 pub use crate::protocol::packets::{
