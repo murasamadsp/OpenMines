@@ -18,9 +18,9 @@
     clippy::format_push_string
 )]
 
+use crate::game::logic::horb::{Button, Horb, HorbDelivery};
 use crate::game::{GameState, PlayerId};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::ui::horb::{Button, Horb, HorbDelivery};
 use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
 use crate::net::session::wire::{encode_hb_bundle, make_u_packet_bytes, send_u_packet};
 use crate::protocol::packets::{clan_hide, clan_show, hb_bot, hb_bundle, money, ok_message};

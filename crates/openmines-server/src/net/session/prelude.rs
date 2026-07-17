@@ -24,8 +24,8 @@ pub use crate::world::{World, WorldProvider};
 
 pub use super::constants::*;
 pub use super::outbox::Outbox;
-pub use super::ui::horb::HorbDelivery;
 pub use super::util::{net_u8_clamped, net_u16_nonneg};
 pub use super::wire::{
     PacketSink, encode_hb_bundle, make_u_packet_bytes, send_b_packet, send_u_packet,
 };
+pub use crate::game::logic::horb::HorbDelivery;

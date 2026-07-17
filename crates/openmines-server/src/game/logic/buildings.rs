@@ -26,9 +26,9 @@ use std::collections::HashMap;
 
 use crate::db::BuildingExtra;
 use crate::game::direction::dir_offset;
+use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::ui::horb::HorbDelivery;
 use crate::net::session::util::net_u16_nonneg;
 use crate::net::session::wire::{encode_hb_bundle, send_u_packet};
 use crate::protocol::packets::{gu_close, hb_bundle, hb_packs, money, ok_message};
@@ -48,7 +48,7 @@ fn send_building_state_error(tx: &Outbox) {
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
 /// Показывает список программ игрока из БД (кликабельный) или кнопку создания.
 pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::net::session::ui::horb::{Button, Horb, ListRow};
+    use crate::game::logic::horb::{Button, Horb, ListRow};
     let programs = match state.db.list_programs(pid.into()).await {
         Ok(programs) => programs,
         Err(e) => {
@@ -78,7 +78,7 @@ pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, 
 
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
 pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::net::session::ui::horb::{Button, Horb, ListRow};
+    use crate::game::logic::horb::{Button, Horb, ListRow};
 
     let Some(cry) =
         state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
@@ -98,7 +98,7 @@ pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
 }
 
 pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::net::session::ui::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
 
     Horb::new("ПОСТРОЙКИ")
         .text("Выберите здание")

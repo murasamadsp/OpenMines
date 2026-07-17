@@ -24,9 +24,9 @@ use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
 
 use crate::game::buildings::{PackType, PackView};
+use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
 use crate::net::session::outbox::Outbox;
-use crate::net::session::ui::horb::HorbDelivery;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{basket, money, ok_message};
 use std::sync::Arc;
@@ -238,7 +238,7 @@ pub fn open_resp_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         )
     };
 
-    use crate::net::session::ui::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     let mut win = Horb::new("РЕСП").text(text).admin(is_owner);
     if !is_bound {
         win = win.button(Button::new(
@@ -351,7 +351,7 @@ pub fn open_resp_admin_gui(
         ""
     };
 
-    use crate::net::session::ui::horb::{Button, Horb, RichRow};
+    use crate::game::logic::horb::{Button, Horb, RichRow};
     Horb::new("РЕСП")
         .text(" ")
         .rich_row(RichRow::fill("заряд", fill_values))
@@ -715,7 +715,7 @@ pub fn open_gun_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, pack_x: 
     // Раньше окно слалось как `{"tabs":[{объект}]}` — но `HORBConfig.tabs` это
     // `string[]`, и `JsonUtility` такой JSON НЕ парсит → окно пушки не открывалось
     // («у пушек нет гуи»). Через единый builder — плоский корректный контракт.
-    use crate::net::session::ui::horb::{Horb, RichRow};
+    use crate::game::logic::horb::{Horb, RichRow};
     Horb::new("Пушка")
         .rich_row(RichRow::fill("заряд", fill_values))
         .close_button()

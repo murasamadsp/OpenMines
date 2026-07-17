@@ -404,7 +404,7 @@ pub fn handle_prog_rename_prompt_ty(
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok());
     if let Some(id) = prog_id {
-        use crate::net::session::ui::horb::{Button, Horb};
+        use crate::game::logic::horb::{Button, Horb};
 
         Horb::new("ПЕРЕИМЕНОВАТЬ")
             .text("Введите новое название программы")

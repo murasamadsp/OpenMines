@@ -324,7 +324,7 @@ fn deliver_gui_view(
             crate::net::session::wire::send_u_packet(&tx, packet.0, &packet.1);
         }
         crate::game::GuiView::Teleport(view) => {
-            let payload = crate::net::session::ui::teleport::render(&view);
+            let payload = crate::game::logic::teleport::render(&view);
             crate::net::session::wire::send_u_packet(&tx, "GU", &payload);
         }
         crate::game::GuiView::Spot(view) => {

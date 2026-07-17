@@ -36,7 +36,7 @@ pub(super) fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &s
 }
 
 pub fn open(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use super::horb::{Button, Horb, RichRow, Tab};
+    use crate::game::logic::horb::{Button, Horb, RichRow, Tab};
 
     let Some(view) = crate::game::logic::settings::settings_view(state, pid) else {
         return;

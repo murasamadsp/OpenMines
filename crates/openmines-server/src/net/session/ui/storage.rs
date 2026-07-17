@@ -4,7 +4,7 @@ use crate::game::player::{PlayerFlags, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::prelude::*;
 
 use super::crystal_form::parse_amounts;
-use super::pack_command::withdraw_state_ready;
+use crate::game::logic::pack_command::withdraw_state_ready;
 
 #[derive(Debug, Clone)]
 pub struct StorageTransfer {
@@ -18,7 +18,7 @@ pub enum StorageTransferError {
 }
 
 pub fn render(view: &crate::game::StorageGuiView) -> Vec<u8> {
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     Horb::new("Склад")
         .crystals(" ", " ", false, view.crystal_lines.clone())
         .button(Button::new("Передать", "transfer:%M%"))

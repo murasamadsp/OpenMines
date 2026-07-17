@@ -31,11 +31,6 @@ crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_playe
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.modify_player(pid, |ecs, e| {
 crates/openmines-server/src/net/session/ui/gui_buttons.rs >>> state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/horb.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/pack_command.rs >>> .query_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let access = state.query_player_opt(pid, |ecs, entity| {
 crates/openmines-server/src/net/session/ui/storage.rs >>> let coords = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> let src_coords = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/ui/teleport.rs >>> state.modify_player(pid, |ecs, entity| {
 crates/openmines-server/src/net/web.rs >>> state.modify_player(pid, |ecs, entity| {

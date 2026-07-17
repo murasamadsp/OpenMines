@@ -1,15 +1,15 @@
 //! Обработка нажатий GUI-кнопок игроком.
 use super::crystal_form::parse_amounts as parse_six_i64_fields;
-use super::pack_command::{
-    send_action_error as send_pack_action_error, send_state_error as send_pack_state_error,
-    withdraw_state_ready as pack_withdraw_state_ready,
-};
 use super::settings::apply as handle_settings_save;
 use crate::game::buildings::{
     BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
 };
 use crate::game::crafting;
 use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
+use crate::game::logic::pack_command::{
+    send_action_error as send_pack_action_error, send_state_error as send_pack_state_error,
+    withdraw_state_ready as pack_withdraw_state_ready,
+};
 use crate::game::market;
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
@@ -262,7 +262,7 @@ pub fn handle_gui_button_sync_fast_path(
 }
 
 fn handle_clan_create_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     // exit добавится builder-гарантией последним → Escape закроет окно.
     Horb::new("СОЗДАНИЕ КЛАНА")
         .text("Введите название и тег (3 симв.) через пробел в чат после нажатия кнопки 'ВВОД'")
@@ -736,7 +736,7 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
         "Здание: {}\nЗаряд: {}/{}\nПрочность: {}/{}",
         title, view.charge, view.max_charge, view.hp, view.max_hp
     );
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     Horb::new(title)
         .text(text)
         .button(Button::new(
@@ -765,7 +765,7 @@ pub fn open_pack_admin_gui(
     pack_x: i32,
     pack_y: i32,
 ) {
-    use super::horb::{Button, Horb, RichRow};
+    use crate::game::logic::horb::{Button, Horb, RichRow};
     let Some(view) = state.get_pack_at(pack_x, pack_y) else {
         return;
     };
@@ -1065,7 +1065,7 @@ fn show_crafter_progress(tx: &Outbox, view: &PackView, recipe_id: i32, num: i32,
 
     let text = format!("Крафт: {recipe_name} x{num}\n\n[{bar}] {progress}%\n{status}");
 
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     let mut win = Horb::new("Крафтер").text(text);
     if done {
         win = win.button(Button::new(
@@ -1081,7 +1081,7 @@ fn show_crafter_recipes(tx: &Outbox, view: &PackView) {
     let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
 
     let mut text = String::from("Выберите рецепт:\n");
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     let mut win = Horb::new("Крафтер");
 
     for r in recipes {
@@ -1162,7 +1162,7 @@ fn handle_craft_recipe_view(state: &Arc<GameState>, tx: &Outbox, _pid: PlayerId,
         recipe.title, recipe.result.num, recipe.time_sec, cost_lines
     );
 
-    use super::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
     Horb::new("Крафтер")
         .text(text)
         .button(Button::new(
@@ -1463,7 +1463,7 @@ fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: 
     show_crafter_recipes(tx, &view);
 }
 
-use super::teleport::apply as handle_teleport_action;
+use crate::game::logic::teleport::apply as handle_teleport_action;
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
 
@@ -1506,8 +1506,8 @@ pub fn open_market_gui(
 }
 
 /// Вкладки market как `Vec<Tab>` для `Horb`-builder.
-pub fn market_tabs(active_tab: &str) -> Vec<super::horb::Tab> {
-    use super::horb::Tab;
+pub fn market_tabs(active_tab: &str) -> Vec<crate::game::logic::horb::Tab> {
+    use crate::game::logic::horb::Tab;
     [
         ("ПРОДАЖА", "sellcrys"),
         ("Покупка", "buycrys"),
@@ -1530,9 +1530,9 @@ fn build_market_sell_page(
     state: &Arc<GameState>,
     player_crys: &[i64; 6],
     is_owner: bool,
-    tabs: Vec<super::horb::Tab>,
-) -> super::horb::Horb {
-    use super::horb::{Button, Horb};
+    tabs: Vec<crate::game::logic::horb::Tab>,
+) -> crate::game::logic::horb::Horb {
+    use crate::game::logic::horb::{Button, Horb};
     // crys_lines format: "LeftMin:RightMin:Denominator:CurrentValue:Label"
     // C# CrysLine(label, leftMin=0, rightMin=0, denominator=player_crys[i], currentValue=0)
     let lines: Vec<String> = (0..6)
@@ -1562,9 +1562,9 @@ fn build_market_buy_page(
     state: &Arc<GameState>,
     player_money: i64,
     is_owner: bool,
-    tabs: Vec<super::horb::Tab>,
-) -> super::horb::Horb {
-    use super::horb::{Button, Horb};
+    tabs: Vec<crate::game::logic::horb::Tab>,
+) -> crate::game::logic::horb::Horb {
+    use crate::game::logic::horb::{Button, Horb};
     let lines: Vec<String> = (0..6)
         .map(|i| {
             let buy_price = market::get_crystal_buy_price(state, i);
@@ -1897,7 +1897,7 @@ pub fn open_market_admin_gui(
     };
     let profit_btn_action = if money_inside > 0 { "getprofit" } else { "" };
 
-    use super::horb::{Horb, RichRow};
+    use crate::game::logic::horb::{Horb, RichRow};
     Horb::new("Market")
         .text(" ")
         .rich_row(RichRow::text(format!("hp {hp}")))
@@ -1913,7 +1913,7 @@ pub fn open_market_admin_gui(
 // ─── Программатор ────────────────────────────────────────────────────────────
 
 fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
-    use crate::net::session::ui::horb::{Button, Horb};
+    use crate::game::logic::horb::{Button, Horb};
 
     Horb::new("НОВАЯ ПРОГРАММА")
         .text("Введите название программы")

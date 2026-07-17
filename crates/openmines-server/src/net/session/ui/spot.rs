@@ -1,5 +1,5 @@
 pub fn render(view: &crate::game::SpotGuiView) -> Vec<u8> {
-    use super::horb::gui;
+    use crate::game::logic::horb::gui;
     gui! {
         <window title="СПОТ">
             <buttons>
