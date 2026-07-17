@@ -1,6 +1,5 @@
 //! Инвентарь, лечение и кнопки GUI (внутриигровые окна).
 
-pub mod auction_gui;
 mod crystal_form;
 pub mod gui_buttons;
 pub mod horb;

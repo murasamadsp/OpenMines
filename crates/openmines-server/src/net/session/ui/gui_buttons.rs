@@ -453,7 +453,7 @@ pub async fn handle_auction_button(
     if let Some(rest) = button.strip_prefix("choose:") {
         // Клик item-грида аукциона (клиент хардкодит InvButton="choose").
         match rest.parse::<i32>() {
-            Ok(item) => super::auction_gui::open_item_auc(state, tx, pid, item).await,
+            Ok(item) => crate::game::logic::auction_gui::open_item_auc(state, tx, pid, item).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction choose action");
                 send_market_action_error(tx);
@@ -463,7 +463,7 @@ pub async fn handle_auction_button(
     }
     if let Some(rest) = button.strip_prefix("openorder:") {
         match rest.parse::<i32>() {
-            Ok(id) => super::auction_gui::open_order(state, tx, pid, id).await,
+            Ok(id) => crate::game::logic::auction_gui::open_order(state, tx, pid, id).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction openorder action");
                 send_market_action_error(tx);
@@ -473,7 +473,7 @@ pub async fn handle_auction_button(
     }
     if let Some(rest) = button.strip_prefix("auccreate:") {
         match rest.parse::<i32>() {
-            Ok(item) => super::auction_gui::open_order_creation(state, tx, pid, item),
+            Ok(item) => crate::game::logic::auction_gui::open_order_creation(state, tx, pid, item),
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction create action");
                 send_market_action_error(tx);
@@ -487,7 +487,9 @@ pub async fn handle_auction_button(
         if let [item, cost] = parts.as_slice() {
             match (item.parse::<i32>(), cost.parse::<i64>()) {
                 (Ok(item), Ok(cost)) => {
-                    super::auction_gui::open_order_creation_num(state, tx, pid, item, cost);
+                    crate::game::logic::auction_gui::open_order_creation_num(
+                        state, tx, pid, item, cost,
+                    );
                 }
                 _ => close_player_window(state, tx, pid),
             }
@@ -503,7 +505,8 @@ pub async fn handle_auction_button(
         if let [item, cost, num] = parts.as_slice() {
             match (item.parse::<i32>(), cost.parse::<i64>(), num.parse::<i32>()) {
                 (Ok(item), Ok(cost), Ok(num)) => {
-                    super::auction_gui::create_order(state, tx, pid, item, num, cost).await;
+                    crate::game::logic::auction_gui::create_order(state, tx, pid, item, num, cost)
+                        .await;
                 }
                 _ => close_player_window(state, tx, pid),
             }
@@ -515,7 +518,7 @@ pub async fn handle_auction_button(
     }
     if let Some(rest) = button.strip_prefix("aucminbet:") {
         match rest.parse::<i32>() {
-            Ok(id) => super::auction_gui::place_minimal_bet(state, tx, pid, id).await,
+            Ok(id) => crate::game::logic::auction_gui::place_minimal_bet(state, tx, pid, id).await,
             Err(e) => {
                 tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction minbet action");
                 send_market_action_error(tx);
@@ -529,9 +532,11 @@ pub async fn handle_auction_button(
         if let [id, amount] = parts.as_slice() {
             match (id.parse::<i32>(), amount.parse::<i64>()) {
                 (Ok(id), Ok(amount)) => {
-                    super::auction_gui::place_bet(state, tx, pid, id, amount).await;
+                    crate::game::logic::auction_gui::place_bet(state, tx, pid, id, amount).await;
                 }
-                (Ok(id), Err(_)) => super::auction_gui::open_order(state, tx, pid, id).await,
+                (Ok(id), Err(_)) => {
+                    crate::game::logic::auction_gui::open_order(state, tx, pid, id).await;
+                }
                 (Err(e), _) => {
                     tracing::warn!(player_id = %pid, action = button, error = ?e, "Invalid auction bet action");
                     send_market_action_error(tx);
@@ -1613,7 +1618,7 @@ async fn handle_market_tab_switch(state: &Arc<GameState>, tx: &Outbox, pid: Play
         return;
     }
     if tab == "auc" {
-        crate::net::session::ui::auction_gui::open_auc_grid(state, tx, pid, bx, by).await;
+        crate::game::logic::auction_gui::open_auc_grid(state, tx, pid, bx, by).await;
     } else {
         handle_market_tab_switch_sync(state, tx, pid, tab);
     }

@@ -1,3 +1,4 @@
+pub mod auction_gui;
 pub mod bonus;
 pub mod boxes;
 pub mod building_delete;

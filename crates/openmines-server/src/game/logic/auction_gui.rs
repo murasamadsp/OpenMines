@@ -6,14 +6,39 @@
 //!
 //! Окно держим `market:{x}:{y}:auc` на всех страницах — координаты сохраняются
 //! для табов и навигации (кнопка «НАЗАД» = action `auc`/`choose:{item}`).
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool
+)]
+
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::prelude::*;
 use crate::net::session::ui::gui_buttons::{market_tabs, resolve_market_window};
-use crate::net::session::ui::horb::{Button, Horb, ListRow};
+use crate::net::session::ui::horb::{Button, Horb, HorbDelivery, ListRow};
 use crate::tasks::auction::{credit_money, now_unix};
 
 use crate::game::logic::items::item_name as pack_name;
+
+use crate::game::{GameState, PlayerId};
+use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::send_u_packet;
+use crate::protocol::packets::{gu_close, money, ok_message};
+use std::sync::Arc;
 
 /// Минимальная ставка: `buyer>0 ? ceil(cost*1.01) : cost` (1:1 C#).
 fn min_bid(cost: i64, has_buyer: bool) -> i64 {
@@ -149,9 +174,7 @@ pub async fn open_order(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, orde
     } else {
         String::new()
     };
-    let buyer_name = if !has_buyer {
-        None
-    } else {
+    let buyer_name = if has_buyer {
         match state.db.get_player_by_id(o.buyer_id).await {
             Ok(Some(player)) => Some(player.name),
             Ok(None) => {
@@ -170,6 +193,8 @@ pub async fn open_order(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, orde
                 return;
             }
         }
+    } else {
+        None
     };
 
     let mut page = auc_page(format!("Order {timer}"))
@@ -488,36 +513,29 @@ pub async fn place_bet(
         };
         if won > 0 {
             // Рефанд старому покупателю — только победитель CAS делает это.
-            if o.buyer_id != 0 {
-                if let Err(e) = credit_money(state, o.buyer_id.into(), o.cost).await {
+            if o.buyer_id != 0
+                && let Err(e) = credit_money(state, o.buyer_id.into(), o.cost).await
+            {
+                tracing::error!(
+                    player_id = %pid,
+                    order_id,
+                    old_buyer_id = o.buyer_id,
+                    refund = o.cost,
+                    error = ?e,
+                    "Auction bet refund failed after CAS update"
+                );
+                rollback_auction_bet(state, pid, order_id, amount, &o, "old buyer refund failed")
+                    .await;
+                if apply_online_money_delta(state, pid, amount).is_none() {
                     tracing::error!(
                         player_id = %pid,
                         order_id,
-                        old_buyer_id = o.buyer_id,
-                        refund = o.cost,
-                        error = ?e,
-                        "Auction bet refund failed after CAS update"
-                    );
-                    rollback_auction_bet(
-                        state,
-                        pid,
-                        order_id,
                         amount,
-                        &o,
-                        "old buyer refund failed",
-                    )
-                    .await;
-                    if apply_online_money_delta(state, pid, amount).is_none() {
-                        tracing::error!(
-                            player_id = %pid,
-                            order_id,
-                            amount,
-                            "Auction bet bidder refund failed after old buyer refund failure"
-                        );
-                    }
-                    send_auc_error(tx, "Не удалось вернуть деньги предыдущему покупателю.");
-                    return;
+                        "Auction bet bidder refund failed after old buyer refund failure"
+                    );
                 }
+                send_auc_error(tx, "Не удалось вернуть деньги предыдущему покупателю.");
+                return;
             }
             send_u_packet(tx, "P$", &money(charged_pair.0, charged_pair.1).1);
         } else if apply_online_money_delta(state, pid, amount).is_none() {
