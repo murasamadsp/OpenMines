@@ -1,10 +1,10 @@
 //! Обработка TCP-подключений и жизненного цикла сессии.
+use crate::game::logic::player_init::on_disconnect;
 use crate::net::session::auth::gui_flow::handle_gui_auth_flow;
 use crate::net::session::auth::login::handle_auth;
 use crate::net::session::handshake::InitialHandshake;
 use crate::net::session::heartbeat::SessionHeartbeat;
 use crate::net::session::outbox::flush_outbox;
-use crate::net::session::player::init::on_disconnect;
 use crate::net::session::prelude::*;
 use crate::net::session::state::HeartbeatGate;
 use crate::net::session::ty_command::enqueue_ty_command;

@@ -30,6 +30,7 @@ pub mod movement;
 pub mod numeric;
 pub mod pack_command;
 pub mod packs;
+pub mod player_init;
 pub mod programmer;
 pub mod random;
 pub mod settings;

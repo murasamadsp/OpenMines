@@ -1,7 +1,7 @@
 //! Логика авторизации игрока (пакет AU).
+use crate::game::logic::player_init::init_player;
 use crate::game::player::PlayerId;
 use crate::net::session::auth::gui_flow::send_default_auth_window;
-use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.

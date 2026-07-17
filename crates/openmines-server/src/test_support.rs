@@ -83,12 +83,7 @@ impl ServerTestHarness {
         session_id: u64,
     ) -> (crate::net::session::outbox::Outbox, Receiver<Vec<u8>>) {
         let (outbox, receiver) = crate::net::session::outbox::channel();
-        crate::net::session::player::init::connect_in_tick(
-            &self.state,
-            &outbox,
-            player,
-            session_id,
-        );
+        crate::game::logic::player_init::connect_in_tick(&self.state, &outbox, player, session_id);
         (outbox, receiver)
     }
 

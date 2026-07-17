@@ -1,8 +1,8 @@
 //! Обработка GUI-диалогов авторизации (вход, регистрация).
 //! 1:1 с C# `Auth.CallAction` / `Auth.TryToFindByNick` / `Auth.EndCreateAndInit`.
 use crate::game::GameState;
+use crate::game::logic::player_init::init_player;
 use crate::net::session::connection::GuiAuthStep;
-use crate::net::session::player::init::init_player;
 use crate::net::session::prelude::*;
 use crate::protocol::packets::auth_hash;
 use anyhow::Context as _;

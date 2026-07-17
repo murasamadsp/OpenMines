@@ -688,7 +688,7 @@ mod tests {
                     session_id,
                     player_id,
                     packets,
-                } => crate::net::session::player::init::deliver_initial_presentation(
+                } => crate::game::logic::player_init::deliver_initial_presentation(
                     &test.state,
                     session_id,
                     player_id,

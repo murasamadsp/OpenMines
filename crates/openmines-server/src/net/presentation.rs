@@ -187,13 +187,13 @@ fn coalesce_movement_burst(
 fn deliver(state: &Arc<GameState>, event: GameEvent) {
     match event {
         GameEvent::PlayerInit { session_id, view } => {
-            crate::net::session::player::init::deliver_player_init(state, session_id, &view);
+            crate::game::logic::player_init::deliver_player_init(state, session_id, &view);
         }
         GameEvent::SessionBatch {
             session_id,
             player_id,
             packets,
-        } => crate::net::session::player::init::deliver_initial_presentation(
+        } => crate::game::logic::player_init::deliver_initial_presentation(
             state, session_id, player_id, packets,
         ),
         GameEvent::RefreshChunks {

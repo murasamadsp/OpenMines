@@ -205,12 +205,12 @@ fn apply_session_command(
     let mut effects = CommandEffects::default();
     match command {
         crate::game::PlayerCommand::Connect { row } => {
-            effects.append(crate::net::session::player::init::connect_entity_in_tick(
+            effects.append(crate::game::logic::player_init::connect_entity_in_tick(
                 state, &row, session_id,
             ));
         }
         crate::game::PlayerCommand::Disconnect => {
-            effects.append(crate::net::session::player::init::disconnect_in_tick(
+            effects.append(crate::game::logic::player_init::disconnect_in_tick(
                 state, player_id, session_id,
             ));
         }

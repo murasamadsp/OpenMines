@@ -1,3 +1,3 @@
 //! Жизненный цикл игрока в сессии: вход в мир, респawn, отключение.
 
-pub mod init;
+// init.rs перемещён в game/logic/player_init.rs

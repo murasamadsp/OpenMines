@@ -58,7 +58,7 @@ if rg -n '^\s*fn drain_events' crates/openmines-server/src --glob '*.rs' \
   fail=1
 fi
 if rg -n '\bconnect_in_tick\(' crates/openmines-server/src --glob '*.rs' \
-  | rg -v 'crates/openmines-server/src/(test_support|net/session/player/init)\.rs:'; then
+  | rg -v 'crates/openmines-server/src/(test_support|game/logic/player_init)\.rs:'; then
   echo "ERROR: tests must connect through ServerTestHarness" >&2
   fail=1
 fi

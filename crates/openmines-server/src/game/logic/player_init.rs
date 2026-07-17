@@ -1,3 +1,28 @@
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::option_if_let_else,
+    clippy::assigning_clones,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::semicolon_if_nothing_returned,
+    clippy::missing_panics_doc,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::significant_drop_tightening,
+    clippy::map_unwrap_or,
+    clippy::manual_let_else,
+    clippy::format_push_string,
+    clippy::single_match_else,
+    clippy::nonminimal_bool,
+    clippy::collapsible_if,
+    clippy::cast_possible_wrap,
+    clippy::redundant_closure_for_method_calls,
+    clippy::needless_range_loop,
+    clippy::similar_names,
+    clippy::too_many_arguments
+)]
 use crate::db::players::PlayerRow;
 use crate::game::player::{
     PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerGeoStack, PlayerId, PlayerInventory,
@@ -182,11 +207,7 @@ fn connect_entity_in_tick_inner(
     if let Some(entity) = state.get_player_entity(pid) {
         let mut reconnect = (|| {
             let mut ecs = state.ecs_write_profiled("player.connect.reuse_entity");
-            if !ecs.entities().contains(entity) {
-                drop(ecs);
-                state.unregister_player_entity(pid);
-                None
-            } else {
+            if ecs.entities().contains(entity) {
                 let position = ecs.get::<PlayerPosition>(entity)?;
                 let center_chunk = (position.chunk_x(), position.chunk_y());
                 let visible_chunks = state.visible_chunks_around(center_chunk.0, center_chunk.1);
@@ -205,6 +226,10 @@ fn connect_entity_in_tick_inner(
                 }
                 crate::game::player::extract_player_row(&ecs, entity)
                     .map(|row| (row, center_chunk, visible_chunks))
+            } else {
+                drop(ecs);
+                state.unregister_player_entity(pid);
+                None
             }
         })();
         if let Some((mut row, center_chunk, visible_chunks)) = reconnect.take() {

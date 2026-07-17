@@ -1,6 +1,0 @@
-crates/openmines-server/src/net/session/player/init.rs >>> if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/player/init.rs >>> if let Some(due_at) = state.query_player_opt(pid, |ecs, entity| {
-crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.read();
-crates/openmines-server/src/net/session/player/init.rs >>> let ecs = state.ecs.read();
-crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs.write();
-crates/openmines-server/src/net/session/player/init.rs >>> let mut ecs = state.ecs_write_profiled("player.connect.reuse_entity");
