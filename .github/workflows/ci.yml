@@ -241,8 +241,8 @@ jobs:
       - name: Telegram notify (non-blocking)
         if: always()
         env:
-          TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          TG_CHAT: ${{ secrets.TG_CHAT }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}  # zizmor: ignore[secrets-inherit]
+          TG_CHAT: ${{ secrets.TG_CHAT }}    # zizmor: ignore[secrets-inherit]
           STATUS: ${{ job.status }}
         run: |
           [ -z "${TG_TOKEN:-}" ] && { echo "no TG secrets, skip"; exit 0; }

@@ -50,6 +50,26 @@ Game logic возвращает данные (`CommandEffects` с `SessionBatch`
 19. `net/session/connection.rs` — session lifecycle
 20. `net/session/handshake.rs` — handshake
 
+## Progress
+
+### Migrated to typed command pipeline:
+- [x] market sell/buy/sellall/getprofit
+- [x] pack operations (resp_bind, resp_fill, gun_fill, resp_profit, resp_save)
+- [x] teleport
+- [x] up_building (skill, upgrade, delete, install, buyslot)
+
+### Still on &Outbox:
+- [ ] settings save (net/session/ui/settings.rs)
+- [ ] heal_inventory (complex, async, uses due_actions)
+- [ ] consumables (boom, protector, razryadka)
+- [ ] dig_build
+- [ ] clans (GUI rendering)
+- [ ] programmator
+
+### Metrics:
+- Functions on `&dyn PacketSink`: 34
+- Functions still on `&Outbox`: 151
+
 ## Execution Order
 
 ### Phase 1: GUI handlers (sell/buy done, continue pattern)
