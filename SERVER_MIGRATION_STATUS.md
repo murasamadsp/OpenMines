@@ -1,6 +1,6 @@
 # OpenMines Server Migration Status
 
-Обновлено: 2026-07-17.
+Обновлено: 2026-07-18.
 
 Это **единственный актуальный checkpoint и handoff** по миграции сервера.
 Подробная целевая модель находится в `docs/SIMULATION_KERNEL_PLAN.md`; целевой план реструктуризации на изолированные крейты — в `docs/TARGET_ARCHITECTURE_PLAN.md`; правила формы
@@ -25,7 +25,7 @@ git diff --check
 1. Прочитать разделы `Что горит`, `Текущий кодовый срез` и `Запрещённые решения` ниже.
 2. Изучить утвержденный [docs/TARGET_ARCHITECTURE_PLAN.md](file:///Users/murasama/Projects/games/OpenMines/docs/TARGET_ARCHITECTURE_PLAN.md) по реструктуризации на изолированные крейты (Nested Crates).
 3. Перейти к Этапу 2 плана миграции: постепенному переносу хэндлеров сессий на команды с очисткой baseline-файла `docs/reference/ecs_bypass_baseline.txt`.
-4. Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.
+4. ~~Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.~~ **Готово.**
 5. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
@@ -747,6 +747,25 @@ monotonic time, с delay - точному `now + delay`.
 проверяет requeue после action без delay и после function transition. Временно
 добавленный `PROGDIAG` dump parsed actions удалён: он создавал строки для
 каждого action при старте программы и искажал CPU trace.
+
+## Завершённый кодовый срез
+
+**GUI market mutations на typed command pipeline.** `sell:`, `buy:`, `sellall`,
+`getprofit` больше не идут через `handle_gui_button_sync_fast_path` и не делают
+прямых ECS мутаций из sync fast path. Вместо этого `apply_gui_button_command`
+перехватывает market кнопки и вызывает `apply_market_sell/sell_all/buy/get_profit`,
+которые:
+
+1. Создают `PacketBatch` вместо отправки через `Outbox`
+2. Делают ECS мутации (economy + building moneyinside)
+3. Собирают wire пакеты (`@B`, `P$`, `GU`) в `PacketBatch`
+4. Возвращают `CommandEffects` с `GameEvent::SessionBatch`
+
+Добавлен `PlayerCommand::MarketGetProfit` для withdraw profit из здания рынка.
+`HorbDelivery` trait изменён с `&Outbox` на `&dyn PacketSink` для поддержки
+`PacketBatch`. Read-only tab switching (`sellcrys`/`buycrys`) остаётся в sync fast path.
+
+Проверка: 5 market tests, 637 total tests, strict clippy, fmt, wire smoke.
 
 ## Видимые milestones
 

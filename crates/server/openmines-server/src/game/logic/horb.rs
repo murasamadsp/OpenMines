@@ -29,7 +29,6 @@
 use std::sync::Arc;
 
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::wire::send_u_packet;
 
 pub use openmines_common::gui;
@@ -41,26 +40,26 @@ pub use openmines_protocol::gui::{Button, Horb, ListRow, RichRow, Tab};
 /// and delivery. This trait preserves existing behavior during the migration,
 /// without duplicating the GUI document or its wire encoder in the server.
 pub trait HorbDelivery {
-    fn send_raw(&self, tx: &Outbox);
+    fn send_raw(&self, tx: &dyn crate::net::session::wire::PacketSink);
 
     fn send(
         &self,
         state: &Arc<GameState>,
-        tx: &Outbox,
+        tx: &dyn crate::net::session::wire::PacketSink,
         pid: PlayerId,
         window_tag: impl Into<String>,
     );
 }
 
 impl HorbDelivery for Horb {
-    fn send_raw(&self, tx: &Outbox) {
+    fn send_raw(&self, tx: &dyn crate::net::session::wire::PacketSink) {
         send_u_packet(tx, "GU", &self.payload());
     }
 
     fn send(
         &self,
         state: &Arc<GameState>,
-        tx: &Outbox,
+        tx: &dyn crate::net::session::wire::PacketSink,
         pid: PlayerId,
         window_tag: impl Into<String>,
     ) {

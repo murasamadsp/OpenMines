@@ -34,6 +34,7 @@ pub fn send_market_action_error(tx: &Outbox) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", "Некорректное действие.").1);
 }
 
+#[allow(dead_code)]
 pub fn send_market_state_error(tx: &Outbox) {
     send_u_packet(
         tx,
@@ -46,7 +47,7 @@ pub fn send_market_state_error(tx: &Outbox) {
 /// `active_tab` is one of: "sellcrys", "buycrys", "auc".
 pub fn open_market_gui(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     view: &PackView,
     active_tab: &str,
@@ -224,6 +225,7 @@ pub fn handle_market_tab_switch_sync(
 
 /// Handle "sell:%M%" — sell crystals from sliders.
 /// C# ref: `MarketSystem.Sell(sliders, p, m)`.
+#[allow(dead_code)]
 pub fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
@@ -244,6 +246,7 @@ pub fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, sl
 
 /// Handle "sellall" — sell all player's crystals.
 /// C# ref: `MarketSystem.Sell(p.crys.cry, p, m)`.
+#[allow(dead_code)]
 pub fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
@@ -288,6 +291,7 @@ pub fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId)
 /// C# ref: `MarketSystem.Sell`:
 ///   for each i: if `RemoveCrys` succeeds, money += value * GetCrysCost(i)
 ///   market.moneyinside += (long)(money * 0.1)
+#[allow(dead_code)]
 pub fn do_market_sell(
     state: &Arc<GameState>,
     tx: &Outbox,
@@ -344,6 +348,7 @@ pub fn do_market_sell(
 
 /// Handle "buy:%M%" — buy crystals with money.
 /// C# ref: `MarketSystem.Buy(sliders, p, m)`.
+#[allow(dead_code)]
 pub fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
@@ -375,6 +380,7 @@ pub fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, sli
 /// Handle "getprofit" — owner withdraws accumulated market profit.
 /// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
 /// then re-open the admin `RichList` page.
+#[allow(dead_code)]
 pub fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
@@ -451,7 +457,7 @@ pub fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
 /// Shows HP and profit withdrawal button. Called from ADMN gear icon.
 pub fn open_market_admin_gui(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,

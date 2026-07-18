@@ -441,6 +441,8 @@ pub enum PlayerCommand {
         building_x: i32,
         building_y: i32,
     },
+    /// Withdraw profit from market building.
+    MarketGetProfit { building_x: i32, building_y: i32 },
     /// Known TY event that does not mutate gameplay state.
     KnownNoopTy { event: String, payload: Bytes },
 }
@@ -632,6 +634,7 @@ impl PlayerCommand {
             Self::MarketSell { .. } => "market_sell",
             Self::MarketSellAll { .. } => "market_sell_all",
             Self::MarketBuy { .. } => "market_buy",
+            Self::MarketGetProfit { .. } => "market_get_profit",
             Self::KnownNoopTy { .. } => "known_noop_ty",
         }
     }

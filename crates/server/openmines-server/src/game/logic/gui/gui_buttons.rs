@@ -99,8 +99,6 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         "sellcrys" => market_gui::handle_market_tab_switch(state, tx, pid, "sellcrys").await,
         "buycrys" => market_gui::handle_market_tab_switch(state, tx, pid, "buycrys").await,
         "auc" => market_gui::handle_market_tab_switch(state, tx, pid, "auc").await,
-        "sellall" => market_gui::handle_market_sellall(state, tx, pid),
-        "getprofit" => market_gui::handle_market_getprofit(state, tx, pid),
         "clancreate" | "clan_create" => {
             handle_clan_create_view(state, tx, pid);
         }
@@ -224,14 +222,6 @@ pub fn handle_gui_button_sync_fast_path(
         pack_gui::handle_pack_save(state, tx, pid, rest);
         return true;
     }
-    if let Some(rest) = button.strip_prefix("sell:") {
-        market_gui::handle_market_sell(state, tx, pid, rest);
-        return true;
-    }
-    if let Some(rest) = button.strip_prefix("buy:") {
-        market_gui::handle_market_buy(state, tx, pid, rest);
-        return true;
-    }
     if let Some(rest) = button.strip_prefix("save:") {
         crate::net::session::ui::settings::apply(state, tx, pid, rest);
         return true;
@@ -256,14 +246,6 @@ pub fn handle_gui_button_sync_fast_path(
                 "КЛАНЫ",
                 "Введите /clan create НАЗВАНИЕ ТЕГ в чате",
             );
-            true
-        }
-        "sellall" => {
-            market_gui::handle_market_sellall(state, tx, pid);
-            true
-        }
-        "getprofit" => {
-            market_gui::handle_market_getprofit(state, tx, pid);
             true
         }
         "sellcrys" | "buycrys" => {
@@ -344,10 +326,6 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     } else if let Some(rest) = button.strip_prefix("pack_save:") {
         // Единая админ-панель пака: сохранить cost/clan из %R%.
         pack_gui::handle_pack_save(state, tx, pid, rest);
-    } else if let Some(rest) = button.strip_prefix("sell:") {
-        market_gui::handle_market_sell(state, tx, pid, rest);
-    } else if let Some(rest) = button.strip_prefix("buy:") {
-        market_gui::handle_market_buy(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("save:") {
         crate::net::session::ui::settings::apply(state, tx, pid, rest);
     } else if handle_auction_button(state, tx, pid, button).await {

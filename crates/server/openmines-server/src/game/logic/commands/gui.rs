@@ -245,6 +245,41 @@ fn apply_gui_button_command(
         spawn_program_editor_rename_task(state, tx.clone(), player_id, program_id, &name);
         return CommandEffects::default();
     }
+    // Market mutations — route through typed command pipeline
+    if let Some(slider_data) = button.strip_prefix("sell:") {
+        if let Some((bx, by, _tab)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+            && let Some(sliders) = crate::net::session::ui::crystal_form::parse_amounts(slider_data)
+        {
+            return super::apply_market_sell(state, player_id, session_id, &sliders, bx, by);
+        }
+        return CommandEffects::default();
+    }
+    if let Some(slider_data) = button.strip_prefix("buy:") {
+        if let Some((bx, by, _tab)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+            && let Some(sliders) = crate::net::session::ui::crystal_form::parse_amounts(slider_data)
+        {
+            return super::apply_market_buy(state, player_id, session_id, &sliders, bx, by);
+        }
+        return CommandEffects::default();
+    }
+    if button == "sellall" {
+        if let Some((bx, by, _tab)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+        {
+            return super::apply_market_sell_all(state, player_id, session_id, bx, by);
+        }
+        return CommandEffects::default();
+    }
+    if button == "getprofit" {
+        if let Some((bx, by, _tab)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+        {
+            return super::apply_market_get_profit(state, player_id, session_id, bx, by);
+        }
+        return CommandEffects::default();
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
