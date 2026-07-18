@@ -12,7 +12,7 @@ while IFS= read -r -d '' file; do
         echo "VIOLATION: $line"
         violations=$((violations + 1))
     done < <(python3 -c "
-import sys
+import re
 with open('$file') as f:
     lines = f.readlines()
 in_modify = 0
@@ -23,7 +23,8 @@ for i, line in enumerate(lines, 1):
     if in_modify:
         if 'send_u_packet' in line:
             print(f'$file:{i}: send_u_packet inside modify_player (started at {start})')
-        if line.strip() == '});' or line.strip() == '})':
+        # Match }); or }) possibly followed by .method() chains
+        if re.match(r'.*\}\)\s*(\.\w+\(.*?\))*\s*;', line.strip()):
             in_modify = 0
 " 2>/dev/null)
 done < <(find "$SRC" -name "*.rs" -print0)

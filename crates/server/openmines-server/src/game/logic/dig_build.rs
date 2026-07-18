@@ -407,6 +407,7 @@ pub fn handle_dig(
                 {
                     return None;
                 }
+                let mut packets: Vec<(&str, Vec<u8>)> = Vec::new();
                 {
                     let mut skills = ecs
                         .get_mut::<crate::game::player::PlayerSkillsComp>(entity)
@@ -414,7 +415,7 @@ pub fn handle_dig(
                     if let Some(sk) =
                         ctx.add_skill_exp(&mut skills.states, "m", mined_yield.exp_amount)
                     {
-                        send_u_packet(tx, sk.0, &sk.1);
+                        packets.push((sk.0, sk.1));
                     }
                 }
                 {
@@ -426,7 +427,7 @@ pub fn handle_dig(
                         mined_yield.final_amount,
                     );
                     let c_data = p_stats.crystals;
-                    send_u_packet(tx, "@B", &basket(&c_data, 1).1);
+                    packets.push(("@B", basket(&c_data, 1).1));
                 }
                 {
                     let mut flags = ecs
@@ -434,11 +435,14 @@ pub fn handle_dig(
                         .expect("PlayerFlags checked before crystal mining");
                     flags.dirty = true;
                 }
-                Some(())
+                Some(packets)
             })
-            .flatten()
-            .is_some();
-        if !mined {
+            .flatten();
+        if let Some(packets) = mined {
+            for (event, payload) in packets {
+                send_u_packet(tx, event, &payload);
+            }
+        } else {
             tracing::error!(player_id = %pid, "Player state missing for crystal mining");
             send_build_state_error(tx);
             return 0;
@@ -505,34 +509,49 @@ pub fn handle_dig(
 
     // Fix 10: Boulder push exp.
     if pushed_boulder {
-        state.modify_player(pid, |ecs, entity| {
-            let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-            if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
-                send_u_packet(tx, sk.0, &sk.1);
-                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?
-                    .dirty = true;
-            }
-            Some(())
-        });
+        let packets = state
+            .modify_player(pid, |ecs, entity| {
+                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
+                let mut result = Vec::new();
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
+                    result.push((sk.0, sk.1));
+                    ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?
+                        .dirty = true;
+                }
+                Some(result)
+            })
+            .flatten()
+            .unwrap_or_default();
+        for (event, payload) in packets {
+            send_u_packet(tx, event, &payload);
+        }
     }
 
     if destroyed {
         // Dig exp only on destroy (1:1 with C# OnDestroy → AddExp("d")).
-        state.modify_player(pid, |ecs, entity| {
-            {
-                // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
-                // на dig-destroy (полоса Digging не обновлялась до след. @S-события).
-                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
-                    send_u_packet(tx, sk.0, &sk.1);
+        let packets = state
+            .modify_player(pid, |ecs, entity| {
+                let mut result = Vec::new();
+                {
+                    // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
+                    // на dig-destroy (полоса Digging не обновлялась до след. @S-события).
+                    let mut skills =
+                        ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
+                    if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "d", 1.0) {
+                        result.push((sk.0, sk.1));
+                    }
                 }
-            }
-            {
-                let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
-                flags.dirty = true;
-            }
-            Some(())
-        });
+                {
+                    let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+                    flags.dirty = true;
+                }
+                Some(result)
+            })
+            .flatten()
+            .unwrap_or_default();
+        for (event, payload) in packets {
+            send_u_packet(tx, event, &payload);
+        }
 
         queue_cell_update(state, tgt_x, tgt_y);
     } else if cry_idx.is_none() {
