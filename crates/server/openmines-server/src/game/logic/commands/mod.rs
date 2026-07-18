@@ -1379,21 +1379,22 @@ pub(super) fn apply_market_get_profit(
     }
 
     if amount > 0 {
-        state.modify_player(player_id, |ecs, entity| {
-            let (money_now, creds_now) = {
-                let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-                s.money = s.money.saturating_add(amount);
-                (s.money, s.creds)
-            };
+        let result = state.modify_player(player_id, |ecs, entity| {
+            let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+            s.money = s.money.saturating_add(amount);
+            let money_now = s.money;
+            let creds_now = s.creds;
             let mut f = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
             f.dirty = true;
+            Some((money_now, creds_now))
+        });
+        if let Some(Some((money_now, creds_now))) = result {
             crate::net::session::wire::send_u_packet(
                 &batch,
                 "P$",
                 &crate::protocol::packets::money(money_now, creds_now).1,
             );
-            Some(())
-        });
+        }
     }
 
     // Re-open admin page with updated profit (now 0)
