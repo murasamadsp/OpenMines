@@ -323,6 +323,15 @@ fn apply_gui_button_command(
     if let Some(rest) = button.strip_prefix("tp:") {
         return super::apply_teleport(state, player_id, session_id, rest);
     }
+    // Up building buttons — route through typed command pipeline
+    if button.starts_with("skill:")
+        || button == "upgrade"
+        || button.starts_with("delete:")
+        || button.starts_with("install:")
+        || button == "buyslot"
+    {
+        return super::apply_up_button(state, player_id, session_id, &button);
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {

@@ -2038,6 +2038,24 @@ pub(super) fn apply_teleport(
     }
 }
 
+pub(super) fn apply_up_button(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    button: &str,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::up_building::handle_up_button(state, &batch, player_id, button);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{apply_persistence_completion, apply_player_command};

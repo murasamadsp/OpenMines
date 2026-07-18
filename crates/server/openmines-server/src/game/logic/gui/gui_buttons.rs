@@ -208,7 +208,7 @@ pub fn handle_gui_button_sync_fast_path(
             market_gui::handle_market_tab_switch_sync(state, tx, pid, button);
             true
         }
-        _ => crate::game::logic::up_building::handle_up_button(state, tx, pid, button),
+        _ => false,
     }
 }
 
@@ -274,8 +274,7 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
             }
         }
     } else {
-        // Up building buttons (skill:N, upgrade, delete:N, install:code#N, buyslot)
-        crate::game::logic::up_building::handle_up_button(state, tx, pid, button);
+        // Up building buttons are now handled in apply_gui_button_command
     }
 }
 

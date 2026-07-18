@@ -37,7 +37,6 @@ use crate::net::session::outbound::player_sync::{
 
 use crate::game::buildings::PackView;
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{health, money, ok_message};
 use std::sync::Arc;
@@ -45,7 +44,7 @@ use std::sync::Arc;
 /// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
 
-fn send_up_state_error(tx: &Outbox) {
+fn send_up_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -56,7 +55,12 @@ fn send_up_state_error(tx: &Outbox) {
 // ─── Public API ─────────────────────────────────────────────────────────────────
 
 /// Open the Up building GUI for a player. Called from `open_pack_gui`.
-pub fn open_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
+pub fn open_up_gui(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    view: &PackView,
+) {
     let opened = state
         .modify_player(pid, |ecs, entity| {
             let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
@@ -78,7 +82,12 @@ pub fn open_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &Pa
 
 /// Handle Up building button presses.
 /// Returns `true` if the button was handled.
-pub fn handle_up_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) -> bool {
+pub fn handle_up_button(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    button: &str,
+) -> bool {
     // Check that the player has an Up window open
     let has_up_window = state.query_player_opt(pid, |ecs, entity| {
         let Some(ui) = ecs.get::<PlayerUI>(entity) else {
@@ -133,7 +142,7 @@ pub fn handle_up_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, butt
 
 pub fn open_up_admin_gui(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -165,13 +174,22 @@ pub fn open_up_admin_gui(
 // ─── Internal handlers ─────────────────────────────────────────────────────────
 
 /// Select a skill slot — re-render the page with the slot selected.
-fn handle_skill_select(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slot: i32) {
+fn handle_skill_select(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    slot: i32,
+) {
     send_up_page(state, tx, pid, slot);
 }
 
 /// Upgrade the skill in the currently selected slot (increase level by 1).
 /// C# ref: `Skill.Up(Player p)` — requires `exp >= Experience`.
-fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+fn handle_skill_upgrade(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+) {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
         return;
     };
@@ -334,7 +352,12 @@ fn handle_skill_upgrade(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
 
 /// Delete skill from the selected slot.
 /// C# ref: `PlayerSkillsComp.DeleteSkill(Player p)`.
-fn handle_skill_delete(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slot: i32) {
+fn handle_skill_delete(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    slot: i32,
+) {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
         return;
     };
@@ -395,7 +418,13 @@ fn handle_skill_delete(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slot:
 
 /// Install a new skill into the selected empty slot.
 /// C# ref: `PlayerSkillsComp.InstallSkill(string type, int slot, Player p)`.
-fn handle_skill_install(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, code: &str, slot: i32) {
+fn handle_skill_install(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    code: &str,
+    slot: i32,
+) {
     let Some(skill_type) = SkillType::from_code(code) else {
         tracing::warn!(pid = %pid, code, "Up: invalid skill code for install");
         return;
@@ -488,7 +517,11 @@ fn handle_skill_install(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, code
 
 /// Buy an additional slot.
 /// C# ref: `PlayerSkillsComp.slots++` if `p.creds > 1000 && slots < 34`.
-fn handle_buy_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+fn handle_buy_slot(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+) {
     let bought = state
         .modify_player(pid, |ecs, entity| {
             // Validate (immutable borrows)
@@ -545,7 +578,12 @@ fn handle_buy_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
 
 /// Build and send the `UpPage` JSON to the client.
 /// Format: `"up:{json}"` sent via GU event.
-fn send_up_page(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, selected_slot: i32) {
+fn send_up_page(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    selected_slot: i32,
+) {
     let page_data = state.query_player_opt(pid, |ecs, entity| {
         let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
             tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up page");
@@ -597,7 +635,11 @@ fn send_up_page(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, selected_slo
 
 /// Get the selected slot from the player's `current_window` state.
 /// Window format: "`up:{x}:{y}:{selected_slot`}"
-fn get_selected_slot(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> Option<i32> {
+fn get_selected_slot(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+) -> Option<i32> {
     let selected = state.query_player_opt(pid, |ecs, entity| {
         let Some(ui) = ecs.get::<PlayerUI>(entity) else {
             tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing for Up selected slot");
@@ -1397,7 +1439,11 @@ mod tests {
         assert_eq!(player_slot_count(&test.state, pid), 20);
     }
 
-    fn open_test_up_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+    fn open_test_up_gui(
+        state: &Arc<GameState>,
+        tx: &dyn crate::net::session::wire::PacketSink,
+        pid: PlayerId,
+    ) {
         let view = PackView {
             id: 1,
             pack_type: crate::game::PackType::Up,
