@@ -27,6 +27,11 @@ quality_run_clippy_strict() {
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
 }
 
+quality_run_no_wire_in_lock() {
+  echo "==> Checking no wire building inside ECS lock closures"
+  bash "$ROOT_DIR/scripts/guards/no-wire-in-lock.sh"
+}
+
 quality_run_doctor() {
   echo "==> Running server doctor"
   RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 cargo run -- --doctor

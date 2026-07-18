@@ -111,9 +111,52 @@ cargo fmt --all -- --check
 scripts/dev/smoke.sh
 ```
 
+### Critical pattern check (must pass before commit):
+
+**No wire building inside ECS lock closures.** The following pattern is FORBIDDEN:
+```rust
+state.modify_player(pid, |ecs, entity| {
+    // ... ECS mutations ...
+    send_u_packet(&batch, ...);  // ← FORBIDDEN: holds write lock while building packets
+    Some(())
+});
+```
+
+Correct pattern:
+```rust
+let result = state.modify_player(pid, |ecs, entity| {
+    // ... ECS mutations ...
+    Some((money, creds))  // ← Return values, release lock
+});
+if let Some(Some((money, creds))) = result {
+    send_u_packet(&batch, ...);  // ← Build packets AFTER lock released
+}
+```
+
+Check command:
+```bash
+# Find send_u_packet inside modify_player closures
+python3 -c "
+import re
+with open('crates/server/openmines-server/src/game/logic/commands/mod.rs') as f:
+    lines = f.readlines()
+in_modify = 0
+for i, line in enumerate(lines, 1):
+    if '.modify_player(' in line:
+        in_modify = 1
+        start = i
+    if in_modify:
+        if 'send_u_packet' in line:
+            print(f'VIOLATION line {i}: send_u_packet inside modify_player (started at {start})')
+        if line.strip() == '});' or line.strip() == '})':
+            in_modify = 0
+"
+```
+
 ## Metrics
 
 Track progress:
 - `game/` → `net/` imports: currently 49, target 0
 - Wire references in `game/logic/`: currently 772, target 0
 - `&Outbox` parameters in game logic: count and eliminate
+- `send_u_packet` inside `modify_player` closures: must be 0
