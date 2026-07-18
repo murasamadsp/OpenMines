@@ -8,6 +8,8 @@ members = [
     "crates/openmines-storage",
     "crates/openmines-world",
     "crates/openmines-server",
+    "crates/openmines-server-simulation",
+    "crates/openmines-server-network",
     "crates/openmines-loadtest",
     "crates/openmines-proxy",
     "crates/openmines-macros"

@@ -17,6 +17,8 @@ openmines-runtime = { workspace = true }
 openmines-storage = { workspace = true }
 openmines-world = { workspace = true }
 openmines-macros = { workspace = true }
+openmines-server-simulation = { path = "../openmines-server-simulation" }
+openmines-server-network = { path = "../openmines-server-network" }
 tokio = { workspace = true }
 bytes = { workspace = true }
 serde = { workspace = true }
@@ -44,3 +46,6 @@ num-traits = { workspace = true }
 sqlx = { workspace = true }
 governor = { workspace = true }
 libc = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["openmines-server-simulation", "openmines-server-network"]
