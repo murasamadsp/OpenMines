@@ -1,0 +1,945 @@
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate,
+    clippy::missing_panics_doc,
+    clippy::module_name_repetitions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::similar_names,
+    clippy::default_trait_access,
+    clippy::doc_markdown,
+    clippy::struct_excessive_bools,
+    clippy::wildcard_imports,
+    clippy::manual_let_else,
+    clippy::redundant_pub_crate,
+    clippy::too_long_first_doc_paragraph
+)]
+
+use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
+use std::fs;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub world_name: String,
+    pub port: u16,
+    pub world_chunks_w: u32,
+    pub world_chunks_h: u32,
+    /// Каталог для `SQLite` и файлов мира (`*_v2.map`, `*_road_v2.map`, durability),
+    /// относительно текущей рабочей директории.
+    /// Перекрывается переменной окружения `M3R_DATA_DIR` (абсолютный или относительный путь).
+    pub data_dir: String,
+    /// См. `LoggingConfig`; секция обязательна в runtime-конфиге.
+    pub logging: LoggingConfig,
+    /// Настройки фоновых задач.
+    pub cron: CronConfig,
+    /// Тюнинг геймплея (админ-настраиваемые параметры). ОБЯЗАТЕЛЕН в `config.json`:
+    /// нет `#[serde(default)]` → пропущенный ключ = ошибка старта (fail-fast,
+    /// «missing field»), а не тихая подстановка. Конфиг — единственный источник
+    /// правды в рантайме. Новый параметр = новое поле; растёт организованно.
+    pub gameplay: GameplayConfig,
+}
+
+/// Корень геймплей-тюнинга. Растёт добавлением секций-суб-структур
+/// (`cooldowns`, далее `combat`/`items`/`economy`/…).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameplayConfig {
+    pub cooldowns: CooldownConfig,
+    pub combat: CombatConfig,
+    pub bonus: BonusConfig,
+    pub skills: SkillsConfig,
+    pub spawn: SpawnConfig,
+    pub programmator: ProgrammatorConfig,
+    pub simulation: SimulationConfig,
+    pub schedules: ScheduleConfig,
+    pub rate_limits: RateLimitConfig,
+}
+
+impl GameplayConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            cooldowns: CooldownConfig::runtime_baseline(),
+            combat: CombatConfig::runtime_baseline(),
+            bonus: BonusConfig::runtime_baseline(),
+            skills: SkillsConfig::runtime_baseline(),
+            spawn: SpawnConfig::runtime_baseline(),
+            programmator: ProgrammatorConfig::runtime_baseline(),
+            simulation: SimulationConfig::runtime_baseline(),
+            schedules: ScheduleConfig::runtime_baseline(),
+            rate_limits: RateLimitConfig::runtime_baseline(),
+        }
+    }
+}
+
+/// Настройки rate limiting для защиты от спама.
+/// `burst` — максимальный всплеск (GCRA bucket depth).
+/// `replenish_per_sec` — сколько токенов добавляется за секунду.
+/// Все поля обязательны (fail-fast при старте).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimitConfig {
+    /// Чат (`Locl`, `Chat`, `Cpri`) — сообщений в секунду + burst.
+    pub chat_burst: u32,
+    pub chat_per_sec: u32,
+    /// GUI-кнопки (`GUI_`) — на случай автокликера.
+    pub gui_burst: u32,
+    pub gui_per_sec: u32,
+}
+
+impl RateLimitConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            chat_burst: 5,
+            chat_per_sec: 3,
+            gui_burst: 10,
+            gui_per_sec: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnConfig {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl SpawnConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self { x: 10, y: 10 }
+    }
+}
+
+/// Настройки серверного исполнения программатора.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgrammatorConfig {
+    /// Задержка для прямых действий программы: копание/стройка/геология/хил.
+    pub direct_action_delay_us: u64,
+    /// Минимальная задержка движения, чтобы программа не крутила busy-loop.
+    pub min_move_delay_ms: u64,
+}
+
+impl ProgrammatorConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            direct_action_delay_us: 333_333,
+            min_move_delay_ms: 20,
+        }
+    }
+}
+
+/// Bounded work limits for the authoritative simulation owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    pub due_action_capacity: usize,
+    pub due_action_batch_budget: usize,
+    pub due_action_time_budget_us: u64,
+    pub lifecycle_ingress_capacity: usize,
+    pub gameplay_ingress_capacity: usize,
+    pub internal_ingress_capacity: usize,
+    pub lifecycle_ingress_batch_budget: usize,
+    pub gameplay_ingress_batch_budget: usize,
+    pub internal_ingress_batch_budget: usize,
+}
+
+impl SimulationConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            due_action_capacity: 65_536,
+            due_action_batch_budget: 256,
+            due_action_time_budget_us: 2_000,
+            lifecycle_ingress_capacity: 1_024,
+            gameplay_ingress_capacity: 8_192,
+            internal_ingress_capacity: 1_024,
+            lifecycle_ingress_batch_budget: 64,
+            gameplay_ingress_batch_budget: 256,
+            internal_ingress_batch_budget: 64,
+        }
+    }
+}
+
+/// Стартовые интервалы ECS-очередей в миллисекундах. `0` отключает очередь.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    pub hazards_ms: u64,
+    pub physics_ms: u64,
+    pub guns_ms: u64,
+    pub programmator_ms: u64,
+    pub alive_ms: u64,
+    pub building_effects_ms: u64,
+    pub hourly_damage_ms: u64,
+    pub game_loop_tick_rate_ms: u64,
+    pub game_loop_panic_backoff_ms: u64,
+    /// Порог slow-log для одной ECS schedule. Должен быть >= tick budget:
+    /// over-budget тики уже логируются отдельно, schedule warning нужен для
+    /// реально диагностируемых stalls.
+    pub schedule_warn_threshold_ms: u64,
+    /// Таймаут сессии: нет PO дольше этого — клиент считается мёртвым.
+    pub session_disconnect_timeout_secs: u64,
+}
+
+impl ScheduleConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            hazards_ms: 10,
+            physics_ms: 400,
+            guns_ms: 100,
+            programmator_ms: 10,
+            alive_ms: 5_000,
+            building_effects_ms: 500,
+            hourly_damage_ms: 3_600_000,
+            game_loop_tick_rate_ms: 10,
+            game_loop_panic_backoff_ms: 200,
+            schedule_warn_threshold_ms: 50,
+            session_disconnect_timeout_secs: 30,
+        }
+    }
+}
+
+/// Тюнинг скиллов. `upgrade_cost_base` — цена апгрейда в деньгах:
+/// `cost = upgrade_cost_base * текущий_уровень` (в C# апгрейд был бесплатным —
+/// намеренная экономик-девиация, см. `docs/DEVIATIONS.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillsConfig {
+    pub upgrade_cost_base: i64,
+}
+
+impl SkillsConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            upgrade_cost_base: 100,
+        }
+    }
+}
+
+/// Кулдауны действий игрока (мс). Прежние литералы из `play/dig_build.rs`
+/// (200ms копание/стройка) — теперь только в `config.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CooldownConfig {
+    pub dig_ms: u64,
+    pub build_ms: u64,
+    pub geo_ms: u64,
+}
+
+impl CooldownConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            dig_ms: 200,
+            build_ms: 200,
+            geo_ms: 200,
+        }
+    }
+}
+
+/// Базовые боевые параметры. Значения по умолчанию держат текущий C#-паритет:
+/// пушка стреляет раз в 0.5с, радиус 20 клеток, базовый урон 60 HP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CombatConfig {
+    pub gun_fire_interval_ms: u64,
+    pub gun_damage: i32,
+    pub gun_radius_cells: i32,
+}
+
+impl CombatConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            gun_fire_interval_ms: 500,
+            gun_damage: 60,
+            gun_radius_cells: 20,
+        }
+    }
+}
+
+/// Daily bonus tuning (`GDon` button). Defaults preserve the current behavior:
+/// one claim every 7 hours, 1_000_000 money.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BonusConfig {
+    pub cooldown_secs: i64,
+    pub reward_money: i64,
+}
+
+impl BonusConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            cooldown_secs: 7 * 3_600,
+            reward_money: 1_000_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CronConfig {
+    pub hourly_log_enabled: bool,
+}
+
+impl CronConfig {
+    #[must_use]
+    pub const fn runtime_baseline() -> Self {
+        Self {
+            hourly_log_enabled: true,
+        }
+    }
+}
+
+/// Настройки вывода логов (см. `crate::logging::init`). Все поля обязательны в
+/// runtime-конфиге: отсутствующее значение — ошибка старта, не тихий дефолт.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    /// Директивы `EnvFilter`, если не заданы `RUST_LOG` / `M3R_LOG`.
+    pub filter: String,
+    pub format: LogFormat,
+    pub file: Option<LogFileConfig>,
+}
+
+impl LoggingConfig {
+    #[must_use]
+    pub fn runtime_baseline() -> Self {
+        Self {
+            filter: runtime_baseline_log_filter(),
+            format: LogFormat::Pretty,
+            file: None,
+        }
+    }
+}
+
+fn runtime_baseline_log_filter() -> String {
+    "openmines_server=info,openmines_server::net::session=debug,tokio=warn,h2=warn".into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    Pretty,
+    Compact,
+    Json,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogFileConfig {
+    /// Путь вида `logs/server.log` — каталог создаётся, префикс имени для ротации по дням.
+    pub path: String,
+    pub format: LogFormat,
+}
+
+impl Config {
+    pub fn load(path: &str) -> Result<Self> {
+        let data =
+            fs::read_to_string(path).with_context(|| format!("read server config {path}"))?;
+        let cfg: Self =
+            serde_json::from_str(&data).with_context(|| format!("parse server config {path}"))?;
+        cfg.validate()
+            .with_context(|| format!("validate server config {path}"))?;
+        Ok(cfg)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.world_name.trim().is_empty() {
+            anyhow::bail!("world_name is empty");
+        }
+        if self.port == 0 {
+            anyhow::bail!("port must be in 1..=65535");
+        }
+        if self.world_chunks_w == 0 {
+            anyhow::bail!("world_chunks_w must be greater than 0");
+        }
+        if self.world_chunks_h == 0 {
+            anyhow::bail!("world_chunks_h must be greater than 0");
+        }
+        if self.data_dir.trim().is_empty() {
+            anyhow::bail!("data_dir is empty");
+        }
+        if self.data_dir.trim() == "." {
+            anyhow::bail!("data_dir must point to a state directory, not repository root");
+        }
+        self.logging.validate()?;
+        self.gameplay
+            .validate(self.world_chunks_w, self.world_chunks_h)?;
+        Ok(())
+    }
+}
+
+impl GameplayConfig {
+    fn validate(&self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
+        self.cooldowns.validate()?;
+        self.combat.validate()?;
+        self.bonus.validate()?;
+        self.spawn.validate(world_chunks_w, world_chunks_h)?;
+        self.programmator.validate()?;
+        self.simulation.validate()?;
+        self.schedules.validate()?;
+        if self.schedules.programmator_ms == 0 {
+            anyhow::bail!("gameplay.schedules.programmator_ms must be greater than 0");
+        }
+        if self.schedules.programmator_ms < self.schedules.game_loop_tick_rate_ms {
+            anyhow::bail!(
+                "gameplay.schedules.programmator_ms must be greater than or equal to gameplay.schedules.game_loop_tick_rate_ms"
+            );
+        }
+        if self.schedules.programmator_ms > self.programmator.min_move_delay_ms {
+            anyhow::bail!(
+                "gameplay.schedules.programmator_ms must be less than or equal to gameplay.programmator.min_move_delay_ms"
+            );
+        }
+        self.rate_limits.validate()?;
+        Ok(())
+    }
+}
+
+impl CooldownConfig {
+    fn validate(&self) -> Result<()> {
+        if self.dig_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.dig_ms must be greater than 0");
+        }
+        if self.build_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.build_ms must be greater than 0");
+        }
+        if self.geo_ms == 0 {
+            anyhow::bail!("gameplay.cooldowns.geo_ms must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl CombatConfig {
+    fn validate(self) -> Result<()> {
+        if self.gun_fire_interval_ms == 0 {
+            anyhow::bail!("gameplay.combat.gun_fire_interval_ms must be greater than 0");
+        }
+        if self.gun_damage <= 0 {
+            anyhow::bail!("gameplay.combat.gun_damage must be greater than 0");
+        }
+        if self.gun_radius_cells <= 0 {
+            anyhow::bail!("gameplay.combat.gun_radius_cells must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl BonusConfig {
+    fn validate(self) -> Result<()> {
+        if self.cooldown_secs <= 0 {
+            anyhow::bail!("gameplay.bonus.cooldown_secs must be greater than 0");
+        }
+        if self.reward_money <= 0 {
+            anyhow::bail!("gameplay.bonus.reward_money must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl SpawnConfig {
+    fn validate(self, world_chunks_w: u32, world_chunks_h: u32) -> Result<()> {
+        const SPAWN_MARGIN: i32 = 10;
+        let world_cells_w = i32::try_from(world_chunks_w)
+            .ok()
+            .and_then(|v| v.checked_mul(32))
+            .context("world_chunks_w is too large")?;
+        let world_cells_h = i32::try_from(world_chunks_h)
+            .ok()
+            .and_then(|v| v.checked_mul(32))
+            .context("world_chunks_h is too large")?;
+        if self.x < SPAWN_MARGIN || self.y < SPAWN_MARGIN {
+            anyhow::bail!("gameplay.spawn must leave a {SPAWN_MARGIN}-cell margin");
+        }
+        if self.x + SPAWN_MARGIN >= world_cells_w || self.y + SPAWN_MARGIN >= world_cells_h {
+            anyhow::bail!("gameplay.spawn does not fit inside configured world");
+        }
+        Ok(())
+    }
+}
+
+impl ProgrammatorConfig {
+    fn validate(self) -> Result<()> {
+        if self.direct_action_delay_us == 0 {
+            anyhow::bail!("gameplay.programmator.direct_action_delay_us must be greater than 0");
+        }
+        if self.min_move_delay_ms == 0 {
+            anyhow::bail!("gameplay.programmator.min_move_delay_ms must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl SimulationConfig {
+    fn validate(self) -> Result<()> {
+        if self.due_action_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_capacity must be greater than 0");
+        }
+        if self.due_action_batch_budget == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_batch_budget must be greater than 0");
+        }
+        if self.due_action_time_budget_us == 0 {
+            anyhow::bail!("gameplay.simulation.due_action_time_budget_us must be greater than 0");
+        }
+        if self.lifecycle_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.lifecycle_ingress_capacity must be greater than 0");
+        }
+        if self.gameplay_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.gameplay_ingress_capacity must be greater than 0");
+        }
+        if self.internal_ingress_capacity == 0 {
+            anyhow::bail!("gameplay.simulation.internal_ingress_capacity must be greater than 0");
+        }
+        if self.lifecycle_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.lifecycle_ingress_batch_budget must be greater than 0"
+            );
+        }
+        if self.gameplay_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.gameplay_ingress_batch_budget must be greater than 0"
+            );
+        }
+        if self.internal_ingress_batch_budget == 0 {
+            anyhow::bail!(
+                "gameplay.simulation.internal_ingress_batch_budget must be greater than 0"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl ScheduleConfig {
+    fn validate(self) -> Result<()> {
+        if self.game_loop_tick_rate_ms == 0 {
+            anyhow::bail!("gameplay.schedules.game_loop_tick_rate_ms must be greater than 0");
+        }
+        if self.game_loop_panic_backoff_ms == 0 {
+            anyhow::bail!("gameplay.schedules.game_loop_panic_backoff_ms must be greater than 0");
+        }
+        if self.schedule_warn_threshold_ms < self.game_loop_tick_rate_ms {
+            anyhow::bail!(
+                "gameplay.schedules.schedule_warn_threshold_ms must be greater than or equal to gameplay.schedules.game_loop_tick_rate_ms"
+            );
+        }
+        if self.session_disconnect_timeout_secs == 0 {
+            anyhow::bail!(
+                "gameplay.schedules.session_disconnect_timeout_secs must be greater than 0"
+            );
+        }
+        Ok(())
+    }
+}
+
+impl RateLimitConfig {
+    fn validate(self) -> Result<()> {
+        if self.chat_burst == 0 {
+            anyhow::bail!("gameplay.rate_limits.chat_burst must be greater than 0");
+        }
+        if self.chat_per_sec == 0 {
+            anyhow::bail!("gameplay.rate_limits.chat_per_sec must be greater than 0");
+        }
+        if self.gui_burst == 0 {
+            anyhow::bail!("gameplay.rate_limits.gui_burst must be greater than 0");
+        }
+        if self.gui_per_sec == 0 {
+            anyhow::bail!("gameplay.rate_limits.gui_per_sec must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl LoggingConfig {
+    fn validate(&self) -> Result<()> {
+        if self.filter.trim().is_empty() {
+            anyhow::bail!("logging.filter is empty");
+        }
+        if let Some(file) = &self.file {
+            file.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl LogFileConfig {
+    fn validate(&self) -> Result<()> {
+        if self.path.trim().is_empty() {
+            anyhow::bail!("logging.file.path is empty");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FULL: &str = r#"{
+        "world_name": "t", "port": 8090, "world_chunks_w": 4, "world_chunks_h": 4,
+        "data_dir": "data", "logging": {"filter": "info", "format": "pretty", "file": null},
+        "cron": {"hourly_log_enabled": true},
+        "gameplay": {"cooldowns": {"dig_ms": 250, "build_ms": 300, "geo_ms": 350},
+                     "combat": {"gun_fire_interval_ms": 550, "gun_damage": 65, "gun_radius_cells": 22},
+                     "bonus": {"cooldown_secs": 25201, "reward_money": 1000001},
+                     "skills": {"upgrade_cost_base": 100},
+                     "spawn": {"x": 12, "y": 13},
+                     "programmator": {
+                       "direct_action_delay_us": 333333,
+                       "min_move_delay_ms": 20
+                     },
+                     "simulation": {
+                       "due_action_capacity": 65536,
+                       "due_action_batch_budget": 256,
+                       "due_action_time_budget_us": 2000,
+                       "lifecycle_ingress_capacity": 1024,
+                       "gameplay_ingress_capacity": 8192,
+                       "internal_ingress_capacity": 1024,
+                       "lifecycle_ingress_batch_budget": 64,
+                       "gameplay_ingress_batch_budget": 256,
+                       "internal_ingress_batch_budget": 64
+                     },
+                      "schedules": {
+                        "hazards_ms": 10,
+                        "physics_ms": 400,
+                        "guns_ms": 100,
+                        "programmator_ms": 10,
+                        "alive_ms": 5000,
+                        "building_effects_ms": 500,
+                        "hourly_damage_ms": 3600000,
+                        "game_loop_tick_rate_ms": 10,
+                        "game_loop_panic_backoff_ms": 200,
+                        "schedule_warn_threshold_ms": 50,
+                        "session_disconnect_timeout_secs": 30
+                      },
+                      "rate_limits": {
+                        "chat_burst": 5,
+                        "chat_per_sec": 3,
+                        "gui_burst": 10,
+                        "gui_per_sec": 5
+                      }}
+    }"#;
+
+    #[test]
+    fn gameplay_values_come_from_config_not_defaults() {
+        let c: Config = serde_json::from_str(FULL).unwrap();
+        c.validate().unwrap();
+        // Значения читаются из JSON, а не из кода (250/300 ≠ дефолтные 200).
+        assert_eq!(c.gameplay.cooldowns.dig_ms, 250);
+        assert_eq!(c.gameplay.cooldowns.build_ms, 300);
+        assert_eq!(c.gameplay.cooldowns.geo_ms, 350);
+        assert_eq!(c.gameplay.combat.gun_fire_interval_ms, 550);
+        assert_eq!(c.gameplay.combat.gun_damage, 65);
+        assert_eq!(c.gameplay.combat.gun_radius_cells, 22);
+        assert_eq!(c.gameplay.bonus.cooldown_secs, 25_201);
+        assert_eq!(c.gameplay.bonus.reward_money, 1_000_001);
+        assert_eq!(c.gameplay.skills.upgrade_cost_base, 100);
+        assert_eq!(c.gameplay.spawn.x, 12);
+        assert_eq!(c.gameplay.spawn.y, 13);
+        assert_eq!(c.gameplay.programmator.direct_action_delay_us, 333_333);
+        assert_eq!(c.gameplay.programmator.min_move_delay_ms, 20);
+        assert_eq!(c.gameplay.simulation.due_action_capacity, 65_536);
+        assert_eq!(c.gameplay.simulation.due_action_batch_budget, 256);
+        assert_eq!(c.gameplay.simulation.due_action_time_budget_us, 2_000);
+        assert_eq!(c.gameplay.simulation.lifecycle_ingress_capacity, 1_024);
+        assert_eq!(c.gameplay.simulation.gameplay_ingress_capacity, 8_192);
+        assert_eq!(c.gameplay.simulation.internal_ingress_capacity, 1_024);
+        assert_eq!(c.gameplay.simulation.lifecycle_ingress_batch_budget, 64);
+        assert_eq!(c.gameplay.simulation.gameplay_ingress_batch_budget, 256);
+        assert_eq!(c.gameplay.simulation.internal_ingress_batch_budget, 64);
+        assert_eq!(c.gameplay.schedules.hazards_ms, 10);
+        assert_eq!(c.gameplay.schedules.physics_ms, 400);
+        assert_eq!(c.gameplay.schedules.programmator_ms, 10);
+        assert_eq!(c.gameplay.schedules.building_effects_ms, 500);
+        assert_eq!(c.gameplay.schedules.hourly_damage_ms, 3_600_000);
+        assert_eq!(c.gameplay.schedules.schedule_warn_threshold_ms, 50);
+        assert!(c.cron.hourly_log_enabled);
+    }
+
+    /// Fail-fast (запрошено): пропущенный геймплей-ключ = ошибка парсинга, а НЕ
+    /// тихая подстановка дефолта. Так админ сразу видит, что забыл в `config.json`.
+    #[test]
+    fn missing_gameplay_key_is_an_error_not_a_silent_default() {
+        // Нет секции gameplay целиком.
+        let no_gameplay = FULL.replace(r#""gameplay": {"#, r#""ignored": {"#);
+        assert!(
+            serde_json::from_str::<Config>(&no_gameplay).is_err(),
+            "пропущенный gameplay должен быть ошибкой (fail-fast), а не дефолтом"
+        );
+        // Нет одного ключа внутри (build_ms) — тоже ошибка.
+        let no_build = FULL.replace(r#", "build_ms": 300"#, "");
+        assert!(
+            serde_json::from_str::<Config>(&no_build).is_err(),
+            "пропущенный build_ms должен быть ошибкой"
+        );
+        let no_geo = FULL.replace(r#", "geo_ms": 350"#, "");
+        assert!(
+            serde_json::from_str::<Config>(&no_geo).is_err(),
+            "пропущенный geo_ms должен быть ошибкой"
+        );
+        let mut no_combat: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_combat["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("combat");
+        assert!(
+            serde_json::from_value::<Config>(no_combat).is_err(),
+            "пропущенный combat должен быть ошибкой"
+        );
+        let mut no_bonus: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_bonus["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("bonus");
+        assert!(
+            serde_json::from_value::<Config>(no_bonus).is_err(),
+            "пропущенный bonus должен быть ошибкой"
+        );
+        let mut no_spawn: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_spawn["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("spawn");
+        assert!(
+            serde_json::from_value::<Config>(no_spawn).is_err(),
+            "пропущенный spawn должен быть ошибкой"
+        );
+        let mut no_programmator: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_programmator["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("programmator");
+        assert!(
+            serde_json::from_value::<Config>(no_programmator).is_err(),
+            "пропущенный programmator должен быть ошибкой"
+        );
+        let mut no_simulation: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_simulation["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("simulation");
+        assert!(
+            serde_json::from_value::<Config>(no_simulation).is_err(),
+            "пропущенный simulation должен быть ошибкой"
+        );
+        let mut no_schedules: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        no_schedules["gameplay"]
+            .as_object_mut()
+            .unwrap()
+            .remove("schedules");
+        assert!(
+            serde_json::from_value::<Config>(no_schedules).is_err(),
+            "пропущенный schedules должен быть ошибкой"
+        );
+    }
+
+    #[test]
+    fn missing_top_level_keys_are_errors_not_silent_defaults() {
+        for key in [
+            "world_name",
+            "port",
+            "world_chunks_w",
+            "world_chunks_h",
+            "data_dir",
+            "logging",
+            "cron",
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<Config>(raw).is_err(),
+                "missing key must be an error: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_load_missing_file_is_error_not_autogenerated() {
+        let path = std::env::temp_dir().join(format!(
+            "openmines_missing_config_{}_{}.json",
+            std::process::id(),
+            "strict"
+        ));
+        let _ = std::fs::remove_file(&path);
+        let err = Config::load(path.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("read server config"),
+            "missing config should fail with read context, got: {err:?}"
+        );
+        assert!(
+            !path.exists(),
+            "Config::load must not create missing config"
+        );
+    }
+
+    #[test]
+    fn invalid_infrastructure_values_are_errors() {
+        for (key, value) in [
+            ("world_name", serde_json::json!("")),
+            ("port", serde_json::json!(0)),
+            ("world_chunks_w", serde_json::json!(0)),
+            ("world_chunks_h", serde_json::json!(0)),
+            ("data_dir", serde_json::json!(" ")),
+            ("data_dir", serde_json::json!(".")),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw.as_object_mut().unwrap().insert(key.to_string(), value);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_spawn_values_are_errors() {
+        for spawn in [
+            serde_json::json!({"x": 9, "y": 13}),
+            serde_json::json!({"x": 12, "y": 9}),
+            serde_json::json!({"x": 118, "y": 13}),
+            serde_json::json!({"x": 12, "y": 118}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["spawn"] = spawn;
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid spawn must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_cooldown_values_are_errors() {
+        for key in ["dig_ms", "build_ms", "geo_ms"] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["cooldowns"][key] = serde_json::json!(0);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_combat_values_are_errors() {
+        for (key, value) in [
+            ("gun_fire_interval_ms", serde_json::json!(0)),
+            ("gun_damage", serde_json::json!(0)),
+            ("gun_radius_cells", serde_json::json!(0)),
+            ("gun_damage", serde_json::json!(-1)),
+            ("gun_radius_cells", serde_json::json!(-1)),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["combat"][key] = value;
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_bonus_values_are_errors() {
+        for (key, value) in [
+            ("cooldown_secs", serde_json::json!(0)),
+            ("reward_money", serde_json::json!(0)),
+            ("cooldown_secs", serde_json::json!(-1)),
+            ("reward_money", serde_json::json!(-1)),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["bonus"][key] = value;
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_programmator_values_are_errors() {
+        for patch in [
+            serde_json::json!({"direct_action_delay_us": 0}),
+            serde_json::json!({"min_move_delay_ms": 0}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["programmator"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid programmator config must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_simulation_values_are_errors() {
+        for key in [
+            "due_action_capacity",
+            "due_action_batch_budget",
+            "due_action_time_budget_us",
+            "lifecycle_ingress_capacity",
+            "gameplay_ingress_capacity",
+            "internal_ingress_capacity",
+            "lifecycle_ingress_batch_budget",
+            "gameplay_ingress_batch_budget",
+            "internal_ingress_batch_budget",
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            raw["gameplay"]["simulation"][key] = serde_json::json!(0);
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(cfg.validate().is_err(), "invalid {key} must be rejected");
+        }
+    }
+
+    #[test]
+    fn invalid_schedule_values_are_errors() {
+        for patch in [
+            serde_json::json!({"game_loop_tick_rate_ms": 0}),
+            serde_json::json!({"game_loop_panic_backoff_ms": 0}),
+            serde_json::json!({"schedule_warn_threshold_ms": 9}),
+            serde_json::json!({"session_disconnect_timeout_secs": 0}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["schedules"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid schedule config must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_programmator_schedule_relationships_are_errors() {
+        for patch in [
+            serde_json::json!({"programmator_ms": 0}),
+            serde_json::json!({"programmator_ms": 9}),
+            serde_json::json!({"programmator_ms": 21}),
+        ] {
+            let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+            let obj = raw["gameplay"]["schedules"].as_object_mut().unwrap();
+            for (key, value) in patch.as_object().unwrap() {
+                obj.insert(key.clone(), value.clone());
+            }
+            let cfg: Config = serde_json::from_value(raw).unwrap();
+            assert!(
+                cfg.validate().is_err(),
+                "invalid programmator schedule relationship must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_logging_values_are_errors() {
+        let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        raw["logging"]["filter"] = serde_json::json!("");
+        let cfg: Config = serde_json::from_value(raw).unwrap();
+        assert!(
+            cfg.validate().is_err(),
+            "empty logging.filter must be rejected"
+        );
+
+        let mut raw: serde_json::Value = serde_json::from_str(FULL).unwrap();
+        raw["logging"]["file"] = serde_json::json!({"path": " ", "format": "json"});
+        let cfg: Config = serde_json::from_value(raw).unwrap();
+        assert!(
+            cfg.validate().is_err(),
+            "empty logging.file.path must be rejected"
+        );
+    }
+}

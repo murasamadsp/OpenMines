@@ -14,11 +14,11 @@ err() {
 }
 
 echo "==> Checking async trait-object allocation hazards"
-if rg -n '#\s*\[\s*async_trait|async_trait::async_trait' crates/openmines-server/src crates/openmines-storage/src; then
+if rg -n '#\s*\[\s*async_trait|async_trait::async_trait' crates/server/openmines-server/src crates/game/openmines-storage/src; then
   err "async_trait is forbidden in server/storage live code; prefer inherent async fns or explicit actor messages"
 fi
 
-if rg -n 'Box\s*<\s*dyn\s+Future|Pin\s*<\s*Box\s*<\s*dyn\s+Future' crates/openmines-server/src; then
+if rg -n 'Box\s*<\s*dyn\s+Future|Pin\s*<\s*Box\s*<\s*dyn\s+Future' crates/server/openmines-server/src; then
   err "boxed dyn Future is forbidden in openmines-server hot code"
 fi
 
@@ -30,7 +30,7 @@ from pathlib import Path
 import re
 import sys
 
-ROOTS = [Path("crates/openmines-server/src")]
+ROOTS = [Path("crates/server/openmines-server/src")]
 GUARD_RE = re.compile(
     r"^\s*let\s+(?:mut\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*.*\.(?:lock|read|write)\s*\(\)\s*;"
 )
@@ -91,8 +91,8 @@ PYEOF
 
 echo "==> Ownership audit summary"
 printf 'Arc<GameState> refs: '
-rg -n 'Arc\s*<\s*GameState|Arc\s*<\s*crate::game::GameState|std::sync::Arc\s*<\s*game::GameState' crates/openmines-server/src -g '*.rs' | wc -l | tr -d ' '
+rg -n 'Arc\s*<\s*GameState|Arc\s*<\s*crate::game::GameState|std::sync::Arc\s*<\s*game::GameState' crates/server/openmines-server/src -g '*.rs' | wc -l | tr -d ' '
 printf 'sync lock guard sites: '
-rg -n 'let\s+(mut\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*.*\.(lock|read|write)\s*\(\)\s*;' crates/openmines-server/src -g '*.rs' | wc -l | tr -d ' '
+rg -n 'let\s+(mut\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*.*\.(lock|read|write)\s*\(\)\s*;' crates/server/openmines-server/src -g '*.rs' | wc -l | tr -d ' '
 
 exit "$fail"

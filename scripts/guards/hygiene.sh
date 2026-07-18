@@ -61,7 +61,7 @@ else
     if ! rg -Fq "\`$path\`" "$registry"; then
       warn "tracked tool is missing from $registry: $path"
     fi
-  done < <(git ls-files 'tools/**/*.py' 'tools/requirements.txt' 'crates/openmines-loadtest/Cargo.toml' 'crates/openmines-proxy/Cargo.toml')
+  done < <(git ls-files 'tools/**/*.py' 'tools/requirements.txt' 'crates/tooling/openmines-loadtest/Cargo.toml' 'crates/tooling/openmines-proxy/Cargo.toml')
 fi
 
 echo "==> Checking tracked generated Python artifacts"

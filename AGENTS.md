@@ -34,12 +34,12 @@
 
 - **🚧 НЕТ ПРОДАКШЕНА — ЭТАП РАЗРАБОТКИ.** На сервере (ssh vps) нет активных внешних игроков, мир в `data/` и volume на VPS является тестовым и подлежит регенерации или рестартам при необходимости (`--regen`). Тем не менее, для удобства разработки и тестирования накопленные данные (игроки, здания) представляют ценность. Любые деструктивные действия с контейнерами или volumes на VPS требуют обязательного создания бэкапа и явного согласования. Локально регенерация мира и сброс БД свободны, без «прод-осторожности». Фиксить ВСЁ.
 - **НЕ ВОЗВРАЩАТЬ УДАЛЁННОЕ** — если код/файл был удалён, не восстанавливать без явной просьбы.
-- **БАРЬЕР ECS И СЕТЕВОГО СЛОЯ:** Строго запрещено добавлять новые прямые обращения к ECS (через `state.ecs`, `ecs_read_profiled`, `ecs_write_profiled`, `query_player`, `modify_player`) в сетевой слой (`crates/openmines-server/src/net/session/` и `crates/openmines-server/src/net/web.rs`). Любое новое действие должно идти через typed commands. Изменения в сетевом слое должны соответствовать `docs/reference/ecs_bypass_baseline.txt`.
+- **БАРЬЕР ECS И СЕТЕВОГО СЛОЯ:** Строго запрещено добавлять новые прямые обращения к ECS (через `state.ecs`, `ecs_read_profiled`, `ecs_write_profiled`, `query_player`, `modify_player`) в сетевой слой (`crates/server/openmines-server/src/net/session/` и `crates/server/openmines-server/src/net/web.rs`). Любое новое действие должно идти через typed commands. Изменения в сетевом слое должны соответствовать `docs/reference/ecs_bypass_baseline.txt`.
 - **НЕ ТРОГАТЬ ЛИНТЕРЫ** — не менять настройки clippy/rustfmt, не подавлять warnings.
 - **НЕ ОБХОДИТЬ ХУКИ** — никогда не использовать `--no-verify`.
 - **ЛОКАЛЬНОСТЬ** — Rust код только в `crates/`, C# только в `client/`.
 - **СЕРВЕР ПОДСТРАИВАЕТСЯ ПОД LEGACY-КЛИЕНТ.** При работе над
-  `crates/openmines-server/` запрещено списывать connect/login/gameplay баг на
+  `crates/server/openmines-server/` запрещено списывать connect/login/gameplay баг на
   клиента: сервер обязан воспроизвести ожидаемый wire и поведение.
 - **ИСХОДНИК КЛИЕНТА НЕ ЗАМОРОЖЕН.** `client/` — декомпилированный Unity-проект под собственным вложенным git-репо (без remote, на origin не уходит). Его МОЖНО рефакторить по явному запросу. Wire-формат при этом неизменен (клиент legacy). Любое изменение `client/` верифицируется компиляцией: Roslyn против Unity 6000.3.17f1 DLL, 0 ошибок — обязательное условие.
 - **НЕ ТРОГАТЬ** `bin`, `obj`. `target/` — Cargo build cache: исходники туда не
@@ -370,9 +370,9 @@ cargo fmt --all
 
 ## Архитектура Rust-сервера
 
-Проект разделен на независимые Cargo packages: `openmines-core` (лёгкие доменные value objects), `openmines-config` (fail-fast конфиги), `openmines-protocol` (wire-контракт), `openmines-world` (mmap-мир/worldgen), `openmines-storage` (SQLite/sqlx), `openmines-runtime` (logging/metrics/env/time), `openmines-server` (игровой сервер), `openmines-loadtest` и `openmines-proxy`. Entry point игрового сервера — `crates/openmines-server/src/main.rs`.
+Проект разделен на независимые Cargo packages: `openmines-core` (лёгкие доменные value objects), `openmines-config` (fail-fast конфиги), `openmines-protocol` (wire-контракт), `openmines-world` (mmap-мир/worldgen), `openmines-storage` (SQLite/sqlx), `openmines-runtime` (logging/metrics/env/time), `openmines-server` (игровой сервер), `openmines-loadtest` и `openmines-proxy`. Entry point игрового сервера — `crates/server/openmines-server/src/main.rs`.
 
-### Структура `crates/openmines-protocol/src/` (Wire-контракт)
+### Структура `crates/game/openmines-protocol/src/` (Wire-контракт)
 
 - **`lib.rs`** — общий бинарный фрейм `[len][type][event][payload]`.
 - **`packets.rs`** — билдеры/декодеры server↔client пакетов и HB sub-packets.
@@ -387,7 +387,7 @@ cargo fmt --all
 - **`openmines-storage`** — SQLite (WAL mode). Таблицы: players, buildings, clans, chats, chat_messages, boxes, programs, active_events.
 - **`openmines-runtime`** — logging, metrics, env parsing, утилиты времени.
 
-### Структура `crates/openmines-server/src/` (Игровой сервер)
+### Структура `crates/server/openmines-server/src/` (Игровой сервер)
 
 - **`game/`** — игровая логика на Bevy ECS:
   - `mod.rs` — `GameState` (центральный Arc-объект), Bevy ECS-системы, очереди broadcast/programmator.
@@ -516,8 +516,8 @@ TCP Session -> QueuedGameCommand -> SimulationRuntime -> CommandEffects
 
 | Система | Файлы | Реально |
 | - | - | - |
-| Протокол (кодек) | `crates/openmines-protocol/` | Билдеры/декодеры, golden-тесты байт-в-байт |
-| БД (схема) | `crates/openmines-storage/` | Схема + миграции, SQLite WAL |
+| Протокол (кодек) | `crates/game/openmines-protocol/` | Билдеры/декодеры, golden-тесты байт-в-байт |
+| БД (схема) | `crates/game/openmines-storage/` | Схема + миграции, SQLite WAL |
 | Аутентификация | `auth/login.rs` | MD5/SHA256 токены, rate-limit |
 | Движение | `play/movement.rs` | Ходит, гейты, дистанция |
 | Спавн игрока | `player/init.rs` | Порядок пакетов в основном 1:1, вход работает |

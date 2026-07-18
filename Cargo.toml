@@ -1,18 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/openmines-config",
-    "crates/openmines-core",
-    "crates/openmines-protocol",
-    "crates/openmines-runtime",
-    "crates/openmines-storage",
-    "crates/openmines-world",
-    "crates/openmines-server",
-    "crates/openmines-server-simulation",
-    "crates/openmines-server-network",
-    "crates/openmines-loadtest",
-    "crates/openmines-proxy",
-    "crates/openmines-macros"
+    "crates/common/openmines-common",
+    "crates/common/openmines-macros",
+    "crates/game/openmines-protocol",
+    "crates/game/openmines-world",
+    "crates/game/openmines-storage",
+    "crates/server/openmines-server",
+    "crates/server/openmines-server-simulation",
+    "crates/server/openmines-server-network",
+    "crates/tooling/openmines-loadtest",
+    "crates/tooling/openmines-proxy"
 ]
 
 [workspace.package]
@@ -75,13 +73,11 @@ proc-macro2 = "1.0.93"
 rstml = "0.11.0"
 
 # Internal workspace dependency
-openmines-config = { path = "crates/openmines-config" }
-openmines-core = { path = "crates/openmines-core" }
-openmines-protocol = { path = "crates/openmines-protocol" }
-openmines-runtime = { path = "crates/openmines-runtime" }
-openmines-storage = { path = "crates/openmines-storage" }
-openmines-world = { path = "crates/openmines-world" }
-openmines-macros = { path = "crates/openmines-macros" }
+openmines-common = { path = "crates/common/openmines-common" }
+openmines-protocol = { path = "crates/game/openmines-protocol" }
+openmines-storage = { path = "crates/game/openmines-storage" }
+openmines-world = { path = "crates/game/openmines-world" }
+openmines-macros = { path = "crates/common/openmines-macros" }
 
 [profile.dev]
 debug = 1

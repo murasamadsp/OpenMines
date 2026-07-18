@@ -1719,19 +1719,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "openmines-config"
+name = "openmines-common"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "openmines-macros",
+ "prometheus",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "openmines-core"
-version = "0.0.2"
-dependencies = [
- "serde",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1785,18 +1783,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openmines-runtime"
-version = "0.0.2"
-dependencies = [
- "anyhow",
- "openmines-config",
- "prometheus",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "openmines-server"
 version = "0.0.2"
 dependencies = [
@@ -1815,11 +1801,8 @@ dependencies = [
  "md5",
  "mime_guess",
  "num-traits",
- "openmines-config",
- "openmines-core",
- "openmines-macros",
+ "openmines-common",
  "openmines-protocol",
- "openmines-runtime",
  "openmines-server-network",
  "openmines-server-simulation",
  "openmines-storage",
@@ -1852,7 +1835,7 @@ version = "0.0.2"
 dependencies = [
  "anyhow",
  "num-traits",
- "openmines-core",
+ "openmines-common",
  "rand 0.9.4",
  "serde",
  "serde_json",
