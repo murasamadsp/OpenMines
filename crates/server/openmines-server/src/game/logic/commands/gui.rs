@@ -280,6 +280,46 @@ fn apply_gui_button_command(
         }
         return CommandEffects::default();
     }
+    // Pack operations — route through typed command pipeline
+    if let Some(rest) = button.strip_prefix("resp_bind:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2
+            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
+        {
+            return super::apply_resp_bind(state, player_id, session_id, x, y);
+        }
+        return CommandEffects::default();
+    }
+    if let Some(rest) = button.strip_prefix("resp_fill:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3
+            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
+        {
+            return super::apply_resp_fill(state, player_id, session_id, parts[0], x, y);
+        }
+        return CommandEffects::default();
+    }
+    if let Some(rest) = button.strip_prefix("gun_fill:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 3
+            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
+        {
+            return super::apply_gun_fill(state, player_id, session_id, parts[0], x, y);
+        }
+        return CommandEffects::default();
+    }
+    if let Some(rest) = button.strip_prefix("resp_profit:") {
+        let parts: Vec<&str> = rest.split(':').collect();
+        if parts.len() == 2
+            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
+        {
+            return super::apply_resp_profit(state, player_id, session_id, x, y);
+        }
+        return CommandEffects::default();
+    }
+    if let Some(rest) = button.strip_prefix("resp_save:") {
+        return super::apply_resp_save(state, player_id, session_id, rest);
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {

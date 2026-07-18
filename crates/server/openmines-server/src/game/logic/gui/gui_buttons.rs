@@ -178,46 +178,6 @@ pub fn handle_gui_button_sync_fast_path(
         crate::game::logic::teleport::apply(state, tx, pid, rest);
         return true;
     }
-    if let Some(rest) = button.strip_prefix("resp_bind:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 2
-            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
-        {
-            crate::game::logic::packs::handle_resp_bind(state, tx, pid, x, y);
-        }
-        return true;
-    }
-    if let Some(rest) = button.strip_prefix("resp_fill:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 3
-            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
-        {
-            crate::game::logic::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
-        }
-        return true;
-    }
-    if let Some(rest) = button.strip_prefix("gun_fill:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 3
-            && let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>())
-        {
-            crate::game::logic::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
-        }
-        return true;
-    }
-    if let Some(rest) = button.strip_prefix("resp_profit:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 2
-            && let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>())
-        {
-            crate::game::logic::packs::handle_resp_profit(state, tx, pid, x, y);
-        }
-        return true;
-    }
-    if let Some(rest) = button.strip_prefix("resp_save:") {
-        crate::game::logic::packs::handle_resp_save(state, tx, pid, rest);
-        return true;
-    }
     if let Some(rest) = button.strip_prefix("pack_save:") {
         pack_gui::handle_pack_save(state, tx, pid, rest);
         return true;
@@ -299,30 +259,6 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
                 crate::game::logic::packs::handle_resp_bind(state, tx, pid, x, y);
             }
         }
-    } else if let Some(rest) = button.strip_prefix("resp_fill:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 3 {
-            if let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-                crate::game::logic::packs::handle_resp_fill(state, tx, pid, parts[0], x, y);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("gun_fill:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 3 {
-            if let (Ok(x), Ok(y)) = (parts[1].parse::<i32>(), parts[2].parse::<i32>()) {
-                crate::game::logic::packs::handle_gun_fill(state, tx, pid, parts[0], x, y);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("resp_profit:") {
-        let parts: Vec<&str> = rest.split(':').collect();
-        if parts.len() == 2 {
-            if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
-                crate::game::logic::packs::handle_resp_profit(state, tx, pid, x, y);
-            }
-        }
-    } else if let Some(rest) = button.strip_prefix("resp_save:") {
-        // RichList data, coordinates resolved from current_window
-        crate::game::logic::packs::handle_resp_save(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("pack_save:") {
         // Единая админ-панель пака: сохранить cost/clan из %R%.
         pack_gui::handle_pack_save(state, tx, pid, rest);

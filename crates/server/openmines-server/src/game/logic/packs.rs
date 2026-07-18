@@ -26,16 +26,15 @@ use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
 use crate::game::buildings::{PackType, PackView};
 use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{basket, money, ok_message};
 use std::sync::Arc;
 
-fn send_resp_action_error(tx: &Outbox) {
+fn send_resp_action_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(tx, "OK", &ok_message("РЕСП", "Некорректное действие.").1);
 }
 
-fn send_resp_state_error(tx: &Outbox) {
+pub fn send_resp_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -43,7 +42,7 @@ fn send_resp_state_error(tx: &Outbox) {
     );
 }
 
-fn send_gun_state_error(tx: &Outbox) {
+fn send_gun_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -194,7 +193,12 @@ fn apply_charge_fill(
 /// Open Resp visitor GUI (1:1 with C# `Resp.GUIWin`).
 /// Shows bind button if not bound, or "you are bound" message.
 /// Owner gets admin gear icon to access fill/settings page.
-pub fn open_resp_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
+pub fn open_resp_gui(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    view: &PackView,
+) {
     // Get player resp and check if bound here
     let player_resp = state.query_player_opt(pid, |ecs, entity| {
         let meta = ecs.get::<PlayerMetadata>(entity)?;
@@ -254,7 +258,7 @@ pub fn open_resp_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
 /// 1:1 with C# `Resp.AdmnPage`.
 pub fn open_resp_admin_gui(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -373,7 +377,7 @@ pub fn open_resp_admin_gui(
 /// Handle resp bind button click.
 pub fn handle_resp_bind(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -422,7 +426,7 @@ pub fn handle_resp_bind(
 /// Deducts blue crystals from player, adds charge to resp.
 pub fn handle_resp_fill(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     amount_str: &str,
     pack_x: i32,
@@ -458,7 +462,7 @@ pub fn handle_resp_fill(
 /// Handle resp profit withdrawal.
 pub fn handle_resp_profit(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -562,7 +566,12 @@ fn resp_profit_state_ready(
 /// Handle resp admin save (cost, clan toggle, clanzone).
 /// Button format: `resp_save:{richlist_data}` (coordinates from `current_window`).
 /// `RichList` data from client: `key:value#key:value#...` (hash-separated, colon key:value).
-pub fn handle_resp_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, richlist_data: &str) {
+pub fn handle_resp_save(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    richlist_data: &str,
+) {
     // Resolve coordinates from current_window ("resp:{x}:{y}")
     let coords = state.query_player_opt(pid, |ecs, entity| {
         let ui = ecs.get::<PlayerUI>(entity)?;
@@ -669,7 +678,13 @@ pub fn handle_resp_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, rich
 }
 
 /// Открыть GUI пушки (`RichList` Fill, заряд Cyan).
-pub fn open_gun_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, pack_x: i32, pack_y: i32) {
+pub fn open_gun_gui(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    pack_x: i32,
+    pack_y: i32,
+) {
     let fill_info = state.query_building_opt(pack_x, pack_y, |ecs, entity| {
         let pk_stats = ecs.get::<BuildingStats>(entity)?;
         Some((pk_stats.charge, pk_stats.max_charge))
@@ -725,7 +740,7 @@ pub fn open_gun_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, pack_x: 
 /// Обработать нажатие кнопки заряда пушки (+100, +1000, max).
 pub fn handle_gun_fill(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     amount_str: &str,
     pack_x: i32,
@@ -768,7 +783,7 @@ pub fn handle_gun_fill(
 #[allow(clippy::needless_pass_by_value)]
 pub fn handle_gun_fill_prog(
     state: &Arc<GameState>,
-    _tx: &Outbox,
+    _tx: &dyn crate::net::session::wire::PacketSink,
     _pid: PlayerId,
     pack_x: i32,
     pack_y: i32,

@@ -1873,6 +1873,153 @@ fn parse_program_rename_button(button: &str) -> Option<(i32, String)> {
     Some((id.parse().ok()?, name.to_owned()))
 }
 
+pub(super) fn apply_resp_bind(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    pack_x: i32,
+    pack_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return CommandEffects::default();
+    };
+    if view.pack_type != crate::game::structures::buildings::PackType::Resp {
+        return CommandEffects::default();
+    }
+
+    let updated = state
+        .modify_player(player_id, |ecs, entity| {
+            if ecs
+                .get::<crate::game::player::PlayerMetadata>(entity)
+                .is_none()
+                || ecs
+                    .get::<crate::game::player::PlayerFlags>(entity)
+                    .is_none()
+            {
+                return Some(false);
+            }
+            {
+                let mut meta = ecs
+                    .get_mut::<crate::game::player::PlayerMetadata>(entity)
+                    .expect("PlayerMetadata checked before resp bind");
+                meta.resp_x = Some(pack_x);
+                meta.resp_y = Some(pack_y);
+            }
+            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                .expect("PlayerFlags checked before resp bind")
+                .dirty = true;
+            Some(true)
+        })
+        .flatten()
+        .unwrap_or(false);
+    if !updated {
+        tracing::error!(player_id = %player_id, pack_x, pack_y, "Resp bind player state missing");
+        crate::game::logic::packs::send_resp_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
+
+    // Re-open GUI to show "bound" state
+    crate::game::logic::packs::open_resp_gui(state, &batch, player_id, &view);
+
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
+pub(super) fn apply_resp_fill(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    amount_str: &str,
+    pack_x: i32,
+    pack_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::packs::handle_resp_fill(
+        state, &batch, player_id, amount_str, pack_x, pack_y,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
+pub(super) fn apply_gun_fill(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    amount_str: &str,
+    pack_x: i32,
+    pack_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::packs::handle_gun_fill(
+        state, &batch, player_id, amount_str, pack_x, pack_y,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
+pub(super) fn apply_resp_profit(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    pack_x: i32,
+    pack_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::packs::handle_resp_profit(state, &batch, player_id, pack_x, pack_y);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
+pub(super) fn apply_resp_save(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    richlist_data: &str,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::packs::handle_resp_save(state, &batch, player_id, richlist_data);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{apply_persistence_completion, apply_player_command};
@@ -1938,3 +2085,5 @@ mod tests {
         );
     }
 }
+
+// === Pack operations (resp_bind, resp_fill, gun_fill, resp_profit, resp_save, pack_save) ===
