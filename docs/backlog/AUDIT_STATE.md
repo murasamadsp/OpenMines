@@ -91,7 +91,7 @@
   пока может быть отброшен после списания item.
 - Веб-админка уже умеет менять роль online/offline игрока через
   `POST /api/players/:id/role`; frontend select есть в
-  `crates/openmines-server/admin/app.js`.
+  `crates/server/openmines-server/admin/app.js`.
 - `skill_effect` и `exp_needed` больше не используют wildcard `match`: каждый
   `SkillType` явно получает формулу эффекта и требование опыта, новый вариант
   теперь ломает компиляцию до осознанного решения.
@@ -105,7 +105,7 @@
   подключены TCP/packet/TY metrics и `/metrics`, PO response id валидируется,
   typed `PlayerRow::as_role/as_clan_rank` используется при hydrate игрока,
   сняты исторические allow с DB API и clan GUI module. Текущий срез:
-  `rg -n '#\[allow\(dead_code\)\]|dead_code' crates/openmines-server/src crates/openmines-runtime/src --glob '!target/**' | wc -l`
+  `rg -n '#\[allow\(dead_code\)\]|dead_code' crates/server/openmines-server/src crates/openmines-runtime/src --glob '!target/**' | wc -l`
   -> 21 строка; оставшееся требует feature wiring (BotSpot, skills hooks,
   programmator, provider/world/protocol), а не удаления кода.
 - Добавлен `openmines-server --doctor`: schema/resource doctor валидирует config,

@@ -1,6 +1,6 @@
 ---
 name: port-cs-reference
-description: Use when porting any feature from docs/reference/server_reference/ (C#) to crates/openmines-server/ (Rust) in OpenMines — before reading any C# code, before planning, before implementing. Also use when C# and client behavior seem to conflict, or when a feature exists in the client but not in docs/reference/server_reference/.
+description: Use when porting any feature from docs/reference/server_reference/ (C#) to crates/server/openmines-server/ (Rust) in OpenMines — before reading any C# code, before planning, before implementing. Also use when C# and client behavior seem to conflict, or when a feature exists in the client but not in docs/reference/server_reference/.
 ---
 
 # Перенос C# → Rust (OpenMines)
@@ -11,7 +11,7 @@ description: Use when porting any feature from docs/reference/server_reference/ 
 1. JS РЕФЕРЕНС (docs/reference/js_reference/) — эталон, если конфликтует с C# или клиентом
 2. КЛИЕНТ (client/*.cs) — эталон wire-ожиданий и GUI-поведения
 3. C# РЕФЕРЕНС (docs/reference/server_reference/) — источник логики реализации
-4. Rust сервер (crates/openmines-server/) — что мы пишем
+4. Rust сервер (crates/server/openmines-server/) — что мы пишем
 ```
 
 Wire-формат неизменяем. Сервер подстраивается под legacy-клиент; `client/`
@@ -63,7 +63,7 @@ Wire-формат неизменяем. Сервер подстраиваетс�
 | `player.Mine()` метод | ECS система: `fn handle_dig(query: Query<...>)` |
 | `null` / `T?` nullable | `Option<T>` |
 | `DateTime` / cooldown поле | `Instant` + `Duration::from_millis(N)` |
-| `World.W` синглтон | `GameState`/ECS resources in `crates/openmines-server/` |
+| `World.W` синглтон | `GameState`/ECS resources in `crates/server/openmines-server/` |
 | EF `[NotMapped]` | Поле в Component (не в DB row) |
 | `using var db = new DataBase()` | Функция в `crates/openmines-shared/src/db/` |
 | `Dictionary<K,V>` | `HashMap<K,V>` |

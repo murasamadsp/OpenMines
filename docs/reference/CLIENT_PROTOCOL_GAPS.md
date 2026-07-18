@@ -373,7 +373,7 @@ mission panel в клиенте. Отдельная крупная задача 
 
 (Дифф «шлёт клиент vs диспатчит сервер»:
 `grep -rhoE 'SendTypicalMessage\([^,]+,\s*"[^"]+"' client/Assets/Scripts/*.cs`
-против `match`-веток `crates/openmines-server/src/net/session/dispatch/ty.rs`.)
+против `match`-веток `crates/server/openmines-server/src/net/session/dispatch/ty.rs`.)
 
 ---
 

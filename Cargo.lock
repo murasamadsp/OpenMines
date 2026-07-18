@@ -1803,8 +1803,6 @@ dependencies = [
  "num-traits",
  "openmines-common",
  "openmines-protocol",
- "openmines-server-network",
- "openmines-server-simulation",
  "openmines-storage",
  "openmines-world",
  "parking_lot",
@@ -1820,14 +1818,6 @@ dependencies = [
  "tokio-cron-scheduler",
  "tracing",
 ]
-
-[[package]]
-name = "openmines-server-network"
-version = "0.0.2"
-
-[[package]]
-name = "openmines-server-simulation"
-version = "0.0.2"
 
 [[package]]
 name = "openmines-storage"

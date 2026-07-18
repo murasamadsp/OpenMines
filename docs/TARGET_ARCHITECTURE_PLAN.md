@@ -115,7 +115,7 @@
 ### Этап 3: Физическое разделение на крейты
 Когда файл `ecs_bypass_baseline.txt` становится пустым (все прямые обращения удалены):
 1. В `GameState` у поля `ecs` убирается модификатор `pub`.
-2. Создаются папки `crates/openmines-server/simulation` и `crates/openmines-server/network`.
+2. Создаются папки `crates/server/openmines-server/simulation` и `crates/server/openmines-server/network`.
 3. Код физически разносится по крейтам. `bevy_ecs` удаляется из зависимостей крейта `network`.
 
 ---

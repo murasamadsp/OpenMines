@@ -2,7 +2,7 @@
 
 Источник истины: **клиент** (`client/`) рисует все типы; **C# референс**
 (`docs/reference/server_reference/.../Inventory.cs`, `Buildings/`) — неполный (не оригинал);
-**Rust сервер** (`crates/openmines-server/`) — что реально реализовано.
+**Rust сервер** (`crates/server/openmines-server/`) — что реально реализовано.
 
 Дата сверки: 2026-07-09.
 
@@ -10,7 +10,7 @@
 
 ## 1. ПРЕДМЕТЫ (инвентарь, Use → INUS)
 
-Диспетчер: `crates/openmines-server/src/net/session/ui/heal_inventory.rs`.
+Диспетчер: `crates/server/openmines-server/src/net/session/ui/heal_inventory.rs`.
 Сверено с C# `Inventory.cs:20-175`: базовый typeditems-набор совпадает, но
 Rust содержит осознанное расширение `item 4 -> PackType::Clans` по клиентскому
 поведению. Это **не строгий 1:1 C#**.

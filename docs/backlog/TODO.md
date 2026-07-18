@@ -111,7 +111,7 @@ dispatch, а отдельный `SLOW hazards` имел микросекундн
 
 ## Программатор: текущий статус и следующий аудит
 
-Текущая серверная реализация: `crates/openmines-server/src/game/actors/programmator.rs`.
+Текущая серверная реализация: `crates/server/openmines-server/src/game/actors/programmator.rs`.
 
 Актуальные проверенные факты:
 - Unity text-format `#S/#E` мапится как `Start/Stop`.

@@ -456,22 +456,22 @@ Quiescing
 
 ### Реализованные изменения
 
-1. `crates/openmines-server/src/game/logic/due.rs`: добавить
+1. `crates/server/openmines-server/src/game/logic/due.rs`: добавить
    `DueActionQueue::is_empty()`.
-2. `crates/openmines-server/src/game/mod.rs`: добавить
+2. `crates/server/openmines-server/src/game/mod.rs`: добавить
    `pub(crate) fn allocate_command_sequence(&self) -> CommandSeq`, использующий
    существующий `command_seq`. И external enqueue, и internal building delete
    получают sequence только через этот API.
-3. `crates/openmines-server/src/tasks/simulation.rs`: добавить owner-local
+3. `crates/server/openmines-server/src/tasks/simulation.rs`: добавить owner-local
    `building_deletes` в `TickPendingWork`; `finish_shutdown(mut self)`
    превращается в quiescing loop.
-4. `crates/openmines-server/src/tasks/simulation/effects.rs`: складывать
+4. `crates/server/openmines-server/src/tasks/simulation/effects.rs`: складывать
    Protector/Raz removals во внутренний FIFO, не вызывать
    `GameState::enqueue_command`.
-5. `crates/openmines-server/src/tasks/simulation/commands.rs`: дренить internal
+5. `crates/server/openmines-server/src/tasks/simulation/commands.rs`: дренить internal
    deletes через существующий `PlayerCommand::RemovePack` apply-path;
    persistence permit резервируется до mutation, saturated head остаётся в FIFO.
-6. `crates/openmines-server/src/tasks/simulation/tick.rs`: добавить узкий
+6. `crates/server/openmines-server/src/tasks/simulation/tick.rs`: добавить узкий
    quiescing cycle без schedules, bots render и periodic dirty snapshot
    producers.
 7. `scripts/arch-guard.sh`: запретить возврат `enqueue_command` из

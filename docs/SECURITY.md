@@ -37,7 +37,7 @@
 ### [OPEN] Пароль передаётся в открытом виде по TCP
 
 **Severity:** MEDIUM  
-**Файл:** `crates/openmines-server/src/net/session/auth/gui_flow.rs`
+**Файл:** `crates/server/openmines-server/src/net/session/auth/gui_flow.rs`
 
 GUI-логин отправляет пароль как текст внутри TY-пакета (`passwd:СЕКРЕТ`).
 TCP-соединение без TLS — пароль виден в дампе трафика вербатим.
@@ -50,20 +50,20 @@ TCP-соединение без TLS — пароль виден в дампе т
 
 ### [FIXED] IDOR: принудительное добавление в клан
 
-**Файл:** `crates/openmines-storage/src/clans.rs` — `accept_clan_request`
+**Файл:** `crates/game/openmines-storage/src/clans.rs` — `accept_clan_request`
 **Суть:** Офицер мог добавить любого игрока в клан без его согласия crafted `GUI_`-пакетом.
 UPDATE в БД выполнялся без проверки наличия заявки.
 **Фикс:** UPDATE теперь условный через `EXISTS (SELECT ... FROM clan_requests)`.
 
 ### [FIXED] IDOR: повышение ранга игрока из чужого клана
 
-**Файл:** `crates/openmines-storage/src/clans.rs` — `set_clan_rank`
+**Файл:** `crates/game/openmines-storage/src/clans.rs` — `set_clan_rank`
 **Суть:** Owner мог выдать ранг Officer любому игроку в любом другом клане.
 **Фикс:** SQL добавлен фильтр `AND clan_id = ?`.
 
 ### [FIXED] IDOR: кик любого игрока из чужого клана
 
-**Файл:** `crates/openmines-server/src/net/session/social/clans.rs` — `handle_clan_kick`
+**Файл:** `crates/server/openmines-server/src/net/session/social/clans.rs` — `handle_clan_kick`
 **Суть:** `target_rank` при кике defaulted в `ClanRank::None (0)` если target не в клане
 актора. Проверка `player_rank <= target_rank` всегда false для любого реального члена клана
 (Member=10, Officer=50, Leader=100) → авторизация обходилась. Любой член клана мог
@@ -72,7 +72,7 @@ UPDATE в БД выполнялся без проверки наличия за�
 
 ### [FIXED] Integer overflow в market buy — бесплатные кристаллы и деньги
 
-**Файл:** `crates/openmines-server/src/net/session/ui/gui_buttons.rs` — `handle_market_buy`
+**Файл:** `crates/server/openmines-server/src/net/session/ui/gui_buttons.rs` — `handle_market_buy`
 **Суть:** `cost = to_buy * buy_price` не защищено от переполнения. В release-сборке
 Rust использует wrapping-арифметику: при `to_buy` ≈ `i64::MAX / buy_price + 1` произведение
 оборачивается в отрицательное число. Проверка `money < cost` не срабатывает (любые деньги ≥
@@ -83,14 +83,14 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 
 ### [FIXED] Пароли хранились в открытом виде
 
-**Файлы:** `crates/openmines-storage/src/players.rs`, `crates/openmines-server/src/net/session/auth/gui_flow.rs`
+**Файлы:** `crates/game/openmines-storage/src/players.rs`, `crates/server/openmines-server/src/net/session/auth/gui_flow.rs`
 **Суть:** Пароли записывались в SQLite сырым текстом, сравнивались прямым `==`.
 **Фикс:** Новые пароли: `SHA-256(user_hash + ":" + passwd)`. Старые plaintext мигрируются
 автоматически при следующем логине игрока.
 
 ### [FIXED] TOCTOU crystal duplication via Storage transfer
 
-**Файл:** `crates/openmines-server/src/net/session/ui/gui_buttons.rs` — `handle_storage_transfer`
+**Файл:** `crates/server/openmines-server/src/net/session/ui/gui_buttons.rs` — `handle_storage_transfer`
 **Severity:** CRITICAL  
 **Суть:** Два члена клана с синхронными пакетами могли задублировать кристаллы из
 общего Storage. Функция читала кристаллы (ECS read-lock, отпускала), валидировала,
@@ -101,7 +101,7 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 
 ### [FIXED] Аукцион: двойной рефанд при одновременных ставках (TOCTOU)
 
-**Файл:** `crates/openmines-server/src/net/session/ui/auction_gui.rs` — `place_bet`
+**Файл:** `crates/server/openmines-server/src/net/session/ui/auction_gui.rs` — `place_bet`
 **Severity:** HIGH  
 **Суть:** Два игрока одновременно ставили на лот с существующим покупателем.
 Оба читали одинаковый `buyer_id` из БД, оба вызывали `credit_money(old_buyer, cost)` →
@@ -112,7 +112,7 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 
 ### [FIXED] Аукцион: проверка денег при ставке допускала отрицательный баланс
 
-**Файл:** `crates/openmines-server/src/net/session/ui/auction_gui.rs` — `place_bet`
+**Файл:** `crates/server/openmines-server/src/net/session/ui/auction_gui.rs` — `place_bet`
 **Severity:** HIGH  
 **Суть:** Проверка `bidder_money >= o.cost` (старая цена) вместо `>= amount`
 (новая ставка). При `o.cost=100, required=101, bidder_money=100` проверка
@@ -121,7 +121,7 @@ Rust использует wrapping-арифметику: при `to_buy` ≈ `i6
 
 ### [FIXED] Аукцион: потеря предметов при ошибке БД в create_order
 
-**Файл:** `crates/openmines-server/src/net/session/ui/auction_gui.rs` — `create_order`
+**Файл:** `crates/server/openmines-server/src/net/session/ui/auction_gui.rs` — `create_order`
 **Severity:** MEDIUM  
 **Суть:** Предметы списывались из инвентаря до вызова `db.create_order`. Если
 INSERT в БД падал — предметы терялись безвозвратно (только `tracing::error!`).
@@ -129,7 +129,7 @@ INSERT в БД падал — предметы терялись безвозвр
 
 ### [FIXED] Overflow при подборе Box — переполнение кристаллов
 
-**Файл:** `crates/openmines-server/src/net/session/play/dig_build.rs` — box pickup
+**Файл:** `crates/server/openmines-server/src/net/session/play/dig_build.rs` — box pickup
 **Severity:** LOW  
 **Суть:** `crystals[i] += bc[i]` без overflow-защиты. Теоретически (очень большой
 box) мог переполнить `i64` и обнулить/инвертировать счётчик кристаллов.

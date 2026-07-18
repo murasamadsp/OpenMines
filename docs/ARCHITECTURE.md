@@ -219,13 +219,13 @@ preemption владельца lock. Deadlock backtrace релевантен то
 
 ## Взаимодействие с клиентом
 
-Сетевой протокол реализован в `crates/openmines-protocol`. Каждый подключённый клиент получает `Session`, которая обрабатывает входящие пакеты и синхронизирует состояние (игроки, инвентарь, мир).
+Сетевой протокол реализован в `crates/game/openmines-protocol`. Каждый подключённый клиент получает `Session`, которая обрабатывает входящие пакеты и синхронизирует состояние (игроки, инвентарь, мир).
 
 ## Admin Control Plane
 
 Админ-возможности имеют три поверхности: in-game slash-команды, интерактивная
 server console и web admin. Источник правды по списку команд — единый registry
-`crates/openmines-server/src/admin/mod.rs`.
+`crates/server/openmines-server/src/admin/mod.rs`.
 
 - in-game `/admin` строит help из registry;
 - console `help` строит help из registry;

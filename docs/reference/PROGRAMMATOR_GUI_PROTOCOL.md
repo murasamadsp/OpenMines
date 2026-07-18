@@ -1,9 +1,9 @@
 # Programmator GUI/Wire Contract
 
 Этот файл фиксирует текущий контракт legacy Unity-клиента и C# reference-сервера
-для GUI программатора. Перед правками `crates/openmines-server/src/net/session/social/misc.rs`,
-`crates/openmines-server/src/net/session/social/buildings.rs`, `crates/openmines-server/src/net/session/ui/gui_buttons.rs`
-и `crates/openmines-server/src/game/actors/programmator.rs` сверяться с этим файлом.
+для GUI программатора. Перед правками `crates/server/openmines-server/src/net/session/social/misc.rs`,
+`crates/server/openmines-server/src/net/session/social/buildings.rs`, `crates/server/openmines-server/src/net/session/ui/gui_buttons.rs`
+и `crates/server/openmines-server/src/game/actors/programmator.rs` сверяться с этим файлом.
 
 ## Источники истины
 
