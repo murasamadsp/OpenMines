@@ -44,8 +44,10 @@ while i < len(lines):
                 if cs.startswith('//'):
                     j += 1
                     continue
-                if 'send_u_packet' in cs:
+                if 'send_u_packet' in cs and '&batch' not in cs and '&packet_batch' not in cs:
                     print(f'$file:{j+1}: send_u_packet inside modify_player (started at {start})')
+                elif 'send_inventory' in cs and '&batch' not in cs and '&packet_batch' not in cs:
+                    print(f'$file:{j+1}: send_inventory inside modify_player (started at {start})')
                 elif 'ecs_write_profiled' in cs or 'ecs_read_profiled' in cs:
                     print(f'$file:{j+1}: ECS lock inside modify_player (started at {start})')
                 elif '.query_player(' in cs:
