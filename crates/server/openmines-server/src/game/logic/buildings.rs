@@ -171,7 +171,6 @@ pub async fn handle_place_building(
     };
     let result = state.modify_player(pid, |ecs, entity| {
         if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
-            send_building_state_error(tx);
             return None;
         }
         let mut s = ecs.get_mut::<PlayerStats>(entity)?;
@@ -184,8 +183,7 @@ pub async fn handle_place_building(
         let owner_clan = s.clan_id.unwrap_or(0);
         let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
         flags.dirty = true;
-        send_u_packet(tx, "P$", &money(m, c).1);
-        Some(owner_clan)
+        Some((owner_clan, m, c))
     });
 
     let Some(result) = result else {
@@ -193,10 +191,12 @@ pub async fn handle_place_building(
         return;
     };
 
-    let Some(owner_clan) = result else {
+    let Some((owner_clan, m, c)) = result else {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Недостаточно денег").1);
         return;
     };
+
+    send_u_packet(tx, "P$", &money(m, c).1);
 
     let initial_clan = if pack_type == PackType::Gate {
         owner_clan
@@ -316,7 +316,6 @@ pub fn prepare_paid_building_placement(
     };
     let result = state.modify_player(pid, |ecs, entity| {
         if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none() {
-            send_building_state_error(tx);
             return None;
         }
         let mut s = ecs.get_mut::<PlayerStats>(entity)?;
@@ -329,8 +328,7 @@ pub fn prepare_paid_building_placement(
         let owner_clan = s.clan_id.unwrap_or(0);
         let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
         flags.dirty = true;
-        send_u_packet(tx, "P$", &money(m, c).1);
-        Some(owner_clan)
+        Some((owner_clan, m, c))
     });
 
     let Some(result) = result else {
@@ -338,10 +336,12 @@ pub fn prepare_paid_building_placement(
         return None;
     };
 
-    let Some(owner_clan) = result else {
+    let Some((owner_clan, m, c)) = result else {
         send_u_packet(tx, "OK", &ok_message("Ошибка", "Недостаточно денег").1);
         return None;
     };
+
+    send_u_packet(tx, "P$", &money(m, c).1);
 
     let initial_clan = if pack_type == PackType::Gate {
         owner_clan
