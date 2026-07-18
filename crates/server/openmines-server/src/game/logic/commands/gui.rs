@@ -320,6 +320,9 @@ fn apply_gui_button_command(
     if let Some(rest) = button.strip_prefix("resp_save:") {
         return super::apply_resp_save(state, player_id, session_id, rest);
     }
+    if let Some(rest) = button.strip_prefix("tp:") {
+        return super::apply_teleport(state, player_id, session_id, rest);
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {

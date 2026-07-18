@@ -174,10 +174,6 @@ pub fn handle_gui_button_sync_fast_path(
         crafter_gui::handle_craft_claim(state, tx, pid, rest);
         return true;
     }
-    if let Some(rest) = button.strip_prefix("tp:") {
-        crate::game::logic::teleport::apply(state, tx, pid, rest);
-        return true;
-    }
     if let Some(rest) = button.strip_prefix("pack_save:") {
         pack_gui::handle_pack_save(state, tx, pid, rest);
         return true;
@@ -250,8 +246,6 @@ async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         crafter_gui::handle_craft_start(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("craft_claim:") {
         crafter_gui::handle_craft_claim(state, tx, pid, rest);
-    } else if let Some(rest) = button.strip_prefix("tp:") {
-        crate::game::logic::teleport::apply(state, tx, pid, rest);
     } else if let Some(rest) = button.strip_prefix("resp_bind:") {
         let parts: Vec<&str> = rest.split(':').collect();
         if parts.len() == 2 {

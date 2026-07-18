@@ -88,7 +88,12 @@ fn map_tile(view: &crate::game::TeleportGuiView, x: i32, y: i32) -> Option<bool>
     view.map_tiles.get(usize::try_from(index).ok()?).copied()?
 }
 
-pub fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, coords: &str) {
+pub fn apply(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    coords: &str,
+) {
     let parts: Vec<&str> = coords.split(':').collect();
     if parts.len() != 2 {
         return;

@@ -2020,6 +2020,24 @@ pub(super) fn apply_resp_save(
     }
 }
 
+pub(super) fn apply_teleport(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    coords: &str,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::teleport::apply(state, &batch, player_id, coords);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{apply_persistence_completion, apply_player_command};
