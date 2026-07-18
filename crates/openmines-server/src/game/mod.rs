@@ -106,7 +106,7 @@ pub struct GameState {
     /// Хранится в `GameState` (не в ECS), чтобы HTTP-API мог менять их
     /// без конкуренции с `ecs.write()` из сессий.
     pub active_events: RwLock<ActiveEvents>,
-    pub ecs: RwLock<EcsWorld>,
+    pub(crate) ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
     commands_tx: CommandSenders,
