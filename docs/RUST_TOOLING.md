@@ -24,6 +24,48 @@ strict clippy, dependency/security checks, `585/585` nextest и wire smoke.
 ускоряет цикл линейно, зато легко съедает RAM из-за одновременной компиляции
 одних и тех же тяжёлых crate-графов.
 
+## Test layout
+
+Единая точка входа для локальной проверки — `scripts/test-all.sh` (делегирует
+`scripts/quality/common.sh`, тот же набор, что CI, но без тяжёлых шагов):
+
+```bash
+scripts/test-all.sh            # fmt + arch-guard + no-wire-in-lock + hygiene + clippy + nextest + wire-smoke
+scripts/test-all.sh --quick    # только cargo nextest run --all-targets --all-features
+scripts/test-all.sh --no-smoke # всё кроме scripts/dev/smoke.sh
+```
+
+Полный gate (fmt, clippy-strict, deny/audit, nextest, wire-smoke, docs) — в
+`scripts/quality/ci.sh`. Pre-commit (без docs/bloat) — в
+`scripts/quality/pre-commit.sh`. Оба делегируют `scripts/quality/common.sh`,
+где каждый шаг — отдельная `quality_run_*` функция.
+
+### Где лежат тесты
+
+| Тип | Где | Как запускается |
+| --- | --- | --- |
+| **Unit** (инлайн `#[cfg(test)] mod tests`) | внутри каждого `.rs` файла | `cargo nextest run` |
+| **Unit** (выделенный `tests.rs`) | рядом с логикой в подпапке модуля, напр. `game/actors/programmator/{system,tests}.rs` | `cargo nextest run` |
+| **Integration** | `tests/` на уровне крейта (только `openmines-macros`) | `cargo nextest run` |
+| **Wire smoke** (E2E) | `scripts/dev/smoke.sh` (поднимает сервер, бьёт по TCP) | `scripts/dev/smoke.sh` |
+| **Load** | крейт `openmines-loadtest` (отдельный бинарь, не в unit-CI) | `cargo run -p openmines-loadtest` |
+| **Static gates** (python) | `scripts/guards/ecs-bypass.py`, `scripts/guards/soundness.py` | вызываются из `arch.sh` / `hygiene.sh` внутри CI |
+
+### Конвенции
+
+- Крупные модули (>800 строк) держат тесты в **отдельном `tests.rs`** внутри
+  подпапки модуля, а не инлайн. Эталонный пример — `game/actors/programmator/`:
+  логика в `types.rs`/`parser.rs`/`helpers.rs`/`system.rs`, тесты в `tests.rs`.
+  Тестовый модуль подключается через `pub mod tests;` под `#[cfg(test)]` в
+  `mod.rs` папки.
+- Имя тест-функции — `snake_case` сути проверки; для regression-тестов миграции
+  используется префикс модуля: `tasks::simulation::shutdown_tests::*`,
+  `dirty_player_registry_drops_stale_entity_after_reconnect`. Это даёт
+  самодокументируемый вывод `nextest` без доп. аннотаций.
+- Тесты, требующие рантайм ECS/БД, используют `test_support::ServerTestHarness`
+  (а не ручной setup). Приватные символы модуля для тестов делаются
+  `pub(crate)`, не `pub`.
+
 ## Compile speed
 
 Базовая цель: быстрый локальный цикл должен сначала ловить ошибку дешёвыми

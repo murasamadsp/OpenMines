@@ -12,11 +12,10 @@ use std::time::{Duration, Instant};
 
 use super::helpers::{
     ExecResult, WritableStateContext, check_cell, delay_millis, execute_writable_state,
-    selected_offset, selected_world_pos,
 };
 use super::types::{ActionType, PAction, ProgrammatorState};
 
-const fn direct_action_delay(timing: crate::config::ProgrammatorConfig) -> Duration {
+pub const fn direct_action_delay(timing: crate::config::ProgrammatorConfig) -> Duration {
     Duration::from_micros(timing.direct_action_delay_us)
 }
 
@@ -164,7 +163,7 @@ fn schedule_next_programmator_step(
     due_queue.schedule(entity, prog.delay);
 }
 
-pub(crate) fn next_programmator_deadline(now: Instant, delay: Option<Duration>) -> Instant {
+pub fn next_programmator_deadline(now: Instant, delay: Option<Duration>) -> Instant {
     delay
         .and_then(|delay| now.checked_add(delay))
         .unwrap_or(now)
@@ -177,7 +176,7 @@ pub(crate) fn next_programmator_deadline(now: Instant, delay: Option<Duration>) 
 // паритет с референсом (жёсткое требование CLAUDE.md). Точечный allow в
 // той же конвенции, что db/mod.rs / skills.rs.
 #[allow(clippy::too_many_lines, clippy::similar_names)]
-fn execute_action(
+pub fn execute_action(
     action: &PAction,
     prog: &mut ProgrammatorState,
     pos: &PlayerPosition,
@@ -1161,7 +1160,7 @@ fn push_move(
     });
 }
 
-fn speed_pause(
+pub fn speed_pause(
     skills: &PlayerSkillsComp,
     on_road: bool,
     timing: crate::config::ProgrammatorConfig,

@@ -3,11 +3,11 @@ use crate::game::player::{PlayerPosition, PlayerStats};
 use crate::world::WorldProvider;
 use std::time::Duration;
 
-pub(crate) const fn delay_millis(ms: u64) -> Duration {
+pub const fn delay_millis(ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
 
-pub(crate) fn check_cell(
+pub fn check_cell(
     prog: &mut ProgrammatorState,
     pos: &PlayerPosition,
     world: &crate::world::World,
@@ -54,7 +54,7 @@ pub(crate) fn check_cell(
     }
 }
 
-pub(crate) fn set_condition_state(prog: &mut ProgrammatorState, result: bool) {
+pub fn set_condition_state(prog: &mut ProgrammatorState, result: bool) {
     if let Some(f) = prog.current_prog.get_mut(&prog.current_function) {
         match f.last_state_action {
             Some(ActionType::Or) => f.state = Some(f.state.unwrap_or(false) || result),
@@ -64,7 +64,7 @@ pub(crate) fn set_condition_state(prog: &mut ProgrammatorState, result: bool) {
     }
 }
 
-pub(crate) fn selected_offset(prog: &ProgrammatorState) -> (i32, i32) {
+pub fn selected_offset(prog: &ProgrammatorState) -> (i32, i32) {
     let f = prog.current_prog.get(&prog.current_function);
     if let Some(f) = f
         && f.startoffset != (0, 0)
@@ -74,7 +74,7 @@ pub(crate) fn selected_offset(prog: &ProgrammatorState) -> (i32, i32) {
     (prog.shift_x + prog.check_x, prog.shift_y + prog.check_y)
 }
 
-pub(crate) fn selected_world_pos(prog: &ProgrammatorState, pos: &PlayerPosition) -> (i32, i32) {
+pub fn selected_world_pos(prog: &ProgrammatorState, pos: &PlayerPosition) -> (i32, i32) {
     let (sx, sy) = selected_offset(prog);
     if prog.flip_state {
         (pos.x - sx, pos.y - sy)
@@ -83,14 +83,14 @@ pub(crate) fn selected_world_pos(prog: &ProgrammatorState, pos: &PlayerPosition)
     }
 }
 
-pub(crate) const fn reset_view_offsets(prog: &mut ProgrammatorState) {
+pub const fn reset_view_offsets(prog: &mut ProgrammatorState) {
     prog.check_x = 0;
     prog.check_y = 0;
     prog.shift_x = 0;
     prog.shift_y = 0;
 }
 
-pub(crate) const fn compare_value(action_type: ActionType, actual: i32, expected: i32) -> bool {
+pub const fn compare_value(action_type: ActionType, actual: i32, expected: i32) -> bool {
     match action_type {
         ActionType::WritableStateLower => actual < expected,
         ActionType::WritableStateMore => actual > expected,
@@ -98,7 +98,7 @@ pub(crate) const fn compare_value(action_type: ActionType, actual: i32, expected
     }
 }
 
-pub(crate) fn clamp_i64_to_i32(value: i64) -> i32 {
+pub fn clamp_i64_to_i32(value: i64) -> i32 {
     i32::try_from(value).unwrap_or_else(|_| {
         if value.is_negative() {
             i32::MIN
@@ -108,12 +108,12 @@ pub(crate) fn clamp_i64_to_i32(value: i64) -> i32 {
     })
 }
 
-pub(crate) fn load_percent(stats: &PlayerStats) -> i32 {
+pub fn load_percent(stats: &PlayerStats) -> i32 {
     let total = stats.crystals.iter().copied().sum::<i64>();
     clamp_i64_to_i32(total.saturating_mul(100))
 }
 
-pub(crate) fn programmator_call_depth(prog: &ProgrammatorState) -> i32 {
+pub fn programmator_call_depth(prog: &ProgrammatorState) -> i32 {
     let mut depth = 0_i32;
     let mut current = prog.current_function.as_str();
     let mut guard = 0_usize;
@@ -132,7 +132,7 @@ pub(crate) fn programmator_call_depth(prog: &ProgrammatorState) -> i32 {
     depth
 }
 
-pub(crate) fn programmator_logic_mode(prog: &ProgrammatorState) -> i32 {
+pub fn programmator_logic_mode(prog: &ProgrammatorState) -> i32 {
     prog.current_prog
         .get(&prog.current_function)
         .and_then(|f| f.last_state_action)
@@ -143,7 +143,7 @@ pub(crate) fn programmator_logic_mode(prog: &ProgrammatorState) -> i32 {
         })
 }
 
-pub(crate) fn readonly_programmator_value(
+pub fn readonly_programmator_value(
     label: &str,
     prog: &mut ProgrammatorState,
     pos: &PlayerPosition,
@@ -206,7 +206,7 @@ pub(crate) fn readonly_programmator_value(
     Some(value)
 }
 
-pub(crate) fn command_variable_value(
+pub fn command_variable_value(
     name: &str,
     prog: &mut ProgrammatorState,
     ctx: WritableStateContext<'_>,
@@ -224,11 +224,11 @@ pub(crate) fn command_variable_value(
     })
 }
 
-pub(crate) const fn js_divisor(value: i32) -> i32 {
+pub const fn js_divisor(value: i32) -> i32 {
     if value == 0 { 1 } else { value }
 }
 
-pub(crate) fn run_programmator_command(
+pub fn run_programmator_command(
     prog: &mut ProgrammatorState,
     command: &str,
     num: i32,
@@ -288,7 +288,7 @@ pub(crate) fn run_programmator_command(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct WritableStateContext<'a> {
+pub struct WritableStateContext<'a> {
     pub(crate) pos: &'a PlayerPosition,
     pub(crate) stats: &'a PlayerStats,
     pub(crate) settings: &'a crate::game::player::PlayerSettings,
@@ -296,7 +296,7 @@ pub(crate) struct WritableStateContext<'a> {
     pub(crate) geo_count: usize,
 }
 
-pub(crate) fn execute_writable_state(
+pub fn execute_writable_state(
     action: &PAction,
     prog: &mut ProgrammatorState,
     ctx: WritableStateContext<'_>,
@@ -336,7 +336,7 @@ pub(crate) fn execute_writable_state(
     ExecResult::BoolResult(result)
 }
 
-pub(crate) enum ExecResult {
+pub enum ExecResult {
     None,
     Label(String),
     BoolResult(bool),

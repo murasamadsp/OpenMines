@@ -120,7 +120,7 @@ pub enum ActionType {
     RestartRow,
 }
 
-pub(crate) const fn get_action_type(id: u8) -> ActionType {
+pub const fn get_action_type(id: u8) -> ActionType {
     match id {
         162 => ActionType::BuildBlock,
         163 => ActionType::BuildPillar,
@@ -261,7 +261,7 @@ pub struct PFunction {
 }
 
 impl PFunction {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             actions: Vec::new(),
             current: 0,
@@ -308,15 +308,15 @@ pub struct LastVariables {
 }
 
 impl LastVariables {
-    pub(crate) fn set(&mut self, name: &str) {
+    pub fn set(&mut self, name: &str) {
         self.older = self.younger.replace(name.to_string());
     }
 
-    pub(crate) fn younger(&self) -> Option<&str> {
+    pub fn younger(&self) -> Option<&str> {
         self.younger.as_deref()
     }
 
-    pub(crate) fn older(&self) -> Option<&str> {
+    pub fn older(&self) -> Option<&str> {
         self.older.as_deref()
     }
 }
@@ -423,7 +423,7 @@ impl ProgrammatorState {
         self.last_variables = snapshot.last_variables;
     }
 
-    pub(crate) fn drop_state(&mut self) {
+    pub fn drop_state(&mut self) {
         self.startpoint = (String::new(), 0);
         self.goto_death = None;
         self.current_function = String::new();
@@ -440,7 +440,7 @@ impl ProgrammatorState {
         }
     }
 
-    pub(crate) fn next_function(&mut self) {
+    pub fn next_function(&mut self) {
         let idx = self
             .function_order
             .iter()

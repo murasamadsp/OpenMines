@@ -13,3 +13,7 @@ See [workflow/taste.md](workflow/taste.md)
 # Rust
 - Eliminate legacy code and workarounds instead of keeping them. Confidence: 0.70
 - Prefer idiomatic, cognitively simple code with clear module boundaries. Confidence: 0.70
+- Do not remove `#[allow(dead_code)]` annotations — they mark intentionally unused items for unimplemented features, not dead code to be eliminated. Confidence: 0.80
+
+# Refactoring
+- Split large files completely, not partially; create subdirectories with correct naming when needed; slight refactoring is OK but preserve existing behavior. Confidence: 0.80

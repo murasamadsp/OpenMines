@@ -1,3 +1,4 @@
+#[allow(clippy::module_inception)]
 #[cfg(test)]
 mod tests {
     use crate::db::SkillSlots;
@@ -11,10 +12,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    use super::super::helpers::{
-        ExecResult, WritableStateContext, execute_writable_state, speed_pause,
-    };
-    use super::super::system::{execute_action, next_programmator_deadline};
+    use super::super::helpers::{ExecResult, WritableStateContext, execute_writable_state};
+    use super::super::system::{execute_action, next_programmator_deadline, speed_pause};
     use super::super::types::{
         ActionType, LastVariables, PAction, PFunction, ProgrammatorState, get_action_type,
     };
