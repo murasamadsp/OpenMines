@@ -150,3 +150,66 @@ dispatch, а отдельный `SLOW hazards` имел микросекундн
   проверки запрещён.
 - **Архитектура ECS**: отсутствие единого владельца остаётся реальным долгом, но
   порядок его миграции теперь задан `SERVER_MIGRATION_STATUS.md`.
+
+---
+
+## SRP-декомпозиция GameState (2026-07-19)
+
+Вынесено 5 кластеров из god-object `game/mod.rs` (2370 → 2046 строк, -13.5%):
+
+- **DueSchedules** (`game/kernel/due_schedules.rs`, 59 строк) — crafting/programmator/hazard
+  due-расписания, 12 методов делегированы.
+- **CommandIngress** (`game/kernel/command_ingress.rs`, 139 строк) — очередь команд,
+  метрики, broadcasts, 14 методов делегированы.
+- **PlayerRegistry** (`game/kernel/player_registry.rs`, 25 строк) — 5 DashMap
+  реестров игроков (active/entities/chunk/bots_render/botspots).
+- **BuildingIndex** (`game/kernel/building_index.rs`, 17 строк) — 4 DashMap
+  индекса зданий/ботспотов.
+- **WebSnapshotOwner** (`game/kernel/web_snapshot.rs`, 36 строк) — снепшот
+  для веб-API (3 типа + update метод).
+
+Итого: 21 поле + 3 struct definition вынесены из GameState. Все методы —
+однострочные делегаты. `cargo check` — 0 ошибок.
+
+**Дальше:**
+- `commands/mod.rs` (2126 строк) — ядро роутинга команд, кандидат на sub-роутеры
+  (admin, player_action, building_action).
+- `contracts/mod.rs` (1371 строк) — команды/events/types, много boilerplate.
+- `gui_buttons.rs` (1580 строк) — GUI-обработчики.
+- `player_init.rs` (1368 строк) — логин/спавн, тестовые хелперы.
+- `heal_inventory.rs` (1341 строк) — лечение/инвентарь/предметы.
+
+## M6: Owned ECS — устранение глобального RwLock<EcsWorld>
+
+**Приоритет: высокий.** Это корневая причина фризов и 100ms+ тиков.
+
+**Диагноз:** `GameState` содержит `RwLock<EcsWorld>`. Все 8 schedule'ов,
+каждый `modify_player` из network threads, dirty flush, admin/web — всё
+конкурирует за один write lock. Preemption владельца блокирует независимую
+работу.
+
+**Целевая модель** (из `SIMULATION_KERNEL_PLAN.md`):
+- Simulation thread владеет Bevy World по значению, без lock
+- Session handlers → typed commands → bounded channel → simulation
+- Admin/web читают immutable `ReadSnapshot`, не ECS
+- Нет `ecs.read()`/`ecs.write()`/`modify_player`/`query_player` снаружи
+
+**Что уже сделано (mitigation):**
+- [x] Typed command pipeline (market, pack, teleport, up_building, crafter)
+- [x] `&Outbox` → `&dyn PacketSink` (105/106 функций)
+- [x] Wire-in-lock guard (0 violations)
+- [x] Убран `refresh_bots_render_player_in_ecs` из `modify_player`
+- [x] Батчинг `snapshot_dirty_players` по 16
+- [x] Hazards/programmator: 10ms → 50ms
+
+**Что нужно для M6:**
+- [ ] Все session handlers → typed commands (остались: dig_build, clans, programmator, consumables, settings, heal_inventory)
+- [ ] Убрать `modify_player` как публичный API — заменить на typed commands
+- [ ] Убрать `query_player` как публичный API — заменить на read snapshots
+- [ ] Admin/web → immutable `ReadSnapshot`
+- [ ] Перенести Bevy World в runtime по значению
+- [ ] Физически удалить `RwLock<EcsWorld>`
+
+**Gate:** zero external ECS writers, нет `ecs_write_profiled`/`ecs_read_profiled`
+вне simulation thread, `RwLock<EcsWorld>` удалён.
+
