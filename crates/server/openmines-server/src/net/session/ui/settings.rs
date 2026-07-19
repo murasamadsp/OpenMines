@@ -1,6 +1,6 @@
 use crate::net::session::prelude::*;
 
-pub fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
+pub fn apply(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, data: &str) {
     use crate::game::logic::settings::SettingsSaveError;
 
     match crate::game::logic::settings::save_settings(state, pid, data) {
@@ -35,7 +35,7 @@ pub fn apply(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, data: &str) {
     }
 }
 
-pub fn open(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn open(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb, RichRow, Tab};
 
     let Some(view) = crate::game::logic::settings::settings_view(state, pid) else {
@@ -91,6 +91,6 @@ pub fn open(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
         .send(state, tx, pid, "settings");
 }
 
-fn error(tx: &Outbox, message: &str) {
+fn error(tx: &dyn PacketSink, message: &str) {
     send_u_packet(tx, "OK", &ok_message("НАСТРОЙКИ", message).1);
 }

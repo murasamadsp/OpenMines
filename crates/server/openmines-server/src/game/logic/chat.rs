@@ -26,7 +26,7 @@ use crate::net::session::outbound::chat_sync::parse_private_tag;
 use crate::net::session::prelude::*;
 use std::sync::Arc;
 
-fn send_chat_state_error(tx: &Outbox) {
+fn send_chat_state_error(tx: &dyn PacketSink) {
     send_u_packet(tx, "OK", &ok_message("ЧАТ", "Состояние чата недоступно.").1);
 }
 
@@ -101,7 +101,7 @@ pub fn parse_chin_resync_payload(payload: &str) -> Option<ChinResync> {
 
 pub fn handle_local_chat_non_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     msg: &str,
 ) -> bool {
@@ -132,7 +132,7 @@ pub fn handle_local_chat_non_command(
     true
 }
 
-fn broadcast_player_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg: &str) {
+fn broadcast_player_chat(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, msg: &str) {
     let data = state.query_player_opt(pid, |ecs: &bevy_ecs::prelude::World, entity| {
         let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
             tracing::error!(player_id = %pid, component = "PlayerPosition", "Player component missing for local chat");
@@ -159,7 +159,7 @@ fn broadcast_player_chat(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg
 
 pub fn prepare_channel_chat_non_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     text: &str,
 ) -> Option<PreparedChannelChat> {

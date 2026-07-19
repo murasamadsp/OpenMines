@@ -523,7 +523,12 @@ fn extract_init_view(
 }
 
 #[cfg(test)]
-pub fn connect_in_tick(state: &Arc<GameState>, tx: &Outbox, player: &PlayerRow, session_id: u64) {
+pub fn connect_in_tick(
+    state: &Arc<GameState>,
+    tx: &crate::net::session::outbox::Outbox,
+    player: &PlayerRow,
+    session_id: u64,
+) {
     let session_id = crate::game::SessionId::new(session_id);
     state.sessions.register_test_outbox(session_id, tx.clone());
     state.sessions.bind_player(session_id, player.id.into());

@@ -51,7 +51,12 @@ pub fn parse_rich_bool(value: &str) -> Option<bool> {
     }
 }
 
-pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) {
+pub async fn handle_gui_button(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    button: &str,
+) {
     // ref `Session.GUI`: `"exit"` or `"exit:0"` => CloseWindow()
     if button == "exit" || button == "exit:0" || button == "close" {
         state.modify_player(pid, |ecs, entity| {
@@ -128,7 +133,7 @@ pub async fn handle_gui_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
 
 pub fn handle_gui_button_sync_fast_path(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     button: &str,
 ) -> bool {
@@ -212,7 +217,7 @@ pub fn handle_gui_button_sync_fast_path(
     }
 }
 
-fn handle_clan_create_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+fn handle_clan_create_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb};
     // exit добавится builder-гарантией последним → Escape закроет окно.
     Horb::new("СОЗДАНИЕ КЛАНА")
@@ -223,7 +228,7 @@ fn handle_clan_create_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).
-pub fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn close_player_window(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     state.modify_player(pid, |ecs, e| {
         if let Some(mut ui) = ecs.get_mut::<PlayerUI>(e) {
             ui.current_window = None;
@@ -234,7 +239,12 @@ pub fn close_player_window(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     send_u_packet(tx, g.0, &g.1);
 }
 
-async fn handle_complex_button(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, button: &str) {
+async fn handle_complex_button(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    button: &str,
+) {
     if handle_clan_button(state, tx, pid, button).await {
     } else if let Some(rest) = button.strip_prefix("bld_place:") {
         crate::game::logic::buildings::handle_place_building(state, tx, pid, rest).await;
@@ -293,7 +303,7 @@ pub fn is_clan_button(button: &str) -> bool {
 
 pub async fn handle_clan_button(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     button: &str,
 ) -> bool {
@@ -330,7 +340,7 @@ pub async fn handle_clan_button(
 
 async fn handle_clan_button_with_id(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     button: &str,
 ) -> bool {
@@ -362,7 +372,7 @@ pub fn is_auction_button(button: &str) -> bool {
 
 pub async fn handle_auction_button(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     button: &str,
 ) -> bool {

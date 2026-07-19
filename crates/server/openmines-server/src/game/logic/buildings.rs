@@ -28,14 +28,14 @@ use crate::db::BuildingExtra;
 use crate::game::direction::dir_offset;
 use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::util::net_u16_nonneg;
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::{encode_hb_bundle, send_u_packet};
 use crate::protocol::packets::{gu_close, hb_bundle, hb_packs, money, ok_message};
 use crate::world::{World, WorldProvider};
 use std::sync::Arc;
 
-fn send_building_state_error(tx: &Outbox) {
+fn send_building_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -47,7 +47,11 @@ fn send_building_state_error(tx: &Outbox) {
 
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
 /// Показывает список программ игрока из БД (кликабельный) или кнопку создания.
-pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_programmator_pope_menu(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+) {
     use crate::game::logic::horb::{Button, Horb, ListRow};
     let programs = match state.db.list_programs(pid.into()).await {
         Ok(programs) => programs,
@@ -77,7 +81,7 @@ pub async fn handle_programmator_pope_menu(state: &Arc<GameState>, tx: &Outbox, 
 }
 
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
-pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb, ListRow};
 
     let Some(cry) =
@@ -97,7 +101,7 @@ pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         .send(state, tx, pid, "open_box");
 }
 
-pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb};
 
     Horb::new("ПОСТРОЙКИ")
@@ -117,7 +121,7 @@ pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId)
 
 pub async fn handle_place_building(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     type_code: &str,
 ) {
@@ -262,7 +266,7 @@ pub async fn handle_place_building(
 
 pub fn prepare_paid_building_placement(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     type_code: &str,
 ) -> Option<crate::game::logic::contracts::PaidBuildingPlacement> {
@@ -363,7 +367,7 @@ pub fn prepare_paid_building_placement(
 
 pub fn apply_paid_building_placed(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     placement: &crate::game::logic::contracts::PaidBuildingPlacement,
     db_id: i32,
 ) {
@@ -404,7 +408,7 @@ pub fn apply_paid_building_placed(
 
 pub fn refund_paid_building_placement(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     cost: i64,
 ) {
@@ -432,7 +436,7 @@ pub fn refund_paid_building_placement(
 
 pub fn broadcast_building_placed(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     view: &PackView,
     close_gui: bool,
@@ -458,7 +462,7 @@ pub fn broadcast_building_placed(
 
 pub fn handle_remove_building(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     bx: i32,
     by: i32,
@@ -658,7 +662,7 @@ pub fn validate_pack_footprint(
     Ok(())
 }
 
-fn send_building_error(tx: &Outbox, text: &str) {
+fn send_building_error(tx: &dyn PacketSink, text: &str) {
     send_u_packet(tx, "OK", &ok_message("Ошибка", text).1);
 }
 

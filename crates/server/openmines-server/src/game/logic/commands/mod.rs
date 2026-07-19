@@ -742,7 +742,7 @@ fn prepare_program_save(
 #[allow(clippy::too_many_lines)]
 pub fn apply_programmator_auto_dig_set(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     enabled: bool,
 ) {
@@ -756,7 +756,7 @@ pub fn apply_programmator_auto_dig_set(
 
 pub fn apply_programmator_aggression_set(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     enabled: bool,
 ) {
@@ -770,7 +770,7 @@ pub fn apply_programmator_aggression_set(
 
 pub fn apply_programmator_heal(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
 ) {
     apply_heal_command(state, tx, player_id, true);
@@ -778,14 +778,14 @@ pub fn apply_programmator_heal(
 
 pub fn apply_programmator_geology(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
 ) {
     apply_geology_command(state, tx, player_id, true);
 }
 
 fn apply_auto_dig_result(
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     result: crate::game::logic::settings::PlayerSettingMutation,
     action: &'static str,
@@ -793,7 +793,7 @@ fn apply_auto_dig_result(
     match result {
         crate::game::logic::settings::PlayerSettingMutation::Changed(val) => {
             let packet = crate::protocol::packets::auto_digg(val);
-            let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+            tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
                 packet.0, &packet.1,
             ));
         }
@@ -815,7 +815,7 @@ fn apply_auto_dig_result(
 }
 
 fn apply_aggression_result(
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     result: crate::game::logic::settings::PlayerSettingMutation,
     action: &'static str,
@@ -823,7 +823,7 @@ fn apply_aggression_result(
     match result {
         crate::game::logic::settings::PlayerSettingMutation::Changed(val) => {
             let packet = crate::protocol::packets::aggression(val);
-            let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+            tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
                 packet.0, &packet.1,
             ));
         }
@@ -844,16 +844,16 @@ fn apply_aggression_result(
     }
 }
 
-fn send_settings_state_error(tx: &crate::net::session::outbox::Outbox) {
+fn send_settings_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     let packet =
         crate::protocol::packets::ok_message("НАСТРОЙКИ", "Состояние настроек недоступно.");
-    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+    tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
         packet.0, &packet.1,
     ));
 }
 
 fn apply_inventory_result(
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     result: crate::game::logic::inventory::InventoryMutation,
     action: &'static str,
@@ -861,7 +861,7 @@ fn apply_inventory_result(
     match result {
         crate::game::logic::inventory::InventoryMutation::Packets(packets) => {
             for (event, payload) in packets {
-                let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+                tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
                     event, &payload,
                 ));
             }
@@ -885,16 +885,16 @@ fn apply_inventory_result(
     }
 }
 
-fn send_inventory_state_error(tx: &crate::net::session::outbox::Outbox) {
+fn send_inventory_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     let packet =
         crate::protocol::packets::ok_message("ИНВЕНТАРЬ", "Состояние инвентаря недоступно.");
-    let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
+    tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
         packet.0, &packet.1,
     ));
 }
 
 fn handle_known_noop_ty(
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     event: &str,
     payload: &[u8],
@@ -1414,7 +1414,7 @@ pub(super) fn apply_market_get_profit(
 
 fn apply_geology_command(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     programmatic: bool,
 ) {
@@ -1450,7 +1450,7 @@ fn apply_geology_command(
 
 fn apply_heal_command(
     state: &Arc<GameState>,
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     programmatic: bool,
 ) {
@@ -1498,7 +1498,7 @@ fn apply_heal_command(
 }
 
 fn decode_program_save(
-    tx: &crate::net::session::outbox::Outbox,
+    tx: &dyn crate::net::session::wire::PacketSink,
     player_id: crate::game::PlayerId,
     payload: &[u8],
 ) -> Option<(i32, String)> {

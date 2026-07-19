@@ -20,15 +20,15 @@
 
 use crate::game::logic::horb::{Button, Horb, HorbDelivery};
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::{encode_hb_bundle, make_u_packet_bytes, send_u_packet};
 use crate::protocol::packets::{clan_hide, clan_show, hb_bot, hb_bundle, money, ok_message};
 use std::sync::Arc;
 
 // ─── Clans ─────────────────────────────────────────────────────────────
 
-fn send_clan_state_error(tx: &Outbox) {
+fn send_clan_state_error(tx: &dyn PacketSink) {
     send_clan_ok(tx, "КЛАН", "Состояние игрока недоступно.");
 }
 
@@ -44,7 +44,11 @@ fn online_player_state_ready(state: &Arc<GameState>, pid: PlayerId) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_online_player_state_ready(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> bool {
+fn ensure_online_player_state_ready(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+) -> bool {
     if online_player_state_ready(state, pid) {
         true
     } else {
@@ -55,7 +59,7 @@ fn ensure_online_player_state_ready(state: &Arc<GameState>, tx: &Outbox, pid: Pl
 
 async fn load_clan_members_or_error(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     clan_id: i32,
     context: &str,
@@ -78,7 +82,7 @@ fn clan_rank_for(members: &[(i32, String, i32)], pid: PlayerId) -> crate::db::Cl
         .unwrap_or(crate::db::ClanRank::None)
 }
 
-pub async fn handle_clan_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_menu(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = player_clan_id(state, pid);
     if let Some(cid) = clan_id {
         handle_clan_info_view(state, tx, pid, cid).await;
@@ -127,7 +131,7 @@ pub async fn handle_clan_menu(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
 
 pub async fn handle_clan_info_view(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -192,7 +196,12 @@ pub async fn handle_clan_info_view(
     win.close_button().send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_preview(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, clan_id: i32) {
+pub async fn handle_clan_preview(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    clan_id: i32,
+) {
     let clan = match state.db.get_clan(clan_id).await {
         Ok(Some(c)) => c,
         Ok(None) => {
@@ -246,7 +255,7 @@ enum DebitResult {
 
 pub async fn handle_clan_create(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     name: &str,
     tag: &str,
@@ -364,7 +373,7 @@ fn refund_clan_credits(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
-pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -492,7 +501,7 @@ pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     }
 }
 
-pub async fn handle_clan_members_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_members_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -533,7 +542,7 @@ pub async fn handle_clan_members_view(state: &Arc<GameState>, tx: &Outbox, pid: 
         .send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_invite_list(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_invite_list(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -589,7 +598,7 @@ pub async fn handle_clan_invite_list(state: &Arc<GameState>, tx: &Outbox, pid: P
         .send(state, tx, pid, "clan");
 }
 
-pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let invites = match state.db.get_player_invites(pid.into()).await {
         Ok(invites) => invites,
         Err(e) => {
@@ -620,7 +629,7 @@ pub async fn handle_clan_invites_view(state: &Arc<GameState>, tx: &Outbox, pid: 
 #[allow(dead_code)]
 pub async fn handle_clan_invite_accept(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     clan_id: i32,
 ) {
@@ -684,7 +693,7 @@ pub async fn handle_clan_invite_accept(
 #[allow(dead_code)]
 pub async fn handle_clan_promote(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -720,7 +729,7 @@ pub async fn handle_clan_promote(
     }
 }
 
-pub async fn handle_clan_requests_view(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_clan_requests_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -764,7 +773,7 @@ pub async fn handle_clan_requests_view(state: &Arc<GameState>, tx: &Outbox, pid:
 #[allow(dead_code)]
 pub async fn handle_clan_accept(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     target_pid: i32,
 ) {
@@ -804,7 +813,12 @@ pub async fn handle_clan_accept(
     }
 }
 
-pub async fn handle_clan_kick(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, target_pid: i32) {
+pub async fn handle_clan_kick(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    target_pid: i32,
+) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
         None => return,
@@ -857,7 +871,7 @@ pub async fn handle_clan_kick(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
 
 pub async fn handle_clan_kick_by_name(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     target_name: &str,
 ) {
@@ -890,11 +904,11 @@ async fn is_clan_owner(state: &Arc<GameState>, clan_id: i32, pid: PlayerId) -> b
     }
 }
 
-fn send_clan_no_rights(tx: &Outbox) {
+fn send_clan_no_rights(tx: &dyn PacketSink) {
     send_clan_ok(tx, "Ошибка", "Нет прав");
 }
 
-fn send_clan_ok(tx: &Outbox, title: &str, text: &str) {
+fn send_clan_ok(tx: &dyn PacketSink, title: &str, text: &str) {
     send_u_packet(tx, "OK", &ok_message(title, text).1);
 }
 

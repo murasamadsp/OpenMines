@@ -767,6 +767,26 @@ monotonic time, с delay - точному `now + delay`.
 
 Проверка: 5 market tests, 637 total tests, strict clippy, fmt, wire smoke.
 
+## Wire-decoupling: &Outbox → &dyn PacketSink (полная миграция)
+
+Все game logic функции переведены с `&Outbox` на `&dyn PacketSink`:
+- **105 функций** на `&dyn PacketSink`
+- **1 функция** на `&Outbox` (только `connect_in_tick` в тестах — нужен `Outbox` для `register_test_outbox`)
+- `PacketSink` trait: `Send + Sync` (required for `tokio::spawn`)
+- `PacketBatch`: `std::sync::Mutex` вместо `RefCell` (для `Sync`)
+- Guard `scripts/guards/no-wire-in-lock.sh`: **0 violations** (depth-tracking, comment-aware)
+- Все 22 `send_u_packet`/`send_inventory` внутри `modify_player` closures вынесены
+
+Wire-in-lock violations были в:
+- `crafter_gui.rs` (start_craft, refund) — вынесены `send_u_packet(&batch, "@B", ...)` и `send_inventory`
+- `slash.rs` (admin give_all) — вынесены `send_u_packet` + `send_inventory`, возврат через `CommandEffects`
+- `commands_social/mod.rs` (give, money, moneyall) — `send_inventory` через `PacketBatch`
+- `heal_inventory.rs` (consume items) — `send_inventory` через `PacketBatch`
+- `auction_gui.rs` (create_order, refund) — `send_inventory` через `PacketBatch`
+- `market_gui.rs`, `pack_gui.rs`, `buildings.rs`, `dig_build.rs`, `movement.rs`
+
+Проверка: 637 tests, clippy -D warnings, guard 0 violations.
+
 ## Видимые milestones
 
 | Milestone | Пользовательский результат | Статус |

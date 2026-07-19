@@ -38,7 +38,7 @@ use strum::IntoEnumIterator;
 
 use crate::game::skills::{SkillType, get_player_skill_effect};
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{money, ok_message, tp};
 use crate::world::WorldProvider;
@@ -268,7 +268,7 @@ pub fn send_ok(tx: &dyn crate::net::session::wire::PacketSink, title: &str, text
     send_u_packet(tx, "OK", &ok_message(title, text).1);
 }
 
-pub fn send_admin_help(tx: &Outbox) {
+pub fn send_admin_help(tx: &dyn PacketSink) {
     send_ok(tx, "Админ-команды", &crate::admin::slash_help());
 }
 
@@ -285,7 +285,7 @@ pub fn is_admin_command(state: &Arc<GameState>, pid: PlayerId) -> bool {
         .unwrap_or(false)
 }
 
-pub fn handle_admin_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_admin_action(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     // C# ref: ADMN triggers AdminButton() on current window (gear icon).
     let handled = state.query_player_expected(pid, "ADMN packet", |ecs, entity| {
         let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
@@ -336,7 +336,7 @@ pub fn handle_admin_action(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
     }
 }
 
-fn ensure_admin(tx: &Outbox, state: &Arc<GameState>, pid: PlayerId) -> bool {
+fn ensure_admin(tx: &dyn PacketSink, state: &Arc<GameState>, pid: PlayerId) -> bool {
     if is_admin_command(state, pid) {
         true
     } else {
@@ -347,7 +347,12 @@ fn ensure_admin(tx: &Outbox, state: &Arc<GameState>, pid: PlayerId) -> bool {
 
 // ─── Main dispatcher ────────────────────────────────────────────────────────
 
-pub async fn handle_chat_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, msg: &str) {
+pub async fn handle_chat_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    msg: &str,
+) {
     let parts: Vec<&str> = msg.split_whitespace().collect();
     if parts.is_empty() {
         return;
@@ -416,7 +421,7 @@ pub async fn handle_chat_command(state: &Arc<GameState>, tx: &Outbox, pid: Playe
 
 // ─── /giveall ───────────────────────────────────────────────────────────────
 
-fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -464,7 +469,7 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         .flatten();
     if let Some((m, c, packets)) = money_result {
         for pkt in packets {
-            let _ = tx.send(pkt);
+            tx.send_packet(pkt);
         }
         send_u_packet(tx, "P$", &money(m, c).1);
     } else {
@@ -474,7 +479,12 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
 
 // ─── /give ──────────────────────────────────────────────────────────────────
 
-fn handle_chat_give_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &[&str]) {
+fn handle_chat_give_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    args: &[&str],
+) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -507,7 +517,7 @@ fn handle_chat_give_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, 
         .flatten();
     if let Some(packets) = packets {
         for pkt in packets {
-            let _ = tx.send(pkt);
+            tx.send_packet(pkt);
         }
     } else {
         send_command_state_error(tx);
@@ -516,7 +526,12 @@ fn handle_chat_give_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, 
 
 // ─── /money ─────────────────────────────────────────────────────────────────
 
-fn handle_chat_money_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &[&str]) {
+fn handle_chat_money_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    args: &[&str],
+) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -537,7 +552,7 @@ fn handle_chat_money_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId,
 
 async fn handle_chat_money_all_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -598,7 +613,7 @@ async fn handle_chat_money_all_command(
 
 async fn handle_chat_skill_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -852,7 +867,12 @@ fn choose_admin_skill_slot(
 
 // ─── /tp ────────────────────────────────────────────────────────────────────
 
-fn handle_chat_teleport_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &[&str]) {
+fn handle_chat_teleport_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    args: &[&str],
+) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -910,7 +930,7 @@ fn handle_chat_teleport_command(state: &Arc<GameState>, tx: &Outbox, pid: Player
 
 // ─── /heal ──────────────────────────────────────────────────────────────────
 
-fn handle_chat_heal_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+fn handle_chat_heal_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -927,7 +947,7 @@ fn handle_chat_heal_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) 
 
 async fn handle_chat_clan_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -945,7 +965,7 @@ async fn handle_chat_clan_command(
 
 async fn handle_chat_clan_create_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -960,7 +980,7 @@ async fn handle_chat_clan_create_command(
 
 async fn handle_chat_clan_kick_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -974,7 +994,12 @@ async fn handle_chat_clan_kick_command(
 
 // ─── /pack ──────────────────────────────────────────────────────────────────
 
-fn handle_chat_pack_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &[&str]) {
+fn handle_chat_pack_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    args: &[&str],
+) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -991,7 +1016,7 @@ fn handle_chat_pack_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, 
     }
 }
 
-fn handle_pack_owner_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str]) {
+fn handle_pack_owner_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_OWNER, 0, 1) {
         Some(p) => p,
         None => return,
@@ -1012,7 +1037,7 @@ fn handle_pack_owner_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str]
     }
 }
 
-fn handle_pack_clan_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str]) {
+fn handle_pack_clan_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_CLAN, 0, 1) {
         Some(p) => p,
         None => return,
@@ -1033,7 +1058,7 @@ fn handle_pack_clan_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str])
     }
 }
 
-fn handle_pack_move_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str]) {
+fn handle_pack_move_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_MOVE, 0, 1) {
         Some(p) => p,
         None => return,
@@ -1071,7 +1096,7 @@ fn handle_pack_move_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str])
     }
 }
 
-fn handle_pack_type_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str]) {
+fn handle_pack_type_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_TYPE, 0, 1) {
         Some(p) => p,
         None => return,
@@ -1110,7 +1135,12 @@ fn handle_pack_type_command(state: &Arc<GameState>, tx: &Outbox, parts: &[&str])
 
 // ─── /kick ──────────────────────────────────────────────────────────────────
 
-fn handle_chat_kick_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &[&str]) {
+fn handle_chat_kick_command(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    args: &[&str],
+) {
     if !ensure_admin(tx, state, pid) {
         return;
     }
@@ -1143,7 +1173,7 @@ fn handle_chat_kick_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, 
 
 async fn handle_chat_role_command(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     args: &[&str],
 ) {
@@ -1194,7 +1224,7 @@ async fn handle_chat_role_command(
 // ─── Parsing helpers ────────────────────────────────────────────────────────
 
 fn parse_required_arg<T: std::str::FromStr>(
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     args: &[&str],
     idx: usize,
     usage: &str,
@@ -1206,7 +1236,7 @@ fn parse_required_arg<T: std::str::FromStr>(
 }
 
 fn parse_optional_arg_with_default<T: std::str::FromStr>(
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     args: &[&str],
     idx: usize,
     def: T,
@@ -1224,7 +1254,7 @@ fn parse_optional_arg_with_default<T: std::str::FromStr>(
 
 fn parse_pack_pos(
     parts: &[&str],
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     usage: &str,
     xi: usize,
     yi: usize,

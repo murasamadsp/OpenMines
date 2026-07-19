@@ -5,7 +5,7 @@ pub mod login;
 
 pub(super) fn send_world_info(
     state: &std::sync::Arc<crate::game::GameState>,
-    outbox: &crate::net::session::outbox::Outbox,
+    outbox: &dyn crate::net::session::wire::PacketSink,
 ) {
     use crate::world::WorldProvider as _;
 

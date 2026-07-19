@@ -189,9 +189,8 @@ fn admin_economy_give_all(
             "Нет прав на админ-команду",
         );
     }
-    let packets = context
+    let money_result = context
         .modify_player(player_id, |ecs, entity| {
-            let batch = crate::net::session::wire::PacketBatch::default();
             {
                 let mut inventory = ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
                 for item_id in 0..=50 {
@@ -203,51 +202,59 @@ fn admin_economy_give_all(
                         .saturating_add(10);
                 }
                 inventory.minv = false;
-                crate::net::session::outbound::inventory_sync::send_inventory(
-                    &batch,
-                    &mut inventory,
-                );
-                inventory.minv = true;
                 inventory.miniq.clear();
                 let mut item_ids = inventory.items.keys().copied().collect::<Vec<_>>();
                 item_ids.sort_unstable();
                 inventory.miniq.extend(item_ids.into_iter().take(4));
-                crate::net::session::outbound::inventory_sync::send_inventory(
-                    &batch,
-                    &mut inventory,
-                );
             }
             {
                 let mut stats = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
                 stats.money = stats.money.saturating_add(1_000_000);
                 stats.creds = stats.creds.saturating_add(100_000);
-                let money = crate::protocol::packets::money(stats.money, stats.creds);
-                crate::net::session::wire::send_u_packet(&batch, money.0, &money.1);
             }
             ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?
                 .dirty = true;
-            Some(batch.into_packets())
+            let stats = ecs.get::<crate::game::player::PlayerStats>(entity)?;
+            Some((stats.money, stats.creds))
         })
         .flatten();
-    packets.map_or_else(
-        || {
-            context.slash_ok_effect(
-                session_id,
-                player_id,
-                "КОМАНДА",
-                "Состояние игрока недоступно.",
-            )
-        },
-        |packets| CommandEffects {
-            events: vec![crate::game::GameEvent::SessionBatch {
-                session_id,
-                player_id,
-                packets,
-            }],
-            saves: Vec::new(),
-            broadcasts: Vec::new(),
-        },
-    )
+    let Some((money, creds)) = money_result else {
+        return context.slash_ok_effect(
+            session_id,
+            player_id,
+            "КОМАНДА",
+            "Состояние игрока недоступно.",
+        );
+    };
+    let mut all_packets = Vec::new();
+    // Send inventory (minv=false first, then minv=true with miniq)
+    if let Some(inv_packets) = context
+        .modify_player(player_id, |ecs, entity| {
+            let mut inv = ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
+            let batch = crate::net::session::wire::PacketBatch::default();
+            inv.minv = false;
+            crate::net::session::outbound::inventory_sync::send_inventory(&batch, &mut inv);
+            inv.minv = true;
+            crate::net::session::outbound::inventory_sync::send_inventory(&batch, &mut inv);
+            Some(batch.into_packets())
+        })
+        .flatten()
+    {
+        all_packets.extend(inv_packets);
+    }
+    let money_pkt = crate::protocol::packets::money(money, creds);
+    let money_batch = crate::net::session::wire::PacketBatch::default();
+    crate::net::session::wire::send_u_packet(&money_batch, money_pkt.0, &money_pkt.1);
+    all_packets.extend(money_batch.into_packets());
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: all_packets,
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
 }
 
 fn admin_economy_money(

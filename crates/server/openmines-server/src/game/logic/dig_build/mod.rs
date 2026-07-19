@@ -19,8 +19,8 @@ use crate::game::skills::{
 
 use crate::game::direction::dir_offset;
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{
     XbldClient, basket, hb_bot, hb_crystal_mine_fx, hb_dig_fx, ok_message,
@@ -41,7 +41,7 @@ const fn add_crystals_like_reference(current: i64, amount: i64) -> i64 {
     }
 }
 
-fn send_build_state_error(tx: &Outbox) {
+fn send_build_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -117,7 +117,7 @@ impl CrystalMineYield {
 
 pub fn handle_dig(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     dir: i32,
     programmatic: bool,
@@ -579,7 +579,7 @@ pub fn handle_dig(
 
 pub fn handle_build(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     bld: &XbldClient<'_>,
     programmatic: bool,
@@ -831,7 +831,7 @@ pub fn handle_build(
 
 pub fn try_spend_crystal(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     idx: usize,
     amount: i64,

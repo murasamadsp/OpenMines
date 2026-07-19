@@ -30,12 +30,12 @@ use crate::net::session::ui::crystal_form::parse_amounts as parse_six_i64_fields
 
 // ─── Market GUI ──────────────────────────────────────────────────────────
 
-pub fn send_market_action_error(tx: &Outbox) {
+pub fn send_market_action_error(tx: &dyn PacketSink) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", "Некорректное действие.").1);
 }
 
 #[allow(dead_code)]
-pub fn send_market_state_error(tx: &Outbox) {
+pub fn send_market_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -185,7 +185,7 @@ pub fn resolve_market_window(state: &Arc<GameState>, pid: PlayerId) -> Option<(i
 /// Handle Market tab switching.
 pub async fn handle_market_tab_switch(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     tab: &str,
 ) {
@@ -207,7 +207,7 @@ pub async fn handle_market_tab_switch(
 
 pub fn handle_market_tab_switch_sync(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     tab: &str,
 ) {
@@ -226,7 +226,12 @@ pub fn handle_market_tab_switch_sync(
 /// Handle "sell:%M%" — sell crystals from sliders.
 /// C# ref: `MarketSystem.Sell(sliders, p, m)`.
 #[allow(dead_code)]
-pub fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
+pub fn handle_market_sell(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    slider_data: &str,
+) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
     };
@@ -247,7 +252,7 @@ pub fn handle_market_sell(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, sl
 /// Handle "sellall" — sell all player's crystals.
 /// C# ref: `MarketSystem.Sell(p.crys.cry, p, m)`.
 #[allow(dead_code)]
-pub fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_market_sellall(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -294,7 +299,7 @@ pub fn handle_market_sellall(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId)
 #[allow(dead_code)]
 pub fn do_market_sell(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     sliders: &[i64],
     bx: i32,
@@ -349,7 +354,12 @@ pub fn do_market_sell(
 /// Handle "buy:%M%" — buy crystals with money.
 /// C# ref: `MarketSystem.Buy(sliders, p, m)`.
 #[allow(dead_code)]
-pub fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, slider_data: &str) {
+pub fn handle_market_buy(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    slider_data: &str,
+) {
     let Some(sliders) = parse_six_i64_fields(slider_data) else {
         return;
     };
@@ -381,7 +391,7 @@ pub fn handle_market_buy(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, sli
 /// C# ref: `Market.onadmn` — transfer moneyinside to player, reset to 0,
 /// then re-open the admin `RichList` page.
 #[allow(dead_code)]
-pub fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_market_getprofit(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let Some((bx, by, _tab)) = resolve_market_window(state, pid) else {
         return;
     };

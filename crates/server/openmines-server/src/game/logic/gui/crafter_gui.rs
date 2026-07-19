@@ -37,11 +37,11 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
-pub fn send_crafter_action_error(tx: &Outbox) {
+pub fn send_crafter_action_error(tx: &dyn PacketSink) {
     send_u_packet(tx, "OK", &ok_message("КРАФТЕР", "Некорректное действие.").1);
 }
 
-pub fn send_crafter_state_error(tx: &Outbox) {
+pub fn send_crafter_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -51,7 +51,12 @@ pub fn send_crafter_state_error(tx: &Outbox) {
 
 /// Open Crafter GUI: if craft in progress show progress, else show recipe list.
 /// C# ref: `Crafter.GUIWin` -> `StaticSystem.FilledPage` / `GlobalFirstPage`.
-pub fn open_crafter_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
+pub fn open_crafter_gui(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    view: &PackView,
+) {
     if view.owner_id != pid {
         return;
     }
@@ -79,7 +84,13 @@ pub fn open_crafter_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view
     });
 }
 
-fn show_crafter_progress(tx: &Outbox, view: &PackView, recipe_id: i32, num: i32, end_ts: i64) {
+fn show_crafter_progress(
+    tx: &dyn PacketSink,
+    view: &PackView,
+    recipe_id: i32,
+    num: i32,
+    end_ts: i64,
+) {
     let now = now_ts();
     let recipe = crafting::recipe_by_id(recipe_id);
     let recipe_name = recipe.map_or("?", |r| r.title);
@@ -122,7 +133,7 @@ fn show_crafter_progress(tx: &Outbox, view: &PackView, recipe_id: i32, num: i32,
     win.close_button().send_raw(tx);
 }
 
-fn show_crafter_recipes(tx: &Outbox, view: &PackView) {
+fn show_crafter_recipes(tx: &dyn PacketSink, view: &PackView) {
     let recipes = crafting::recipes();
     let crys_names = ["зель", "синь", "крась", "фиоль", "бель", "голь"];
 
@@ -168,7 +179,12 @@ fn show_crafter_recipes(tx: &Outbox, view: &PackView) {
 /// Show recipe details + Start button.
 /// Called from `craft_recipe:{id}:{x}:{y}` but `handle_complex_button` parses
 /// only the prefix `craft_recipe:` and passes the rest as a string.
-pub fn handle_craft_recipe_view(state: &Arc<GameState>, tx: &Outbox, _pid: PlayerId, args: &str) {
+pub fn handle_craft_recipe_view(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    _pid: PlayerId,
+    args: &str,
+) {
     let _ = state;
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 3 {
@@ -221,7 +237,7 @@ pub fn handle_craft_recipe_view(state: &Arc<GameState>, tx: &Outbox, _pid: Playe
 
 /// Start crafting: deduct resources, set timer.
 /// Button format: `craft_start:{recipe_id}:{num}:{x}:{y}`
-pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
+pub fn handle_craft_start(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, args: &str) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 4 {
         send_crafter_action_error(tx);
@@ -293,7 +309,7 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                 let pstats = ecs.get::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
                     if pstats.crystals[c.id as usize] < i64::from(c.num) * i64::from(num) {
-                        return Some((false, Vec::new()));
+                        return Some((false, [0; 6], false));
                     }
                 }
                 if !recipe.cost_res.is_empty() {
@@ -301,19 +317,17 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                     for c in recipe.cost_res {
                         let have = inv.items.get(&c.id).copied().unwrap_or(0);
                         if have < c.num * num {
-                            return Some((false, Vec::new()));
+                            return Some((false, [0; 6], false));
                         }
                     }
                 }
             }
 
-            let batch = crate::net::session::wire::PacketBatch::default();
             {
                 let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
                     pstats.crystals[c.id as usize] -= i64::from(c.num) * i64::from(num);
                 }
-                send_u_packet(&batch, "@B", &basket(&pstats.crystals, 1).1);
             }
 
             if !recipe.cost_res.is_empty() {
@@ -322,25 +336,46 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                     let entry = inv.items.entry(c.id).or_insert(0);
                     *entry -= c.num * num;
                 }
-                send_inventory(&batch, &mut inv);
             }
             let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
             flags.dirty = true;
 
-            Some((true, batch.into_packets()))
+            let crystals = ecs.get::<PlayerStats>(entity)?.crystals;
+            let has_res = !recipe.cost_res.is_empty();
+            Some((true, crystals, has_res))
         })
         .flatten();
 
-    let Some((deducted, packets)) = deducted else {
+    let Some((deducted, crystals, has_res)) = deducted else {
         send_crafter_state_error(tx);
         return;
     };
-    for pkt in packets {
-        let _ = tx.send(pkt);
-    }
     if !deducted {
         send_u_packet(tx, "OK", &ok_message("Крафтер", "Недостаточно ресурсов").1);
         return;
+    }
+    {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        send_u_packet(&batch, "@B", &basket(&crystals, 1).1);
+        // Send inventory if resources were refunded
+        if has_res {
+            if let Some(inv_packets) = state
+                .modify_player(pid, |ecs, entity| {
+                    let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    send_inventory(&batch, &mut inv);
+                    Some(batch.into_packets())
+                })
+                .flatten()
+            {
+                for pkt in inv_packets {
+                    tx.send_packet(pkt);
+                }
+            }
+        }
+        for pkt in batch.into_packets() {
+            tx.send_packet(pkt);
+        }
     }
 
     let end_ts = now_ts() + i64::from(recipe.time_sec) * i64::from(num);
@@ -362,7 +397,7 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
         }
     };
     if !updated {
-        let packets = state
+        let refund_result = state
             .modify_player(pid, |ecs, entity| {
                 if ecs.get::<PlayerStats>(entity).is_none()
                     || ecs.get::<PlayerFlags>(entity).is_none()
@@ -370,13 +405,11 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                 {
                     return None;
                 }
-                let batch = crate::net::session::wire::PacketBatch::default();
                 {
                     let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
                     for c in recipe.cost_crys {
                         pstats.crystals[c.id as usize] += i64::from(c.num) * i64::from(num);
                     }
-                    send_u_packet(&batch, "@B", &basket(&pstats.crystals, 1).1);
                 }
 
                 if !recipe.cost_res.is_empty() {
@@ -385,17 +418,36 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                         let entry = inv.items.entry(c.id).or_insert(0);
                         *entry += c.num * num;
                     }
-                    send_inventory(&batch, &mut inv);
                 }
 
                 let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
                 f.dirty = true;
-                Some(batch.into_packets())
+                let crystals = ecs.get::<PlayerStats>(entity)?.crystals;
+                Some(crystals)
             })
-            .flatten()
-            .unwrap_or_default();
-        for pkt in packets {
-            let _ = tx.send(pkt);
+            .flatten();
+        if let Some(crystals) = refund_result {
+            let batch = crate::net::session::wire::PacketBatch::default();
+            send_u_packet(&batch, "@B", &basket(&crystals, 1).1);
+            // Send inventory if resources were refunded
+            if !recipe.cost_res.is_empty() {
+                if let Some(inv_packets) = state
+                    .modify_player(pid, |ecs, entity| {
+                        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                        let batch = crate::net::session::wire::PacketBatch::default();
+                        send_inventory(&batch, &mut inv);
+                        Some(batch.into_packets())
+                    })
+                    .flatten()
+                {
+                    for pkt in inv_packets {
+                        tx.send_packet(pkt);
+                    }
+                }
+            }
+            for pkt in batch.into_packets() {
+                tx.send_packet(pkt);
+            }
         }
         send_crafter_action_error(tx);
         return;
@@ -410,7 +462,7 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
 }
 
 /// Claim finished craft. Button format: `craft_claim:{x}:{y}`
-pub fn handle_craft_claim(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, args: &str) {
+pub fn handle_craft_claim(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, args: &str) {
     let parts: Vec<&str> = args.split(':').collect();
     if parts.len() < 2 {
         send_crafter_action_error(tx);

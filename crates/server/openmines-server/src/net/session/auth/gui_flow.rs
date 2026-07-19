@@ -37,7 +37,7 @@ fn required_button_payload<'a>(button: &'a str, prefix: &str) -> Option<&'a str>
 /// Returns `Some(pid)` on successful login/registration (session transitions to Authenticated).
 pub async fn handle_gui_auth_flow(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     button: &str,
     session_id: SessionId,
     step: &mut GuiAuthStep,
@@ -63,7 +63,7 @@ pub async fn handle_gui_auth_flow(
 }
 
 /// C# ref: `def` window — main auth menu with "Новый акк" and "ok" (nick input).
-pub fn send_default_auth_window(tx: &Outbox) {
+pub fn send_default_auth_window(tx: &dyn PacketSink) {
     let window = gui! {
         <window title="ВХОД">
             <text>"Авторизация"</text>
@@ -78,7 +78,7 @@ pub fn send_default_auth_window(tx: &Outbox) {
     send_u_packet(tx, "GU", &window.payload());
 }
 
-fn send_auth_input_window(tx: &Outbox, title: &str, text: &str, action: &str) {
+fn send_auth_input_window(tx: &dyn PacketSink, title: &str, text: &str, action: &str) {
     let window = gui! {
         <window title=title>
             <text>{text}</text>
@@ -93,7 +93,7 @@ fn send_auth_input_window(tx: &Outbox, title: &str, text: &str, action: &str) {
 /// Handle buttons on the main auth menu.
 async fn handle_main_menu(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -114,7 +114,7 @@ async fn handle_main_menu(
 /// C# ref: `TryToFindByNick` — look up player by name.
 async fn handle_find_by_nick(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     name: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -138,7 +138,7 @@ async fn handle_find_by_nick(
 /// Handle password input for existing player login.
 async fn handle_login_password(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     button: &str,
     nick: &str,
     session_id: SessionId,
@@ -183,7 +183,7 @@ async fn handle_login_password(
 /// Handle nick input for new account registration.
 async fn handle_register_nick(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     button: &str,
     step: &mut GuiAuthStep,
 ) -> Result<Option<PlayerId>> {
@@ -215,7 +215,7 @@ async fn handle_register_nick(
 /// Handle password input for new account — creates the player.
 async fn handle_register_password(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     button: &str,
     nick: &str,
     session_id: SessionId,
@@ -247,7 +247,7 @@ async fn handle_register_password(
 /// Shared finalization: send AH, cf, Gu, `init_player`.
 async fn finalize_auth(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     player: &crate::db::players::PlayerRow,
     session_id: SessionId,
     step: &mut GuiAuthStep,

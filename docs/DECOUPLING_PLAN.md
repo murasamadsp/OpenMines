@@ -58,17 +58,31 @@ Game logic возвращает данные (`CommandEffects` с `SessionBatch`
 - [x] teleport
 - [x] up_building (skill, upgrade, delete, install, buyslot)
 
-### Still on &Outbox:
-- [ ] settings save (net/session/ui/settings.rs)
-- [ ] heal_inventory (complex, async, uses due_actions)
-- [ ] consumables (boom, protector, razryadka)
-- [ ] dig_build
-- [ ] clans (GUI rendering)
-- [ ] programmator
+### Migrated from &Outbox to &dyn PacketSink:
+- [x] commands_social/mod.rs (15 functions)
+- [x] clans/mod.rs (12 functions)
+- [x] crafter_gui.rs (8 functions)
+- [x] auction_gui.rs (8 functions)
+- [x] market_gui.rs, pack_gui.rs, programmator_gui.rs, gui_buttons.rs
+- [x] buildings.rs, heal_inventory.rs, misc.rs, chat.rs, pack_command.rs
+- [x] dig_build/mod.rs, death.rs, player_init.rs
+- [x] commands/mod.rs (slash.rs, gui.rs)
+- [x] net/session: settings.rs, gui_flow.rs, login.rs, auth/mod.rs
+
+### Still on &Outbox (test-only):
+- [ ] player_init.rs::connect_in_tick — needs &Outbox for register_test_outbox
+
+### Wire-in-lock guard:
+- [x] scripts/guards/no-wire-in-lock.sh — 0 violations, depth-tracking, comment-aware
+- [x] PacketSink: Send + Sync bound (required for tokio::spawn)
+- [x] PacketBatch: std::sync::Mutex (not RefCell) for Sync
 
 ### Metrics:
-- Functions on `&dyn PacketSink`: 34
-- Functions still on `&Outbox`: 151
+- Functions on `&dyn PacketSink`: 105
+- Functions still on `&Outbox`: 1 (test-only `connect_in_tick`)
+- `send_u_packet` inside `modify_player` closures: 0
+- `PacketSink` trait: `Send + Sync` (required for async tokio::spawn)
+- `PacketBatch`: uses `std::sync::Mutex` (not `RefCell`) for `Sync`
 
 ## Execution Order
 
@@ -156,7 +170,7 @@ for i, line in enumerate(lines, 1):
 ## Metrics
 
 Track progress:
-- `game/` → `net/` imports: currently 49, target 0
-- Wire references in `game/logic/`: currently 772, target 0
-- `&Outbox` parameters in game logic: count and eliminate
-- `send_u_packet` inside `modify_player` closures: must be 0
+- `&Outbox` parameters in game logic: 1 (test-only), target 0
+- `&dyn PacketSink` parameters: 105
+- `send_u_packet` inside `modify_player` closures: 0 (must stay 0)
+- Guard: `scripts/guards/no-wire-in-lock.sh` (pre-commit)

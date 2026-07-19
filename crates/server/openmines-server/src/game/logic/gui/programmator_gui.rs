@@ -26,7 +26,7 @@ use crate::net::session::prelude::*;
 
 // ─── Программатор ────────────────────────────────────────────────────────────
 
-pub fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn open_create_prog_dialog(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb};
 
     Horb::new("НОВАЯ ПРОГРАММА")
@@ -37,11 +37,11 @@ pub fn open_create_prog_dialog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
         .send(state, tx, pid, "createprog");
 }
 
-pub fn send_programmator_error(tx: &Outbox, message: &str) {
+pub fn send_programmator_error(tx: &dyn PacketSink, message: &str) {
     send_u_packet(tx, "OK", &ok_message("ПРОГРАММАТОР", message).1);
 }
 
-pub fn send_programmator_action_error(tx: &Outbox, message: &str) {
+pub fn send_programmator_action_error(tx: &dyn PacketSink, message: &str) {
     send_programmator_error(tx, message);
 }
 
@@ -54,7 +54,12 @@ pub fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
-pub async fn handle_open_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, prog_id: i32) {
+pub async fn handle_open_prog(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    prog_id: i32,
+) {
     let p = match state.db.get_program(prog_id).await {
         Ok(Some(program)) => program,
         Ok(None) => {
@@ -102,7 +107,12 @@ pub async fn handle_open_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
     );
 }
 
-pub async fn handle_create_prog(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, name: &str) {
+pub async fn handle_create_prog(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    name: &str,
+) {
     let name = name.trim();
     if name.is_empty() {
         return;
@@ -147,7 +157,7 @@ pub async fn handle_create_prog(state: &Arc<GameState>, tx: &Outbox, pid: Player
 
 pub async fn handle_rename_prog(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     prog_id: i32,
     name: &str,

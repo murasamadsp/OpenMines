@@ -38,7 +38,12 @@ use crate::net::session::prelude::*;
 
 // ─── Pack Operations ─────────────────────────────────────────────────────────
 
-pub async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, op: &str) {
+pub async fn handle_pack_operation(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    op: &str,
+) {
     let parts: Vec<&str> = op.split(':').collect();
     if parts.len() < 3 {
         send_pack_action_error(tx);
@@ -105,7 +110,7 @@ pub async fn handle_pack_operation(state: &Arc<GameState>, tx: &Outbox, pid: Pla
 
 pub fn handle_pack_operation_sync_fast_path(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     op: &str,
 ) -> bool {
@@ -168,7 +173,7 @@ pub fn handle_pack_operation_sync_fast_path(
     true
 }
 
-pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
+pub fn open_pack_gui(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, view: &PackView) {
     // C# ref: Gate.GUIWin() returns null — no window opens
     if view.pack_type == PackType::Gate {
         close_player_window(state, tx, pid);
@@ -247,7 +252,7 @@ pub fn open_pack_gui(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &
 /// прибыль. Открывается по `ADMN` на окне `pack:{x}:{y}`. Сохранение — `pack_save`.
 pub fn open_pack_admin_gui(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     pack_x: i32,
     pack_y: i32,
@@ -301,7 +306,12 @@ pub fn open_pack_admin_gui(
 
 /// `pack_save:{key:value#…}` из админ-панели (`%R%`). Ставит cost/clan,
 /// перерисовывает панель. Зеркало `handle_resp_save`, но для окна `pack:`.
-pub fn handle_pack_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, richlist_data: &str) {
+pub fn handle_pack_save(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    richlist_data: &str,
+) {
     let coords = state.query_player_opt(pid, |ecs, entity| {
         let ui = ecs.get::<PlayerUI>(entity)?;
         let rest = ui.current_window.as_deref()?.strip_prefix("pack:")?;
@@ -386,7 +396,12 @@ pub fn handle_pack_save(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, rich
     open_pack_admin_gui(state, tx, pid, pack_x, pack_y);
 }
 
-pub fn handle_pack_take_money(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, view: &PackView) {
+pub fn handle_pack_take_money(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    view: &PackView,
+) {
     if !pack_withdraw_state_ready(state, pid, view.x, view.y) {
         send_pack_state_error(tx);
         return;
@@ -439,7 +454,7 @@ pub fn handle_pack_take_money(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
 
 pub fn handle_pack_take_crystals(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     view: &PackView,
 ) {

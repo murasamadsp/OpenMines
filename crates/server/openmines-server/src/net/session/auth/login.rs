@@ -5,7 +5,7 @@ use crate::net::session::auth::gui_flow::send_default_auth_window;
 use crate::net::session::prelude::*;
 
 /// Неуспешная авторизация: референс `Auth.TryToAuth` — `cf` → `BI` (гость) → `HB` → `GU`.
-fn send_auth_failure(state: &Arc<GameState>, tx: &Outbox, _au: &AuClientPacket<'_>) {
+fn send_auth_failure(state: &Arc<GameState>, tx: &dyn PacketSink, _au: &AuClientPacket<'_>) {
     // 1:1 ref: WorldInfoPacket(World.W.name, ...)
     super::send_world_info(state, tx);
 
@@ -25,7 +25,7 @@ fn send_auth_failure(state: &Arc<GameState>, tx: &Outbox, _au: &AuClientPacket<'
 
 pub async fn handle_auth(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     au: &AuClientPacket<'_>,
     sid: &str,
     session_id: SessionId,

@@ -36,7 +36,7 @@ async fn load_owned_program_name(
         .map(|p| p.name))
 }
 
-fn send_programmator_state_error(tx: &Outbox) {
+fn send_programmator_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -53,7 +53,7 @@ fn clear_programmator_window(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
-fn send_programmator_start_position(tx: &Outbox, server_pos: (i32, i32), running: bool) {
+fn send_programmator_start_position(tx: &dyn PacketSink, server_pos: (i32, i32), running: bool) {
     if running {
         send_u_packet(tx, "@T", &tp(server_pos.0, server_pos.1).1);
     }
@@ -62,7 +62,7 @@ fn send_programmator_start_position(tx: &Outbox, server_pos: (i32, i32), running
 /// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в `server_reference`.
 pub async fn handle_prog_ty(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     event: &str,
     payload: &[u8],
@@ -280,7 +280,7 @@ pub fn clear_deleted_program_runtime(state: &Arc<GameState>, pid: PlayerId, prog
 
 pub fn apply_saved_program_to_tick_state(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     prog_id: i32,
     prog_name: &str,
@@ -358,7 +358,7 @@ pub fn apply_saved_program_to_tick_state(
     }
 }
 
-pub fn handle_prog_reset_ty(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub fn handle_prog_reset_ty(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     // Unity uses stopped `pRST` as a pre-open/reset signal from
     // `OnProgButton()`. It must not open `#P`: doing so reopens the
     // editor over gameplay when the user is only toggling program mode.
@@ -394,7 +394,7 @@ pub fn handle_prog_reset_ty(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) 
 
 pub fn handle_prog_rename_prompt_ty(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     payload: &[u8],
 ) {

@@ -4,12 +4,11 @@ use crate::metrics;
 use crate::net::session::outbox::Outbox;
 use crate::protocol::{b_packet, u_packet};
 use bytes::BytesMut;
-use std::cell::RefCell;
 
 pub const OUTGOING_PACKET_PREVIEW: usize = 256;
 pub const INCOMING_PACKET_PREVIEW: usize = 160;
 
-pub trait PacketSink {
+pub trait PacketSink: Send + Sync {
     fn send_packet(&self, packet: Vec<u8>) -> bool;
 }
 
@@ -21,18 +20,23 @@ impl PacketSink for Outbox {
 
 #[derive(Debug, Default)]
 pub struct PacketBatch {
-    packets: RefCell<Vec<Vec<u8>>>,
+    packets: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 
 impl PacketBatch {
     pub fn into_packets(self) -> Vec<Vec<u8>> {
-        self.packets.into_inner()
+        self.packets
+            .into_inner()
+            .expect("packet batch mutex poisoned")
     }
 }
 
 impl PacketSink for PacketBatch {
     fn send_packet(&self, packet: Vec<u8>) -> bool {
-        self.packets.borrow_mut().push(packet);
+        self.packets
+            .lock()
+            .expect("packet batch mutex poisoned")
+            .push(packet);
         true
     }
 }

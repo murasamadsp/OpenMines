@@ -25,8 +25,8 @@ use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::game::buildings::{PackType, PackView};
 use crate::game::direction::dir_offset;
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
 use crate::net::session::util::net_u16_nonneg;
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{hb_gun_shot_fx, hb_hurt_fx, health, ok_message};
 use crate::world::WorldProvider;
@@ -41,7 +41,7 @@ const fn is_exempt_item(sel: i32) -> bool {
     sel == 40 || is_geopack_item(sel)
 }
 
-fn send_inventory_state_error(tx: &Outbox) {
+fn send_inventory_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -50,7 +50,7 @@ fn send_inventory_state_error(tx: &Outbox) {
 }
 
 #[cfg(test)]
-pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) {
+pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     // C# Inventory.Use:204 — гейт 400ms: если с прошлого использования прошло
     // меньше, Use() игнорируется целиком. Таймер обновляется при прохождении
     // гейта, даже если предмет в итоге не использован (как C# `time = DateTime.Now`).
@@ -153,14 +153,14 @@ pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &Outbox, pid: Play
             .flatten()
             .unwrap_or_default();
         for pkt in packets {
-            let _ = tx.send(pkt);
+            tx.send_packet(pkt);
         }
     }
 }
 
 pub fn handle_inventory_use_sync_nonbuilding(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     session_id: crate::game::SessionId,
     due_actions: &mut crate::game::logic::due::DueActionQueue,
@@ -309,7 +309,7 @@ pub fn handle_inventory_use_sync_nonbuilding(
 
 pub fn prepare_inventory_building_use(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
 ) -> Option<crate::game::logic::contracts::InventoryBuildingPlacement> {
     let selected = state.query_player_opt(pid, |ecs, entity| {
@@ -408,7 +408,7 @@ pub fn prepare_inventory_building_use(
 
 pub fn apply_inventory_building_placed(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     placement: &crate::game::logic::contracts::InventoryBuildingPlacement,
     db_id: i32,
 ) {
@@ -440,7 +440,7 @@ pub fn apply_inventory_building_placed(
 
 fn consume_selected_inventory_item(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     selected: i32,
 ) {
@@ -460,7 +460,7 @@ fn consume_selected_inventory_item(
         .flatten()
         .unwrap_or_default();
     for pkt in packets {
-        let _ = tx.send(pkt);
+        tx.send_packet(pkt);
     }
 }
 
@@ -558,7 +558,12 @@ fn true_empty(state: &Arc<GameState>, x: i32, y: i32) -> bool {
 }
 
 /// D25+D26: Geopack — placement on truly empty cells, pickup of any alive cell.
-pub fn use_geopack(state: &Arc<GameState>, _tx: &Outbox, pid: PlayerId, item_id: i32) -> bool {
+pub fn use_geopack(
+    state: &Arc<GameState>,
+    _tx: &dyn PacketSink,
+    pid: PlayerId,
+    item_id: i32,
+) -> bool {
     let pos = state.query_player_opt(pid, |ecs, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         Some((p.x, p.y, p.dir))
@@ -640,7 +645,7 @@ pub fn use_poli(state: &Arc<GameState>, pid: PlayerId) -> bool {
 /// Только в клане, без вражеской заряженной пушки рядом (access) и при наличии
 /// любой пушки в радиусе (anygun). Иначе ворота не ставятся.
 #[cfg(test)]
-async fn use_gate_item(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> bool {
+async fn use_gate_item(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) -> bool {
     let info = state.query_player_opt(pid, |ecs, entity| {
         let p = ecs.get::<PlayerPosition>(entity)?;
         let s = ecs.get::<PlayerStats>(entity)?;
@@ -664,7 +669,7 @@ async fn use_gate_item(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId) -> bo
 #[cfg(test)]
 pub async fn place_building_from_item(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     pack_type: PackType,
 ) -> bool {
@@ -674,7 +679,7 @@ pub async fn place_building_from_item(
 #[cfg(test)]
 async fn place_building_from_item_with(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     pack_type: PackType,
     offset_cells: i32,

@@ -41,11 +41,11 @@ pub fn withdraw_state_ready(state: &Arc<GameState>, pid: PlayerId, x: i32, y: i3
     player_ready && building_ready
 }
 
-pub fn send_action_error(tx: &Outbox) {
+pub fn send_action_error(tx: &dyn PacketSink) {
     send_u_packet(tx, "OK", &ok_message("ЗДАНИЕ", "Некорректное действие.").1);
 }
 
-pub fn send_state_error(tx: &Outbox) {
+pub fn send_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",

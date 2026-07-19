@@ -56,7 +56,7 @@ pub struct DeathCoreOutput {
     pub save: Option<crate::game::SaveCommand>,
 }
 
-pub fn send_death_state_error(tx: &Outbox) {
+pub fn send_death_state_error(tx: &dyn PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -387,7 +387,7 @@ pub fn run_death_broadcasts(state: &Arc<GameState>, bcast: &DeathBroadcasts, pid
 }
 
 pub fn send_respawn_after_death(
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     rx: i32,
     ry: i32,

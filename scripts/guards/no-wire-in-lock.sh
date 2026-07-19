@@ -15,17 +15,24 @@ while IFS= read -r -d '' file; do
 import re
 with open('$file') as f:
     lines = f.readlines()
-in_modify = 0
+depth = 0
+in_modify = False
+modify_start = 0
 for i, line in enumerate(lines, 1):
-    if '.modify_player(' in line:
-        in_modify = 1
-        start = i
+    stripped = line.strip()
+    if '.modify_player(' in line and not in_modify:
+        in_modify = True
+        modify_start = i
+        depth = 0
     if in_modify:
-        if 'send_u_packet' in line:
-            print(f'$file:{i}: send_u_packet inside modify_player (started at {start})')
-        # Match }); or }) possibly followed by .method() chains
-        if re.match(r'.*\}\)\s*(\.\w+\(.*?\))*\s*;', line.strip()):
-            in_modify = 0
+        depth += line.count('{') - line.count('}')
+        # Skip comments
+        code_part = line.split('//')[0] if '//' in line else line
+        if 'send_u_packet' in code_part:
+            print(f'$file:{i}: send_u_packet inside modify_player (started at {modify_start})')
+        # Closure ends when brace depth returns to 0
+        if depth <= 0:
+            in_modify = False
 " 2>/dev/null)
 done < <(find "$SRC" -name "*.rs" -print0)
 

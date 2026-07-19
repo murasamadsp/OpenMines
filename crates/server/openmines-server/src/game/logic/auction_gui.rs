@@ -35,7 +35,7 @@ use crate::tasks::auction::{credit_money, now_unix};
 use crate::game::logic::items::item_name as pack_name;
 
 use crate::game::{GameState, PlayerId};
-use crate::net::session::outbox::Outbox;
+use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::send_u_packet;
 use crate::protocol::packets::{gu_close, money, ok_message};
 use std::sync::Arc;
@@ -66,21 +66,34 @@ fn auc_page(title: impl Into<String>) -> Horb {
         .fold(Horb::new(title), Horb::tab)
 }
 
-fn send_auc(page: &Horb, state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, bx: i32, by: i32) {
+fn send_auc(
+    page: &Horb,
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
     page.send(state, tx, pid, auc_window_tag(bx, by));
 }
 
-fn send_auc_error(tx: &Outbox, message: &str) {
+fn send_auc_error(tx: &dyn PacketSink, message: &str) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", message).1);
 }
 
-fn send_auc_state_error(tx: &Outbox) {
+fn send_auc_state_error(tx: &dyn PacketSink) {
     send_auc_error(tx, "Данные игрока недоступны.");
 }
 
 /// `MarketSystem.GlobalFirstPage`/`Items` — item-грид (51 тип, кроме 49=Money)
 /// с числом ордеров и мин. ценой. Клик → `choose:{i}`.
-pub async fn open_auc_grid(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, bx: i32, by: i32) {
+pub async fn open_auc_grid(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
     let counts = match state.db.order_counts_by_item().await {
         Ok(counts) => counts,
         Err(e) => {
@@ -119,7 +132,7 @@ pub async fn open_auc_grid(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, b
 }
 
 /// `MarketSystem.OpenItemAuc` — список ордеров по типу + «Создать Ордер».
-pub async fn open_item_auc(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, item: i32) {
+pub async fn open_item_auc(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, item: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -150,7 +163,7 @@ pub async fn open_item_auc(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, i
 }
 
 /// `MarketSystem.OpenOrder` — деталь ордера: карточка + ставка.
-pub async fn open_order(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, order_id: i32) {
+pub async fn open_order(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, order_id: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -222,7 +235,7 @@ pub async fn open_order(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, orde
 }
 
 /// `MarketSystem.OpenOrderCreation` — ввод стартовой цены.
-pub fn open_order_creation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, item: i32) {
+pub fn open_order_creation(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, item: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
@@ -239,7 +252,7 @@ pub fn open_order_creation(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, i
 /// `MarketSystem.OrderCreationNum` — ввод количества (цена уже выбрана).
 pub fn open_order_creation_num(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     item: i32,
     cost: i64,
@@ -263,7 +276,7 @@ pub fn open_order_creation_num(
 /// `MarketSystem.CreateOrder` — списать предметы, создать ордер, подтвердить.
 pub async fn create_order(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     item: i32,
     num: i32,
@@ -323,7 +336,7 @@ pub async fn create_order(
         Some(batch.into_packets())
     }).flatten().unwrap_or_default();
     for pkt in inv_packets {
-        let _ = tx.send(pkt);
+        tx.send_packet(pkt);
     }
     if let Err(e) = state.db.create_order(pid.into(), item, num, cost).await {
         tracing::error!(error = ?e, "Failed to create auction order");
@@ -345,7 +358,7 @@ pub async fn create_order(
         }).flatten();
         if let Some(packets) = refunded {
             for pkt in packets {
-                let _ = tx.send(pkt);
+                tx.send_packet(pkt);
             }
         } else {
             send_auc_state_error(tx);
@@ -366,7 +379,12 @@ pub async fn create_order(
 }
 
 /// Кнопка «minimalbet» — ставка ровно минимальной суммой (1:1 C#).
-pub async fn place_minimal_bet(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, order_id: i32) {
+pub async fn place_minimal_bet(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    order_id: i32,
+) {
     let o = match state.db.get_order(order_id).await {
         Ok(Some(order)) => order,
         Ok(None) => {
@@ -458,7 +476,7 @@ async fn rollback_auction_bet(
 /// чтения — только один из конкурирующих запросов пройдёт CAS.
 pub async fn place_bet(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     order_id: i32,
     amount: i64,
