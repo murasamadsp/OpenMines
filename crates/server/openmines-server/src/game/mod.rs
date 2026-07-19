@@ -1002,7 +1002,6 @@ impl GameState {
                 .0
                 .insert((entity, incarnation));
         }
-        self.refresh_bots_render_player_in_ecs(pid, entity, &ecs);
         drop(ecs);
         Some(res)
     }
@@ -1087,13 +1086,16 @@ impl GameState {
         &self,
         entities: &[(Entity, crate::game::SessionId)],
     ) -> Vec<Option<crate::db::PlayerRow>> {
-        let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_players");
-        entities
-            .iter()
-            .map(|&(entity, incarnation)| {
-                self.snapshot_dirty_player_in_ecs(&mut ecs, entity, incarnation)
-            })
-            .collect()
+        const BATCH_SIZE: usize = 16;
+        let mut results = Vec::with_capacity(entities.len());
+        for chunk in entities.chunks(BATCH_SIZE) {
+            let mut ecs = self.ecs_write_profiled("game.snapshot_dirty_players");
+            for &(entity, incarnation) in chunk {
+                results.push(self.snapshot_dirty_player_in_ecs(&mut ecs, entity, incarnation));
+            }
+            drop(ecs);
+        }
+        results
     }
 
     fn snapshot_dirty_player_in_ecs(
