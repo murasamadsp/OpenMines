@@ -436,17 +436,21 @@ pub fn handle_market_getprofit(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
     }
 
     if amount > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            let (money_now, creds_now) = {
-                let mut s = ecs.get_mut::<PlayerStats>(entity)?;
-                s.money += amount;
-                (s.money, s.creds)
-            };
-            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-            f.dirty = true;
+        let money_result = state
+            .modify_player(pid, |ecs, entity| {
+                let (money_now, creds_now) = {
+                    let mut s = ecs.get_mut::<PlayerStats>(entity)?;
+                    s.money += amount;
+                    (s.money, s.creds)
+                };
+                let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+                f.dirty = true;
+                Some((money_now, creds_now))
+            })
+            .flatten();
+        if let Some((money_now, creds_now)) = money_result {
             send_u_packet(tx, "P$", &money(money_now, creds_now).1);
-            Some(())
-        });
+        }
     }
 
     // Re-open admin page with updated profit (now 0)

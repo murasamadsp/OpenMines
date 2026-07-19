@@ -431,16 +431,16 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
                 || ecs.get::<PlayerStats>(entity).is_none()
                 || ecs.get::<PlayerFlags>(entity).is_none()
             {
-                send_command_state_error(tx);
                 return None;
             }
+            let batch = crate::net::session::wire::PacketBatch::default();
             let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
             for id in 0..=50 {
                 *inv.items.entry(id).or_insert(0) += 10;
             }
             // Send full inventory list (not mini) so player sees everything
             inv.minv = false;
-            send_inventory(tx, &mut inv);
+            send_inventory(&batch, &mut inv);
             // Then switch back to mini and send again so hotbar appears
             inv.minv = true;
             inv.miniq.clear();
@@ -449,7 +449,7 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
             for k in keys.iter().take(4) {
                 inv.miniq.push(*k);
             }
-            send_inventory(tx, &mut inv);
+            send_inventory(&batch, &mut inv);
             let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
             flags.dirty = true;
 
@@ -459,11 +459,16 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerI
             let (m, c) = (s.money, s.creds);
             let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
             flags.dirty = true;
-            Some((m, c))
+            Some((m, c, batch.into_packets()))
         })
         .flatten();
-    if let Some((m, c)) = money_result {
+    if let Some((m, c, packets)) = money_result {
+        for pkt in packets {
+            let _ = tx.send(pkt);
+        }
         send_u_packet(tx, "P$", &money(m, c).1);
+    } else {
+        send_command_state_error(tx);
     }
 }
 
@@ -481,22 +486,32 @@ fn handle_chat_give_command(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, 
         Some(a) => a,
         None => return,
     };
-    state.modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
-        if ecs.get::<PlayerInventory>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
-        {
-            send_command_state_error(tx);
-            return Some(());
-        }
-        {
+    let packets = state
+        .modify_player(pid, |ecs: &mut bevy_ecs::prelude::World, entity| {
+            if ecs.get::<PlayerInventory>(entity).is_none()
+                || ecs.get::<PlayerFlags>(entity).is_none()
+            {
+                return None;
+            }
+            let batch = crate::net::session::wire::PacketBatch::default();
+            {
+                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                *inv.items.entry(item_id).or_insert(0) += amount;
+            }
+            let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
+            flags.dirty = true;
             let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-            *inv.items.entry(item_id).or_insert(0) += amount;
+            send_inventory(&batch, &mut inv);
+            Some(batch.into_packets())
+        })
+        .flatten();
+    if let Some(packets) = packets {
+        for pkt in packets {
+            let _ = tx.send(pkt);
         }
-        let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
-        flags.dirty = true;
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        send_inventory(tx, &mut inv);
-        Some(())
-    });
+    } else {
+        send_command_state_error(tx);
+    }
 }
 
 // ─── /money ─────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 # Workflow
+- Do not use `git checkout HEAD` or similar destructive git commands to revert files — prefer targeted undo via edit_file or manual restoration. Confidence: 0.95
 - Run `cargo clippy --all-targets` and `cargo fmt --all` before committing. Confidence: 0.80
 - Work only on main branch; do not create branches. Confidence: 0.75
 - Do not revert or discard previous agents' changes. Confidence: 0.75

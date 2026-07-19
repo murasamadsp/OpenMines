@@ -414,22 +414,26 @@ pub fn handle_pack_take_money(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId
     }
 
     if amount > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
-            let (money_now, creds_now) = {
-                let mut s = ecs
-                    .get_mut::<PlayerStats>(entity)
-                    .expect("PlayerStats checked before pack money withdrawal");
-                s.money += amount;
-                (s.money, s.creds)
-            };
-            let mut f = ecs
-                .get_mut::<PlayerFlags>(entity)
-                .expect("PlayerFlags checked before pack money withdrawal");
-            f.dirty = true;
+        let money_result = state
+            .modify_player(pid, |ecs, entity| {
+                // B2: пометить dirty (см. do_market_sell) — pack take тоже мутирует деньги.
+                let (money_now, creds_now) = {
+                    let mut s = ecs
+                        .get_mut::<PlayerStats>(entity)
+                        .expect("PlayerStats checked before pack money withdrawal");
+                    s.money += amount;
+                    (s.money, s.creds)
+                };
+                let mut f = ecs
+                    .get_mut::<PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before pack money withdrawal");
+                f.dirty = true;
+                Some((money_now, creds_now))
+            })
+            .flatten();
+        if let Some((money_now, creds_now)) = money_result {
             send_u_packet(tx, "P$", &money(money_now, creds_now).1);
-            Some(())
-        });
+        }
     }
 }
 
@@ -466,23 +470,27 @@ pub fn handle_pack_take_crystals(
     }
 
     if amount.iter().sum::<i64>() > 0 {
-        state.modify_player(pid, |ecs, entity| {
-            // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
-            let crystals_now = {
-                let mut s = ecs
-                    .get_mut::<PlayerStats>(entity)
-                    .expect("PlayerStats checked before pack crystal withdrawal");
-                for i in 0..6 {
-                    s.crystals[i] += amount[i];
-                }
-                s.crystals
-            };
-            let mut f = ecs
-                .get_mut::<PlayerFlags>(entity)
-                .expect("PlayerFlags checked before pack crystal withdrawal");
-            f.dirty = true;
+        let crystals_result = state
+            .modify_player(pid, |ecs, entity| {
+                // B2: пометить dirty (см. do_market_sell) — pack take кристаллов.
+                let crystals_now = {
+                    let mut s = ecs
+                        .get_mut::<PlayerStats>(entity)
+                        .expect("PlayerStats checked before pack crystal withdrawal");
+                    for i in 0..6 {
+                        s.crystals[i] += amount[i];
+                    }
+                    s.crystals
+                };
+                let mut f = ecs
+                    .get_mut::<PlayerFlags>(entity)
+                    .expect("PlayerFlags checked before pack crystal withdrawal");
+                f.dirty = true;
+                Some(crystals_now)
+            })
+            .flatten();
+        if let Some(crystals_now) = crystals_result {
             send_u_packet(tx, "@B", &basket(&crystals_now, 1).1);
-            Some(())
-        });
+        }
     }
 }

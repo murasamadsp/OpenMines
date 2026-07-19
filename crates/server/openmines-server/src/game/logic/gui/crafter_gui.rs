@@ -287,14 +287,13 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                 || ecs.get::<PlayerFlags>(entity).is_none()
                 || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
             {
-                send_crafter_state_error(tx);
                 return None;
             }
             {
                 let pstats = ecs.get::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
                     if pstats.crystals[c.id as usize] < i64::from(c.num) * i64::from(num) {
-                        return Some(false);
+                        return Some((false, Vec::new()));
                     }
                 }
                 if !recipe.cost_res.is_empty() {
@@ -302,18 +301,19 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                     for c in recipe.cost_res {
                         let have = inv.items.get(&c.id).copied().unwrap_or(0);
                         if have < c.num * num {
-                            return Some(false);
+                            return Some((false, Vec::new()));
                         }
                     }
                 }
             }
 
+            let batch = crate::net::session::wire::PacketBatch::default();
             {
                 let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
                 for c in recipe.cost_crys {
                     pstats.crystals[c.id as usize] -= i64::from(c.num) * i64::from(num);
                 }
-                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
+                send_u_packet(&batch, "@B", &basket(&pstats.crystals, 1).1);
             }
 
             if !recipe.cost_res.is_empty() {
@@ -322,18 +322,22 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
                     let entry = inv.items.entry(c.id).or_insert(0);
                     *entry -= c.num * num;
                 }
-                send_inventory(tx, &mut inv);
+                send_inventory(&batch, &mut inv);
             }
             let mut flags = ecs.get_mut::<PlayerFlags>(entity)?;
             flags.dirty = true;
 
-            Some(true)
+            Some((true, batch.into_packets()))
         })
         .flatten();
 
-    let Some(deducted) = deducted else {
+    let Some((deducted, packets)) = deducted else {
+        send_crafter_state_error(tx);
         return;
     };
+    for pkt in packets {
+        let _ = tx.send(pkt);
+    }
     if !deducted {
         send_u_packet(tx, "OK", &ok_message("Крафтер", "Недостаточно ресурсов").1);
         return;
@@ -358,35 +362,41 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &Outbox, pid: PlayerId, ar
         }
     };
     if !updated {
-        state.modify_player(pid, |ecs, entity| {
-            if ecs.get::<PlayerStats>(entity).is_none()
-                || ecs.get::<PlayerFlags>(entity).is_none()
-                || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
-            {
-                send_crafter_state_error(tx);
-                return None;
-            }
-            {
-                let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
-                for c in recipe.cost_crys {
-                    pstats.crystals[c.id as usize] += i64::from(c.num) * i64::from(num);
+        let packets = state
+            .modify_player(pid, |ecs, entity| {
+                if ecs.get::<PlayerStats>(entity).is_none()
+                    || ecs.get::<PlayerFlags>(entity).is_none()
+                    || (!recipe.cost_res.is_empty() && ecs.get::<PlayerInventory>(entity).is_none())
+                {
+                    return None;
                 }
-                send_u_packet(tx, "@B", &basket(&pstats.crystals, 1).1);
-            }
-
-            if !recipe.cost_res.is_empty() {
-                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-                for c in recipe.cost_res {
-                    let entry = inv.items.entry(c.id).or_insert(0);
-                    *entry += c.num * num;
+                let batch = crate::net::session::wire::PacketBatch::default();
+                {
+                    let mut pstats = ecs.get_mut::<PlayerStats>(entity)?;
+                    for c in recipe.cost_crys {
+                        pstats.crystals[c.id as usize] += i64::from(c.num) * i64::from(num);
+                    }
+                    send_u_packet(&batch, "@B", &basket(&pstats.crystals, 1).1);
                 }
-                send_inventory(tx, &mut inv);
-            }
 
-            let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
-            f.dirty = true;
-            Some(())
-        });
+                if !recipe.cost_res.is_empty() {
+                    let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                    for c in recipe.cost_res {
+                        let entry = inv.items.entry(c.id).or_insert(0);
+                        *entry += c.num * num;
+                    }
+                    send_inventory(&batch, &mut inv);
+                }
+
+                let mut f = ecs.get_mut::<PlayerFlags>(entity)?;
+                f.dirty = true;
+                Some(batch.into_packets())
+            })
+            .flatten()
+            .unwrap_or_default();
+        for pkt in packets {
+            let _ = tx.send(pkt);
+        }
         send_crafter_action_error(tx);
         return;
     }

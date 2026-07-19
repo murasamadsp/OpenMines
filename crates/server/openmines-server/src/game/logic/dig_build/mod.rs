@@ -810,15 +810,22 @@ pub fn handle_build(
 
     // Fix 15: Build skill exp after successful placement.
     if let Some(skill) = placed_skill {
-        state.modify_player(pid, |ecs, entity| {
-            // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
-            // на build (полоса Build* не обновлялась до след. @S-события).
-            let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
-            if let Some(sk) = ctx.add_skill_exp(&mut skills.states, skill.code(), 1.0) {
-                send_u_packet(tx, sk.0, &sk.1);
-            }
-            Some(())
-        });
+        let packets = state
+            .modify_player(pid, |ecs, entity| {
+                // C# `Skill.AddExp` всегда шлёт @S при изменении pct — было пропущено
+                // на build (полоса Build* не обновлялась до след. @S-события).
+                let mut skills = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?;
+                let mut result = Vec::new();
+                if let Some(sk) = ctx.add_skill_exp(&mut skills.states, skill.code(), 1.0) {
+                    result.push((sk.0.to_string(), sk.1));
+                }
+                Some(result)
+            })
+            .flatten()
+            .unwrap_or_default();
+        for (event, payload) in packets {
+            send_u_packet(tx, &event, &payload);
+        }
     }
 }
 

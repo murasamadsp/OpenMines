@@ -313,15 +313,18 @@ pub async fn create_order(
     }
 
     // обновить инвентарь у клиента
-    state.modify_player(pid, |ecs, e| {
+    let inv_packets = state.modify_player(pid, |ecs, e| {
         let Some(mut inv) = ecs.get_mut::<PlayerInventory>(e) else {
             tracing::error!(player_id = %pid, component = "PlayerInventory", "Player component missing after auction order item deduction");
-            send_auc_state_error(tx);
             return None;
         };
-        send_inventory(tx, &mut inv);
-        Some(())
-    });
+        let batch = crate::net::session::wire::PacketBatch::default();
+        send_inventory(&batch, &mut inv);
+        Some(batch.into_packets())
+    }).flatten().unwrap_or_default();
+    for pkt in inv_packets {
+        let _ = tx.send(pkt);
+    }
     if let Err(e) = state.db.create_order(pid.into(), item, num, cost).await {
         tracing::error!(error = ?e, "Failed to create auction order");
         // Refund: undo the item deduction so the player doesn't lose their items.
@@ -331,15 +334,20 @@ pub async fn create_order(
                 return None;
             };
             *inv.items.entry(item).or_insert(0) += num;
-            send_inventory(tx, &mut inv);
+            let batch = crate::net::session::wire::PacketBatch::default();
+            send_inventory(&batch, &mut inv);
             let Some(mut f) = ecs.get_mut::<PlayerFlags>(e) else {
                 tracing::error!(player_id = %pid, component = "PlayerFlags", "Player component missing while refunding failed auction order creation");
                 return None;
             };
             f.dirty = true;
-            Some(())
-        });
-        if refunded.is_none() {
+            Some(batch.into_packets())
+        }).flatten();
+        if let Some(packets) = refunded {
+            for pkt in packets {
+                let _ = tx.send(pkt);
+            }
+        } else {
             send_auc_state_error(tx);
             return;
         }

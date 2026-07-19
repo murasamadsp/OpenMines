@@ -137,17 +137,24 @@ pub async fn handle_inventory_use(state: &Arc<GameState>, tx: &Outbox, pid: Play
     };
 
     if used {
-        state.modify_player(pid, |ecs, entity| {
-            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-            let c = inv.items.entry(sel).or_insert(0);
-            *c -= 1;
-            if *c <= 0 {
-                inv.items.remove(&sel);
-                inv.miniq.retain(|&x| x != sel);
-            }
-            send_inventory(tx, &mut inv);
-            Some(())
-        });
+        let packets = state
+            .modify_player(pid, |ecs, entity| {
+                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                let c = inv.items.entry(sel).or_insert(0);
+                *c -= 1;
+                if *c <= 0 {
+                    inv.items.remove(&sel);
+                    inv.miniq.retain(|&x| x != sel);
+                }
+                let batch = crate::net::session::wire::PacketBatch::default();
+                send_inventory(&batch, &mut inv);
+                Some(batch.into_packets())
+            })
+            .flatten()
+            .unwrap_or_default();
+        for pkt in packets {
+            let _ = tx.send(pkt);
+        }
     }
 }
 
@@ -437,17 +444,24 @@ fn consume_selected_inventory_item(
     pid: PlayerId,
     selected: i32,
 ) {
-    state.modify_player(pid, |ecs, entity| {
-        let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-        let c = inv.items.entry(selected).or_insert(0);
-        *c -= 1;
-        if *c <= 0 {
-            inv.items.remove(&selected);
-            inv.miniq.retain(|&x| x != selected);
-        }
-        send_inventory(tx, &mut inv);
-        Some(())
-    });
+    let packets = state
+        .modify_player(pid, |ecs, entity| {
+            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+            let c = inv.items.entry(selected).or_insert(0);
+            *c -= 1;
+            if *c <= 0 {
+                inv.items.remove(&selected);
+                inv.miniq.retain(|&x| x != selected);
+            }
+            let batch = crate::net::session::wire::PacketBatch::default();
+            send_inventory(&batch, &mut inv);
+            Some(batch.into_packets())
+        })
+        .flatten()
+        .unwrap_or_default();
+    for pkt in packets {
+        let _ = tx.send(pkt);
+    }
 }
 
 fn consume_inventory_item_effect(
