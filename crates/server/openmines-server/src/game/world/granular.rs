@@ -914,7 +914,7 @@ mod physics_repro {
         world.set_cell(64, 65, cell_type::EMPTY);
 
         let hazards = crate::game::HazardDueQueue::new(Arc::new(parking_lot::Mutex::new(
-            crate::game::HazardDueSchedule::default(),
+            crate::game::kernel::schedule::HazardDueSchedule::default(),
         )));
         let mut ecs = bevy_ecs::world::World::new();
         ecs.insert_resource(WorldResource(Arc::clone(&world)));

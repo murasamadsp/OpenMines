@@ -144,7 +144,7 @@ async fn handle_auth(
 }
 
 async fn handle_stats(State(state): State<Arc<GameState>>) -> impl IntoResponse {
-    let snapshot = state.web_snapshot.read().clone();
+    let snapshot = state.web_snapshot.snapshot();
     let active_players = snapshot
         .players
         .iter()
@@ -186,7 +186,7 @@ async fn handle_map(State(state): State<Arc<GameState>>) -> impl IntoResponse {
     let width = state.world.cells_width();
     let height = state.world.cells_height();
 
-    let snapshot = state.web_snapshot.read().clone();
+    let snapshot = state.web_snapshot.snapshot();
     let players = snapshot
         .players
         .iter()

@@ -201,7 +201,7 @@ async fn handle_client(
                 if saved_au_packet.is_none() {
                     let mut temp_buf = client_buf.clone();
                     while let Some(packet) = ProxyPacket::try_decode(&mut temp_buf) {
-                        if packet.event() == [b'A', b'U'] {
+                        if packet.event() == *b"AU" {
                             saved_au_packet = Some(packet.raw.clone());
                             tracing::info!(
                                 session = %addr,

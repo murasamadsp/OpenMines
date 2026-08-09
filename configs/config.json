@@ -53,7 +53,7 @@
       "hazards_ms": 50,
       "physics_ms": 400,
       "guns_ms": 100,
-      "programmator_ms": 50,
+      "programmator_ms": 20,
       "alive_ms": 5000,
       "building_effects_ms": 500,
       "hourly_damage_ms": 3600000,

@@ -38,7 +38,6 @@ use anyhow::Context as _;
 use bevy_ecs::prelude::{Entity, Schedule, World as EcsWorld};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -56,51 +55,14 @@ pub use world::coords::{ChunkPos, WorldPos};
 pub mod kernel;
 pub use kernel::*;
 
-#[derive(Clone, Debug, Default)]
-pub struct WebSnapshot {
-    pub players: Vec<WebPlayerInfo>,
-    pub buildings: Vec<WebBuildingInfo>,
-}
-
-#[derive(Clone, Debug)]
-pub struct WebPlayerInfo {
-    pub id: PlayerId,
-    pub name: String,
-    pub x: i32,
-    pub y: i32,
-    pub health: i32,
-    pub max_health: i32,
-    pub crystals: i64,
-    pub money: i64,
-    pub creds: i64,
-    pub role: i32,
-}
-
-#[derive(Clone, Debug)]
-pub struct WebBuildingInfo {
-    pub x: i32,
-    pub y: i32,
-    pub pack_type: PackType,
-    pub hp: i32,
-    pub max_hp: i32,
-    pub clan_id: i32,
-}
-
 // ─── GameState ───────────────────────────────────────────────────────────────
 
 pub struct GameState {
     pub world: Arc<World>,
     pub db: Arc<Database>,
     pub config: Config,
-    active_players: DashMap<PlayerId, ActivePlayer>,
-    player_entities: DashMap<PlayerId, Entity>,
-    chunk_players: DashMap<ChunkPos, Vec<PlayerId>>,
-    bots_render_players: DashMap<PlayerId, BotsRenderPlayer>,
-    building_index: DashMap<WorldPos, Entity>,
-    botspot_index: DashMap<PlayerId, Entity>,
-    chunk_botspots: DashMap<ChunkPos, Vec<Entity>>,
-    bots_render_botspots: DashMap<ChunkPos, Vec<BotSpotView>>,
-    chunk_buildings: DashMap<ChunkPos, Vec<Entity>>,
+    pub(crate) player_registry: PlayerRegistry,
+    pub(crate) building_index: BuildingIndex,
     pub chat_channels: RwLock<Vec<chat::ChatChannel>>,
     /// Активные игровые ивенты (множители опыта, дропа и т.д.).
     /// Хранится в `GameState` (не в ECS), чтобы HTTP-API мог менять их
@@ -109,18 +71,10 @@ pub struct GameState {
     pub(crate) ecs: RwLock<EcsWorld>,
     pub schedules: Vec<GameSchedule>,
     pub auth_failures: DashMap<std::net::IpAddr, (u32, Instant)>,
-    commands_tx: CommandSenders,
     pub commands_rx: Mutex<Option<CommandReceivers>>,
-    command_seq: std::sync::atomic::AtomicU64,
-    command_queue_depth: std::sync::atomic::AtomicUsize,
-    command_queue_high_water: std::sync::atomic::AtomicUsize,
-    command_ingress_depth: [std::sync::atomic::AtomicUsize; 3],
-    command_ingress_ages: [Mutex<VecDeque<Instant>>; 3],
-    command_broadcasts: Mutex<Vec<BroadcastEffect>>,
+    pub(crate) command_ingress: CommandIngress,
     simulation_waker: crate::simulation_waker::SimulationWaker,
-    crafting_due_schedule: Mutex<CraftingDueSchedule>,
-    programmator_due_schedule: Arc<Mutex<ProgrammatorDueSchedule>>,
-    hazard_due_schedule: Arc<Mutex<HazardDueSchedule>>,
+    due_schedules: DueSchedules,
     bots_render_schedule: Mutex<BotsRenderSchedule>,
     bots_render_slot_seq: std::sync::atomic::AtomicU64,
     pub tokio_handle: tokio::runtime::Handle,
@@ -146,7 +100,7 @@ pub struct GameState {
     /// удаляются при дисконнекте через `remove_rate_limiter`.
     pub rate_limiters: DashMap<PlayerId, crate::net::session::rate_limit::PlayerLimiters>,
     /// Неизменяемый `ReadSnapshot` для веб-API (stats/map), обновляемый симулятором.
-    pub web_snapshot: RwLock<Arc<WebSnapshot>>,
+    pub web_snapshot: WebSnapshotOwner,
 }
 
 impl GameState {
@@ -170,53 +124,7 @@ impl GameState {
     }
 
     pub fn update_web_snapshot(&self) {
-        let mut ecs = self.ecs_write_profiled("web.update_snapshot");
-
-        let mut players = Vec::new();
-        for pid in self.active_player_ids() {
-            if let Some(entity) = self.get_player_entity(pid)
-                && let Some(pos) = ecs.get::<crate::game::player::PlayerPosition>(entity)
-                && let Some(p_stats) = ecs.get::<crate::game::player::PlayerStats>(entity)
-                && let Some(meta) = ecs.get::<crate::game::player::PlayerMetadata>(entity)
-            {
-                players.push(WebPlayerInfo {
-                    id: pid,
-                    name: meta.name.clone(),
-                    x: pos.x,
-                    y: pos.y,
-                    health: p_stats.health,
-                    max_health: p_stats.max_health,
-                    crystals: p_stats.crystals.iter().sum(),
-                    money: p_stats.money,
-                    creds: p_stats.creds,
-                    role: p_stats.role,
-                });
-            }
-        }
-
-        let mut b_query = ecs.query::<(
-            &crate::game::buildings::GridPosition,
-            &crate::game::buildings::BuildingMetadata,
-            &crate::game::buildings::BuildingStats,
-            &crate::game::buildings::BuildingOwnership,
-        )>();
-
-        let mut buildings = Vec::new();
-        for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
-            buildings.push(WebBuildingInfo {
-                x: grid_pos.x,
-                y: grid_pos.y,
-                pack_type: metadata.pack_type,
-                hp: stats.hp,
-                max_hp: stats.max_hp,
-                clan_id: ownership.clan_id,
-            });
-        }
-
-        drop(ecs);
-
-        let snapshot = Arc::new(WebSnapshot { players, buildings });
-        *self.web_snapshot.write() = snapshot;
+        self.web_snapshot.update(self);
     }
 
     pub fn ecs_read_profiled(&self, label: &'static str) -> ProfiledEcsReadGuard<'_> {
@@ -380,51 +288,40 @@ impl GameState {
         ];
 
         let ingress = config.gameplay.simulation;
-        let programmator_due_schedule = Arc::new(Mutex::new(ProgrammatorDueSchedule::default()));
-        let hazard_due_schedule = Arc::new(Mutex::new(HazardDueSchedule::default()));
         let (lifecycle_tx, lifecycle_rx) = mpsc::channel(ingress.lifecycle_ingress_capacity);
         let (gameplay_tx, gameplay_rx) = mpsc::channel(ingress.gameplay_ingress_capacity);
         let (internal_tx, internal_rx) = mpsc::channel(ingress.internal_ingress_capacity);
         let max_chat_id = database.get_max_chat_id().await.unwrap_or(0);
+        let simulation_waker = crate::simulation_waker::SimulationWaker::default();
+        let command_ingress = CommandIngress::new(
+            CommandSenders {
+                lifecycle: lifecycle_tx,
+                gameplay: gameplay_tx,
+                internal: internal_tx,
+            },
+            simulation_waker.clone(),
+        );
+        let due_schedules = DueSchedules::new(simulation_waker.clone());
         let state = Arc::new(Self {
             world,
             db: database,
             config,
-            active_players: DashMap::new(),
-            player_entities: DashMap::new(),
-            chunk_players: DashMap::new(),
-            bots_render_players: DashMap::new(),
-            building_index: DashMap::new(),
-            botspot_index: DashMap::new(),
-            chunk_botspots: DashMap::new(),
-            bots_render_botspots: DashMap::new(),
-            chunk_buildings: DashMap::new(),
+            player_registry: PlayerRegistry::new(),
+            building_index: BuildingIndex::new(),
             chat_channels: RwLock::new(default_channels),
             active_events: RwLock::new(ActiveEvents::default()),
             ecs: RwLock::new(EcsWorld::new()),
             schedules,
             auth_failures: DashMap::new(),
-            commands_tx: CommandSenders {
-                lifecycle: lifecycle_tx,
-                gameplay: gameplay_tx,
-                internal: internal_tx,
-            },
             commands_rx: Mutex::new(Some(CommandReceivers {
                 lifecycle: lifecycle_rx,
                 gameplay: gameplay_rx,
                 internal: internal_rx,
                 next_class: 0,
             })),
-            command_seq: std::sync::atomic::AtomicU64::new(1),
-            command_queue_depth: std::sync::atomic::AtomicUsize::new(0),
-            command_queue_high_water: std::sync::atomic::AtomicUsize::new(0),
-            command_ingress_depth: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)),
-            command_ingress_ages: std::array::from_fn(|_| Mutex::new(VecDeque::new())),
-            command_broadcasts: Mutex::new(Vec::new()),
-            simulation_waker: crate::simulation_waker::SimulationWaker::default(),
-            crafting_due_schedule: Mutex::new(CraftingDueSchedule::default()),
-            programmator_due_schedule,
-            hazard_due_schedule,
+            command_ingress,
+            simulation_waker,
+            due_schedules,
             bots_render_schedule: Mutex::new(BotsRenderSchedule::default()),
             bots_render_slot_seq: std::sync::atomic::AtomicU64::new(0),
             tokio_handle: tokio::runtime::Handle::current(),
@@ -439,7 +336,7 @@ impl GameState {
             db_pending_tasks: std::sync::atomic::AtomicUsize::new(0),
             rate_limiters: DashMap::new(),
             chat_id_seq: std::sync::atomic::AtomicI64::new(max_chat_id),
-            web_snapshot: RwLock::new(Arc::new(WebSnapshot::default())),
+            web_snapshot: WebSnapshotOwner::new(),
         });
 
         // Боксы из БД → in-memory индекс (один раз; на hot-path SQLite по
@@ -502,14 +399,14 @@ impl GameState {
             ecs.insert_resource(BroadcastQueue::default());
             ecs.insert_resource(ProgrammatorQueue::default());
             ecs.insert_resource(ProgrammatorDueQueue::new(
-                state.programmator_due_schedule.clone(),
+                state.due_schedules.programmator_schedule(),
             ));
             ecs.insert_resource(ProgrammatorDueBatch::default());
             ecs.insert_resource(HazardDueBatch::default());
             ecs.insert_resource(StandingCellHazardContext {
                 box_pickups: state.box_pickup_queue.clone(),
                 death_queue: state.death_queue.clone(),
-                due_queue: HazardDueQueue::new(state.hazard_due_schedule.clone()),
+                due_queue: HazardDueQueue::new(state.due_schedules.hazard_schedule()),
                 interval: Duration::from_millis(state.config.gameplay.schedules.hazards_ms),
                 slow_threshold: Duration::from_millis(
                     state.config.gameplay.schedules.schedule_warn_threshold_ms,
@@ -583,73 +480,59 @@ impl GameState {
     }
 
     pub fn get_player_entity(&self, pid: PlayerId) -> Option<Entity> {
-        self.player_entities.get(&pid).map(|p| *p)
+        self.player_registry.get_player_entity(pid)
     }
 
     /// Выдать новый токен сеанса (монотонный, уникальный на процесс).
     pub fn schedule_crafting_completion(&self, entity: Entity, end_ts: i64) {
-        let mut schedule = self.crafting_due_schedule.lock();
-        schedule.schedule(entity, end_ts);
-        let depth = schedule.len();
-        drop(schedule);
-        crate::metrics::CRAFTING_DUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-        self.simulation_waker.wake();
+        self.due_schedules
+            .schedule_crafting_completion(entity, end_ts);
     }
 
     pub fn next_crafting_due_ts(&self) -> Option<i64> {
-        self.crafting_due_schedule.lock().next_due_ts()
+        self.due_schedules.next_crafting_due_ts()
     }
 
     pub fn has_due_crafting(&self, now_ts: i64) -> bool {
-        self.crafting_due_schedule.lock().is_due(now_ts)
+        self.due_schedules.has_due_crafting(now_ts)
     }
 
     pub fn schedule_programmator(&self, entity: Entity, due_at: Instant) {
-        self.programmator_due_schedule
-            .lock()
-            .schedule(entity, due_at);
-        self.simulation_waker.wake();
+        self.due_schedules.schedule_programmator(entity, due_at);
     }
 
     pub fn next_programmator_due_at(&self) -> Option<Instant> {
-        self.programmator_due_schedule.lock().next_due_at()
+        self.due_schedules.next_programmator_due_at()
     }
 
     pub fn has_due_programmator(&self, now: Instant) -> bool {
-        self.programmator_due_schedule.lock().is_due(now)
+        self.due_schedules.has_due_programmator(now)
     }
 
     pub fn take_due_programmators(&self, now: Instant) -> Vec<(Entity, Instant)> {
-        self.programmator_due_schedule
-            .lock()
-            .pop_due(now, Self::PROGRAMMATOR_DUE_BATCH_BUDGET)
+        self.due_schedules
+            .take_due_programmators(now, Self::PROGRAMMATOR_DUE_BATCH_BUDGET)
     }
 
     pub fn schedule_hazard(&self, entity: Entity, due_at: Instant) {
-        self.hazard_due_schedule.lock().schedule(entity, due_at);
-        self.simulation_waker.wake();
+        self.due_schedules.schedule_hazard(entity, due_at);
     }
 
     pub fn next_hazard_due_at(&self) -> Option<Instant> {
-        self.hazard_due_schedule.lock().next_due_at()
+        self.due_schedules.next_hazard_due_at()
     }
 
     pub fn take_due_hazards(&self, now: Instant) -> Vec<(Entity, Instant)> {
-        self.hazard_due_schedule
-            .lock()
-            .pop_due(now, Self::HAZARD_DUE_BATCH_BUDGET)
+        self.due_schedules
+            .take_due_hazards(now, Self::HAZARD_DUE_BATCH_BUDGET)
     }
 
     pub fn take_due_crafting(
         &self,
         now_ts: i64,
     ) -> (Vec<building_damage::CraftingDue>, bool, usize) {
-        let mut schedule = self.crafting_due_schedule.lock();
-        let due = schedule.pop_due(now_ts, Self::CRAFTING_DUE_BATCH_BUDGET);
-        let due_remaining = schedule.is_due(now_ts);
-        let depth = schedule.len();
-        drop(schedule);
-        (due, due_remaining, depth)
+        self.due_schedules
+            .take_due_crafting(now_ts, Self::CRAFTING_DUE_BATCH_BUDGET)
     }
 
     /// Проверить chat rate limit для игрока. Возвращает `true` если разрешено.
@@ -691,52 +574,9 @@ impl GameState {
         session_id: SessionId,
         command: PlayerCommand,
     ) -> bool {
-        use std::sync::atomic::Ordering;
-
-        debug_assert_eq!(command.ingress_class(), CommandIngressClass::Lifecycle);
-        let kind = command.name();
-        let received_at = Instant::now();
-        let Ok(permit) = self.commands_tx.lifecycle.reserve().await else {
-            crate::metrics::COMMANDS_TOTAL
-                .with_label_values(&[kind, "ingress_closed"])
-                .inc();
-            return false;
-        };
-        let enqueued_at = Instant::now();
-        let sequence = self.allocate_command_sequence();
-        let class = CommandIngressClass::Lifecycle;
-        let queued = QueuedGameCommand {
-            player_id,
-            session_id,
-            ingress_class: Some(class),
-            sequence,
-            received_at,
-            enqueued_at,
-            command: GameCommand::Player(command),
-        };
-        let depth = self
-            .command_queue_depth
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let class_depth = self.command_ingress_depth[class.index()]
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let high_water = self
-            .command_queue_high_water
-            .fetch_max(depth, Ordering::Relaxed)
-            .max(depth);
-        crate::metrics::COMMANDS_TOTAL
-            .with_label_values(&[kind, "enqueued"])
-            .inc();
-        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_INGRESS_DEPTH
-            .with_label_values(&[class.metric_name()])
-            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
-        self.push_command_ingress_age(class, enqueued_at);
-        permit.send(queued);
-        self.simulation_waker.wake();
-        true
+        self.command_ingress
+            .enqueue_lifecycle(player_id, session_id, command)
+            .await
     }
 
     pub fn enqueue_command(
@@ -745,7 +585,8 @@ impl GameState {
         session_id: SessionId,
         command: GameCommand,
     ) -> bool {
-        self.enqueue_command_received(player_id, session_id, command, Instant::now())
+        self.command_ingress
+            .enqueue_command(player_id, session_id, command)
     }
 
     pub async fn enqueue_internal(
@@ -754,52 +595,9 @@ impl GameState {
         session_id: SessionId,
         command: PlayerCommand,
     ) -> bool {
-        use std::sync::atomic::Ordering;
-
-        debug_assert_eq!(command.ingress_class(), CommandIngressClass::Internal);
-        let kind = command.name();
-        let received_at = Instant::now();
-        let Ok(permit) = self.commands_tx.internal.reserve().await else {
-            crate::metrics::COMMANDS_TOTAL
-                .with_label_values(&[kind, "ingress_closed"])
-                .inc();
-            return false;
-        };
-        let enqueued_at = Instant::now();
-        let sequence = self.allocate_command_sequence();
-        let class = CommandIngressClass::Internal;
-        let queued = QueuedGameCommand {
-            player_id,
-            session_id,
-            ingress_class: Some(class),
-            sequence,
-            received_at,
-            enqueued_at,
-            command: GameCommand::Player(command),
-        };
-        let depth = self
-            .command_queue_depth
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let class_depth = self.command_ingress_depth[class.index()]
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let high_water = self
-            .command_queue_high_water
-            .fetch_max(depth, Ordering::Relaxed)
-            .max(depth);
-        crate::metrics::COMMANDS_TOTAL
-            .with_label_values(&[kind, "enqueued"])
-            .inc();
-        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_INGRESS_DEPTH
-            .with_label_values(&[class.metric_name()])
-            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
-        self.push_command_ingress_age(class, enqueued_at);
-        permit.send(queued);
-        self.simulation_waker.wake();
-        true
+        self.command_ingress
+            .enqueue_internal(player_id, session_id, command)
+            .await
     }
 
     pub fn enqueue_command_received(
@@ -809,127 +607,24 @@ impl GameState {
         command: GameCommand,
         received_at: Instant,
     ) -> bool {
-        use std::sync::atomic::Ordering;
-
-        let GameCommand::Player(action) = &command;
-        let (kind, class) = (action.name(), action.ingress_class());
-        assert_ne!(
-            class,
-            CommandIngressClass::Internal,
-            "internal follow-up must use awaitable GameState::enqueue_internal"
-        );
-        let enqueued_at = Instant::now();
-        let sequence = self.allocate_command_sequence();
-        let queued = QueuedGameCommand {
-            player_id,
-            session_id,
-            ingress_class: Some(class),
-            sequence,
-            received_at,
-            enqueued_at,
-            command,
-        };
-        crate::metrics::COMMAND_RECEIVE_TO_ENQUEUE_SECONDS
-            .with_label_values(&[kind])
-            .observe(
-                enqueued_at
-                    .saturating_duration_since(received_at)
-                    .as_secs_f64(),
-            );
-        let sender = match class {
-            CommandIngressClass::Lifecycle => &self.commands_tx.lifecycle,
-            CommandIngressClass::Gameplay => &self.commands_tx.gameplay,
-            CommandIngressClass::Internal => &self.commands_tx.internal,
-        };
-        let Ok(permit) = sender.try_reserve() else {
-            crate::metrics::COMMANDS_TOTAL
-                .with_label_values(&[kind, "ingress_rejected"])
-                .inc();
-            crate::metrics::COMMANDS_TOTAL
-                .with_label_values(&[class.metric_name(), "ingress_rejected"])
-                .inc();
-            return false;
-        };
-        let depth = self
-            .command_queue_depth
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let class_depth = self.command_ingress_depth[class.index()]
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        let high_water = self
-            .command_queue_high_water
-            .fetch_max(depth, Ordering::Relaxed)
-            .max(depth);
-        crate::metrics::COMMANDS_TOTAL
-            .with_label_values(&[kind, "enqueued"])
-            .inc();
-        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_QUEUE_HIGH_WATER.set(i64::try_from(high_water).unwrap_or(i64::MAX));
-        crate::metrics::COMMAND_INGRESS_DEPTH
-            .with_label_values(&[class.metric_name()])
-            .set(i64::try_from(class_depth).unwrap_or(i64::MAX));
-        self.push_command_ingress_age(class, enqueued_at);
-        permit.send(queued);
-        self.simulation_waker.wake();
-        true
-    }
-
-    fn push_command_ingress_age(&self, class: CommandIngressClass, enqueued_at: Instant) {
-        let mut ages = self.command_ingress_ages[class.index()].lock();
-        ages.push_back(enqueued_at);
-        Self::record_oldest_command_ingress_age(class, ages.front().copied());
-    }
-
-    fn pop_command_ingress_age(&self, class: CommandIngressClass) {
-        let mut ages = self.command_ingress_ages[class.index()].lock();
-        assert!(ages.pop_front().is_some(), "command ingress age underflow");
-        Self::record_oldest_command_ingress_age(class, ages.front().copied());
+        self.command_ingress
+            .enqueue_command_received(player_id, session_id, command, received_at)
     }
 
     pub(crate) fn refresh_command_ingress_oldest_ages(&self) {
-        for class in [
-            CommandIngressClass::Lifecycle,
-            CommandIngressClass::Gameplay,
-            CommandIngressClass::Internal,
-        ] {
-            let ages = self.command_ingress_ages[class.index()].lock();
-            Self::record_oldest_command_ingress_age(class, ages.front().copied());
-        }
-    }
-
-    fn record_oldest_command_ingress_age(class: CommandIngressClass, oldest: Option<Instant>) {
-        let age = oldest.map_or(Duration::ZERO, |timestamp| timestamp.elapsed());
-        crate::metrics::COMMAND_INGRESS_OLDEST_AGE_SECONDS
-            .with_label_values(&[class.metric_name()])
-            .set(age.as_secs_f64());
+        self.command_ingress.refresh_command_ingress_oldest_ages();
     }
 
     pub(crate) fn allocate_command_sequence(&self) -> CommandSeq {
-        CommandSeq::new(
-            self.command_seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        )
+        self.command_ingress.allocate_command_sequence()
     }
 
     pub(crate) fn simulation_waker(&self) -> crate::simulation_waker::SimulationWaker {
-        self.simulation_waker.clone()
+        self.command_ingress.simulation_waker()
     }
 
     pub fn record_command_dequeued(&self, class: CommandIngressClass) {
-        use std::sync::atomic::Ordering;
-
-        let previous = self.command_queue_depth.fetch_sub(1, Ordering::Relaxed);
-        debug_assert!(previous > 0, "command queue depth underflow");
-        let depth = previous.saturating_sub(1);
-        crate::metrics::COMMAND_QUEUE_DEPTH.set(i64::try_from(depth).unwrap_or(i64::MAX));
-        let previous_class =
-            self.command_ingress_depth[class.index()].fetch_sub(1, Ordering::Relaxed);
-        debug_assert!(previous_class > 0, "command ingress depth underflow");
-        crate::metrics::COMMAND_INGRESS_DEPTH
-            .with_label_values(&[class.metric_name()])
-            .set(i64::try_from(previous_class.saturating_sub(1)).unwrap_or(i64::MAX));
-        self.pop_command_ingress_age(class);
+        self.command_ingress.record_command_dequeued(class);
     }
 
     pub fn query_player<F, R>(&self, pid: PlayerId, f: F) -> Option<R>
@@ -1008,17 +703,17 @@ impl GameState {
 
     fn refresh_bots_render_player_in_ecs(&self, pid: PlayerId, entity: Entity, ecs: &EcsWorld) {
         let Some(position) = ecs.get::<PlayerPosition>(entity) else {
-            self.bots_render_players.remove(&pid);
+            self.player_registry.bots_render_players.remove(&pid);
             return;
         };
         let Some(stats) = ecs.get::<PlayerStats>(entity) else {
-            self.bots_render_players.remove(&pid);
+            self.player_registry.bots_render_players.remove(&pid);
             return;
         };
         let tail = ecs
             .get::<programmator::ProgrammatorState>(entity)
             .map_or(0, |program| u8::from(program.running));
-        self.bots_render_players.insert(
+        self.player_registry.bots_render_players.insert(
             pid,
             BotsRenderPlayer {
                 x: position.x,
@@ -1036,6 +731,7 @@ impl GameState {
     /// the immutable cache below without touching ECS.
     pub fn refresh_active_bots_render_players(&self) {
         let active = self
+            .player_registry
             .active_players
             .iter()
             .map(|entry| (*entry.key(), entry.ecs_entity))
@@ -1047,11 +743,15 @@ impl GameState {
     }
 
     pub fn bots_render_player(&self, pid: PlayerId) -> Option<BotsRenderPlayer> {
-        self.bots_render_players.get(&pid).map(|entry| *entry)
+        self.player_registry
+            .bots_render_players
+            .get(&pid)
+            .map(|entry| *entry)
     }
 
     pub fn bots_render_botspots_in_chunk(&self, cx: u32, cy: u32) -> Vec<BotSpotView> {
-        self.bots_render_botspots
+        self.player_registry
+            .bots_render_botspots
             .get(&(cx, cy).into())
             .map(|spots| spots.clone())
             .unwrap_or_default()
@@ -1267,12 +967,13 @@ impl GameState {
     /// Найти origin building entity по typed world position boundary.
     pub fn building_entity_at(&self, x: i32, y: i32) -> Option<Entity> {
         self.building_index
+            .by_origin
             .get(&((x, y).into()))
             .map(|entry| *entry.value())
     }
 
     pub fn has_building_origin(&self, x: i32, y: i32) -> bool {
-        self.building_index.contains_key(&((x, y).into()))
+        self.building_index.by_origin.contains_key(&((x, y).into()))
     }
 
     pub fn query_building_opt<R>(
@@ -1288,13 +989,15 @@ impl GameState {
 
     pub fn building_entities_snapshot(&self) -> Vec<Entity> {
         self.building_index
+            .by_origin
             .iter()
             .map(|entry| *entry.value())
             .collect()
     }
 
     pub fn building_entities_in_chunk_snapshot(&self, cx: u32, cy: u32) -> Vec<Entity> {
-        self.chunk_buildings
+        self.building_index
+            .chunk_buildings
             .get(&(cx, cy).into())
             .map_or_else(Vec::new, |entities| entities.value().clone())
     }
@@ -1339,11 +1042,11 @@ impl GameState {
 
     pub fn find_pack_covering(&self, x: i32, y: i32) -> Option<(i32, i32)> {
         let ecs = self.ecs.read();
-        Self::find_pack_covering_with(&ecs, &self.chunk_buildings, x, y)
+        Self::find_pack_covering_with(&ecs, &self.building_index.chunk_buildings, x, y)
     }
 
     pub fn find_pack_covering_in_ecs(&self, ecs: &EcsWorld, x: i32, y: i32) -> Option<(i32, i32)> {
-        Self::find_pack_covering_with(ecs, &self.chunk_buildings, x, y)
+        Self::find_pack_covering_with(ecs, &self.building_index.chunk_buildings, x, y)
     }
 
     pub fn pack_block_pos(&self, x: i32, y: i32) -> Option<i32> {
@@ -1445,7 +1148,13 @@ impl GameState {
     /// C# `World.AccessGun` целиком: `(access, anygun)`.
     pub fn access_gun_full(&self, x: i32, y: i32, player_clan_id: i32) -> (bool, bool) {
         let ecs = self.ecs.read();
-        Self::access_gun_with(&ecs, &self.chunk_buildings, x, y, player_clan_id)
+        Self::access_gun_with(
+            &ecs,
+            &self.building_index.chunk_buildings,
+            x,
+            y,
+            player_clan_id,
+        )
     }
 
     pub fn access_gun_full_in_ecs(
@@ -1455,7 +1164,13 @@ impl GameState {
         y: i32,
         player_clan_id: i32,
     ) -> (bool, bool) {
-        Self::access_gun_with(ecs, &self.chunk_buildings, x, y, player_clan_id)
+        Self::access_gun_with(
+            ecs,
+            &self.building_index.chunk_buildings,
+            x,
+            y,
+            player_clan_id,
+        )
     }
 
     /// Паки (HB-оверлей) ровно в ОДНОМ чанке `(cx, cy)`. В отличие от
@@ -1471,7 +1186,7 @@ impl GameState {
     ) -> Vec<PackOverlay> {
         let mut results = Vec::new();
         let now = crate::time::now_unix();
-        if let Some(entities) = self.chunk_buildings.get(&(cx, cy).into()) {
+        if let Some(entities) = self.building_index.chunk_buildings.get(&(cx, cy).into()) {
             for &entity in entities.value() {
                 let pos = ecs.get::<GridPosition>(entity);
                 let meta = ecs.get::<BuildingMetadata>(entity);
@@ -1499,7 +1214,7 @@ impl GameState {
         let now = crate::time::now_unix();
         let ecs = self.ecs.read();
         for (ucx, ucy) in self.visible_chunks_around(cx, cy) {
-            if let Some(entities) = self.chunk_buildings.get(&(ucx, ucy).into()) {
+            if let Some(entities) = self.building_index.chunk_buildings.get(&(ucx, ucy).into()) {
                 for &entity in entities.value() {
                     let pos = ecs.get::<GridPosition>(entity);
                     let meta = ecs.get::<BuildingMetadata>(entity);
@@ -1558,10 +1273,7 @@ impl GameState {
     }
 
     pub fn active_player_ids(&self) -> Vec<PlayerId> {
-        self.active_players
-            .iter()
-            .map(|entry| *entry.key())
-            .collect()
+        self.player_registry.active_player_ids()
     }
 
     pub fn guns_due(&self, now: Instant) -> bool {
@@ -1577,6 +1289,7 @@ impl GameState {
 
     pub fn fill_gun_candidate_batch(&self, ecs: &EcsWorld) -> combat::GunCandidateBatch {
         let mut players = self
+            .player_registry
             .active_players
             .iter()
             .map(|entry| entry.ecs_entity)
@@ -1600,9 +1313,7 @@ impl GameState {
     }
 
     pub fn active_session_for_player(&self, pid: PlayerId) -> Option<SessionId> {
-        self.active_players
-            .get(&pid)
-            .map(|active| active.session_id)
+        self.player_registry.active_session_for_player(pid)
     }
 
     pub fn nearby_session_ids(
@@ -1621,9 +1332,10 @@ impl GameState {
     pub fn nearby_player_sessions(&self, cx: u32, cy: u32) -> Vec<(PlayerId, SessionId)> {
         let mut sessions = Vec::new();
         for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
-            if let Some(players) = self.chunk_players.get(&(ncx, ncy).into()) {
+            if let Some(players) = self.player_registry.chunk_players.get(&(ncx, ncy).into()) {
                 sessions.extend(players.iter().filter_map(|player_id| {
-                    self.active_players
+                    self.player_registry
+                        .active_players
                         .get(player_id)
                         .map(|active| (*player_id, active.session_id))
                 }));
@@ -1638,7 +1350,7 @@ impl GameState {
         cy: u32,
         exclude_id: Option<PlayerId>,
     ) -> Vec<SessionId> {
-        let Some(players) = self.chunk_players.get(&(cx, cy).into()) else {
+        let Some(players) = self.player_registry.chunk_players.get(&(cx, cy).into()) else {
             return Vec::new();
         };
         players
@@ -1646,7 +1358,8 @@ impl GameState {
             .copied()
             .filter(|player_id| Some(*player_id) != exclude_id)
             .filter_map(|player_id| {
-                self.active_players
+                self.player_registry
+                    .active_players
                     .get(&player_id)
                     .map(|active| active.session_id)
             })
@@ -1654,15 +1367,15 @@ impl GameState {
     }
 
     pub fn is_player_active(&self, pid: PlayerId) -> bool {
-        self.active_players.contains_key(&pid)
+        self.player_registry.is_player_active(pid)
     }
 
     pub fn online_count(&self) -> usize {
-        self.active_players.len()
+        self.player_registry.active_players.len()
     }
 
     pub fn register_active_player(&self, pid: PlayerId, entity: Entity, session_id: SessionId) {
-        self.active_players.insert(
+        self.player_registry.active_players.insert(
             pid,
             ActivePlayer {
                 ecs_entity: entity,
@@ -1689,8 +1402,11 @@ impl GameState {
     }
 
     pub fn remove_active_player(&self, pid: PlayerId) -> Option<ActivePlayer> {
-        self.bots_render_players.remove(&pid);
-        self.active_players.remove(&pid).map(|(_, active)| active)
+        self.player_registry.bots_render_players.remove(&pid);
+        self.player_registry
+            .active_players
+            .remove(&pid)
+            .map(|(_, active)| active)
     }
 
     pub fn active_player_entity_for_session(
@@ -1698,29 +1414,31 @@ impl GameState {
         pid: PlayerId,
         session_id: SessionId,
     ) -> Option<Entity> {
-        self.active_players
+        self.player_registry
+            .active_players
             .get(&pid)
             .filter(|active| active.session_id == session_id)
             .map(|active| active.ecs_entity)
     }
 
     pub fn player_entity_ids(&self) -> Vec<PlayerId> {
-        self.player_entities
+        self.player_registry
+            .player_entities
             .iter()
             .map(|entry| *entry.key())
             .collect()
     }
 
     pub fn player_entity_count(&self) -> usize {
-        self.player_entities.len()
+        self.player_registry.player_entities.len()
     }
 
     pub fn register_player_entity(&self, pid: PlayerId, entity: Entity) {
-        self.player_entities.insert(pid, entity);
+        self.player_registry.player_entities.insert(pid, entity);
     }
 
     pub fn unregister_player_entity(&self, pid: PlayerId) {
-        self.player_entities.remove(&pid);
+        self.player_registry.player_entities.remove(&pid);
     }
 
     pub fn take_due_bots_render(&self, now: Instant, limit: usize) -> Vec<BotsRenderDue> {
@@ -1730,6 +1448,7 @@ impl GameState {
                 break;
             };
             if self
+                .player_registry
                 .active_players
                 .get(&candidate.player_id)
                 .is_some_and(|active| active.session_id.get() == candidate.session_token)
@@ -1746,6 +1465,7 @@ impl GameState {
 
     pub fn reschedule_bots_render(&self, due: BotsRenderDue, next_at: Instant) {
         if self
+            .player_registry
             .active_players
             .get(&due.player_id)
             .is_some_and(|active| active.session_id.get() == due.session_token)
@@ -1842,9 +1562,10 @@ impl GameState {
     /// Callers не должны вручную синхронизировать `building_index` и
     /// `chunk_buildings`: это единый boundary для position→entity кэшей.
     pub fn register_building_entity(&self, x: i32, y: i32, entity: Entity) {
-        self.building_index.insert((x, y).into(), entity);
+        self.building_index.by_origin.insert((x, y).into(), entity);
         let (cx, cy) = World::chunk_pos(x, y);
-        self.chunk_buildings
+        self.building_index
+            .chunk_buildings
             .entry((cx, cy).into())
             .or_default()
             .push(entity);
@@ -1852,9 +1573,13 @@ impl GameState {
 
     /// Удалить building entity из обоих runtime-индексов.
     pub fn remove_building_entity(&self, x: i32, y: i32) -> Option<Entity> {
-        let (_, entity) = self.building_index.remove(&((x, y).into()))?;
+        let (_, entity) = self.building_index.by_origin.remove(&((x, y).into()))?;
         let (cx, cy) = World::chunk_pos(x, y);
-        if let Some(mut entities) = self.chunk_buildings.get_mut(&(cx, cy).into()) {
+        if let Some(mut entities) = self
+            .building_index
+            .chunk_buildings
+            .get_mut(&(cx, cy).into())
+        {
             entities.retain(|&ent| ent != entity);
         }
         Some(entity)
@@ -1863,9 +1588,14 @@ impl GameState {
     fn remove_building_entity_if(&self, x: i32, y: i32, expected: Entity) -> Option<Entity> {
         let (_, entity) = self
             .building_index
+            .by_origin
             .remove_if(&((x, y).into()), |_, entity| *entity == expected)?;
         let (cx, cy) = World::chunk_pos(x, y);
-        if let Some(mut entities) = self.chunk_buildings.get_mut(&(cx, cy).into()) {
+        if let Some(mut entities) = self
+            .building_index
+            .chunk_buildings
+            .get_mut(&(cx, cy).into())
+        {
             entities.retain(|&entity| entity != expected);
         }
         Some(entity)
@@ -1942,13 +1672,17 @@ impl GameState {
 
     /// Runtime removal `BotSpot`, связанного со Spot-зданием.
     pub fn remove_botspot_runtime(&self, owner_id: PlayerId, x: i32, y: i32) -> Option<Entity> {
-        let (_, entity) = self.botspot_index.remove(&owner_id)?;
+        let (_, entity) = self.building_index.botspot_index.remove(&owner_id)?;
         let (cx, cy) = World::chunk_pos(x, y);
         let chunk_pos = ChunkPos::from((cx, cy));
-        if let Some(mut spots) = self.chunk_botspots.get_mut(&chunk_pos) {
+        if let Some(mut spots) = self.building_index.chunk_botspots.get_mut(&chunk_pos) {
             spots.retain(|&ent| ent != entity);
         }
-        if let Some(mut spots) = self.bots_render_botspots.get_mut(&chunk_pos) {
+        if let Some(mut spots) = self
+            .player_registry
+            .bots_render_botspots
+            .get_mut(&chunk_pos)
+        {
             spots.retain(|spot| spot.bot_id != -i32::from(owner_id));
         }
         self.ecs_write_profiled("game.remove_botspot_runtime")
@@ -1995,13 +1729,15 @@ impl GameState {
         clan_id: i32,
         entity: Entity,
     ) {
-        self.botspot_index.insert(owner_id, entity);
+        self.building_index.botspot_index.insert(owner_id, entity);
         let (cx, cy) = World::chunk_pos(x, y);
-        self.chunk_botspots
+        self.building_index
+            .chunk_botspots
             .entry((cx, cy).into())
             .or_default()
             .push(entity);
-        self.bots_render_botspots
+        self.player_registry
+            .bots_render_botspots
             .entry((cx, cy).into())
             .or_default()
             .push(BotSpotView {
@@ -2015,6 +1751,7 @@ impl GameState {
 
     pub fn botspots_in_chunk_with_ecs(&self, ecs: &EcsWorld, cx: u32, cy: u32) -> Vec<BotSpotView> {
         let entities = self
+            .building_index
             .chunk_botspots
             .get(&(cx, cy).into())
             .map(|chunk| chunk.clone())
@@ -2039,28 +1776,34 @@ impl GameState {
     }
 
     pub fn players_in_chunk(&self, cx: u32, cy: u32) -> Vec<PlayerId> {
-        self.chunk_players
+        self.player_registry
+            .chunk_players
             .get(&(cx, cy).into())
             .map(|players| players.clone())
             .unwrap_or_default()
     }
 
     pub fn register_player_chunk(&self, pid: PlayerId, cx: u32, cy: u32) {
-        let mut players = self.chunk_players.entry((cx, cy).into()).or_default();
+        let mut players = self
+            .player_registry
+            .chunk_players
+            .entry((cx, cy).into())
+            .or_default();
         if !players.contains(&pid) {
             players.push(pid);
         }
     }
 
     pub fn unregister_player_from_chunk(&self, pid: PlayerId, cx: u32, cy: u32) {
-        if let Some(mut players) = self.chunk_players.get_mut(&(cx, cy).into()) {
+        if let Some(mut players) = self.player_registry.chunk_players.get_mut(&(cx, cy).into()) {
             players.retain(|&id| id != pid);
         }
     }
 
     #[allow(dead_code)]
     pub fn unregister_player_from_all_chunks(&self, pid: PlayerId) {
-        self.chunk_players
+        self.player_registry
+            .chunk_players
             .iter_mut()
             .for_each(|mut e| e.value_mut().retain(|&id| id != pid));
     }
@@ -2159,7 +1902,7 @@ impl GameState {
         // PB-2: итерируем напрямую под guard'ом DashMap — не клонируем Vec<PlayerId>.
         // send_to_player берёт player_tx (другой DashMap-шард) → дедлок невозможен.
         for (ncx, ncy) in self.visible_chunks_iter(cx, cy) {
-            if let Some(players) = self.chunk_players.get(&(ncx, ncy).into()) {
+            if let Some(players) = self.player_registry.chunk_players.get(&(ncx, ncy).into()) {
                 for &pid in players.value() {
                     if Some(pid) == exclude_id {
                         continue;
@@ -2191,24 +1934,16 @@ impl GameState {
         use crate::net::session::wire::encode_hb_bundle;
         use crate::protocol::packets::hb_bundle;
         let (cx, cy) = World::chunk_pos(x, y);
-        self.command_broadcasts
-            .lock()
-            .push(BroadcastEffect::Nearby {
-                cx,
-                cy,
-                data: encode_hb_bundle(&hb_bundle(subs).1),
-                exclude: exclude_id,
-            });
+        self.command_ingress
+            .queue_nearby(cx, cy, encode_hb_bundle(&hb_bundle(subs).1), exclude_id);
     }
 
     pub fn queue_direct(&self, session_id: SessionId, data: Vec<u8>) {
-        self.command_broadcasts
-            .lock()
-            .push(BroadcastEffect::Direct { session_id, data });
+        self.command_ingress.queue_direct(session_id, data);
     }
 
     pub fn drain_command_broadcasts(&self) -> Vec<BroadcastEffect> {
-        std::mem::take(&mut *self.command_broadcasts.lock())
+        self.command_ingress.drain_command_broadcasts()
     }
 
     pub fn generate_hash() -> String {

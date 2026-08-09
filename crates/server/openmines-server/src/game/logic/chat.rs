@@ -238,10 +238,9 @@ pub fn prepare_channel_chat_non_command(
         ChannelChatRoute::Global(channel_tag.clone())
     } else if is_clan {
         ChannelChatRoute::Clan(clan_opt.unwrap_or(0))
-    } else if let Some(pair) = priv_ids {
-        ChannelChatRoute::Private(channel_tag.clone(), pair.into())
     } else {
-        return None;
+        let pair = priv_ids?;
+        ChannelChatRoute::Private(channel_tag.clone(), pair.into())
     };
 
     Some(PreparedChannelChat {

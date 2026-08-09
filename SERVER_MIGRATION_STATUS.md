@@ -1,6 +1,6 @@
 # OpenMines Server Migration Status
 
-Обновлено: 2026-07-18.
+Обновлено: 2026-08-10.
 
 Это **единственный актуальный checkpoint и handoff** по миграции сервера.
 Подробная целевая модель находится в `docs/SIMULATION_KERNEL_PLAN.md`; целевой план реструктуризации на изолированные крейты — в `docs/TARGET_ARCHITECTURE_PLAN.md`; правила формы
@@ -766,6 +766,27 @@ monotonic time, с delay - точному `now + delay`.
 `PacketBatch`. Read-only tab switching (`sellcrys`/`buycrys`) остаётся в sync fast path.
 
 Проверка: 5 market tests, 637 total tests, strict clippy, fmt, wire smoke.
+
+**Kernel owner extraction закрыт как structural slice.** `GameState` больше не
+хранит пять кластеров реестров и очередей непосредственно в god-object:
+
+- `PlayerRegistry` владеет active/entity/chunk/bots-render player maps;
+- `BuildingIndex` владеет origin/chunk building и BotSpot indexes;
+- `CommandIngress` владеет bounded ingress counters, sequence, age metrics и
+  queued command broadcasts;
+- `DueSchedules` владеет crafting/programmator/hazard schedules;
+- `WebSnapshotOwner` владеет immutable `Arc<WebSnapshot>` для web routes.
+
+Публичные `GameState` facades сохранены, поэтому wire и call-site API не
+изменены. Срез не заявляет Owned ECS: `EcsWorld` всё ещё под `GameState` lock,
+а snapshot extraction по-прежнему выполняется коротким owner-side ECS чтением.
+Новые owner-модули подключены в `game/kernel/mod.rs`, старые дубли удалены.
+
+Проверка текущего среза: `cargo check -p openmines-server --all-targets
+--all-features`, workspace strict clippy с `-D warnings -W clippy::pedantic
+-W clippy::nursery`, `cargo fmt --all -- --check`, `git diff --check`.
+Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
+оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
 ## Wire-decoupling: &Outbox → &dyn PacketSink (полная миграция)
 
