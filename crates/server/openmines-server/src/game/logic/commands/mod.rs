@@ -18,12 +18,14 @@ mod building_tasks;
 pub(super) mod completion;
 pub(super) mod completion_clan;
 pub(super) mod gui;
+mod gui_tasks;
 mod parsing;
 pub(super) mod slash;
 
 pub(super) use building_tasks::{
     spawn_inventory_building_insert_task, spawn_paid_building_insert_task,
 };
+pub(super) use gui_tasks::spawn_gui_async_task;
 
 use parsing::{
     decode_finv_index, decode_miss_enabled, decode_program_save, decode_rndm_hash, is_unit_payload,
