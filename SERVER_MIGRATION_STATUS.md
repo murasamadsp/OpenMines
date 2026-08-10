@@ -902,6 +902,12 @@ block update без прямой доставки из legacy handler; clan muta
 building HORB потерял legacy Spot/Up routes, что обнаружил smoke; этот путь
 остаётся legacy до сохранения полного wire поведения.
 
+**Пустое сохранение `PROG` также переведено на typed persistence.** Если legacy
+клиент присылает нулевой ID выбранной программы, command layer резервирует и
+возвращает `ProgramMenu`; старый `program_list_after_empty_save` async fallback
+удалён. Wire-последовательность не меняется, а regression test подтверждает
+отсутствие прямой доставки из command apply.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

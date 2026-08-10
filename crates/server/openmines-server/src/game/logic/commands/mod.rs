@@ -641,7 +641,7 @@ fn apply_program_command(
                 match event.as_str() {
                     "PROG" => {
                         if let Some(save) =
-                            prepare_program_save(state, tx, player_id, session_id, &payload)
+                            prepare_program_save(tx, player_id, session_id, &payload)
                         {
                             effects.saves.push(save);
                         }
@@ -714,7 +714,6 @@ fn apply_program_command(
 }
 
 fn prepare_program_save(
-    state: &Arc<GameState>,
     tx: crate::net::session::outbox::Outbox,
     player_id: crate::game::PlayerId,
     session_id: crate::game::SessionId,
@@ -727,16 +726,12 @@ fn prepare_program_save(
             program_id,
             "PROG received no selected client program; opening program list"
         );
-        let task_state = state.clone();
-        spawn_session_async_task(state, "program_list_after_empty_save", async move {
-            crate::game::logic::buildings::handle_programmator_pope_menu(
-                &task_state,
-                &tx,
+        return Some(crate::game::SaveCommand::ProgramMenu {
+            request: crate::game::ProgramMenuRequest {
                 player_id,
-            )
-            .await;
+                session_id,
+            },
         });
-        return None;
     }
     Some(crate::game::SaveCommand::Program {
         request: crate::game::ProgramSaveRequest {
@@ -2143,6 +2138,37 @@ mod tests {
                 if request.player == player_id
                     && request.session == session_id
                     && request.program == 42
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_program_save_reopens_list_through_typed_persistence() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_empty_save", "programmer").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(211);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+        payload.extend_from_slice(&0_i32.to_le_bytes());
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PROG".to_owned(),
+                payload: bytes::Bytes::from(payload),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ProgramMenu { request }]
+                if request.player_id == player_id && request.session_id == session_id
         ));
         assert!(receiver.try_recv().is_err());
     }

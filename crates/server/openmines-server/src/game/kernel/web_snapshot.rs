@@ -49,7 +49,16 @@ impl WebSnapshotOwner {
     }
 
     pub fn update(&self, state: &crate::game::GameState) {
-        let mut ecs = state.ecs_write_profiled("web.update_snapshot");
+        let mut b_query = {
+            let mut ecs = state.ecs_write_profiled("web.update_snapshot_query");
+            bevy_ecs::query::QueryState::<(
+                &crate::game::buildings::GridPosition,
+                &crate::game::buildings::BuildingMetadata,
+                &crate::game::buildings::BuildingStats,
+                &crate::game::buildings::BuildingOwnership,
+            )>::new(&mut ecs)
+        };
+        let ecs = state.ecs_read_profiled("web.update_snapshot");
         let mut players = Vec::new();
         for pid in state.active_player_ids() {
             if let Some(entity) = state.get_player_entity(pid)
@@ -71,12 +80,6 @@ impl WebSnapshotOwner {
                 });
             }
         }
-        let mut b_query = ecs.query::<(
-            &crate::game::buildings::GridPosition,
-            &crate::game::buildings::BuildingMetadata,
-            &crate::game::buildings::BuildingStats,
-            &crate::game::buildings::BuildingOwnership,
-        )>();
         let mut buildings = Vec::new();
         for (grid_pos, metadata, stats, ownership) in b_query.iter(&ecs) {
             buildings.push(WebBuildingInfo {

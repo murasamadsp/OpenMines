@@ -47,6 +47,7 @@ fn send_building_state_error(tx: &dyn PacketSink) {
 
 /// TY `Pope` → `StaticGUI.OpenGui` в `server_reference/.../StaticGUI.cs` (программатор).
 /// Показывает список программ игрока из БД (кликабельный) или кнопку создания.
+#[cfg(test)]
 pub async fn handle_programmator_pope_menu(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,

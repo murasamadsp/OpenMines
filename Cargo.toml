@@ -49,7 +49,7 @@ bevy_ecs = "0.18.1"
 base64 = "0.22.1"
 lzma-rs = "0.3.0"
 tokio-cron-scheduler = "0.13.0"
-binrw = "0.14.0"
+binrw = "0.15.2"
 sqlx = { version = "0.8.3", features = [
     "runtime-tokio",
     "sqlite",
