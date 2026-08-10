@@ -649,6 +649,12 @@ impl PlayerCommand {
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw == "prog" => Some(SaveKind::ProgramMenu),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("openprog:") => Some(SaveKind::ProgramOpen),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("rename:") => Some(SaveKind::ProgramRename),
             Self::ProgramAction { event, payload } if event == "PROG" => {
                 crate::game::programmator::ProgrammatorState::decode_prog_packet(payload).map(
                     |(program_id, _)| {
@@ -861,6 +867,12 @@ pub enum SaveCommand {
     ProgramMenu {
         request: ProgramMenuRequest,
     },
+    ProgramOpen {
+        request: ProgramOpenRequest,
+    },
+    ProgramRename {
+        request: ProgramRenameRequest,
+    },
     #[allow(dead_code)]
     ProgramCopy {
         request: ProgramCopyRequest,
@@ -1035,6 +1047,8 @@ impl SaveCommand {
             Self::ProgramCreate { .. } => SaveKind::ProgramCreate,
             Self::Program { .. } => SaveKind::Program,
             Self::ProgramMenu { .. } => SaveKind::ProgramMenu,
+            Self::ProgramOpen { .. } => SaveKind::ProgramOpen,
+            Self::ProgramRename { .. } => SaveKind::ProgramRename,
             Self::ProgramCopy { .. } => SaveKind::ProgramCopy,
             Self::BuildingMenu { .. } => SaveKind::BuildingMenu,
             Self::AuctionGrid { .. } => SaveKind::AuctionGrid,
@@ -1077,6 +1091,21 @@ pub struct ProgramSaveRequest {
 pub struct ProgramMenuRequest {
     pub player_id: PlayerId,
     pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramOpenRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub program: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramRenameRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub program_id: i32,
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1153,6 +1182,14 @@ pub enum PersistenceCompletion {
     ProgramMenuLoaded {
         request: ProgramMenuRequest,
         result: ProgramMenuResult,
+    },
+    ProgramOpened {
+        request: ProgramOpenRequest,
+        result: ProgramOpenResult,
+    },
+    ProgramRenamed {
+        request: ProgramRenameRequest,
+        result: ProgramRenameResult,
     },
     ProgramCopied {
         request: ProgramCopyRequest,
@@ -1249,6 +1286,20 @@ pub enum ProgramMenuResult {
     PermanentFailure {
         message: String,
     },
+}
+
+#[derive(Debug)]
+pub enum ProgramOpenResult {
+    Opened { program: crate::db::ProgramRow },
+    Rejected,
+    PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum ProgramRenameResult {
+    Renamed { program: crate::db::ProgramRow },
+    Rejected,
+    PermanentFailure { message: String },
 }
 
 #[derive(Debug)]
@@ -1480,6 +1531,8 @@ pub enum SaveKind {
     Program,
     ProgramCreate,
     ProgramMenu,
+    ProgramOpen,
+    ProgramRename,
     ProgramCopy,
     BuildingMenu,
     AuctionGrid,
@@ -1510,6 +1563,8 @@ impl SaveKind {
             Self::Program => "save_program",
             Self::ProgramCreate => "create_program",
             Self::ProgramMenu => "program_menu",
+            Self::ProgramOpen => "program_open",
+            Self::ProgramRename => "program_rename",
             Self::ProgramCopy => "program_copy",
             Self::BuildingMenu => "building_menu",
             Self::AuctionGrid => "auction_grid",

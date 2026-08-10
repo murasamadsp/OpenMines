@@ -67,6 +67,80 @@ pub fn apply_persistence_completion(
             }
             effects
         }
+        crate::game::PersistenceCompletion::ProgramOpened { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            match result {
+                crate::game::ProgramOpenResult::Opened { program } => {
+                    apply_program_editor_completion(
+                        state,
+                        request.session_id,
+                        request.player_id,
+                        PlayerCommand::ApplyProgramEditorOpen {
+                            program_id: program.id,
+                            program_name: program.name,
+                            source: program.code,
+                        },
+                    );
+                }
+                crate::game::ProgramOpenResult::Rejected => {
+                    if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
+                        crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                            &tx,
+                            "Программа недоступна.",
+                        );
+                    }
+                }
+                crate::game::ProgramOpenResult::PermanentFailure { message } => {
+                    tracing::error!(player_id = %request.player_id, error = %message, "Program open failed permanently");
+                    if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
+                        crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                            &tx,
+                            "Не удалось открыть программу.",
+                        );
+                    }
+                }
+            }
+            CommandEffects::default()
+        }
+        crate::game::PersistenceCompletion::ProgramRenamed { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            match result {
+                crate::game::ProgramRenameResult::Renamed { program } => {
+                    apply_program_editor_completion(
+                        state,
+                        request.session_id,
+                        request.player_id,
+                        PlayerCommand::ApplyProgramEditorRename {
+                            program_id: program.id,
+                            program_name: program.name,
+                            source: program.code,
+                        },
+                    );
+                }
+                crate::game::ProgramRenameResult::Rejected => {
+                    if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
+                        crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                            &tx,
+                            "Программа недоступна.",
+                        );
+                    }
+                }
+                crate::game::ProgramRenameResult::PermanentFailure { message } => {
+                    tracing::error!(player_id = %request.player_id, error = %message, "Program rename failed permanently");
+                    if let Some(tx) = state.sessions.outbox_for_session(request.session_id) {
+                        crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                            &tx,
+                            "Не удалось переименовать программу.",
+                        );
+                    }
+                }
+            }
+            CommandEffects::default()
+        }
         crate::game::PersistenceCompletion::ProgramCopied { request, result } => {
             if state.sessions.session_for_player(request.player) != Some(request.session) {
                 return CommandEffects::default();

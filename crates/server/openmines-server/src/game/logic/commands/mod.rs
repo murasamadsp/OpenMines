@@ -1639,143 +1639,6 @@ fn parse_pack_remove_button(button: &str) -> Option<(i32, i32)> {
     Some((x, y))
 }
 
-fn spawn_program_editor_open_task(
-    state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    program_id: i32,
-) {
-    let Some(session_id) = state.sessions.session_for_player(player_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "program_editor_open", async move {
-        let program = match task_state.db.get_program(program_id).await {
-            Ok(Some(program)) => program,
-            Ok(None) => {
-                crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                    &tx,
-                    "Программа не найдена.",
-                );
-                return;
-            }
-            Err(e) => {
-                tracing::error!(player_id = %player_id, program_id, error = ?e, "DB get failed for openprog");
-                crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                    &tx,
-                    "Не удалось прочитать программу.",
-                );
-                return;
-            }
-        };
-        if program.player_id != player_id.as_i32() {
-            tracing::warn!(
-                player_id = %player_id,
-                program_id,
-                owner_id = program.player_id,
-                "Rejected foreign program open"
-            );
-            crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                &tx,
-                "Программа недоступна.",
-            );
-            return;
-        }
-        if let Err(e) = task_state
-            .db
-            .set_selected_program(player_id.into(), Some(program.id))
-            .await
-        {
-            tracing::error!(player_id = %player_id, program_id = program.id, error = ?e, "DB selected program update failed for openprog");
-            crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                &tx,
-                "Не удалось выбрать программу.",
-            );
-            return;
-        }
-        task_state
-            .enqueue_internal(
-                player_id,
-                session_id,
-                crate::game::PlayerCommand::ApplyProgramEditorOpen {
-                    program_id: program.id,
-                    program_name: program.name,
-                    source: program.code,
-                },
-            )
-            .await;
-    });
-}
-
-fn spawn_program_editor_rename_task(
-    state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    program_id: i32,
-    name: &str,
-) {
-    let name = name.trim().to_owned();
-    if name.is_empty() {
-        return;
-    }
-    let Some(session_id) = state.sessions.session_for_player(player_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "program_editor_rename", async move {
-        let program = match task_state.db.get_program(program_id).await {
-            Ok(Some(program)) => program,
-            Ok(None) => {
-                crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                    &tx,
-                    "Программа не найдена.",
-                );
-                return;
-            }
-            Err(e) => {
-                tracing::error!(player_id = %player_id, program_id, error = ?e, "DB get failed for rename program");
-                crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                    &tx,
-                    "Не удалось прочитать программу.",
-                );
-                return;
-            }
-        };
-        if program.player_id != player_id.as_i32() {
-            tracing::warn!(
-                player_id = %player_id,
-                program_id,
-                owner_id = program.player_id,
-                "Rejected foreign program rename"
-            );
-            crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                &tx,
-                "Программа недоступна.",
-            );
-            return;
-        }
-        if let Err(e) = task_state.db.rename_program(program_id, &name).await {
-            tracing::error!(player_id = %player_id, program_id, error = ?e, "DB rename failed for program");
-            crate::game::logic::gui::programmator_gui::send_programmator_action_error(
-                &tx,
-                "Не удалось переименовать программу.",
-            );
-            return;
-        }
-        task_state
-            .enqueue_internal(
-                player_id,
-                session_id,
-                crate::game::PlayerCommand::ApplyProgramEditorRename {
-                    program_id,
-                    program_name: name,
-                    source: program.code,
-                },
-            )
-            .await;
-    });
-}
-
 fn spawn_program_delete_task(
     state: &Arc<GameState>,
     tx: crate::net::session::outbox::Outbox,
@@ -2085,6 +1948,66 @@ mod tests {
                 if request.player_id == player_id
                     && request.session_id == session_id
                     && request.amount == 15
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_editor_open_is_admitted_without_legacy_gui_task() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_open_durable", "programmer").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(203);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("openprog:42".to_owned()),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ProgramOpen { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.program == 42
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_editor_rename_is_admitted_without_legacy_gui_task() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_rename_durable", "programmer")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(207);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("rename:42:new-name".to_owned()),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ProgramRename { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.program_id == 42
+                    && request.name == "new-name"
         ));
         assert!(receiver.try_recv().is_err());
     }

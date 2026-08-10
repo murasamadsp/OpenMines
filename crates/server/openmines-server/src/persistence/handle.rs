@@ -23,6 +23,8 @@ const fn needs_completion_permit(kind: SaveKind) -> bool {
             | SaveKind::Whois
             | SaveKind::ClanMenu
             | SaveKind::ProgramMenu
+            | SaveKind::ProgramOpen
+            | SaveKind::ProgramRename
             | SaveKind::ProgramCopy
             | SaveKind::BuildingMenu
             | SaveKind::AuctionGrid

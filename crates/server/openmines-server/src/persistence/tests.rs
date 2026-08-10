@@ -101,6 +101,34 @@ impl PersistenceStore for TestStore {
         Ok(Vec::new())
     }
 
+    async fn program_open(
+        &self,
+        request: &crate::game::ProgramOpenRequest,
+    ) -> Result<crate::game::ProgramOpenResult, PersistenceStoreFailure> {
+        Ok(crate::game::ProgramOpenResult::Opened {
+            program: crate::db::ProgramRow {
+                id: request.program,
+                player_id: request.player_id.as_i32(),
+                name: "main".to_owned(),
+                code: "source".to_owned(),
+            },
+        })
+    }
+
+    async fn program_rename(
+        &self,
+        request: &crate::game::ProgramRenameRequest,
+    ) -> Result<crate::game::ProgramRenameResult, PersistenceStoreFailure> {
+        Ok(crate::game::ProgramRenameResult::Renamed {
+            program: crate::db::ProgramRow {
+                id: request.program_id,
+                player_id: request.player_id.as_i32(),
+                name: request.name.clone(),
+                code: "source".to_owned(),
+            },
+        })
+    }
+
     async fn copy_program(
         &self,
         _request: &crate::game::ProgramCopyRequest,
@@ -519,6 +547,33 @@ fn publish_program(handle: &PersistenceHandle, player_id: i32, session_id: u64, 
         });
 }
 
+fn publish_program_open(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::ProgramOpen)
+        .expect("program-open persistence capacity")
+        .publish(SaveCommand::ProgramOpen {
+            request: crate::game::ProgramOpenRequest {
+                player_id: crate::game::PlayerId(player_id),
+                session_id: crate::game::SessionId::new(session_id),
+                program: 42,
+            },
+        });
+}
+
+fn publish_program_rename(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::ProgramRename)
+        .expect("program-rename persistence capacity")
+        .publish(SaveCommand::ProgramRename {
+            request: crate::game::ProgramRenameRequest {
+                player_id: crate::game::PlayerId(player_id),
+                session_id: crate::game::SessionId::new(session_id),
+                program_id: 42,
+                name: "renamed".to_owned(),
+            },
+        });
+}
+
 fn publish_building_delete(handle: &PersistenceHandle, building_id: i32, operation_id: u64) {
     handle
         .try_reserve(SaveKind::BuildingDelete)
@@ -849,6 +904,48 @@ async fn pending_program_completion_bounds_new_program_admission() {
     ));
     assert!(completions.try_recv().is_ok());
     assert!(handle.try_reserve(SaveKind::Program).is_ok());
+
+    drop(handle);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn program_editor_completion_capacity_covers_open_and_rename() {
+    let store = TestStore::new(false, 0);
+    let mut runtime = PersistenceRuntime::start_with_store(store, 1);
+    let mut completions = runtime.take_completion_receiver();
+    let handle = runtime.handle();
+    publish_program_open(&handle, 7, 11);
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::ProgramOpen),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::ProgramOpened {
+            request: crate::game::ProgramOpenRequest { program: 42, .. },
+            result: crate::game::ProgramOpenResult::Opened { .. },
+        })
+    ));
+
+    publish_program_rename(&handle, 7, 11);
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::ProgramRename),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::ProgramRenamed {
+            request: crate::game::ProgramRenameRequest { program_id: 42, .. },
+            result: crate::game::ProgramRenameResult::Renamed { .. },
+        })
+    ));
 
     drop(handle);
     runtime.shutdown().await;

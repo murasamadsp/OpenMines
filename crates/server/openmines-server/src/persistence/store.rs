@@ -108,6 +108,16 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         request: &crate::game::ProgramMenuRequest,
     ) -> impl Future<Output = Result<Vec<crate::db::ProgramRow>, PersistenceStoreFailure>> + Send;
 
+    fn program_open(
+        &self,
+        request: &crate::game::ProgramOpenRequest,
+    ) -> impl Future<Output = Result<crate::game::ProgramOpenResult, PersistenceStoreFailure>> + Send;
+
+    fn program_rename(
+        &self,
+        request: &crate::game::ProgramRenameRequest,
+    ) -> impl Future<Output = Result<crate::game::ProgramRenameResult, PersistenceStoreFailure>> + Send;
+
     fn copy_program(
         &self,
         request: &crate::game::ProgramCopyRequest,
@@ -598,6 +608,51 @@ impl PersistenceStore for Arc<crate::db::Database> {
         self.list_programs(request.player_id.as_i32())
             .await
             .map_err(PersistenceStoreFailure::Transient)
+    }
+
+    async fn program_open(
+        &self,
+        request: &crate::game::ProgramOpenRequest,
+    ) -> Result<crate::game::ProgramOpenResult, PersistenceStoreFailure> {
+        let Some(program) = self
+            .get_program(request.program)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?
+        else {
+            return Ok(crate::game::ProgramOpenResult::Rejected);
+        };
+        if program.player_id != request.player_id.as_i32() {
+            return Ok(crate::game::ProgramOpenResult::Rejected);
+        }
+        self.set_selected_program(request.player_id.into(), Some(program.id))
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?;
+        Ok(crate::game::ProgramOpenResult::Opened { program })
+    }
+
+    async fn program_rename(
+        &self,
+        request: &crate::game::ProgramRenameRequest,
+    ) -> Result<crate::game::ProgramRenameResult, PersistenceStoreFailure> {
+        let Some(program) = self
+            .get_program(request.program_id)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?
+        else {
+            return Ok(crate::game::ProgramRenameResult::Rejected);
+        };
+        if program.player_id != request.player_id.as_i32() {
+            return Ok(crate::game::ProgramRenameResult::Rejected);
+        }
+        self.rename_program(request.program_id, &request.name)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?;
+        Ok(crate::game::ProgramRenameResult::Renamed {
+            program: crate::db::ProgramRow {
+                name: request.name.clone(),
+                ..program
+            },
+        })
     }
 
     async fn copy_program(

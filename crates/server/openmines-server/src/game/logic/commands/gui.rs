@@ -1,7 +1,6 @@
 use super::{
     Arc, CommandEffects, GameState, PlayerCommand, parse_pack_remove_button,
-    parse_program_rename_button, spawn_paid_building_insert_task, spawn_program_editor_open_task,
-    spawn_program_editor_rename_task, spawn_session_async_task,
+    parse_program_rename_button, spawn_paid_building_insert_task, spawn_session_async_task,
 };
 use crate::game::logic::horb::HorbDelivery;
 
@@ -414,8 +413,17 @@ fn apply_gui_button_command(
         .strip_prefix("openprog:")
         .and_then(|rest| rest.parse::<i32>().ok())
     {
-        spawn_program_editor_open_task(state, tx.clone(), player_id, program_id);
-        return CommandEffects::default();
+        return CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ProgramOpen {
+                request: crate::game::ProgramOpenRequest {
+                    player_id,
+                    session_id,
+                    program: program_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        };
     }
     if let Some(name) = button.strip_prefix("createprog:") {
         let name = name.trim();
@@ -435,8 +443,18 @@ fn apply_gui_button_command(
         };
     }
     if let Some((program_id, name)) = parse_program_rename_button(&button) {
-        spawn_program_editor_rename_task(state, tx.clone(), player_id, program_id, &name);
-        return CommandEffects::default();
+        return CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::ProgramRename {
+                request: crate::game::ProgramRenameRequest {
+                    player_id,
+                    session_id,
+                    program_id,
+                    name,
+                },
+            }],
+            broadcasts: Vec::new(),
+        };
     }
     // Market mutations — route through typed command pipeline
     if let Some(slider_data) = button.strip_prefix("sell:") {

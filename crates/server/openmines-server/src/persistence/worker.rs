@@ -103,6 +103,12 @@ async fn persist_batch<S>(
             SaveKind::ProgramMenu => {
                 persist_program_menu_batch(store, &mut batch[start..end], simulation_waker).await;
             }
+            SaveKind::ProgramOpen => {
+                persist_program_open_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
+            SaveKind::ProgramRename => {
+                persist_program_rename_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::ProgramCopy => {
                 persist_program_copy_batch(store, &mut batch[start..end], simulation_waker).await;
             }
@@ -914,6 +920,84 @@ async fn persist_program_menu_batch<S>(
     }
 }
 
+async fn persist_program_open_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::ProgramOpen { request } = &envelope.command else {
+            unreachable!("compatible program-open batch");
+        };
+        let request = request.clone();
+        let result = loop {
+            match store.program_open(&request).await {
+                Ok(result) => break result,
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::ProgramOpenResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    tracing::warn!(error = ?error, player_id = %request.player_id, "Program open persistence failed transiently; retrying");
+                    tokio::time::sleep(RETRY_INITIAL_BACKOFF).await;
+                }
+            }
+        };
+        envelope
+            .completion
+            .take()
+            .expect("program open command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ProgramOpened { request, result });
+        simulation_waker.wake();
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::ProgramOpen.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
+    }
+}
+
+async fn persist_program_rename_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::ProgramRename { request } = &envelope.command else {
+            unreachable!("compatible program-rename batch");
+        };
+        let request = request.clone();
+        let result = loop {
+            match store.program_rename(&request).await {
+                Ok(result) => break result,
+                Err(PersistenceStoreFailure::Permanent(error)) => {
+                    break crate::game::ProgramRenameResult::PermanentFailure {
+                        message: error.to_string(),
+                    };
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    tracing::warn!(error = ?error, player_id = %request.player_id, "Program rename persistence failed transiently; retrying");
+                    tokio::time::sleep(RETRY_INITIAL_BACKOFF).await;
+                }
+            }
+        };
+        envelope
+            .completion
+            .take()
+            .expect("program rename command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ProgramRenamed { request, result });
+        simulation_waker.wake();
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::ProgramRename.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
+    }
+}
+
 async fn persist_program_copy_batch<S>(
     store: &S,
     batch: &mut [PersistenceEnvelope],
@@ -1039,6 +1123,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ProgramMenu { .. }
+                        | SaveCommand::ProgramOpen { .. }
+                        | SaveCommand::ProgramRename { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1074,6 +1160,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ProgramMenu { .. }
+                        | SaveCommand::ProgramOpen { .. }
+                        | SaveCommand::ProgramRename { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1109,6 +1197,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ProgramMenu { .. }
+                        | SaveCommand::ProgramOpen { .. }
+                        | SaveCommand::ProgramRename { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1145,6 +1235,8 @@ where
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
                         | SaveCommand::ProgramMenu { .. }
+                        | SaveCommand::ProgramOpen { .. }
+                        | SaveCommand::ProgramRename { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1172,6 +1264,8 @@ where
             SaveKind::Program
             | SaveKind::ProgramCreate
             | SaveKind::ProgramMenu
+            | SaveKind::ProgramOpen
+            | SaveKind::ProgramRename
             | SaveKind::ProgramCopy
             | SaveKind::BuildingMenu
             | SaveKind::AuctionGrid

@@ -690,13 +690,21 @@ strict workspace clippy, `cargo fmt --all` и `git diff --check`. Старый
 legacy regression tests, но исключены из production compilation; production
 slash fallback теперь сразу возвращает `CommandEffects`.
 
-**Programmer menu (`Pope`) закрыт.** `OpenProgrammer`, `GUI_ prog`, `PROG` без
+**Programmer menu/editor (`Pope`) закрыт.** `OpenProgrammer`, `GUI_ prog`, `PROG` без
 выбранной программы и `PCOP` резервируют typed durable work до apply.
 `ProgramMenu` читает список, `ProgramCopy` копирует owned source; их completion
 при актуальной session отдаёт `GU` или ставит следующий persistence request.
-Старые Pope/PROG handlers оставлены только под `cfg(test)`, production-входов
-к ним нет. Проверка: admission и completion tests для binary `PROG`, GUI `prog`
-и `PCOP`.
+Теперь `openprog:{id}` и `rename:{id}:{name}` также резервируют отдельные
+`ProgramOpen`/`ProgramRename`: worker повторяет ownership-проверку, выбирает
+программу/selected id или переименовывает её, а completion вызывает прежний
+editor apply и сохраняет legacy `#P`/`#p`/`Gu` порядок. Старые GUI handlers
+оставлены для legacy regression/fallback paths; production
+typed-вход не делает прямой DB-вызов из command apply.
+
+Проверка: admission tests для GUI `prog`, `openprog`, `rename`, `PCOP` и
+binary `PROG`; persistence completion-capacity tests для `ProgramOpen` и
+`ProgramRename`; targeted `program_` suite, `cargo check -p openmines-server
+--all-targets --all-features`.
 
 **My buildings (`Blds`) закрыт.** Запрос резервирует `BuildingMenu` до apply;
 persistence worker читает owned buildings, а completion с session guard строит
