@@ -459,19 +459,14 @@ fn apply_chat_command(
             } else {
                 tag
             };
-            if !channel_tag.is_empty() {
-                let _ = state.modify_player(player_id, |w, e| {
-                    if let Some(mut ui) = w.get_mut::<crate::game::player::PlayerUI>(e) {
-                        ui.current_chat = channel_tag.clone();
-                    }
-                });
-            }
             CommandEffects {
                 events: Vec::new(),
-                saves: vec![crate::game::SaveCommand::ChatMenu {
-                    request: crate::game::ChatMenuRequest {
+                saves: vec![crate::game::SaveCommand::ChatResync {
+                    request: crate::game::ChatResyncRequest {
                         player_id,
                         session_id,
+                        channel_tag,
+                        last_id: 0,
                     },
                 }],
                 broadcasts: Vec::new(),
@@ -1999,6 +1994,50 @@ mod tests {
         assert_eq!(packet_events(&toggle), vec![*b"IN"]);
         assert_eq!(packet_events(&choose), vec![*b"IN", *b"IN"]);
         assert!(toggle.saves.is_empty() && choose.saves.is_empty());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_choose_resyncs_selected_channel_through_typed_persistence() {
+        let test = crate::test_support::ServerTestHarness::new("chat_choose_typed", "chat").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(205);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        let before = test
+            .state
+            .query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_chat.clone())
+            })
+            .expect("player UI");
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ChatChoose {
+                payload: Bytes::from_static(b"DNO"),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ChatResync { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.channel_tag == "DNO"
+                    && request.last_id == 0
+        ));
+        let after = test
+            .state
+            .query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_chat.clone())
+            })
+            .expect("player UI");
+        assert_eq!(after, before);
         assert!(receiver.try_recv().is_err());
     }
 

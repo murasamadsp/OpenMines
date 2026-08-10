@@ -914,6 +914,11 @@ building HORB потерял legacy Spot/Up routes, что обнаружил sm
 apply удалён. Порядок `IN full` и `IN full` → `IN choose/close` сохранён;
 `INUS` и inventory-backed building placement остаются отдельными slices.
 
+**`Choo` исправлен через `ChatResync`.** Выбор канала больше не меняет
+`PlayerUI.current_chat` до завершения persistence и не открывает ошибочно
+`ChatMenu`; typed completion теперь выдаёт legacy-порядок `mO → mU` и только
+после session-check фиксирует выбранный канал. Обычный `Chat` не затрагивался.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
