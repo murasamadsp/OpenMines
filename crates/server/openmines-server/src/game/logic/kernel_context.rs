@@ -255,17 +255,26 @@ impl<'a> KernelContext<'a> {
     pub(crate) fn slash_ok_effect(
         &self,
         session_id: crate::game::SessionId,
-        _player_id: PlayerId,
+        player_id: PlayerId,
         title: &str,
         message: &str,
     ) -> crate::game::CommandEffects {
-        if let Some(tx) = self.state.sessions.outbox_for_session(session_id) {
-            crate::net::session::wire::send_u_packet(
-                &tx,
-                "OK",
-                &crate::protocol::packets::ok_message(title, message).1,
-            );
+        if self.state.sessions.session_for_player(player_id) != Some(session_id) {
+            return crate::game::CommandEffects::default();
         }
-        crate::game::CommandEffects::default()
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message(title, message).1,
+        );
+        crate::game::CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..crate::game::CommandEffects::default()
+        }
     }
 }

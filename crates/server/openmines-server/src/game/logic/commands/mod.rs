@@ -2716,6 +2716,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn slash_ok_error_returns_typed_session_effect() {
+        let test =
+            crate::test_support::ServerTestHarness::new("slash_ok_typed", "slash-ok-typed").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(212);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Slash {
+                command: crate::game::SlashCommand::Invalid {
+                    title: "Ошибка".to_owned(),
+                    message: "Некорректная команда.".to_owned(),
+                },
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("slash OK must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("slash OK packet must decode")
+        .expect("slash OK packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "Ошибка#Некорректная команда.".as_bytes());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn settings_save_is_delivered_as_typed_session_effect() {
         let test =
             crate::test_support::ServerTestHarness::new("settings_typed_save", "settings").await;
