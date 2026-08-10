@@ -615,6 +615,24 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if button == "createprog" {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::gui::programmator_gui::open_create_prog_dialog(
+            state, &batch, player_id,
+        );
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
@@ -1627,6 +1645,48 @@ mod tests {
                 .payload
                 .windows(11)
                 .any(|window| window == b"bld_place:R")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_program_returns_typed_legacy_gui() {
+        let test = ServerTestHarness::new("create_program_typed", "createprog").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(14);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "createprog".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("create program must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("create program packet must decode")
+            .expect("create program packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        assert!(packet.payload.starts_with(b"horb:"));
+        assert!(
+            packet
+                .payload
+                .windows(11)
+                .any(|window| window == b"createprog:")
+        );
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .and_then(|ui| ui.current_window.clone())
+            }),
+            Some("createprog".to_owned())
         );
     }
 }
