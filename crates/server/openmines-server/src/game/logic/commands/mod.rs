@@ -1907,6 +1907,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_save_is_delivered_as_typed_session_effect() {
+        let test =
+            crate::test_support::ServerTestHarness::new("settings_typed_save", "settings").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(201);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("save:isca:1#mous:0#".to_owned()),
+            },
+        );
+
+        assert!(effects.saves.is_empty());
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::SessionBatch {
+                session_id: event_session,
+                player_id: event_player,
+                packets,
+            }] if *event_session == session_id
+                && *event_player == player_id
+                && packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"#S"))
+                })
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn program_editor_open_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("program_open_durable", "programmer").await;

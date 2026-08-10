@@ -724,6 +724,16 @@ Reject и permanent failure сохраняют прежние `OK`; legacy `misc
 `ProgramOpen`/`ProgramRename`/`ProgramDelete`/`ProgramCopy`, targeted `program_`
 suite и strict server clippy.
 
+**Settings save (`save:%R%`) закрыт как typed presentation effect.** Парсинг и
+authoritative mutation `PlayerSettings` остаются в существующем
+`save_settings`/dirty-snapshot пути, но `GUI_` теперь собирает `#S` и повторное
+окно настроек в `PacketBatch` и возвращает `SessionBatch`. Production command
+path больше не вызывает `net::session::ui::settings::apply` с прямым `Outbox`;
+legacy UI helper сохранён для regression tests.
+
+Проверка: typed settings admission/wire regression, strict server clippy,
+rustfmt и `git diff --check`.
+
 **My buildings (`Blds`) закрыт.** Запрос резервирует `BuildingMenu` до apply;
 persistence worker читает owned buildings, а completion с session guard строит
 прежний `Мои здания` GU и обновляет UI state. Старый renderer оставлен только

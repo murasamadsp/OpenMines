@@ -456,6 +456,9 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if let Some(payload) = button.strip_prefix("save:") {
+        return apply_settings_save(state, session_id, player_id, payload);
+    }
     // Market mutations — route through typed command pipeline
     if let Some(slider_data) = button.strip_prefix("sell:") {
         if let Some((bx, by, _tab)) =
@@ -550,6 +553,61 @@ fn apply_gui_button_command(
     }
     spawn_gui_async_task(state, tx.clone(), player_id, button);
     CommandEffects::default()
+}
+
+fn apply_settings_save(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    payload: &str,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    match crate::game::logic::settings::save_settings(state, player_id, payload) {
+        Ok(wire) => {
+            crate::net::session::wire::send_u_packet(&batch, "#S", &wire);
+            crate::net::session::ui::settings::open(state, &batch, player_id);
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::MalformedPayload) => {
+            tracing::warn!(player_id = %player_id, payload, "Malformed settings payload");
+            send_settings_error(&batch, "Некорректный формат настроек.");
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("isca")) => {
+            tracing::warn!(player_id = %player_id, "Invalid isca setting");
+            send_settings_error(&batch, "Некорректный масштаб интерфейса.");
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger("tsca")) => {
+            tracing::warn!(player_id = %player_id, "Invalid tsca setting");
+            send_settings_error(&batch, "Некорректный масштаб территории.");
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidInteger(_)) => {
+            tracing::warn!(player_id = %player_id, "Invalid integer setting");
+            send_settings_error(&batch, "Некорректное значение настройки.");
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::InvalidBool(_)) => {
+            tracing::warn!(player_id = %player_id, "Invalid bool setting");
+            send_settings_error(&batch, "Некорректное значение настройки.");
+        }
+        Err(crate::game::logic::settings::SettingsSaveError::MissingState) => {
+            tracing::error!(player_id = %player_id, "Player settings state missing for save");
+            send_settings_error(&batch, "Состояние настроек недоступно.");
+        }
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
+}
+
+fn send_settings_error(tx: &dyn crate::net::session::wire::PacketSink, message: &str) {
+    let packet = crate::protocol::packets::ok_message("НАСТРОЙКИ", message);
+    tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
+        packet.0, &packet.1,
+    ));
 }
 
 fn auction_presentation_effects(
