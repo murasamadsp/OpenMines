@@ -76,8 +76,9 @@ git diff --check
 52. ~~Вынести chat command dispatcher из `commands/mod.rs` в `commands/chat_commands.rs`, сохранив `ChatResync/ChatMenu/ChatChoose/ChatSettings/ChatPrivate/Whois` persistence requests и legacy semantics.~~ **Готово.**
 53. ~~Вынести KnownNoopTy handler/effect wrapper из `commands/mod.rs` в `commands/known_noop_commands.rs`, сохранив тихие `Xhur/FINV/THID/Miss/Rndm/TAUR` и typed `Help/Miso` output.~~ **Готово.**
 54. ~~Вынести `ClaimBonus` command/effect wrapper из `commands/mod.rs` в `commands/bonus_commands.rs`, сохранив `P$/DR/OK`, Player save и not-ready semantics.~~ **Готово.**
-55. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-56. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+55. ~~Убрать wire writes из ECS closure в `hurt_player_pure` и включить `no-wire-in-lock` в pre-commit guard, сохранив packet order и error semantics.~~ **Готово.**
+56. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+57. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
