@@ -61,8 +61,9 @@ git diff --check
 37. ~~Перевести raw GUI `no-window` fallback (`Gu/_`) с sync fast-path direct sink на typed `SessionBatch`, сохранив close semantics; typed `Close` flow не дублировать.~~ **Готово.**
 38. ~~Перевести рабочее открытие Clan pack (`pack_op:open:x:y`) с async legacy direct-output на typed `ClanMenu` admission, сохранив доступ и legacy `GU` через completion.~~ **Готово.**
 39. ~~Перевести BuildWar skill update (`@S`) после cell conversion с `player_sender` на typed `SessionBatch`, сохранив wire payload и порядок side-phase.~~ **Готово.**
-40. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-41. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+40. ~~Перевести death/respawn self-output (`Gu/@B/P$/@T/@L/@P` плюс chunk refresh) с `player_sender` на typed `SessionBatch`, сохранив порядок legacy self-пакетов и nearby HB.~~ **Готово.**
+41. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+42. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

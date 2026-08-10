@@ -172,7 +172,7 @@ pub(super) fn apply_side_effects(
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideDeath);
-    apply_deaths(state, deaths);
+    apply_deaths(state, &services.presentation, deaths);
     side_profile.death += started_at.elapsed();
 
     let started_at = Instant::now();
@@ -700,7 +700,11 @@ fn apply_programmator_move(
     publish_command_events(presentation, effects.events);
 }
 
-fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
+fn apply_deaths(
+    state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
+    deaths: Vec<PendingDeathEffect>,
+) {
     for (player_id, respawn_x, respawn_y, max_health, broadcasts) in deaths {
         if let Some(entity) = state.get_player_entity(player_id) {
             state.schedule_hazard(entity, std::time::Instant::now());
@@ -708,19 +712,28 @@ fn apply_deaths(state: &Arc<GameState>, deaths: Vec<PendingDeathEffect>) {
         state.seed_granular_region(respawn_x, respawn_y);
         state.seed_alive_region(respawn_x, respawn_y);
         crate::game::logic::death::run_death_broadcasts(state, &broadcasts, player_id);
-        if let Some(tx) = state.player_sender(player_id) {
-            crate::game::logic::death::send_respawn_after_death(
-                &tx,
-                player_id,
-                respawn_x,
-                respawn_y,
-                max_health,
-                &broadcasts,
-            );
-            crate::game::logic::death::broadcast_self_after_respawn(
-                state, player_id, respawn_x, respawn_y,
-            );
-            crate::game::logic::chunks::check_chunk_changed(state, &tx, player_id);
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::death::send_respawn_after_death(
+            &batch,
+            player_id,
+            respawn_x,
+            respawn_y,
+            max_health,
+            &broadcasts,
+        );
+        crate::game::logic::death::broadcast_self_after_respawn(
+            state, player_id, respawn_x, respawn_y,
+        );
+        crate::game::logic::chunks::check_chunk_changed(state, &batch, player_id);
+        if let Some(session_id) = state.sessions.session_for_player(player_id) {
+            let packets = batch.into_packets();
+            if !packets.is_empty() {
+                presentation.publish(crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets,
+                });
+            }
         }
     }
 }
