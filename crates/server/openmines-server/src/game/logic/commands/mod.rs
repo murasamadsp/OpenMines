@@ -2192,6 +2192,12 @@ pub(super) fn apply_up_button(
     button: &str,
 ) -> CommandEffects {
     let batch = crate::net::session::wire::PacketBatch::default();
+    if let Some(slot) = button
+        .strip_prefix("skill:")
+        .and_then(|slot| slot.parse().ok())
+    {
+        return apply_up_skill_select(state, player_id, session_id, slot, batch);
+    }
     let durable = button == "upgrade"
         || button == "buyslot"
         || button.starts_with("delete:")
@@ -2241,6 +2247,39 @@ pub(super) fn apply_up_button(
             .push(crate::game::SaveCommand::Player { row: Box::new(row) });
     }
     effects
+}
+
+fn apply_up_skill_select(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    slot: i32,
+    batch: crate::net::session::wire::PacketBatch,
+) -> CommandEffects {
+    let Some(payload) = crate::game::logic::up_building::prepare_up_page(state, player_id, slot)
+    else {
+        crate::game::logic::up_building::send_up_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    };
+    crate::net::session::wire::send_u_packet(&batch, "GU", payload.as_bytes());
+    if !crate::game::logic::up_building::update_selected_slot(state, player_id, slot) {
+        crate::game::logic::up_building::send_up_state_error(&batch);
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
 }
 
 #[cfg(test)]

@@ -981,6 +981,12 @@ dirty-наблюдения и полные snapshots возвращаются ч
 `HB/O` через `BlockUpdate` effect. Старые handlers оставлены только для
 regression tests.
 
+**Выбор слота Up (`skill:{slot}`) переведён на typed session effect.** Подготовка
+`up:{json}` и изменение `current_window` больше не идут через legacy handler и
+не создают durable save; command layer возвращает тот же `GU` через
+`SessionBatch`. Durable `upgrade`/`delete`/`install`/`buyslot` пока остаются
+отдельным следующим Up-срезом.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

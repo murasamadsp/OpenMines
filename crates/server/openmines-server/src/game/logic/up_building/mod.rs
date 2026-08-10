@@ -44,7 +44,7 @@ use std::sync::Arc;
 /// Minimum creds gate for buying an additional slot; C# checks it but does not spend it.
 const SLOT_COST: i64 = 1000;
 
-fn send_up_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
+pub fn send_up_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(
         tx,
         "OK",
@@ -578,39 +578,35 @@ fn handle_buy_slot(
 
 /// Build and send the `UpPage` JSON to the client.
 /// Format: `"up:{json}"` sent via GU event.
-fn send_up_page(
+pub fn prepare_up_page(
     state: &Arc<GameState>,
-    tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     selected_slot: i32,
-) {
+) -> Option<String> {
     let page_data = state.query_player_opt(pid, |ecs, entity| {
-        let Some(skills) = ecs.get::<PlayerSkillsComp>(entity) else {
-            tracing::error!(player_id = %pid, component = "PlayerSkillsComp", "Player component missing for Up page");
-            return None;
-        };
+        let skills = ecs.get::<PlayerSkillsComp>(entity)?;
         let is_owner = ecs
             .get::<PlayerUI>(entity)
             .and_then(|ui| ui.current_window.as_deref())
             .and_then(parse_up_window_owner);
         Some((skills.states.clone(), is_owner))
-    });
+    })?;
+    let (skills, is_owner) = page_data;
+    Some(format!(
+        "up:{}",
+        build_up_page_json(
+            &skills,
+            skills.total_slots,
+            selected_slot,
+            is_owner.unwrap_or(false),
+        )
+    ))
+}
 
-    let Some((skills, is_owner)) = page_data else {
-        send_up_state_error(tx);
-        return;
-    };
-    let is_owner = is_owner.unwrap_or(false);
-    let json_str = build_up_page_json(&skills, skills.total_slots, selected_slot, is_owner);
-    send_u_packet(tx, "GU", format!("up:{json_str}").as_bytes());
-
-    // Store selected slot in window state
-    let updated = state
+pub fn update_selected_slot(state: &Arc<GameState>, pid: PlayerId, selected_slot: i32) -> bool {
+    state
         .modify_player(pid, |ecs, entity| {
-            let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) else {
-                tracing::error!(player_id = %pid, component = "PlayerUI", "Player component missing while storing Up page state");
-                return None;
-            };
+            let mut ui = ecs.get_mut::<PlayerUI>(entity)?;
             // Preserve the owner bit captured when the window was opened.
             let Some(window) = &ui.current_window else {
                 return Some(());
@@ -627,8 +623,23 @@ fn send_up_page(
             }
             Some(())
         })
-        .is_some();
-    if !updated {
+        .is_some()
+}
+
+fn send_up_page(
+    state: &Arc<GameState>,
+    tx: &dyn crate::net::session::wire::PacketSink,
+    pid: PlayerId,
+    selected_slot: i32,
+) {
+    let Some(payload) = prepare_up_page(state, pid, selected_slot) else {
+        send_up_state_error(tx);
+        return;
+    };
+    send_u_packet(tx, "GU", payload.as_bytes());
+
+    // Store selected slot in window state
+    if !update_selected_slot(state, pid, selected_slot) {
         send_up_state_error(tx);
     }
 }
