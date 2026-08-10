@@ -191,10 +191,7 @@ pub fn apply_queued_player_command_with_due(
             building_y,
         } => apply_market_get_profit(state, player_id, session_id, building_x, building_y),
         PlayerCommand::KnownNoopTy { event, payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                handle_known_noop_ty(&tx, player_id, &event, &payload);
-            }
-            CommandEffects::default()
+            apply_known_noop_ty(state, session_id, player_id, &event, &payload)
         }
         PlayerCommand::Slash { command } => {
             let context = crate::game::logic::kernel_context::KernelContext::new(state);
@@ -1068,6 +1065,32 @@ fn handle_known_noop_ty(
         _ => {
             tracing::warn!(pid = %player_id, event, "unknown no-op TY command");
         }
+    }
+}
+
+fn apply_known_noop_ty(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    event: &str,
+    payload: &[u8],
+) -> CommandEffects {
+    if state.sessions.session_for_player(player_id) != Some(session_id) {
+        return CommandEffects::default();
+    }
+    let batch = crate::net::session::wire::PacketBatch::default();
+    handle_known_noop_ty(&batch, player_id, event, payload);
+    let packets = batch.into_packets();
+    if packets.is_empty() {
+        return CommandEffects::default();
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        }],
+        ..CommandEffects::default()
     }
 }
 
@@ -2580,6 +2603,40 @@ mod tests {
                 .clone()
         });
         assert_eq!(window.as_deref(), Some("open_box"));
+    }
+
+    #[tokio::test]
+    async fn known_noop_help_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new("known_noop_help", "help").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(4);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::KnownNoopTy {
+                event: "Help".to_owned(),
+                payload: Bytes::new(),
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("known Help command must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed Help packet must decode")
+            .expect("typed Help packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "Справка#Справка пока не подключена на сервере.".as_bytes()
+        );
     }
 
     #[tokio::test]
