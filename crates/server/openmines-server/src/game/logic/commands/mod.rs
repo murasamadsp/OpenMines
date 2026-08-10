@@ -17,7 +17,13 @@
 pub(super) mod completion;
 pub(super) mod completion_clan;
 pub(super) mod gui;
+mod parsing;
 pub(super) mod slash;
+
+use parsing::{
+    decode_finv_index, decode_miss_enabled, decode_program_save, decode_rndm_hash, is_unit_payload,
+    parse_pack_remove_button, parse_program_rename_button,
+};
 
 pub use completion::apply_persistence_completion;
 
@@ -1668,10 +1674,6 @@ fn apply_heal_command(
     }
 }
 
-fn decode_program_save(payload: &[u8]) -> Option<(i32, String)> {
-    crate::game::programmator::ProgrammatorState::decode_prog_packet(payload)
-}
-
 fn spawn_inventory_building_insert_task(
     state: &Arc<GameState>,
     placement: crate::game::logic::contracts::InventoryBuildingPlacement,
@@ -1777,48 +1779,6 @@ fn spawn_paid_building_insert_task(
             }
         }
     });
-}
-
-fn parse_pack_remove_button(button: &str) -> Option<(i32, i32)> {
-    let rest = button.strip_prefix("pack_op:remove:")?;
-    let mut parts = rest.split(':');
-    let x = parts.next()?.parse::<i32>().ok()?;
-    let y = parts.next()?.parse::<i32>().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((x, y))
-}
-
-fn decode_finv_index(payload: &[u8]) -> Option<u8> {
-    match payload {
-        [b'0'..=b'9'] => Some(payload[0] - b'0'),
-        _ => None,
-    }
-}
-
-fn is_unit_payload(payload: &[u8]) -> bool {
-    payload == b"_"
-}
-
-fn decode_miss_enabled(payload: &[u8]) -> Option<bool> {
-    match payload {
-        b"0" => Some(false),
-        b"1" => Some(true),
-        _ => None,
-    }
-}
-
-fn decode_rndm_hash(payload: &[u8]) -> Option<&str> {
-    const PREFIX: &[u8] = b"hash=";
-    let hash = payload.strip_prefix(PREFIX)?;
-    std::str::from_utf8(hash).ok()
-}
-
-fn parse_program_rename_button(button: &str) -> Option<(i32, String)> {
-    let rest = button.strip_prefix("rename:")?;
-    let (id, name) = rest.split_once(':')?;
-    Some((id.parse().ok()?, name.to_owned()))
 }
 
 pub(super) fn apply_resp_bind(

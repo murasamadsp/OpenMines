@@ -65,8 +65,9 @@ git diff --check
 41. ~~Перевести death-admission state error (`OK`) с `player_sender` на typed `SessionBatch`, сохранив session guard и legacy payload.~~ **Готово.**
 42. ~~Перевести periodic bots-render `HB` delivery с прямого `Outbox` на typed `SessionBatch`, сохранив immutable snapshot, session-token guard и legacy payload.~~ **Готово.**
 43. ~~Перевести auction finalizer online `P$`/`IN` delivery с фонового прямого `Outbox` на `PresentationSender` → typed `SessionBatch`, сохранив legacy payload и session guard.~~ **Готово.**
-44. Следующий срез — выбрать следующий оставшийся production bypass; структурное распиливание монолитных модулей делать отдельным slice, не смешивая с wire migration.
-45. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+44. ~~Вынести pure command-payload decoders из монолитного `commands/mod.rs` в отдельный `commands/parsing.rs`, не меняя accepted legacy payloads.~~ **Готово.**
+45. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+46. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
