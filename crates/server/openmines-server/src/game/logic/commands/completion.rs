@@ -193,6 +193,48 @@ pub fn apply_persistence_completion(
                 }
             }
         }
+        crate::game::PersistenceCompletion::AuctionItemOrdersLoaded { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            match result {
+                crate::game::AuctionItemOrdersResult::Loaded { orders } => {
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    crate::game::logic::auction_gui::send_auc_item_orders(
+                        request.item_id,
+                        &orders,
+                        state,
+                        &batch,
+                        request.player_id,
+                        request.building_x,
+                        request.building_y,
+                    );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        saves: Vec::new(),
+                        broadcasts: Vec::new(),
+                    }
+                }
+                crate::game::AuctionItemOrdersResult::PermanentFailure { message } => {
+                    tracing::error!(
+                        player_id = %request.player_id,
+                        item_id = request.item_id,
+                        error = %message,
+                        "Auction item orders load failed permanently"
+                    );
+                    KernelContext::new(state).slash_ok_effect(
+                        request.session_id,
+                        request.player_id,
+                        "МАРКЕТ",
+                        "Не удалось загрузить ордера.",
+                    )
+                }
+            }
+        }
         crate::game::PersistenceCompletion::ProgramSaved { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();

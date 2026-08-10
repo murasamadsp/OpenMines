@@ -147,6 +147,35 @@ pub async fn open_auc_grid(
 }
 
 /// `MarketSystem.OpenItemAuc` — список ордеров по типу + «Создать Ордер».
+pub fn auc_item_page(item: i32, orders: &[crate::db::orders::OrderRow]) -> Horb {
+    // list = тройки [label, btnLabel, action] (1:1 C# GetItems, сорт по cost).
+    let mut page =
+        auc_page(format!("Auc {}", pack_name(item))).card(format!("i{item}:{}", pack_name(item)));
+    for o in orders {
+        let display = min_bid(o.cost, o.buyer_id > 0);
+        page = page.list_row(ListRow::new(
+            format!("{} x{}", pack_name(o.item_id), o.num),
+            format!("<color=#aaeeaa>{display}$</color>"),
+            format!("openorder:{}", o.id),
+        ));
+    }
+    page.button(Button::new("Создать Ордер", format!("auccreate:{item}")))
+        .button(Button::new("НАЗАД", "auc"))
+        .close_button()
+}
+
+pub fn send_auc_item_orders(
+    item: i32,
+    orders: &[crate::db::orders::OrderRow],
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    send_auc(&auc_item_page(item, orders), state, tx, pid, bx, by);
+}
+
 pub async fn open_item_auc(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, item: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
@@ -159,22 +188,7 @@ pub async fn open_item_auc(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Pla
             return;
         }
     };
-    // list = тройки [label, btnLabel, action] (1:1 C# GetItems, сорт по cost).
-    let mut page =
-        auc_page(format!("Auc {}", pack_name(item))).card(format!("i{item}:{}", pack_name(item)));
-    for o in &orders {
-        let display = min_bid(o.cost, o.buyer_id > 0);
-        page = page.list_row(ListRow::new(
-            format!("{} x{}", pack_name(o.item_id), o.num),
-            format!("<color=#aaeeaa>{display}$</color>"),
-            format!("openorder:{}", o.id),
-        ));
-    }
-    let page = page
-        .button(Button::new("Создать Ордер", format!("auccreate:{item}")))
-        .button(Button::new("НАЗАД", "auc"))
-        .close_button();
-    send_auc(&page, state, tx, pid, bx, by);
+    send_auc_item_orders(item, &orders, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenOrder` — деталь ордера: карточка + ставка.

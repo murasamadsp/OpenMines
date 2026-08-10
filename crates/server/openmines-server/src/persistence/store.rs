@@ -122,6 +122,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         request: &crate::game::AuctionGridRequest,
     ) -> impl Future<Output = Result<crate::game::AuctionGridResult, PersistenceStoreFailure>> + Send;
+
+    fn auction_item_orders(
+        &self,
+        request: &crate::game::AuctionItemOrdersRequest,
+    ) -> impl Future<Output = Result<crate::game::AuctionItemOrdersResult, PersistenceStoreFailure>> + Send;
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -615,6 +620,16 @@ impl PersistenceStore for Arc<crate::db::Database> {
         self.order_counts_by_item()
             .await
             .map(|counts| crate::game::AuctionGridResult::Loaded { counts })
+            .map_err(PersistenceStoreFailure::Transient)
+    }
+
+    async fn auction_item_orders(
+        &self,
+        request: &crate::game::AuctionItemOrdersRequest,
+    ) -> Result<crate::game::AuctionItemOrdersResult, PersistenceStoreFailure> {
+        self.list_orders_by_item(request.item_id)
+            .await
+            .map(|orders| crate::game::AuctionItemOrdersResult::Loaded { orders })
             .map_err(PersistenceStoreFailure::Transient)
     }
 }

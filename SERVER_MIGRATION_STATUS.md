@@ -783,6 +783,17 @@ navigation (`choose`/`openorder`) и auction mutations (`create`/`bet`) в эт�
 Проверка: admission, completion-HORB и persistence completion-capacity tests,
 workspace strict clippy, rustfmt и `git diff --check`.
 
+**Auction item orders (`choose:{item}`) закрыт как read-only continuation.**
+После клика по item-grid admission резервирует отдельный
+`AuctionItemOrders`, persistence worker читает тот же список ордеров с сортировкой
+по `cost`, а session-guarded completion собирает прежний `Auc {item}` HORB
+список с теми же `openorder:{id}`, `auccreate:{item}` и `auc` actions. Legacy
+`open_item_auc` оставлен для старого regression path; `openorder` и все auction
+mutations (`create`/`bet`) намеренно не входят в этот срез.
+
+Проверка: admission, persistence completion-capacity и GU/HORB regression tests;
+legacy `auc` tests остаются зелёными.
+
 **Kernel owner extraction закрыт как structural slice.** `GameState` больше не
 хранит пять кластеров реестров и очередей непосредственно в god-object:
 

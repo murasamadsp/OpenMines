@@ -687,6 +687,9 @@ impl PlayerCommand {
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw == "auc" => Some(SaveKind::AuctionGrid),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("choose:") => Some(SaveKind::AuctionItemOrders),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
@@ -857,6 +860,9 @@ pub enum SaveCommand {
     AuctionGrid {
         request: AuctionGridRequest,
     },
+    AuctionItemOrders {
+        request: AuctionItemOrdersRequest,
+    },
     BuildingDelete {
         request: BuildingDeleteRequest,
     },
@@ -1012,6 +1018,7 @@ impl SaveCommand {
             Self::ProgramCopy { .. } => SaveKind::ProgramCopy,
             Self::BuildingMenu { .. } => SaveKind::BuildingMenu,
             Self::AuctionGrid { .. } => SaveKind::AuctionGrid,
+            Self::AuctionItemOrders { .. } => SaveKind::AuctionItemOrders,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
             Self::ChatColorCycle { .. } => SaveKind::ChatColorCycle,
@@ -1070,6 +1077,15 @@ pub struct AuctionGridRequest {
     pub building_y: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuctionItemOrdersRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub building_x: i32,
+    pub building_y: i32,
+    pub item_id: i32,
+}
+
 #[derive(Debug)]
 pub enum PersistenceCompletion {
     ProgramCreated {
@@ -1095,6 +1111,10 @@ pub enum PersistenceCompletion {
     AuctionGridLoaded {
         request: AuctionGridRequest,
         result: AuctionGridResult,
+    },
+    AuctionItemOrdersLoaded {
+        request: AuctionItemOrdersRequest,
+        result: AuctionItemOrdersResult,
     },
     BuildingDeleted {
         request: BuildingDeleteRequest,
@@ -1186,6 +1206,16 @@ pub enum BuildingMenuResult {
 pub enum AuctionGridResult {
     Loaded { counts: Vec<(i32, i64, i64)> },
     PermanentFailure { message: String },
+}
+
+#[derive(Debug)]
+pub enum AuctionItemOrdersResult {
+    Loaded {
+        orders: Vec<crate::db::orders::OrderRow>,
+    },
+    PermanentFailure {
+        message: String,
+    },
 }
 
 #[derive(Debug)]
@@ -1352,6 +1382,7 @@ pub enum SaveKind {
     ProgramCopy,
     BuildingMenu,
     AuctionGrid,
+    AuctionItemOrders,
     BuildingDelete,
     ChatAppend,
     ChatColorCycle,
@@ -1378,6 +1409,7 @@ impl SaveKind {
             Self::ProgramCopy => "program_copy",
             Self::BuildingMenu => "building_menu",
             Self::AuctionGrid => "auction_grid",
+            Self::AuctionItemOrders => "auction_item_orders",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
             Self::ChatColorCycle => "cycle_chat_color",
