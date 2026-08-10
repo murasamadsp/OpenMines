@@ -109,6 +109,9 @@ async fn persist_batch<S>(
             SaveKind::BuildingMenu => {
                 persist_building_menu_batch(store, &mut batch[start..end], simulation_waker).await;
             }
+            SaveKind::AuctionGrid => {
+                persist_auction_grid_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::Program => {
                 persist_program_batch(store, &mut batch[start..end], simulation_waker).await;
             }
@@ -360,6 +363,16 @@ persist_action_batch!(
     crate::game::ClanCommandResult::PermanentFailure,
     ClanCommandApplied,
     "Clan command persistence failed transiently; retrying"
+);
+
+persist_action_batch!(
+    persist_auction_grid_batch,
+    AuctionGrid,
+    SaveKind::AuctionGrid,
+    auction_grid,
+    crate::game::AuctionGridResult::PermanentFailure,
+    AuctionGridLoaded,
+    "Auction grid persistence failed transiently; retrying"
 );
 async fn persist_chat_color_cycle_batch<S>(
     store: &S,
@@ -974,6 +987,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
+                        | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1004,6 +1018,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
+                        | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1034,6 +1049,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
+                        | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1065,6 +1081,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
+                        | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
                         | SaveCommand::ChatResync { .. }
@@ -1087,6 +1104,7 @@ where
             | SaveKind::ProgramMenu
             | SaveKind::ProgramCopy
             | SaveKind::BuildingMenu
+            | SaveKind::AuctionGrid
             | SaveKind::BuildingDelete
             | SaveKind::ChatColorCycle
             | SaveKind::ChatResync

@@ -117,6 +117,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         request: &crate::game::BuildingMenuRequest,
     ) -> impl Future<Output = Result<Vec<crate::db::BuildingRow>, PersistenceStoreFailure>> + Send;
+
+    fn auction_grid(
+        &self,
+        request: &crate::game::AuctionGridRequest,
+    ) -> impl Future<Output = Result<crate::game::AuctionGridResult, PersistenceStoreFailure>> + Send;
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -600,6 +605,16 @@ impl PersistenceStore for Arc<crate::db::Database> {
     ) -> Result<Vec<crate::db::BuildingRow>, PersistenceStoreFailure> {
         self.load_buildings_by_owner(request.player_id.as_i32())
             .await
+            .map_err(PersistenceStoreFailure::Transient)
+    }
+
+    async fn auction_grid(
+        &self,
+        _request: &crate::game::AuctionGridRequest,
+    ) -> Result<crate::game::AuctionGridResult, PersistenceStoreFailure> {
+        self.order_counts_by_item()
+            .await
+            .map(|counts| crate::game::AuctionGridResult::Loaded { counts })
             .map_err(PersistenceStoreFailure::Transient)
     }
 }

@@ -87,24 +87,10 @@ fn send_auc_state_error(tx: &dyn PacketSink) {
 
 /// `MarketSystem.GlobalFirstPage`/`Items` — item-грид (51 тип, кроме 49=Money)
 /// с числом ордеров и мин. ценой. Клик → `choose:{i}`.
-pub async fn open_auc_grid(
-    state: &Arc<GameState>,
-    tx: &dyn PacketSink,
-    pid: PlayerId,
-    bx: i32,
-    by: i32,
-) {
-    let counts = match state.db.order_counts_by_item().await {
-        Ok(counts) => counts,
-        Err(e) => {
-            tracing::error!(player_id = %pid, error = ?e, "Failed to load auction item grid");
-            send_auc_error(tx, "Не удалось загрузить список ордеров.");
-            return;
-        }
-    };
+pub fn auc_grid_page(counts: &[(i32, i64, i64)]) -> Horb {
     // item_id → (count, min_cost)
     let mut by_item: std::collections::HashMap<i32, (i64, i64)> = std::collections::HashMap::new();
-    for (item, cnt, min_cost) in counts {
+    for &(item, cnt, min_cost) in counts {
         by_item.insert(item, (cnt, min_cost));
     }
     // inv = "id: {up};!{down}" на каждый предмет, склеено ':' (1:1 C# InventoryItem).
@@ -127,8 +113,37 @@ pub async fn open_auc_grid(
         .collect::<Vec<_>>()
         .join(":");
 
-    let page = auc_page("МАРКЕТ").inventory(inv).close_button();
+    auc_page("МАРКЕТ").inventory(inv).close_button()
+}
+
+pub fn send_auc_grid(
+    page_counts: &[(i32, i64, i64)],
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    let page = auc_grid_page(page_counts);
     send_auc(&page, state, tx, pid, bx, by);
+}
+
+pub async fn open_auc_grid(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    let counts = match state.db.order_counts_by_item().await {
+        Ok(counts) => counts,
+        Err(e) => {
+            tracing::error!(player_id = %pid, error = ?e, "Failed to load auction item grid");
+            send_auc_error(tx, "Не удалось загрузить список ордеров.");
+            return;
+        }
+    };
+    send_auc_grid(&counts, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenItemAuc` — список ордеров по типу + «Создать Ордер».

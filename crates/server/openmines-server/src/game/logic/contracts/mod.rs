@@ -684,6 +684,9 @@ impl PlayerCommand {
             {
                 Some(SaveKind::ClanMenu)
             }
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw == "auc" => Some(SaveKind::AuctionGrid),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
@@ -851,6 +854,9 @@ pub enum SaveCommand {
     BuildingMenu {
         request: BuildingMenuRequest,
     },
+    AuctionGrid {
+        request: AuctionGridRequest,
+    },
     BuildingDelete {
         request: BuildingDeleteRequest,
     },
@@ -1005,6 +1011,7 @@ impl SaveCommand {
             Self::ProgramMenu { .. } => SaveKind::ProgramMenu,
             Self::ProgramCopy { .. } => SaveKind::ProgramCopy,
             Self::BuildingMenu { .. } => SaveKind::BuildingMenu,
+            Self::AuctionGrid { .. } => SaveKind::AuctionGrid,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
             Self::ChatColorCycle { .. } => SaveKind::ChatColorCycle,
@@ -1055,6 +1062,14 @@ pub struct BuildingMenuRequest {
     pub session_id: SessionId,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuctionGridRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub building_x: i32,
+    pub building_y: i32,
+}
+
 #[derive(Debug)]
 pub enum PersistenceCompletion {
     ProgramCreated {
@@ -1076,6 +1091,10 @@ pub enum PersistenceCompletion {
     BuildingMenuLoaded {
         request: BuildingMenuRequest,
         result: BuildingMenuResult,
+    },
+    AuctionGridLoaded {
+        request: AuctionGridRequest,
+        result: AuctionGridResult,
     },
     BuildingDeleted {
         request: BuildingDeleteRequest,
@@ -1161,6 +1180,12 @@ pub enum BuildingMenuResult {
     PermanentFailure {
         message: String,
     },
+}
+
+#[derive(Debug)]
+pub enum AuctionGridResult {
+    Loaded { counts: Vec<(i32, i64, i64)> },
+    PermanentFailure { message: String },
 }
 
 #[derive(Debug)]
@@ -1326,6 +1351,7 @@ pub enum SaveKind {
     ProgramMenu,
     ProgramCopy,
     BuildingMenu,
+    AuctionGrid,
     BuildingDelete,
     ChatAppend,
     ChatColorCycle,
@@ -1351,6 +1377,7 @@ impl SaveKind {
             Self::ProgramMenu => "program_menu",
             Self::ProgramCopy => "program_copy",
             Self::BuildingMenu => "building_menu",
+            Self::AuctionGrid => "auction_grid",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
             Self::ChatColorCycle => "cycle_chat_color",

@@ -177,6 +177,25 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if button == "auc" {
+        let Some((building_x, building_y, _)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+        else {
+            return CommandEffects::default();
+        };
+        return CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::AuctionGrid {
+                request: crate::game::AuctionGridRequest {
+                    player_id,
+                    session_id,
+                    building_x,
+                    building_y,
+                },
+            }],
+            broadcasts: Vec::new(),
+        };
+    }
     if let Some(payload) = button.strip_prefix("transfer:") {
         return apply_storage_transfer(state, session_id, player_id, payload);
     }

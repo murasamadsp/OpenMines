@@ -771,6 +771,18 @@ monotonic time, с delay - точному `now + delay`.
 
 Проверка: 5 market tests, 637 total tests, strict clippy, fmt, wire smoke.
 
+**Auction grid (`auc`) закрыт как первый auction vertical slice.** Кнопка
+`auc` больше не запускает legacy `spawn_gui_async_task`: admission резервирует
+`AuctionGrid`, persistence worker читает order-count/min-cost snapshot, а
+completion с актуальным `SessionId` собирает прежний HORB inventory grid и
+передаёт его через `SessionBatch`. Старый `open_auc_grid` оставлен для
+legacy regression tests и не является production entry point. Item/order
+navigation (`choose`/`openorder`) и auction mutations (`create`/`bet`) в этот
+срез намеренно не включены.
+
+Проверка: admission, completion-HORB и persistence completion-capacity tests,
+workspace strict clippy, rustfmt и `git diff --check`.
+
 **Kernel owner extraction закрыт как structural slice.** `GameState` больше не
 хранит пять кластеров реестров и очередей непосредственно в god-object:
 

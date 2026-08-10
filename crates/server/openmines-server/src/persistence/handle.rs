@@ -25,6 +25,7 @@ const fn needs_completion_permit(kind: SaveKind) -> bool {
             | SaveKind::ProgramMenu
             | SaveKind::ProgramCopy
             | SaveKind::BuildingMenu
+            | SaveKind::AuctionGrid
     )
 }
 

@@ -12,18 +12,19 @@ pub use actors::{alive, botspot, player, programmator};
 pub use economy::market;
 pub use logic::contracts::{
     AdminMoneyAllRequest, AdminMoneyAllResult, AdminRoleRequest, AdminRoleResult,
-    AdminSkillRequest, AdminSkillResult, BuildingDeleteCause, BuildingDeleteOperationId,
-    BuildingDeleteOrigin, BuildingDeleteRequest, BuildingDeleteResult, BuildingIdentity,
-    BuildingMenuRequest, BuildingMenuResult, ChatAppendRequest, ChatColorCycleRequest,
-    ChatColorCycleResult, ChatMenuRequest, ChatMenuResult, ChatPrivateRequest, ChatPrivateResult,
-    ChatResyncRequest, ChatResyncResult, ClanAction, ClanCommandRequest, ClanCommandResult,
-    ClanMemberEntry, ClanMenuAction, ClanMenuListEntry, ClanMenuRequest, ClanMenuResult,
-    CommandEffects, CommandIngressClass, CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView,
-    PersistenceCompletion, PlayerCommand, PlayerInitView, ProgramCopyRequest, ProgramCopyResult,
-    ProgramCreateRequest, ProgramCreateResult, ProgramMenuRequest, ProgramMenuResult,
-    ProgramSaveRequest, ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind,
-    SessionId, SimTick, SlashCommand, SlashPackCommand, SpotGuiView, StorageGuiView,
-    TeleportGuiView, WhoisRequest, WhoisResult,
+    AdminSkillRequest, AdminSkillResult, AuctionGridRequest, AuctionGridResult,
+    BuildingDeleteCause, BuildingDeleteOperationId, BuildingDeleteOrigin, BuildingDeleteRequest,
+    BuildingDeleteResult, BuildingIdentity, BuildingMenuRequest, BuildingMenuResult,
+    ChatAppendRequest, ChatColorCycleRequest, ChatColorCycleResult, ChatMenuRequest,
+    ChatMenuResult, ChatPrivateRequest, ChatPrivateResult, ChatResyncRequest, ChatResyncResult,
+    ClanAction, ClanCommandRequest, ClanCommandResult, ClanMemberEntry, ClanMenuAction,
+    ClanMenuListEntry, ClanMenuRequest, ClanMenuResult, CommandEffects, CommandIngressClass,
+    CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
+    PlayerInitView, ProgramCopyRequest, ProgramCopyResult, ProgramCreateRequest,
+    ProgramCreateResult, ProgramMenuRequest, ProgramMenuResult, ProgramSaveRequest,
+    ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
+    SlashCommand, SlashPackCommand, SpotGuiView, StorageGuiView, TeleportGuiView, WhoisRequest,
+    WhoisResult,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};
