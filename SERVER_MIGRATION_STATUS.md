@@ -73,8 +73,9 @@ git diff --check
 49. ~~Вынести connection/movement dispatcher из `commands/mod.rs` в `commands/session_commands.rs`, сохранив lifecycle, movement effects и legacy wire.~~ **Готово.**
 50. ~~Вынести gameplay command/output dispatcher из `commands/mod.rs` в `commands/gameplay_commands.rs`, сохранив `Dig/Build/Geology/Heal/Respawn` semantics и typed `SessionBatch`.~~ **Готово.**
 51. ~~Вынести inventory/settings dispatcher из `commands/mod.rs` в `commands/inventory_commands.rs`, сохранив `INVN/INCL/INUS/TADG/TAGR/Sett` effects и due admission.~~ **Готово.**
-52. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-53. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+52. ~~Вынести chat command dispatcher из `commands/mod.rs` в `commands/chat_commands.rs`, сохранив `ChatResync/ChatMenu/ChatChoose/ChatSettings/ChatPrivate/Whois` persistence requests и legacy semantics.~~ **Готово.**
+53. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+54. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
