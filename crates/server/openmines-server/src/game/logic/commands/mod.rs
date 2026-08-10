@@ -738,7 +738,9 @@ fn apply_program_command(
                             },
                         });
                     }
-                    "pRST" => crate::game::logic::misc::handle_prog_reset_ty(state, &tx, player_id),
+                    "pRST" => effects.append(crate::game::logic::misc::apply_prog_reset_ty(
+                        state, session_id, player_id,
+                    )),
                     "PREN" => crate::game::logic::misc::handle_prog_rename_prompt_ty(
                         state, &tx, player_id, &payload,
                     ),
@@ -3438,6 +3440,58 @@ mod tests {
         assert_eq!(events, vec![*b"@P", *b"OK"]);
         assert!(effects.saves.is_empty());
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_reset_returns_typed_legacy_packet_order() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_reset_typed", "programmer-reset")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(210);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            let mut program =
+                ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)?;
+            program.running = true;
+            program.hand_mode_active = true;
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "pRST".to_owned(),
+                payload: Bytes::new(),
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("program reset must return one typed session batch");
+        };
+        let events = packets
+            .iter()
+            .map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .expect("program reset packet must decode")
+                .expect("program reset packet must be complete")
+                .event_name
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events, vec![*b"Gu", *b"@P", *b"BH"]);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                let program = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+                Some((program.running, program.hand_mode_active))
+            }),
+            Some((false, false))
+        );
     }
 
     #[tokio::test]

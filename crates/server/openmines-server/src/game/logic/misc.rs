@@ -360,7 +360,33 @@ pub fn apply_saved_program_to_tick_state(
     }
 }
 
+#[cfg(test)]
 pub fn handle_prog_reset_ty(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
+    reset_prog_ty(state, tx, pid);
+}
+
+pub fn apply_prog_reset_ty(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: PlayerId,
+) -> crate::game::CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    reset_prog_ty(state, &batch, player_id);
+    let packets = batch.into_packets();
+    if packets.is_empty() {
+        return crate::game::CommandEffects::default();
+    }
+    crate::game::CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        }],
+        ..crate::game::CommandEffects::default()
+    }
+}
+
+fn reset_prog_ty(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     // Unity uses stopped `pRST` as a pre-open/reset signal from
     // `OnProgButton()`. It must not open `#P`: doing so reopens the
     // editor over gameplay when the user is only toggling program mode.
