@@ -177,6 +177,7 @@ async fn persist_batch<S>(
             SaveKind::Player
             | SaveKind::Building
             | SaveKind::RespProfit
+            | SaveKind::ChargeFill
             | SaveKind::Box
             | SaveKind::ChatAppend => {
                 persist_compatible_batch(store, kind, &batch[start..end]).await;
@@ -1168,6 +1169,7 @@ where
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Player { row } => row.as_ref().clone(),
                         SaveCommand::RespProfit { .. }
+                        | SaveCommand::ChargeFill { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
@@ -1207,6 +1209,7 @@ where
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Building { row } => row.as_ref().clone(),
                         SaveCommand::RespProfit { .. }
+                        | SaveCommand::ChargeFill { .. }
                         | SaveCommand::Player { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
@@ -1246,6 +1249,7 @@ where
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Box { write } => write.clone(),
                         SaveCommand::RespProfit { .. }
+                        | SaveCommand::ChargeFill { .. }
                         | SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Program { .. }
@@ -1285,6 +1289,7 @@ where
                     .map(|envelope| match &envelope.command {
                         SaveCommand::ChatAppend { request } => request.clone(),
                         SaveCommand::RespProfit { .. }
+                        | SaveCommand::ChargeFill { .. }
                         | SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
@@ -1329,6 +1334,18 @@ where
                     })
                     .collect::<Vec<_>>();
                 store.save_resp_profit_batch(&transfers).await
+            }
+            SaveKind::ChargeFill => {
+                let transfers = batch
+                    .iter()
+                    .map(|envelope| match &envelope.command {
+                        SaveCommand::ChargeFill { player, building } => {
+                            (player.as_ref().clone(), building.as_ref().clone())
+                        }
+                        _ => unreachable!("compatible charge fill batch"),
+                    })
+                    .collect::<Vec<_>>();
+                store.save_charge_fill_batch(&transfers).await
             }
             SaveKind::Program
             | SaveKind::ProgramCreate

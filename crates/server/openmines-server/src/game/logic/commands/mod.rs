@@ -1830,18 +1830,15 @@ pub(super) fn apply_resp_fill(
     pack_x: i32,
     pack_y: i32,
 ) -> CommandEffects {
-    let batch = crate::net::session::wire::PacketBatch::default();
-    crate::game::logic::packs::handle_resp_fill(
-        state, &batch, player_id, amount_str, pack_x, pack_y,
-    );
-    CommandEffects {
-        events: vec![crate::game::GameEvent::SessionBatch {
-            session_id,
-            player_id,
-            packets: batch.into_packets(),
-        }],
-        ..CommandEffects::default()
-    }
+    apply_charge_fill(
+        state,
+        player_id,
+        session_id,
+        amount_str,
+        (pack_x, pack_y),
+        1,
+        true,
+    )
 }
 
 pub(super) fn apply_gun_fill(
@@ -1852,17 +1849,196 @@ pub(super) fn apply_gun_fill(
     pack_x: i32,
     pack_y: i32,
 ) -> CommandEffects {
+    apply_charge_fill(
+        state,
+        player_id,
+        session_id,
+        amount_str,
+        (pack_x, pack_y),
+        5,
+        false,
+    )
+}
+
+fn apply_charge_fill(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    amount_str: &str,
+    (pack_x, pack_y): (i32, i32),
+    crystal_index: usize,
+    is_resp: bool,
+) -> CommandEffects {
+    let request = match amount_str {
+        "100" => Some(100_i64),
+        "1000" => Some(1000_i64),
+        "max" => None,
+        _ => return CommandEffects::default(),
+    };
     let batch = crate::net::session::wire::PacketBatch::default();
-    crate::game::logic::packs::handle_gun_fill(
-        state, &batch, player_id, amount_str, pack_x, pack_y,
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return CommandEffects::default();
+    };
+    let expected_type = if is_resp {
+        crate::game::PackType::Resp
+    } else {
+        crate::game::PackType::Gun
+    };
+    if view.pack_type != expected_type {
+        return CommandEffects::default();
+    }
+    let Some(player_entity) = state.get_player_entity(player_id) else {
+        send_charge_fill_error(&batch, is_resp);
+        return charge_fill_effects(batch, session_id, player_id, Vec::new(), Vec::new());
+    };
+    let Some(building_entity) = state.building_entity_at(pack_x, pack_y) else {
+        send_charge_fill_error(&batch, is_resp);
+        return charge_fill_effects(batch, session_id, player_id, Vec::new(), Vec::new());
+    };
+
+    let result = {
+        let mut ecs = state.ecs_write_profiled("commands.charge_fill");
+        if ecs.get::<crate::game::PlayerStats>(player_entity).is_none()
+            || ecs.get::<crate::game::PlayerFlags>(player_entity).is_none()
+            || ecs
+                .get::<crate::game::structures::buildings::BuildingStats>(building_entity)
+                .is_none()
+            || ecs
+                .get::<crate::game::structures::buildings::BuildingFlags>(building_entity)
+                .is_none()
+            || crate::game::player::extract_player_row(&ecs, player_entity).is_none()
+            || crate::game::structures::buildings::extract_building_row(&ecs, building_entity)
+                .is_none()
+        {
+            None
+        } else {
+            let (charge, max_charge) = {
+                let building_stats = ecs
+                    .get::<crate::game::structures::buildings::BuildingStats>(building_entity)
+                    .expect("BuildingStats checked before charge fill");
+                (building_stats.charge, building_stats.max_charge)
+            };
+            if charge >= max_charge {
+                Some(None)
+            } else {
+                let requested =
+                    request.unwrap_or_else(|| i64::from(max_charge.saturating_sub(charge)).max(0));
+                let available = ecs
+                    .get::<crate::game::PlayerStats>(player_entity)
+                    .expect("PlayerStats checked before charge fill")
+                    .crystals[crystal_index];
+                let to_take = requested.min(available);
+                if to_take <= 0 {
+                    Some(None)
+                } else {
+                    let crystals = {
+                        let mut player_stats = ecs
+                            .get_mut::<crate::game::PlayerStats>(player_entity)
+                            .expect("PlayerStats checked before charge fill");
+                        player_stats.crystals[crystal_index] -= to_take;
+                        player_stats.crystals
+                    };
+                    let increment = i32::try_from(to_take).unwrap_or(i32::MAX);
+                    ecs.get_mut::<crate::game::structures::buildings::BuildingStats>(
+                        building_entity,
+                    )
+                    .expect("BuildingStats checked before charge fill")
+                    .charge = charge.saturating_add(increment).min(max_charge);
+                    ecs.get_mut::<crate::game::PlayerFlags>(player_entity)
+                        .expect("PlayerFlags checked before charge fill")
+                        .dirty = true;
+                    ecs.get_mut::<crate::game::structures::buildings::BuildingFlags>(
+                        building_entity,
+                    )
+                    .expect("BuildingFlags checked before charge fill")
+                    .dirty = true;
+                    let incarnation = ecs
+                        .get::<crate::game::PlayerFlags>(player_entity)
+                        .expect("PlayerFlags checked before charge fill")
+                        .incarnation;
+                    ecs.resource_mut::<crate::game::DirtyPlayers>()
+                        .0
+                        .insert((player_entity, incarnation));
+                    ecs.resource_mut::<crate::game::DirtyBuildings>()
+                        .0
+                        .insert(building_entity);
+                    let player = crate::game::player::extract_player_row(&ecs, player_entity);
+                    let building = crate::game::structures::buildings::extract_building_row(
+                        &ecs,
+                        building_entity,
+                    );
+                    drop(ecs);
+                    Some(Some((crystals, player, building)))
+                }
+            }
+        }
+    };
+    let (crystals, player, building) = match result {
+        Some(Some((crystals, Some(player), Some(building)))) => (crystals, player, building),
+        Some(None) => return CommandEffects::default(),
+        Some(Some(_)) | None => {
+            tracing::error!(player_id = %player_id, pack_x, pack_y, "Charge fill state missing");
+            send_charge_fill_error(&batch, is_resp);
+            return charge_fill_effects(batch, session_id, player_id, Vec::new(), Vec::new());
+        }
+    };
+
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "@B",
+        &crate::protocol::packets::basket(&crystals, 1).1,
     );
+    if is_resp {
+        crate::game::logic::packs::open_resp_admin_gui(state, &batch, player_id, pack_x, pack_y);
+    } else {
+        crate::game::logic::packs::open_gun_gui(state, &batch, player_id, pack_x, pack_y);
+    }
+    let broadcasts = if is_resp {
+        Vec::new()
+    } else {
+        vec![crate::game::BroadcastEffect::BlockUpdate(
+            crate::game::WorldPos(pack_x, pack_y),
+        )]
+    };
+    charge_fill_effects(
+        batch,
+        session_id,
+        player_id,
+        vec![crate::game::SaveCommand::ChargeFill {
+            player: Box::new(player),
+            building: Box::new(building),
+        }],
+        broadcasts,
+    )
+}
+
+fn send_charge_fill_error(batch: &crate::net::session::wire::PacketBatch, is_resp: bool) {
+    if is_resp {
+        crate::game::logic::packs::send_resp_state_error(batch);
+    } else {
+        crate::net::session::wire::send_u_packet(
+            batch,
+            "OK",
+            &crate::protocol::packets::ok_message("Пушка", "Состояние пушки недоступно.").1,
+        );
+    }
+}
+
+fn charge_fill_effects(
+    batch: crate::net::session::wire::PacketBatch,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    saves: Vec<crate::game::SaveCommand>,
+    broadcasts: Vec<crate::game::BroadcastEffect>,
+) -> CommandEffects {
     CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
             session_id,
             player_id,
             packets: batch.into_packets(),
         }],
-        ..CommandEffects::default()
+        saves,
+        broadcasts,
     }
 }
 

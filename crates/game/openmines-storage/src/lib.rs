@@ -76,8 +76,8 @@ impl Database {
 }
 
 impl Database {
-    /// Atomically persists a player withdrawal from a building.
-    pub async fn save_resp_profit_batch(
+    /// Atomically persists a player/building pair from one simulation action.
+    pub async fn save_player_building_batch(
         &self,
         transfers: &[(players::PlayerRow, buildings::BuildingRow)],
     ) -> Result<()> {

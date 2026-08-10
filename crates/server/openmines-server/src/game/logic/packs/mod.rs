@@ -27,7 +27,9 @@ use crate::game::buildings::{PackType, PackView};
 use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
 use crate::net::session::wire::send_u_packet;
-use crate::protocol::packets::{basket, ok_message};
+#[cfg(test)]
+use crate::protocol::packets::basket;
+use crate::protocol::packets::ok_message;
 use std::sync::Arc;
 
 fn send_resp_action_error(tx: &dyn crate::net::session::wire::PacketSink) {
@@ -42,6 +44,7 @@ pub fn send_resp_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     );
 }
 
+#[cfg(test)]
 fn send_gun_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     send_u_packet(
         tx,
@@ -50,12 +53,14 @@ fn send_gun_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     );
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 enum FillRequest {
     Fixed(i64),
     Max,
 }
 
+#[cfg(test)]
 enum FillResult {
     Filled { crystals: [i64; 6] },
     Noop,
@@ -113,6 +118,7 @@ pub fn parse_resp_save_fields(data: &str) -> Option<RespSaveFields> {
     })
 }
 
+#[cfg(test)]
 fn apply_charge_fill(
     state: &Arc<GameState>,
     pid: PlayerId,
@@ -427,6 +433,7 @@ pub fn handle_resp_bind(
 
 /// Handle resp fill button (+100, +1000, max).
 /// Deducts blue crystals from player, adds charge to resp.
+#[cfg(test)]
 pub fn handle_resp_fill(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
@@ -748,6 +755,7 @@ pub fn open_gun_gui(
 }
 
 /// Обработать нажатие кнопки заряда пушки (+100, +1000, max).
+#[cfg(test)]
 pub fn handle_gun_fill(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,

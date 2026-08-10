@@ -105,6 +105,58 @@ async fn gun_fill_allows_non_owner_like_reference() {
 }
 
 #[tokio::test]
+async fn resp_fill_gui_command_returns_compound_typed_save() {
+    let test = make_charge_fill_test_state("typed_resp_fill", "R", 1, 100).await;
+    let session_id = crate::game::SessionId::new(81);
+    let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+    drain_events(&mut rx);
+
+    let effects = crate::game::logic::commands::apply_player_command(
+        &test.state,
+        test.player.id.into(),
+        session_id,
+        crate::game::PlayerCommand::Gui {
+            command: crate::game::GuiCommand::parse("resp_fill:100:10:10".to_owned()),
+        },
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(
+        effects.saves.as_slice(),
+        [crate::game::SaveCommand::ChargeFill { player, building }]
+            if player.crystals[1] == 0 && building.charge == 100
+    ));
+    assert_eq!(player_crystals(&test.state, test.player.id.into())[1], 0);
+    assert_eq!(building_charge(&test.state, 10, 10), 100);
+}
+
+#[tokio::test]
+async fn gun_fill_gui_command_returns_compound_typed_save() {
+    let test = make_charge_fill_test_state("typed_gun_fill", "G", 5, 100).await;
+    let session_id = crate::game::SessionId::new(82);
+    let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+    drain_events(&mut rx);
+
+    let effects = crate::game::logic::commands::apply_player_command(
+        &test.state,
+        test.player.id.into(),
+        session_id,
+        crate::game::PlayerCommand::Gui {
+            command: crate::game::GuiCommand::parse("gun_fill:100:10:10".to_owned()),
+        },
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(
+        effects.saves.as_slice(),
+        [crate::game::SaveCommand::ChargeFill { player, building }]
+            if player.crystals[5] == 0 && building.charge == 100
+    ));
+    assert_eq!(player_crystals(&test.state, test.player.id.into())[5], 0);
+    assert_eq!(building_charge(&test.state, 10, 10), 100);
+}
+
+#[tokio::test]
 async fn resp_profit_missing_player_flags_is_explicit_error_without_money_mutation() {
     let test = make_charge_fill_test_state("resp_profit_missing_flags", "R", 1, 100).await;
     let (tx, mut rx) = test.connect_with_outbox(1);

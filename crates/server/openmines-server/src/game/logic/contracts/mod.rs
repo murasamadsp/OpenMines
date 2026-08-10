@@ -284,6 +284,22 @@ fn is_building_mutation_button(button: &str) -> bool {
         || button.starts_with("resp_save:")
 }
 
+fn is_charge_fill_button(button: &str) -> bool {
+    button.starts_with("resp_fill:") || button.starts_with("gun_fill:")
+}
+
+fn is_clan_menu_button(button: &str) -> bool {
+    matches!(
+        button,
+        "clan_menu"
+            | "clan_back"
+            | "clan_members"
+            | "clan_invite_list"
+            | "clan_invites_view"
+            | "clan_requests"
+    ) || button.starts_with("clan_view:")
+}
+
 #[derive(Debug, Clone)]
 pub struct TeleportGuiView {
     pub source: crate::game::WorldPos,
@@ -690,27 +706,14 @@ impl PlayerCommand {
             }
             Self::OpenProgrammer => Some(SaveKind::ProgramMenu),
             Self::RequestMyBuildings => Some(SaveKind::BuildingMenu),
+            // `OpenPack` is resolved during apply; reserve conservatively for clan packs.
             Self::OpenClan
-            // `OpenPack` is resolved against the live world during apply. Reserve the
-            // clan-menu slot conservatively so a clans pack can never create durable
-            // work after admission. Non-clan packs release this unused permit.
             | Self::Gui {
                 command: GuiCommand::OpenPack { .. },
             } => Some(SaveKind::ClanMenu),
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
-            } if matches!(
-                raw.as_str(),
-                "clan_menu"
-                    | "clan_back"
-                    | "clan_members"
-                    | "clan_invite_list"
-                    | "clan_invites_view"
-                    | "clan_requests"
-            ) || raw.starts_with("clan_view:") =>
-            {
-                Some(SaveKind::ClanMenu)
-            }
+            } if is_clan_menu_button(raw) => Some(SaveKind::ClanMenu),
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw == "auc" => Some(SaveKind::AuctionGrid),
@@ -734,6 +737,9 @@ impl PlayerCommand {
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw.starts_with("resp_profit:") => Some(SaveKind::RespProfit),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if is_charge_fill_button(raw) => Some(SaveKind::ChargeFill),
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if is_player_mutation_button(raw) || raw.starts_with("resp_bind:") => {
@@ -888,6 +894,10 @@ pub enum SaveCommand {
         row: Box<openmines_storage::buildings::BuildingRow>,
     },
     RespProfit {
+        player: Box<PlayerRow>,
+        building: Box<openmines_storage::buildings::BuildingRow>,
+    },
+    ChargeFill {
         player: Box<PlayerRow>,
         building: Box<openmines_storage::buildings::BuildingRow>,
     },
@@ -1083,6 +1093,7 @@ impl SaveCommand {
             Self::Player { .. } => SaveKind::Player,
             Self::Building { .. } => SaveKind::Building,
             Self::RespProfit { .. } => SaveKind::RespProfit,
+            Self::ChargeFill { .. } => SaveKind::ChargeFill,
             Self::Box { .. } => SaveKind::Box,
             Self::ProgramCreate { .. } => SaveKind::ProgramCreate,
             Self::Program { .. } => SaveKind::Program,
@@ -1588,6 +1599,7 @@ pub enum SaveKind {
     Player,
     Building,
     RespProfit,
+    ChargeFill,
     Box,
     Program,
     ProgramCreate,
@@ -1622,6 +1634,7 @@ impl SaveKind {
             Self::Player => "save_player",
             Self::Building => "save_building",
             Self::RespProfit => "resp_profit",
+            Self::ChargeFill => "charge_fill",
             Self::Box => "save_box",
             Self::Program => "save_program",
             Self::ProgramCreate => "create_program",

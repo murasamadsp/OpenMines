@@ -973,6 +973,14 @@ Building saves для этой операции не допускаются. Leg
 точно: при положительной сумме `P$ → GU`, при нулевой сумме только `GU`; имя
 кнопки и payload клиента не менялись.
 
+**`resp_fill` и `gun_fill` переведены на typed charge-fill effect.** Списание
+кристаллов и заряд здания теперь выполняются под одним ECS write lock, оба
+dirty-наблюдения и полные snapshots возвращаются через один
+`SaveCommand::ChargeFill`, а persistence worker пишет Player+Building одной
+транзакцией. `@B → GU` сохранён; gun дополнительно возвращает прежний nearby
+`HB/O` через `BlockUpdate` effect. Старые handlers оставлены только для
+regression tests.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
