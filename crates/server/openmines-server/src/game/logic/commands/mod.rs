@@ -311,28 +311,18 @@ fn apply_inventory_command(
     due_actions: &mut crate::game::logic::due::DueActionQueue,
 ) -> CommandEffects {
     match command {
-        PlayerCommand::InventoryToggle => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_inventory_result(
-                    &tx,
-                    player_id,
-                    crate::game::logic::inventory::toggle_inventory(state, player_id),
-                    "toggle",
-                );
-            }
-            CommandEffects::default()
-        }
-        PlayerCommand::InventoryChoose { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_inventory_result(
-                    &tx,
-                    player_id,
-                    crate::game::logic::inventory::choose_inventory(state, player_id, &payload),
-                    "choose",
-                );
-            }
-            CommandEffects::default()
-        }
+        PlayerCommand::InventoryToggle => apply_inventory_result(
+            session_id,
+            player_id,
+            crate::game::logic::inventory::toggle_inventory(state, player_id),
+            "toggle",
+        ),
+        PlayerCommand::InventoryChoose { payload } => apply_inventory_result(
+            session_id,
+            player_id,
+            crate::game::logic::inventory::choose_inventory(state, player_id, &payload),
+            "choose",
+        ),
         PlayerCommand::InventoryUse => {
             apply_inventory_use(state, session_id, player_id, due_actions)
         }
@@ -857,18 +847,20 @@ fn send_settings_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
 }
 
 fn apply_inventory_result(
-    tx: &dyn crate::net::session::wire::PacketSink,
+    session_id: crate::game::SessionId,
     player_id: crate::game::PlayerId,
     result: crate::game::logic::inventory::InventoryMutation,
     action: &'static str,
-) {
+) -> CommandEffects {
+    let mut packets = Vec::new();
     match result {
-        crate::game::logic::inventory::InventoryMutation::Packets(packets) => {
-            for (event, payload) in packets {
-                tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
-                    event, &payload,
-                ));
-            }
+        crate::game::logic::inventory::InventoryMutation::Packets(mutation_packets) => {
+            packets = mutation_packets
+                .into_iter()
+                .map(|(event, payload)| {
+                    crate::net::session::wire::make_u_packet_bytes(event, &payload)
+                })
+                .collect();
         }
         crate::game::logic::inventory::InventoryMutation::MissingState(component) => {
             tracing::error!(
@@ -877,24 +869,39 @@ fn apply_inventory_result(
                 action,
                 "Player component missing for inventory"
             );
-            send_inventory_state_error(tx);
+            let packet = crate::protocol::packets::ok_message(
+                "ИНВЕНТАРЬ",
+                "Состояние инвентаря недоступно.",
+            );
+            packets.push(crate::net::session::wire::make_u_packet_bytes(
+                packet.0, &packet.1,
+            ));
         }
         crate::game::logic::inventory::InventoryMutation::MissingEntity => {
             tracing::error!(player_id = %player_id, action, "Player entity missing for inventory");
-            send_inventory_state_error(tx);
+            let packet = crate::protocol::packets::ok_message(
+                "ИНВЕНТАРЬ",
+                "Состояние инвентаря недоступно.",
+            );
+            packets.push(crate::net::session::wire::make_u_packet_bytes(
+                packet.0, &packet.1,
+            ));
         }
         crate::game::logic::inventory::InventoryMutation::RejectedPayload => {
             tracing::warn!(player_id = %player_id, action, "Rejected malformed inventory payload");
         }
     }
-}
-
-fn send_inventory_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
-    let packet =
-        crate::protocol::packets::ok_message("ИНВЕНТАРЬ", "Состояние инвентаря недоступно.");
-    tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
-        packet.0, &packet.1,
-    ));
+    if packets.is_empty() {
+        return CommandEffects::default();
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        }],
+        ..CommandEffects::default()
+    }
 }
 
 fn handle_known_noop_ty(
@@ -1935,6 +1942,63 @@ mod tests {
                     .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"#S"))
                 })
         ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn inventory_commands_deliver_legacy_packets_as_typed_session_effects() {
+        let test =
+            crate::test_support::ServerTestHarness::new("inventory_typed_effect", "inventory")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(204);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let toggle = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::InventoryToggle,
+        );
+        let choose = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::InventoryChoose {
+                payload: Bytes::from_static(b"2"),
+            },
+        );
+
+        let packet_events = |effects: &crate::game::CommandEffects| {
+            let [
+                crate::game::GameEvent::SessionBatch {
+                    session_id: event_session,
+                    player_id: event_player,
+                    packets,
+                },
+            ] = effects.events.as_slice()
+            else {
+                panic!("inventory command must return one typed session batch");
+            };
+            assert_eq!(*event_session, session_id);
+            assert_eq!(*event_player, player_id);
+            packets
+                .iter()
+                .map(|packet| {
+                    openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                        packet.as_slice(),
+                    ))
+                    .expect("inventory packet must decode")
+                    .expect("inventory packet must be present")
+                    .event_name
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(packet_events(&toggle), vec![*b"IN"]);
+        assert_eq!(packet_events(&choose), vec![*b"IN", *b"IN"]);
+        assert!(toggle.saves.is_empty() && choose.saves.is_empty());
         assert!(receiver.try_recv().is_err());
     }
 

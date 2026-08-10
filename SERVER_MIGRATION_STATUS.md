@@ -908,6 +908,12 @@ building HORB потерял legacy Spot/Up routes, что обнаружил sm
 удалён. Wire-последовательность не меняется, а regression test подтверждает
 отсутствие прямой доставки из command apply.
 
+**`INVN`/`INCL` переведены на typed session effects.** Авторитетная мутация
+`PlayerInventory` и точные legacy `IN` packets теперь возвращаются как
+`SessionBatch` с исходным `SessionId`; прямой `player_sender` write из command
+apply удалён. Порядок `IN full` и `IN full` → `IN choose/close` сохранён;
+`INUS` и inventory-backed building placement остаются отдельными slices.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
