@@ -960,6 +960,11 @@ dirty, возвращает один refreshed `GU` и один полный `Sa
 возвращают полный `SaveCommand::Player`. `skill:<slot>` оставлен
 presentation-only: он не создаёт durable save.
 
+**`resp_bind` переведён на typed Player persistence.** Существующие проверки
+типа Resp, dirty semantics и повторное открытие GUI сохранены; команда теперь
+резервирует `SaveKind::Player` и возвращает полный snapshot с `resp_x/resp_y`
+вместе с прежним `GU` через `SessionBatch`.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

@@ -729,7 +729,9 @@ impl PlayerCommand {
                 || raw.starts_with("resp_save:") => Some(SaveKind::Building),
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
-            } if is_player_mutation_button(raw) => Some(SaveKind::Player),
+            } if is_player_mutation_button(raw) || raw.starts_with("resp_bind:") => {
+                Some(SaveKind::Player)
+            }
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),

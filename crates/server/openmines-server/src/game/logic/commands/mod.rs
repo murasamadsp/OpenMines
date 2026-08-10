@@ -1740,6 +1740,25 @@ pub(super) fn apply_resp_bind(
     if view.pack_type != crate::game::structures::buildings::PackType::Resp {
         return CommandEffects::default();
     }
+    if !state
+        .query_player_opt(player_id, |ecs, entity| {
+            Some(
+                crate::game::player::extract_player_row(ecs, entity).is_some()
+                    && ecs.get::<crate::game::PlayerFlags>(entity).is_some(),
+            )
+        })
+        .unwrap_or(false)
+    {
+        crate::game::logic::packs::send_resp_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
 
     let updated = state
         .modify_player(player_id, |ecs, entity| {
@@ -1782,14 +1801,25 @@ pub(super) fn apply_resp_bind(
     // Re-open GUI to show "bound" state
     crate::game::logic::packs::open_resp_gui(state, &batch, player_id, &view);
 
-    CommandEffects {
+    let mut effects = CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
             session_id,
             player_id,
             packets: batch.into_packets(),
         }],
         ..CommandEffects::default()
+    };
+    if let Some(entity) = state.get_player_entity(player_id)
+        && let Some(row) = crate::game::player::extract_player_row(
+            &state.ecs_read_profiled("commands.resp_bind_snapshot"),
+            entity,
+        )
+    {
+        effects
+            .saves
+            .push(crate::game::SaveCommand::Player { row: Box::new(row) });
     }
+    effects
 }
 
 pub(super) fn apply_resp_fill(

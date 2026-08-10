@@ -97,6 +97,37 @@ fn pack_withdrawals_reserve_building_persistence_before_apply() {
 }
 
 #[test]
+fn up_mutations_reserve_player_persistence_before_apply() {
+    for action in ["upgrade", "buyslot", "delete:1", "install:p#4"] {
+        assert_eq!(
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse(action.to_owned()),
+            }
+            .persistence_kind(),
+            Some(SaveKind::Player)
+        );
+    }
+    assert_eq!(
+        PlayerCommand::Gui {
+            command: super::GuiCommand::parse("skill:1".to_owned()),
+        }
+        .persistence_kind(),
+        None
+    );
+}
+
+#[test]
+fn resp_bind_reserves_player_persistence_before_apply() {
+    assert_eq!(
+        PlayerCommand::Gui {
+            command: super::GuiCommand::parse("resp_bind:10:10".to_owned()),
+        }
+        .persistence_kind(),
+        Some(SaveKind::Player)
+    );
+}
+
+#[test]
 fn auction_grid_reserves_its_durable_kind_before_apply() {
     assert_eq!(
         PlayerCommand::Gui {

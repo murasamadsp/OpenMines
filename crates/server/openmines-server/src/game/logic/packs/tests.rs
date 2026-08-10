@@ -266,6 +266,41 @@ async fn resp_save_client_richlist_payload_returns_typed_building_effect() {
 }
 
 #[tokio::test]
+async fn resp_bind_gui_command_returns_typed_player_save() {
+    let test = make_charge_fill_test_state("typed_resp_bind", "R", 1, 100).await;
+    let session_id = crate::game::SessionId::new(79);
+    let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+    drain_events(&mut rx);
+
+    let effects = crate::game::logic::commands::apply_player_command(
+        &test.state,
+        test.player.id.into(),
+        session_id,
+        crate::game::PlayerCommand::Gui {
+            command: crate::game::GuiCommand::parse("resp_bind:10:10".to_owned()),
+        },
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(
+        effects.saves.as_slice(),
+        [crate::game::SaveCommand::Player { row }]
+            if row.resp_x == Some(10) && row.resp_y == Some(10)
+    ));
+    assert!(matches!(
+        effects.events.as_slice(),
+        [crate::game::GameEvent::SessionBatch { session_id: event_session, packets, .. }]
+            if *event_session == session_id
+                && packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                })
+    ));
+}
+
+#[tokio::test]
 async fn gun_fill_prog_missing_building_stats_does_not_dirty_building() {
     let test = make_charge_fill_test_state("gun_prog_missing_stats", "G", 5, 100).await;
     let (tx, _rx) = crate::net::session::outbox::channel();
