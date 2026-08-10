@@ -3036,6 +3036,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_menu_completion_preserves_typed_legacy_order_and_errors() {
+        let test =
+            crate::test_support::ServerTestHarness::new("chat_menu_completion_typed", "chat-menu")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(207);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let success = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatMenuLoaded {
+                request: crate::game::ChatMenuRequest {
+                    player_id,
+                    session_id,
+                },
+                result: crate::game::ChatMenuResult::Success {
+                    channels: vec![(
+                        "DNO".to_owned(),
+                        true,
+                        "Общий".to_owned(),
+                        "preview".to_owned(),
+                    )],
+                },
+            },
+        );
+        let packets = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("chat menu completion must return one typed session batch");
+            };
+            packets
+                .iter()
+                .map(|packet| {
+                    openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                        packet.as_slice(),
+                    ))
+                    .expect("chat menu packet must decode")
+                    .expect("chat menu packet must be complete")
+                    .event_name
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(packets(&success), vec![*b"mL", *b"mN"]);
+        assert!(receiver.try_recv().is_err());
+
+        let failure = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatMenuLoaded {
+                request: crate::game::ChatMenuRequest {
+                    player_id,
+                    session_id,
+                },
+                result: crate::game::ChatMenuResult::PermanentFailure {
+                    message: "database unavailable".to_owned(),
+                },
+            },
+        );
+        assert_eq!(packets(&failure), vec![*b"OK"]);
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = failure.events.as_slice()
+        else {
+            unreachable!();
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("chat menu error packet must decode")
+        .expect("chat menu error packet must be complete");
+        assert_eq!(
+            packet.payload,
+            "ЧАТ#Не удалось прочитать данные чата.".as_bytes()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn clan_gui_mutation_is_admitted_without_legacy_session_delivery() {
         let test = crate::test_support::ServerTestHarness::new("clan_gui_typed", "clan-gui").await;
         let player_id = crate::game::PlayerId(test.player.id);
