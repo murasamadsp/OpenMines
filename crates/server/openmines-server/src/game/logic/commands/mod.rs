@@ -276,38 +276,32 @@ fn apply_gameplay_command(
         crate::game::PlayerCommand::Dig {
             direction,
             programmatic,
-        } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                crate::game::logic::dig_build::handle_dig(
-                    state,
-                    &tx,
-                    player_id,
-                    direction,
-                    programmatic,
-                );
-            }
-            CommandEffects::default()
-        }
+        } => apply_gameplay_output(state, session_id, player_id, |batch| {
+            crate::game::logic::dig_build::handle_dig(
+                state,
+                batch,
+                player_id,
+                direction,
+                programmatic,
+            );
+        }),
         crate::game::PlayerCommand::Build {
             direction,
             block_type,
             programmatic,
-        } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                let bld = crate::protocol::packets::XbldClient {
-                    direction,
-                    block_type: &block_type,
-                };
-                crate::game::logic::dig_build::handle_build(
-                    state,
-                    &tx,
-                    player_id,
-                    &bld,
-                    programmatic,
-                );
-            }
-            CommandEffects::default()
-        }
+        } => apply_gameplay_output(state, session_id, player_id, |batch| {
+            let bld = crate::protocol::packets::XbldClient {
+                direction,
+                block_type: &block_type,
+            };
+            crate::game::logic::dig_build::handle_build(
+                state,
+                batch,
+                player_id,
+                &bld,
+                programmatic,
+            );
+        }),
         crate::game::PlayerCommand::Geology { programmatic } => {
             apply_gameplay_output(state, session_id, player_id, |batch| {
                 apply_geology_command(state, batch, player_id, programmatic);
@@ -2741,6 +2735,85 @@ mod tests {
         assert_eq!(
             packet.payload,
             "ЛЕЧЕНИЕ#Состояние игрока недоступно.".as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn dig_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new("dig_state_error", "dig").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(9);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerPosition>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Dig {
+                direction: 0,
+                programmatic: false,
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("dig state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed dig error packet must decode")
+            .expect("typed dig error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "СТРОЙКА#Состояние игрока недоступно.".as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn build_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new("build_state_error", "build").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(10);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerPosition>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Build {
+                direction: 0,
+                block_type: "G".to_owned(),
+                programmatic: false,
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("build state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed build error packet must decode")
+            .expect("typed build error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "СТРОЙКА#Состояние игрока недоступно.".as_bytes()
         );
     }
 
