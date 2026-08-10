@@ -25,6 +25,7 @@ use crate::net::session::prelude::*;
 use crate::protocol::packets::open_programmator;
 use std::sync::Arc;
 
+#[cfg(test)]
 async fn load_owned_program_name(
     state: &Arc<GameState>,
     pid: PlayerId,
@@ -60,6 +61,7 @@ fn send_programmator_start_position(tx: &dyn PacketSink, server_pos: (i32, i32),
 }
 
 /// TY программатор — как `Session.PROG/PDEL/pRST/PREN` + `StaticGUI` в `server_reference`.
+#[cfg(test)]
 pub async fn handle_prog_ty(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,

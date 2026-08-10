@@ -712,8 +712,17 @@ selected-program clear выполняются в persistence worker, completion 
 permanent failure дают прежний `OK` только актуальной session. Legacy
 `misc::handle_prog_ty` сохранён для regression path.
 
+`PCOP` теперь также проходит typed `ProgramCopy`: command admission только
+валидирует положительный id и резервирует durable work, worker повторно проверяет
+ownership исходной программы перед копированием, а completion при актуальной
+session повторно ставит typed `OpenProgrammer` в ingress для обновлённого меню.
+Reject и permanent failure сохраняют прежние `OK`; legacy `misc::handle_prog_ty` оставлен в test
+сборке для regression-проверок, но production command path больше не делает
+прямой DB-вызов.
+
 Проверка: admission/completion regression, persistence saturation для
-`ProgramDelete`, targeted `program_` suite и strict server clippy.
+`ProgramOpen`/`ProgramRename`/`ProgramDelete`/`ProgramCopy`, targeted `program_`
+suite и strict server clippy.
 
 **My buildings (`Blds`) закрыт.** Запрос резервирует `BuildingMenu` до apply;
 persistence worker читает owned buildings, а completion с session guard строит

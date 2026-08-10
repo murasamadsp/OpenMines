@@ -595,6 +595,19 @@ fn publish_program_delete(handle: &PersistenceHandle, player_id: i32, session_id
         });
 }
 
+fn publish_program_copy(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::ProgramCopy)
+        .expect("program-copy persistence capacity")
+        .publish(SaveCommand::ProgramCopy {
+            request: crate::game::ProgramCopyRequest {
+                player: crate::game::PlayerId(player_id),
+                session: crate::game::SessionId::new(session_id),
+                program: 42,
+            },
+        });
+}
+
 fn publish_building_delete(handle: &PersistenceHandle, building_id: i32, operation_id: u64) {
     handle
         .try_reserve(SaveKind::BuildingDelete)
@@ -981,6 +994,22 @@ async fn program_editor_completion_capacity_covers_open_and_rename() {
         Ok(crate::game::PersistenceCompletion::ProgramDeleted {
             request: crate::game::ProgramDeleteRequest { program_id: 42, .. },
             result: crate::game::ProgramDeleteResult::Deleted,
+        })
+    ));
+
+    publish_program_copy(&handle, 7, 11);
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::ProgramCopy),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::ProgramCopied {
+            request: crate::game::ProgramCopyRequest { program: 42, .. },
+            result: crate::game::ProgramCopyResult::Copied,
         })
     ));
 

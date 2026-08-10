@@ -182,16 +182,24 @@ pub fn apply_persistence_completion(
                 return CommandEffects::default();
             }
             match result {
-                crate::game::ProgramCopyResult::Copied => CommandEffects {
-                    events: Vec::new(),
-                    saves: vec![crate::game::SaveCommand::ProgramMenu {
-                        request: crate::game::ProgramMenuRequest {
-                            player_id: request.player,
-                            session_id: request.session,
-                        },
-                    }],
-                    broadcasts: Vec::new(),
-                },
+                crate::game::ProgramCopyResult::Copied => {
+                    if state.enqueue_command(
+                        request.player,
+                        request.session,
+                        crate::game::GameCommand::Player(
+                            crate::game::PlayerCommand::OpenProgrammer,
+                        ),
+                    ) {
+                        CommandEffects::default()
+                    } else {
+                        KernelContext::new(state).slash_ok_effect(
+                            request.session,
+                            request.player,
+                            "ПРОГРАММАТОР",
+                            "Сервер перегружен, повторите действие.",
+                        )
+                    }
+                }
                 crate::game::ProgramCopyResult::Rejected => KernelContext::new(state)
                     .slash_ok_effect(
                         request.session,

@@ -691,14 +691,18 @@ impl PersistenceStore for Arc<crate::db::Database> {
         request: &crate::game::ProgramCopyRequest,
     ) -> Result<bool, PersistenceStoreFailure> {
         let source = match self.get_program(request.program).await {
-            Ok(Some(program)) => program.code,
-            Ok(None) => return Ok(false),
+            Ok(Some(program)) if program.player_id == request.player.as_i32() => {
+                (program.name, program.code)
+            }
+            Ok(Some(_) | None) => return Ok(false),
             Err(error) => {
                 return Err(PersistenceStoreFailure::Transient(error));
             }
         };
+        let (source_name, source_code) = source;
+        let copy_name = format!("{source_name} (copy)");
         match self
-            .insert_program(request.player.as_i32(), "Копия", &source)
+            .insert_program(request.player.as_i32(), &copy_name, &source_code)
             .await
         {
             Ok(_) => Ok(true),

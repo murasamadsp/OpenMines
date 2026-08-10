@@ -678,16 +678,19 @@ fn apply_program_command(
                         state, &tx, player_id, &payload,
                     ),
                     "PCOP" => {
-                        let task_state = state.clone();
-                        spawn_session_async_task(state, "program_copy", async move {
-                            crate::game::logic::misc::handle_prog_ty(
-                                &task_state,
-                                &tx,
-                                player_id,
-                                "PCOP",
-                                &payload,
-                            )
-                            .await;
+                        let Some(program) = std::str::from_utf8(&payload)
+                            .ok()
+                            .and_then(|raw| raw.trim().parse::<i32>().ok())
+                            .filter(|program_id| *program_id > 0)
+                        else {
+                            return effects;
+                        };
+                        effects.saves.push(crate::game::SaveCommand::ProgramCopy {
+                            request: crate::game::ProgramCopyRequest {
+                                player: player_id,
+                                session: session_id,
+                                program,
+                            },
                         });
                     }
                     _ => tracing::warn!(
@@ -2045,6 +2048,36 @@ mod tests {
             }),
             Some((None, None, false))
         );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_copy_is_admitted_without_legacy_gui_task() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_copy_durable", "programmer").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(210);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PCOP".to_owned(),
+                payload: bytes::Bytes::from_static(b"42"),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ProgramCopy { request }]
+                if request.player == player_id
+                    && request.session == session_id
+                    && request.program == 42
+        ));
         assert!(receiver.try_recv().is_err());
     }
 
