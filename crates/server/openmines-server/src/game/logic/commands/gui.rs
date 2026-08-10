@@ -668,6 +668,24 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if let Some(args) = button.strip_prefix("craft_recipe:") {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::gui::crafter_gui::handle_craft_recipe_view(
+            state, &batch, player_id, args,
+        );
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if matches!(button.as_str(), "sellcrys" | "buycrys") {
         let batch = crate::net::session::wire::PacketBatch::default();
         crate::game::logic::gui::market_gui::handle_market_tab_switch_sync(
@@ -1814,6 +1832,41 @@ mod tests {
         assert_eq!(
             packet.payload,
             "КЛАНЫ#Введите /clan create НАЗВАНИЕ ТЕГ в чате".as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn craft_recipe_returns_typed_legacy_gui() {
+        let test = ServerTestHarness::new("craft_recipe_typed", "craft").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(19);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "craft_recipe:0:10:10".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("craft recipe must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("craft recipe packet must decode")
+            .expect("craft recipe packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        assert!(packet.payload.starts_with(b"horb:"));
+        assert!(
+            packet
+                .payload
+                .windows(12)
+                .any(|window| window == b"craft_start:")
         );
     }
 
