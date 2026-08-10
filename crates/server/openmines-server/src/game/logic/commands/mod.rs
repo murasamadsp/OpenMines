@@ -3268,6 +3268,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn programmator_persistence_errors_return_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "programmator_persistence_errors",
+            "programmer-errors",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(213);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let open = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramOpened {
+                request: crate::game::ProgramOpenRequest {
+                    player_id,
+                    session_id,
+                    program: 42,
+                },
+                result: crate::game::ProgramOpenResult::Rejected,
+            },
+        );
+        let rename = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramRenamed {
+                request: crate::game::ProgramRenameRequest {
+                    player_id,
+                    session_id,
+                    program_id: 42,
+                    name: "renamed".to_owned(),
+                },
+                result: crate::game::ProgramRenameResult::PermanentFailure {
+                    message: "db failure".to_owned(),
+                },
+            },
+        );
+        let create = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramCreated {
+                request: crate::game::ProgramCreateRequest {
+                    player_id,
+                    session_id,
+                    name: "new".to_owned(),
+                },
+                result: crate::game::ProgramCreateResult::PermanentFailure {
+                    message: "db failure".to_owned(),
+                },
+            },
+        );
+
+        let packet = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("programmator error must return one typed session batch");
+            };
+            let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+            openmines_protocol::Packet::try_decode(&mut encoded)
+                .expect("programmator error packet must decode")
+                .expect("programmator error packet must be complete")
+        };
+        assert_eq!(packet(&open).event_name, *b"OK");
+        assert_eq!(
+            packet(&open).payload,
+            "ПРОГРАММАТОР#Программа недоступна.".as_bytes()
+        );
+        assert_eq!(
+            packet(&rename).payload,
+            "ПРОГРАММАТОР#Не удалось переименовать программу.".as_bytes()
+        );
+        assert_eq!(
+            packet(&create).payload,
+            "ПРОГРАММАТОР#Не удалось создать программу.".as_bytes()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn auction_grid_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("auction_grid", "auction-grid").await;
