@@ -453,29 +453,26 @@ pub fn broadcast_self_after_respawn(state: &Arc<GameState>, pid: PlayerId, rx: i
 }
 
 /// `Player.Hurt(num, Pure)` — без `AntiGun`; смерть применяется lifecycle после persistence admission.
-pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
+pub fn hurt_player_pure(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, damage: i32) {
     if damage <= 0 {
         return;
     }
-    let Some(conn_tx) = state.player_sender(pid) else {
-        return;
-    };
     let result = state
         .modify_player(pid, |ecs, entity| {
             let (h, mh, px, py) = {
                 let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity) else {
-                    send_death_state_error(&conn_tx);
+                    send_death_state_error(tx);
                     return Some((false, None));
                 };
                 let Some(p) = ecs.get::<crate::game::player::PlayerPosition>(entity) else {
-                    send_death_state_error(&conn_tx);
+                    send_death_state_error(tx);
                     return Some((false, None));
                 };
                 if ecs
                     .get::<crate::game::player::PlayerFlags>(entity)
                     .is_none()
                 {
-                    send_death_state_error(&conn_tx);
+                    send_death_state_error(tx);
                     return Some((false, None));
                 }
                 (s.health, s.max_health, p.x, p.y)
@@ -485,8 +482,7 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
             if let Some(mut skills) = ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity) {
                 let ctx = crate::game::ExpContext::from_state(state);
                 if let Some(sk) = ctx.add_skill_exp(&mut skills.states, "l", 1.0) {
-                    let _ =
-                        conn_tx.send(crate::net::session::wire::make_u_packet_bytes(sk.0, &sk.1));
+                    send_u_packet(tx, sk.0, &sk.1);
                 }
             }
 
@@ -500,10 +496,7 @@ pub fn hurt_player_pure(state: &Arc<GameState>, pid: PlayerId, damage: i32) {
                 let mut f_mut = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
                 f_mut.dirty = true;
             }
-            let _ = conn_tx.send(crate::net::session::wire::make_u_packet_bytes(
-                "@L",
-                &health(new_h, mh).1,
-            ));
+            send_u_packet(tx, "@L", &health(new_h, mh).1);
             Some(if lethal {
                 (true, Some((px, py)))
             } else {
@@ -661,12 +654,13 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerFlags>();
         }
 
-        hurt_player_pure(&test.state, pid, 10);
+        let batch = crate::net::session::wire::PacketBatch::default();
+        hurt_player_pure(&test.state, &batch, pid, 10);
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
+        let packets = batch.into_packets();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(&packets[0][5..7], b"OK");
+        let message = std::str::from_utf8(&packets[0][7..]).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
         assert_eq!(player_health(&test.state, pid), 90);
     }

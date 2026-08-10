@@ -275,7 +275,7 @@ pub fn handle_dig(
     };
     // Референс `Player.Bz`: сначала `Hurt(damage)` если `GetProp(cell).damage > 0`, потом проверка `is_diggable`.
     if touch_damage > 0 {
-        hurt_player_pure(state, pid, touch_damage);
+        hurt_player_pure(state, tx, pid, touch_damage);
     }
 
     let tail = state

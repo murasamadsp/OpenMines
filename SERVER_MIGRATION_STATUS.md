@@ -68,8 +68,9 @@ git diff --check
 44. ~~Вынести pure command-payload decoders из монолитного `commands/mod.rs` в отдельный `commands/parsing.rs`, не меняя accepted legacy payloads.~~ **Готово.**
 45. ~~Вынести async building-placement DB tasks из монолитного `commands/mod.rs` в `commands/building_tasks.rs`, сохранив session guard, completion commands и legacy behavior.~~ **Готово.**
 46. ~~Вынести async GUI/Auction dispatcher из `commands/gui.rs` в `commands/gui_tasks.rs`, сохранив handler selection и legacy async behavior.~~ **Готово.**
-47. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-48. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+47. ~~Перевести `hurt_player_pure` в обычном `Xdig` с прямого `player_sender` на входящий typed `PacketBatch`, сохранив порядок `@S/@L/OK` и death admission.~~ **Готово.**
+48. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+49. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
