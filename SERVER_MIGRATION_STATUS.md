@@ -31,8 +31,9 @@ git diff --check
 7. ~~Перевести building-placement completions (`ApplyPaidBuildingPlaced`, `ApplyInventoryBuildingPlaced`, refund) с прямого Outbox на typed `CommandEffects` с сохранением legacy `P$/Gu/IN/O`.~~ **Готово.**
 8. ~~Перевести `DPBX/OpenBox` с gameplay direct-Outbox на typed `SessionBatch`, сохранив `GU` и `open_box` window state.~~ **Готово.**
 9. ~~Перевести `InventoryUse` output/errors, включая DB-failure path building placement, на typed effects, сохранив legacy inventory packets, `OK` payload и порядок delayed effects.~~ **Готово.**
-10. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-11. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+10. ~~Перевести local-chat state errors на typed `SessionBatch`, сохранив обычный nearby `HB` side-phase и legacy `OK` payload.~~ **Готово.**
+11. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+12. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

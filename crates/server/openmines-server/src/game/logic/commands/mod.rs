@@ -553,16 +553,25 @@ fn apply_local_chat_command(
     session_id: crate::game::SessionId,
     message: String,
 ) -> CommandEffects {
-    let effects = CommandEffects::default();
-    let Some(tx) = state.player_sender(player_id) else {
-        return effects;
-    };
+    let batch = crate::net::session::wire::PacketBatch::default();
     if !state.check_chat_rate(player_id) {
         tracing::debug!(player_id = %player_id, "chat rate limited (Locl)");
-        return effects;
+        return CommandEffects::default();
     }
-    if crate::game::logic::chat::handle_local_chat_non_command(state, &tx, player_id, &message) {
-        return effects;
+    if crate::game::logic::chat::handle_local_chat_non_command(state, &batch, player_id, &message) {
+        let packets = batch.into_packets();
+        return if packets.is_empty() {
+            CommandEffects::default()
+        } else {
+            CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets,
+                }],
+                ..CommandEffects::default()
+            }
+        };
     }
     let command = crate::game::logic::commands_social::parse_slash_command(message.trim());
     slash::apply_slash_command(
@@ -2562,6 +2571,45 @@ mod tests {
                 .clone()
         });
         assert_eq!(window.as_deref(), Some("open_box"));
+    }
+
+    #[tokio::test]
+    async fn local_chat_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "local_chat_state_error",
+            "local-chat-state-error",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(5);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerUI>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::LocalChat {
+                message: "state error".to_owned(),
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("local chat state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed chat error packet must decode")
+            .expect("typed chat error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "ЧАТ#Состояние чата недоступно.".as_bytes());
     }
 
     #[tokio::test]
