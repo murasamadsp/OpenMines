@@ -127,6 +127,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         &self,
         request: &crate::game::AuctionItemOrdersRequest,
     ) -> impl Future<Output = Result<crate::game::AuctionItemOrdersResult, PersistenceStoreFailure>> + Send;
+
+    fn auction_order(
+        &self,
+        request: &crate::game::AuctionOrderRequest,
+    ) -> impl Future<Output = Result<crate::game::AuctionOrderResult, PersistenceStoreFailure>> + Send;
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -631,5 +636,33 @@ impl PersistenceStore for Arc<crate::db::Database> {
             .await
             .map(|orders| crate::game::AuctionItemOrdersResult::Loaded { orders })
             .map_err(PersistenceStoreFailure::Transient)
+    }
+
+    async fn auction_order(
+        &self,
+        request: &crate::game::AuctionOrderRequest,
+    ) -> Result<crate::game::AuctionOrderResult, PersistenceStoreFailure> {
+        let Some(order) = self
+            .get_order(request.order_id)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?
+        else {
+            return Ok(crate::game::AuctionOrderResult::NotFound);
+        };
+        let buyer_name = if order.buyer_id > 0 {
+            let Some(player) = self
+                .get_player_by_id(order.buyer_id)
+                .await
+                .map_err(PersistenceStoreFailure::Transient)?
+            else {
+                return Ok(crate::game::AuctionOrderResult::PermanentFailure {
+                    message: "Данные ордера повреждены.".to_owned(),
+                });
+            };
+            Some(player.name)
+        } else {
+            None
+        };
+        Ok(crate::game::AuctionOrderResult::Loaded { order, buyer_name })
     }
 }

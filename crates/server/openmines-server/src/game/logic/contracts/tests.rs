@@ -102,6 +102,17 @@ fn auction_item_orders_reserves_its_durable_kind_before_apply() {
 }
 
 #[test]
+fn auction_order_reserves_its_durable_kind_before_apply() {
+    assert_eq!(
+        PlayerCommand::Gui {
+            command: super::GuiCommand::parse("openorder:42".to_string()),
+        }
+        .persistence_kind(),
+        Some(SaveKind::AuctionOrder)
+    );
+}
+
+#[test]
 fn whois_reserves_its_durable_kind_before_apply() {
     assert_eq!(
         PlayerCommand::Whois { ids: vec![1] }.persistence_kind(),

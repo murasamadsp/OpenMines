@@ -2266,6 +2266,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auction_order_is_admitted_without_legacy_gui_task() {
+        let test =
+            crate::test_support::ServerTestHarness::new("auction_order", "auction-order").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(7);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                ui.current_window = Some("market:12:34:auc".to_owned());
+            }
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("openorder:42".to_owned()),
+            },
+        );
+
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::AuctionOrder { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.building_x == 12
+                    && request.building_y == 34
+                    && request.order_id == 42
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn auction_order_completion_preserves_legacy_horb_payload() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "auction_order_completion",
+            "auction-order-completion",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(8);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::AuctionOrderLoaded {
+                request: crate::game::AuctionOrderRequest {
+                    player_id,
+                    session_id,
+                    building_x: 12,
+                    building_y: 34,
+                    order_id: 42,
+                },
+                result: crate::game::AuctionOrderResult::Loaded {
+                    order: crate::db::orders::OrderRow {
+                        id: 42,
+                        initiator_id: 1,
+                        item_id: 1,
+                        num: 3,
+                        cost: 100,
+                        buyer_id: 9,
+                        bet_time: crate::tasks::auction::now_unix(),
+                    },
+                    buyer_name: Some("Buyer".to_owned()),
+                },
+            },
+        );
+
+        let packet = effects
+            .events
+            .into_iter()
+            .find_map(|event| match event {
+                crate::game::GameEvent::SessionBatch { packets, .. } => packets.into_iter().next(),
+                _ => None,
+            })
+            .expect("auction order completion must emit GU");
+        let decoded =
+            openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(packet.as_slice()))
+                .expect("GU packet must decode")
+                .expect("GU packet must be complete");
+        assert_eq!(decoded.event_name, *b"GU");
+        let payload = String::from_utf8_lossy(&decoded.payload);
+        assert!(payload.contains("aucminbet:42"));
+        assert!(payload.contains("aucbet:42:%I%"));
+        assert!(payload.contains("choose:1"));
+        assert!(payload.contains("by: Buyer"));
+        assert_eq!(
+            test.state.query_player(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .and_then(|ui| ui.current_window.clone())
+            }),
+            Some(Some("market:12:34:auc".to_owned()))
+        );
+    }
+
+    #[tokio::test]
     async fn chat_color_completion_delivers_only_to_the_current_session() {
         let test = crate::test_support::ServerTestHarness::new(
             "chat_color_completion_session_guard",

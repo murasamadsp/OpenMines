@@ -116,6 +116,9 @@ async fn persist_batch<S>(
                 persist_auction_item_orders_batch(store, &mut batch[start..end], simulation_waker)
                     .await;
             }
+            SaveKind::AuctionOrder => {
+                persist_auction_order_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::Program => {
                 persist_program_batch(store, &mut batch[start..end], simulation_waker).await;
             }
@@ -377,6 +380,16 @@ persist_action_batch!(
     crate::game::AuctionItemOrdersResult::PermanentFailure,
     AuctionItemOrdersLoaded,
     "Auction item orders persistence failed transiently; retrying"
+);
+
+persist_action_batch!(
+    persist_auction_order_batch,
+    AuctionOrder,
+    SaveKind::AuctionOrder,
+    auction_order,
+    crate::game::AuctionOrderResult::PermanentFailure,
+    AuctionOrderLoaded,
+    "Auction order persistence failed transiently; retrying"
 );
 
 persist_action_batch!(
@@ -1003,6 +1016,7 @@ where
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::AuctionItemOrders { .. }
+                        | SaveCommand::AuctionOrder { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1035,6 +1049,7 @@ where
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::AuctionItemOrders { .. }
+                        | SaveCommand::AuctionOrder { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1067,6 +1082,7 @@ where
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::AuctionItemOrders { .. }
+                        | SaveCommand::AuctionOrder { .. }
                         | SaveCommand::ChatAppend { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
@@ -1100,6 +1116,7 @@ where
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
                         | SaveCommand::AuctionItemOrders { .. }
+                        | SaveCommand::AuctionOrder { .. }
                         | SaveCommand::BuildingDelete { .. }
                         | SaveCommand::ChatColorCycle { .. }
                         | SaveCommand::ChatResync { .. }
@@ -1124,6 +1141,7 @@ where
             | SaveKind::BuildingMenu
             | SaveKind::AuctionGrid
             | SaveKind::AuctionItemOrders
+            | SaveKind::AuctionOrder
             | SaveKind::BuildingDelete
             | SaveKind::ChatColorCycle
             | SaveKind::ChatResync

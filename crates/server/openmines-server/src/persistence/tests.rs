@@ -129,6 +129,13 @@ impl PersistenceStore for TestStore {
         Ok(crate::game::AuctionItemOrdersResult::Loaded { orders: Vec::new() })
     }
 
+    async fn auction_order(
+        &self,
+        _request: &crate::game::AuctionOrderRequest,
+    ) -> Result<crate::game::AuctionOrderResult, PersistenceStoreFailure> {
+        Ok(crate::game::AuctionOrderResult::NotFound)
+    }
+
     fn save_players_batch(
         &self,
         players: &[crate::db::PlayerRow],
@@ -558,6 +565,21 @@ fn publish_auction_item_orders(handle: &PersistenceHandle, player_id: i32, sessi
         });
 }
 
+fn publish_auction_order(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::AuctionOrder)
+        .expect("auction order persistence capacity")
+        .publish(SaveCommand::AuctionOrder {
+            request: crate::game::AuctionOrderRequest {
+                player_id: crate::game::PlayerId(player_id),
+                session_id: crate::game::SessionId::new(session_id),
+                building_x: 12,
+                building_y: 34,
+                order_id: 42,
+            },
+        });
+}
+
 fn building(id: i32) -> crate::db::BuildingRow {
     crate::db::BuildingRow {
         id,
@@ -945,6 +967,37 @@ async fn auction_item_orders_reserves_completion_and_publishes_result() {
             && building_y == 34
             && item_id == 1
             && orders.is_empty()
+    ));
+
+    drop(handle);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn auction_order_reserves_completion_and_publishes_result() {
+    let store = TestStore::new(false, 0);
+    let mut runtime = PersistenceRuntime::start_with_store(store, 1);
+    let mut completions = runtime.take_completion_receiver();
+    let handle = runtime.handle();
+    publish_auction_order(&handle, 7, 11);
+
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::AuctionOrder),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::AuctionOrderLoaded {
+            request: crate::game::AuctionOrderRequest { player_id, session_id, building_x, building_y, order_id },
+            result: crate::game::AuctionOrderResult::NotFound,
+        }) if player_id == crate::game::PlayerId(7)
+            && session_id == crate::game::SessionId::new(11)
+            && building_x == 12
+            && building_y == 34
+            && order_id == 42
     ));
 
     drop(handle);

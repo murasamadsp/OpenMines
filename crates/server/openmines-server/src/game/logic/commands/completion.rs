@@ -235,6 +235,55 @@ pub fn apply_persistence_completion(
                 }
             }
         }
+        crate::game::PersistenceCompletion::AuctionOrderLoaded { request, result } => {
+            if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
+                return CommandEffects::default();
+            }
+            match result {
+                crate::game::AuctionOrderResult::Loaded { order, buyer_name } => {
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    crate::game::logic::auction_gui::send_auc_order(
+                        &order,
+                        buyer_name.as_deref(),
+                        state,
+                        &batch,
+                        request.player_id,
+                        request.building_x,
+                        request.building_y,
+                    );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        saves: Vec::new(),
+                        broadcasts: Vec::new(),
+                    }
+                }
+                crate::game::AuctionOrderResult::NotFound => KernelContext::new(state)
+                    .slash_ok_effect(
+                        request.session_id,
+                        request.player_id,
+                        "МАРКЕТ",
+                        "Ордер не найден.",
+                    ),
+                crate::game::AuctionOrderResult::PermanentFailure { message } => {
+                    tracing::error!(
+                        player_id = %request.player_id,
+                        order_id = request.order_id,
+                        error = %message,
+                        "Auction order load failed permanently"
+                    );
+                    KernelContext::new(state).slash_ok_effect(
+                        request.session_id,
+                        request.player_id,
+                        "МАРКЕТ",
+                        &message,
+                    )
+                }
+            }
+        }
         crate::game::PersistenceCompletion::ProgramSaved { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();

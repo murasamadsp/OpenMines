@@ -794,6 +794,17 @@ mutations (`create`/`bet`) намеренно не входят в этот ср
 Проверка: admission, persistence completion-capacity и GU/HORB regression tests;
 legacy `auc` tests остаются зелёными.
 
+**Auction order detail (`openorder:{id}`) закрыт как read-only continuation.**
+Admission резервирует `AuctionOrder`, persistence worker загружает `OrderRow` и
+имя buyer одним typed read-model, а session-guarded completion собирает прежнюю
+детальную HORB-страницу с таймером, minimal bet, `aucminbet:{id}`,
+`aucbet:{id}:%I%`, `choose:{item}` и строкой `Last bet`. `open_order` оставлен
+как legacy regression path; фактические `minimalbet`/`bet` mutations ещё не
+переводились.
+
+Проверка: admission, persistence completion-capacity и GU/HORB regression tests;
+`auc` и `choose` slices остаются зелёными.
+
 **Kernel owner extraction закрыт как structural slice.** `GameState` больше не
 хранит пять кластеров реестров и очередей непосредственно в god-object:
 

@@ -219,6 +219,29 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if let Some(order_id) = button
+        .strip_prefix("openorder:")
+        .and_then(|raw| raw.parse::<i32>().ok())
+    {
+        let Some((building_x, building_y, _)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+        else {
+            return CommandEffects::default();
+        };
+        return CommandEffects {
+            events: Vec::new(),
+            saves: vec![crate::game::SaveCommand::AuctionOrder {
+                request: crate::game::AuctionOrderRequest {
+                    player_id,
+                    session_id,
+                    building_x,
+                    building_y,
+                    order_id,
+                },
+            }],
+            broadcasts: Vec::new(),
+        };
+    }
     if let Some(payload) = button.strip_prefix("transfer:") {
         return apply_storage_transfer(state, session_id, player_id, payload);
     }

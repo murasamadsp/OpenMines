@@ -192,6 +192,52 @@ pub async fn open_item_auc(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Pla
 }
 
 /// `MarketSystem.OpenOrder` — деталь ордера: карточка + ставка.
+pub fn auc_order_page(order: &crate::db::orders::OrderRow, buyer_name: Option<&str>) -> Horb {
+    let has_buyer = order.buyer_id > 0;
+    let min = min_bid(order.cost, has_buyer);
+    let timer = if has_buyer {
+        let left = (300 - (now_unix() - order.bet_time)).max(0);
+        format!("(time till ends {:02}:{:02})", left / 60, left % 60)
+    } else {
+        String::new()
+    };
+
+    let mut page = auc_page(format!("Order {timer}"))
+        .card(format!(
+            "i{}:{} x{} costs <color=#aaeeaa>{}$</color>",
+            order.item_id,
+            pack_name(order.item_id),
+            order.num,
+            order.cost
+        ))
+        .input(
+            format!("minimal bet is <color=#aaeeaa>{min}$</color>"),
+            false,
+        )
+        .button(Button::new("minimalbet", format!("aucminbet:{}", order.id)))
+        .button(Button::new("bet", format!("aucbet:{}:%I%", order.id)))
+        .button(Button::new("НАЗАД", format!("choose:{}", order.item_id)))
+        .close_button();
+    if let Some(name) = buyer_name {
+        page = page
+            .text("Last bet")
+            .list_row(ListRow::new(format!("by: {name}"), "", ""));
+    }
+    page
+}
+
+pub fn send_auc_order(
+    order: &crate::db::orders::OrderRow,
+    buyer_name: Option<&str>,
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    send_auc(&auc_order_page(order, buyer_name), state, tx, pid, bx, by);
+}
+
 pub async fn open_order(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, order_id: i32) {
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
@@ -209,13 +255,6 @@ pub async fn open_order(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Player
         }
     };
     let has_buyer = o.buyer_id > 0;
-    let min = min_bid(o.cost, has_buyer);
-    let timer = if has_buyer {
-        let left = (300 - (now_unix() - o.bet_time)).max(0);
-        format!("(time till ends {:02}:{:02})", left / 60, left % 60)
-    } else {
-        String::new()
-    };
     let buyer_name = if has_buyer {
         match state.db.get_player_by_id(o.buyer_id).await {
             Ok(Some(player)) => Some(player.name),
@@ -239,28 +278,7 @@ pub async fn open_order(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Player
         None
     };
 
-    let mut page = auc_page(format!("Order {timer}"))
-        .card(format!(
-            "i{}:{} x{} costs <color=#aaeeaa>{}$</color>",
-            o.item_id,
-            pack_name(o.item_id),
-            o.num,
-            o.cost
-        ))
-        .input(
-            format!("minimal bet is <color=#aaeeaa>{min}$</color>"),
-            false,
-        )
-        .button(Button::new("minimalbet", format!("aucminbet:{order_id}")))
-        .button(Button::new("bet", format!("aucbet:{order_id}:%I%")))
-        .button(Button::new("НАЗАД", format!("choose:{}", o.item_id)))
-        .close_button();
-    if let Some(name) = buyer_name {
-        page = page
-            .text("Last bet")
-            .list_row(ListRow::new(format!("by: {name}"), "", ""));
-    }
-    send_auc(&page, state, tx, pid, bx, by);
+    send_auc_order(&o, buyer_name.as_deref(), state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OpenOrderCreation` — ввод стартовой цены.
