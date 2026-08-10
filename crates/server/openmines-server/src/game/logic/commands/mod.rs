@@ -86,10 +86,7 @@ pub fn apply_queued_player_command_with_due(
         | PlayerCommand::Build { .. }
         | PlayerCommand::Geology { .. }
         | PlayerCommand::Heal { .. }
-        | PlayerCommand::Respawn) => {
-            apply_gameplay_command(state, player_id, command);
-            CommandEffects::default()
-        }
+        | PlayerCommand::Respawn) => apply_gameplay_command(state, player_id, session_id, command),
         PlayerCommand::OpenBox => apply_open_box_command(state, player_id, session_id),
         PlayerCommand::ClaimBonus => apply_bonus_claim(state, player_id, session_id),
         command @ (PlayerCommand::InventoryToggle
@@ -272,8 +269,9 @@ fn apply_open_box_command(
 fn apply_gameplay_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
     command: PlayerCommand,
-) {
+) -> CommandEffects {
     match command {
         crate::game::PlayerCommand::Dig {
             direction,
@@ -288,6 +286,7 @@ fn apply_gameplay_command(
                     programmatic,
                 );
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::Build {
             direction,
@@ -307,21 +306,51 @@ fn apply_gameplay_command(
                     programmatic,
                 );
             }
+            CommandEffects::default()
         }
         crate::game::PlayerCommand::Geology { programmatic } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_geology_command(state, &tx, player_id, programmatic);
-            }
+            apply_gameplay_output(state, session_id, player_id, |batch| {
+                apply_geology_command(state, batch, player_id, programmatic);
+            })
         }
         crate::game::PlayerCommand::Heal { programmatic } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_heal_command(state, &tx, player_id, programmatic);
-            }
+            apply_gameplay_output(state, session_id, player_id, |batch| {
+                apply_heal_command(state, batch, player_id, programmatic);
+            })
         }
         crate::game::PlayerCommand::Respawn => {
             crate::game::logic::death::request_death(state, player_id);
+            CommandEffects::default()
         }
         _ => unreachable!("non-gameplay command routed to gameplay command handler"),
+    }
+}
+
+fn apply_gameplay_output<F>(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    apply: F,
+) -> CommandEffects
+where
+    F: FnOnce(&crate::net::session::wire::PacketBatch),
+{
+    if state.sessions.session_for_player(player_id) != Some(session_id) {
+        return CommandEffects::default();
+    }
+    let batch = crate::net::session::wire::PacketBatch::default();
+    apply(&batch);
+    let packets = batch.into_packets();
+    if packets.is_empty() {
+        return CommandEffects::default();
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        }],
+        ..CommandEffects::default()
     }
 }
 
@@ -2636,6 +2665,82 @@ mod tests {
         assert_eq!(
             packet.payload,
             "Справка#Справка пока не подключена на сервере.".as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn geology_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new("geology_state_error", "geo").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(7);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::programmator::ProgrammatorState>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Geology {
+                programmatic: false,
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("geology state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed geology error packet must decode")
+            .expect("typed geology error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "ГЕОЛОГИЯ#Состояние игрока недоступно.".as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn heal_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new("heal_state_error", "heal").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(8);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::programmator::ProgrammatorState>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Heal {
+                programmatic: false,
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("heal state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed heal error packet must decode")
+            .expect("typed heal error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "ЛЕЧЕНИЕ#Состояние игрока недоступно.".as_bytes()
         );
     }
 

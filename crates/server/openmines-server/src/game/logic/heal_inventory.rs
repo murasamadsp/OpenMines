@@ -961,7 +961,7 @@ mod tests {
         }
     }
 
-    fn apply_heal_command(state: &Arc<GameState>, pid: PlayerId) {
+    fn apply_heal_command(state: &Arc<GameState>, pid: PlayerId) -> crate::game::CommandEffects {
         crate::game::logic::commands::apply_player_command(
             state,
             pid,
@@ -969,7 +969,7 @@ mod tests {
             crate::game::PlayerCommand::Heal {
                 programmatic: false,
             },
-        );
+        )
     }
 
     #[tokio::test]
@@ -1025,12 +1025,19 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerStats>();
         }
 
-        apply_heal_command(&test.state, pid);
+        let effects = apply_heal_command(&test.state, pid);
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(drain_events(&mut rx).is_empty());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("heal state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed heal error packet must decode")
+            .expect("typed heal error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        let message = std::str::from_utf8(&packet.payload).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
     }
 
@@ -1051,12 +1058,19 @@ mod tests {
             ecs.entity_mut(entity).remove::<PlayerSkillsComp>();
         }
 
-        apply_heal_command(&test.state, pid);
+        let effects = apply_heal_command(&test.state, pid);
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(drain_events(&mut rx).is_empty());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("heal state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed heal error packet must decode")
+            .expect("typed heal error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        let message = std::str::from_utf8(&packet.payload).unwrap();
         assert!(message.contains("Состояние игрока недоступно."));
     }
 
@@ -1076,9 +1090,10 @@ mod tests {
             stats.crystals[2] = 1;
         }
 
-        apply_heal_command(&test.state, pid);
+        let effects = apply_heal_command(&test.state, pid);
 
         assert!(drain_events(&mut rx).is_empty());
+        assert!(effects.events.is_empty());
     }
 
     #[tokio::test]
