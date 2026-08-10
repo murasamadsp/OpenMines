@@ -82,14 +82,11 @@ pub async fn handle_programmator_pope_menu(
 }
 
 /// TY `DPBX` → `Basket.OpenBoxGui` (упрощённо: показать кристаллы).
-pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
+pub fn prepare_dpbx_crystal_box(state: &Arc<GameState>, pid: PlayerId) -> Option<Vec<u8>> {
     use crate::game::logic::horb::{Button, Horb, ListRow};
 
-    let Some(cry) =
-        state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))
-    else {
-        return;
-    };
+    let cry =
+        state.query_player_opt(pid, |ecs, e| ecs.get::<PlayerStats>(e).map(|s| s.crystals))?;
     let mut win = Horb::new("Создание бокса").text("Кристаллы");
     for (i, n) in cry.iter().enumerate() {
         win = win.list_row(ListRow::new(
@@ -98,8 +95,20 @@ pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &dyn PacketSink, pid:
             String::new(),
         ));
     }
-    win.button(Button::new("ВЫЙТИ", "exit"))
-        .send(state, tx, pid, "open_box");
+    Some(win.button(Button::new("ВЫЙТИ", "exit")).payload())
+}
+
+pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
+    let Some(payload) = prepare_dpbx_crystal_box(state, pid) else {
+        return;
+    };
+    send_u_packet(tx, "GU", &payload);
+    state.modify_player(pid, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = Some("open_box".to_string());
+        }
+        Some(())
+    });
 }
 
 pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {

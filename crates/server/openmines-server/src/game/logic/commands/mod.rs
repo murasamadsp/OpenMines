@@ -86,11 +86,11 @@ pub fn apply_queued_player_command_with_due(
         | PlayerCommand::Build { .. }
         | PlayerCommand::Geology { .. }
         | PlayerCommand::Heal { .. }
-        | PlayerCommand::Respawn
-        | PlayerCommand::OpenBox) => {
+        | PlayerCommand::Respawn) => {
             apply_gameplay_command(state, player_id, command);
             CommandEffects::default()
         }
+        PlayerCommand::OpenBox => apply_open_box_command(state, player_id, session_id),
         PlayerCommand::ClaimBonus => apply_bonus_claim(state, player_id),
         command @ (PlayerCommand::InventoryToggle
         | PlayerCommand::InventoryChoose { .. }
@@ -242,6 +242,33 @@ fn apply_session_command(
         _ => unreachable!("non-session command routed to session command handler"),
     }
     effects
+}
+
+fn apply_open_box_command(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    let Some(payload) = crate::game::logic::buildings::prepare_dpbx_crystal_box(state, player_id)
+    else {
+        return CommandEffects::default();
+    };
+    crate::net::session::wire::send_u_packet(&batch, "GU", &payload);
+    state.modify_player(player_id, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+            ui.current_window = Some("open_box".to_string());
+        }
+        Some(())
+    });
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
 }
 
 fn apply_gameplay_command(
@@ -2497,6 +2524,40 @@ fn apply_up_skill_install(
 mod tests {
     use super::{apply_persistence_completion, apply_player_command};
     use bytes::Bytes;
+
+    #[tokio::test]
+    async fn open_box_returns_typed_gui_effect() {
+        let test = crate::test_support::ServerTestHarness::new("typed_open_box", "open-box").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(3);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::OpenBox,
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert!(effects.events.iter().any(|event| matches!(
+            event,
+            crate::game::GameEvent::SessionBatch { packets, .. }
+                if packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                })
+        )));
+        let window = test.state.query_player_opt(player_id, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerUI>(entity)?
+                .current_window
+                .clone()
+        });
+        assert_eq!(window.as_deref(), Some("open_box"));
+    }
 
     #[tokio::test]
     async fn local_chat_slash_is_applied_as_a_typed_command() {

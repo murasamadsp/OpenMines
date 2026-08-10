@@ -29,7 +29,8 @@ git diff --check
 5. ~~Перевести покупку слота Up (`buyslot`) на typed mutation/effect/persistence путь с сохранением legacy `GU` wire.~~ **Готово.**
 6. ~~Перевести durable Up `delete:{slot}`, `install:{code}#{slot}` и `upgrade` на typed mutation/effect/persistence путь с сохранением порядка `P$/@S/LV/@L/sp/GU`.~~ **Готово.**
 7. ~~Перевести building-placement completions (`ApplyPaidBuildingPlaced`, `ApplyInventoryBuildingPlaced`, refund) с прямого Outbox на typed `CommandEffects` с сохранением legacy `P$/Gu/IN/O`.~~ **Готово.**
-8. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+8. ~~Перевести `DPBX/OpenBox` с gameplay direct-Outbox на typed `SessionBatch`, сохранив `GU` и `open_box` window state.~~ **Готово.**
+9. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
@@ -1006,6 +1007,10 @@ DB insert теперь возвращает `SessionBatch` и `BlockUpdate`; п�
 сохраняет `Gu`, refund — `P$ → OK`, а inventory placement — `IN` и nearby `O`.
 Прямой `Outbox` из completion удалён, stale session отбрасывается до runtime
 spawn.
+
+**`DPBX/OpenBox` переведён на typed presentation effect.** Crystal-box HORB
+строится тем же payload, но доставляется через `SessionBatch`; `PlayerUI`
+получает прежний `open_box`, direct Outbox из gameplay apply удалён.
 
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
