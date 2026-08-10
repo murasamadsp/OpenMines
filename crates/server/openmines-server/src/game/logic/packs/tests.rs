@@ -1,4 +1,5 @@
 use super::*;
+use crate::game::player::PlayerUI;
 use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
 
 #[tokio::test]
@@ -222,6 +223,46 @@ async fn resp_save_updates_clanzone_marks_dirty_and_refreshes_admin_gui() {
         }),
         "admin GUI refresh must include updated clanzone"
     );
+}
+
+#[tokio::test]
+async fn resp_save_client_richlist_payload_returns_typed_building_effect() {
+    let test = make_charge_fill_test_state("typed_resp_save", "R", 1, 100).await;
+    let session_id = crate::game::SessionId::new(77);
+    let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+    drain_events(&mut rx);
+    set_player_window(&test.state, test.player.id.into(), "resp:10:10");
+
+    let effects = crate::game::logic::commands::apply_player_command(
+        &test.state,
+        test.player.id.into(),
+        session_id,
+        crate::game::PlayerCommand::Gui {
+            command: crate::game::GuiCommand::parse(
+                "resp_save:#:0#cost:123##clan:1#clanzone:321#".to_owned(),
+            ),
+        },
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(
+        effects.saves.as_slice(),
+        [crate::game::SaveCommand::Building { row }]
+            if row.cost == 123 && row.clan_id == 0 && row.clanzone == 321
+    ));
+    assert!(matches!(
+        effects.events.as_slice(),
+        [crate::game::GameEvent::SessionBatch { session_id: event_session, packets, .. }]
+            if *event_session == session_id
+                && packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                })
+    ));
+    assert_eq!(building_cost(&test.state, 10, 10), 123);
+    assert_eq!(building_clanzone(&test.state, 10, 10), 321);
 }
 
 #[tokio::test]

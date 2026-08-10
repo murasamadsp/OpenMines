@@ -1855,24 +1855,6 @@ pub(super) fn apply_resp_profit(
     }
 }
 
-pub(super) fn apply_resp_save(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    richlist_data: &str,
-) -> CommandEffects {
-    let batch = crate::net::session::wire::PacketBatch::default();
-    crate::game::logic::packs::handle_resp_save(state, &batch, player_id, richlist_data);
-    CommandEffects {
-        events: vec![crate::game::GameEvent::SessionBatch {
-            session_id,
-            player_id,
-            packets: batch.into_packets(),
-        }],
-        ..CommandEffects::default()
-    }
-}
-
 pub(super) fn apply_teleport(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,

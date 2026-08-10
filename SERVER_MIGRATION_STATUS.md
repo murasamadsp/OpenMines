@@ -948,6 +948,12 @@ completion.
 `SaveCommand::Building`. Wire-порядок и `pack:x:y` current-window semantics
 сохранены.
 
+**`resp_save` переведён на typed mutation/effect.** Parser теперь принимает
+фактические служебные RichList-сегменты legacy-клиента (`:0` и пустые записи)
+вместе с `cost`, `clan`, `clanzone`. Команда сохраняет прежние owner/window и
+ошибочные wire-ответы, меняет настройки под ECS write lock, помечает здание
+dirty, возвращает один refreshed `GU` и один полный `SaveCommand::Building`.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

@@ -718,7 +718,8 @@ impl PlayerCommand {
                 command: GuiCommand::Button { raw, .. },
             } if raw.starts_with("pack_op:take_money:")
                 || raw.starts_with("pack_op:take_crys:")
-                || raw.starts_with("pack_save:") => Some(SaveKind::Building),
+                || raw.starts_with("pack_save:")
+                || raw.starts_with("resp_save:") => Some(SaveKind::Building),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),

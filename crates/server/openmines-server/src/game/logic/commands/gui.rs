@@ -578,7 +578,7 @@ fn apply_gui_button_command(
         return CommandEffects::default();
     }
     if let Some(rest) = button.strip_prefix("resp_save:") {
-        return super::apply_resp_save(state, player_id, session_id, rest);
+        return apply_resp_save(state, player_id, session_id, rest);
     }
     if let Some(rest) = button.strip_prefix("pack_save:") {
         return apply_pack_save(state, player_id, session_id, rest);
@@ -1262,6 +1262,153 @@ fn apply_pack_save(
             packets: batch.into_packets(),
         }],
         saves: vec![crate::game::SaveCommand::Building { row: Box::new(row) }],
+        broadcasts: Vec::new(),
+    }
+}
+
+fn apply_resp_save(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    richlist_data: &str,
+) -> CommandEffects {
+    let Some((pack_x, pack_y)) = state.query_player_opt(player_id, |ecs, entity| {
+        let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?.strip_prefix("resp:")?;
+        let mut parts = window.split(':');
+        let x = parts.next()?.parse::<i32>().ok()?;
+        let y = parts.next()?.parse::<i32>().ok()?;
+        (parts.next().is_none()).then_some((x, y))
+    }) else {
+        return CommandEffects::default();
+    };
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return CommandEffects::default();
+    };
+    if view.owner_id != player_id {
+        return CommandEffects::default();
+    }
+    let Some(fields) = crate::game::logic::packs::parse_resp_save_fields(richlist_data) else {
+        return resp_save_error(session_id, player_id, "РЕСП", "Некорректное действие.");
+    };
+    let owner_clan = if fields.clan_enabled.is_some() {
+        let Some(clan_id) = state.query_player_opt(player_id, |ecs, entity| {
+            Some(
+                ecs.get::<crate::game::player::PlayerStats>(entity)?
+                    .clan_id
+                    .unwrap_or(0),
+            )
+        }) else {
+            return resp_save_error(session_id, player_id, "РЕСП", "Состояние респа недоступно.");
+        };
+        Some(clan_id)
+    } else {
+        None
+    };
+    let state_ready = state
+        .query_building_opt(pack_x, pack_y, |ecs, entity| {
+            Some(
+                (fields.cost.is_none() && fields.clanzone.is_none()
+                    || ecs
+                        .get::<crate::game::buildings::BuildingStats>(entity)
+                        .is_some())
+                    && (fields.clan_enabled.is_none()
+                        || ecs
+                            .get::<crate::game::buildings::BuildingOwnership>(entity)
+                            .is_some())
+                    && ecs
+                        .get::<crate::game::buildings::BuildingFlags>(entity)
+                        .is_some(),
+            )
+        })
+        .unwrap_or(false);
+    if !state_ready {
+        return resp_save_error(session_id, player_id, "РЕСП", "Состояние респа недоступно.");
+    }
+    let Some(row) = (match crate::game::logic::buildings::modify_pack_with_db(
+        state,
+        pack_x,
+        pack_y,
+        |ecs, entity| {
+            let mut updated = false;
+            if fields.cost.is_some() || fields.clanzone.is_some() {
+                let mut building_stats = ecs
+                    .get_mut::<crate::game::buildings::BuildingStats>(entity)
+                    .expect("BuildingStats checked before resp save");
+                if let Some(cost) = fields.cost {
+                    building_stats.cost = cost;
+                    updated = true;
+                }
+                if let Some(clanzone) = fields.clanzone {
+                    building_stats.clanzone = clanzone;
+                    updated = true;
+                }
+            }
+            if let Some(clan_enabled) = fields.clan_enabled {
+                ecs.get_mut::<crate::game::buildings::BuildingOwnership>(entity)
+                    .expect("BuildingOwnership checked before resp save")
+                    .clan_id = if clan_enabled {
+                    owner_clan.expect("owner clan checked before resp save")
+                } else {
+                    0
+                };
+                updated = true;
+            }
+            updated
+        },
+    ) {
+        Ok(true) => state.building_entity_at(pack_x, pack_y).and_then(|entity| {
+            crate::game::buildings::extract_building_row(
+                &state.ecs_read_profiled("commands.resp_save_snapshot"),
+                entity,
+            )
+        }),
+        Ok(false) => {
+            return resp_save_error(
+                session_id,
+                player_id,
+                "Респ",
+                "Не удалось сохранить настройки",
+            );
+        }
+        Err(error) => {
+            tracing::error!(pack_x, pack_y, error = %error, "Resp admin save failed");
+            return resp_save_error(session_id, player_id, "РЕСП", "Состояние респа недоступно.");
+        }
+    }) else {
+        return resp_save_error(session_id, player_id, "РЕСП", "Состояние респа недоступно.");
+    };
+
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::packs::open_resp_admin_gui(state, &batch, player_id, pack_x, pack_y);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: vec![crate::game::SaveCommand::Building { row: Box::new(row) }],
+        broadcasts: Vec::new(),
+    }
+}
+
+fn resp_save_error(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    title: &str,
+    body: &str,
+) -> CommandEffects {
+    let packet = crate::net::session::wire::make_u_packet_bytes(
+        "OK",
+        &crate::protocol::packets::ok_message(title, body).1,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: vec![packet],
+        }],
+        saves: Vec::new(),
         broadcasts: Vec::new(),
     }
 }

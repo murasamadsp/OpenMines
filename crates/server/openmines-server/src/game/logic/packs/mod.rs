@@ -21,7 +21,7 @@
 
 use crate::game::buildings::{BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage};
 use crate::game::logic::buildings::modify_pack_with_db;
-use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats, PlayerUI};
+use crate::game::player::{PlayerFlags, PlayerMetadata, PlayerStats};
 
 use crate::game::buildings::{PackType, PackView};
 use crate::game::logic::horb::HorbDelivery;
@@ -62,23 +62,26 @@ enum FillResult {
     MissingState,
 }
 
-struct RespSaveFields {
-    cost: Option<i32>,
-    clanzone: Option<i32>,
-    clan_enabled: Option<bool>,
+#[derive(Clone, Copy)]
+pub struct RespSaveFields {
+    pub cost: Option<i32>,
+    pub clanzone: Option<i32>,
+    pub clan_enabled: Option<bool>,
 }
 
-fn parse_resp_save_fields(data: &str) -> Option<RespSaveFields> {
+pub fn parse_resp_save_fields(data: &str) -> Option<RespSaveFields> {
     let mut cost = None;
     let mut clanzone = None;
     let mut clan_enabled = None;
-    let trimmed = data.strip_suffix('#').unwrap_or(data);
-    if trimmed.is_empty() {
-        return None;
-    }
-    for pair in trimmed.split('#') {
+    for pair in data.split('#') {
+        if pair.is_empty() {
+            continue;
+        }
         let (key, value) = pair.split_once(':')?;
-        if key.is_empty() || value.is_empty() {
+        if key.is_empty() {
+            continue;
+        }
+        if value.is_empty() {
             return None;
         }
         match key {
@@ -566,6 +569,7 @@ fn resp_profit_state_ready(
 /// Handle resp admin save (cost, clan toggle, clanzone).
 /// Button format: `resp_save:{richlist_data}` (coordinates from `current_window`).
 /// `RichList` data from client: `key:value#key:value#...` (hash-separated, colon key:value).
+#[cfg(test)]
 pub fn handle_resp_save(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
@@ -574,7 +578,7 @@ pub fn handle_resp_save(
 ) {
     // Resolve coordinates from current_window ("resp:{x}:{y}")
     let coords = state.query_player_opt(pid, |ecs, entity| {
-        let ui = ecs.get::<PlayerUI>(entity)?;
+        let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
         let window = ui.current_window.as_deref()?;
         let rest = window.strip_prefix("resp:")?;
         let parts: Vec<&str> = rest.split(':').collect();
