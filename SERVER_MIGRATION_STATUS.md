@@ -64,8 +64,9 @@ git diff --check
 40. ~~Перевести death/respawn self-output (`Gu/@B/P$/@T/@L/@P` плюс chunk refresh) с `player_sender` на typed `SessionBatch`, сохранив порядок legacy self-пакетов и nearby HB.~~ **Готово.**
 41. ~~Перевести death-admission state error (`OK`) с `player_sender` на typed `SessionBatch`, сохранив session guard и legacy payload.~~ **Готово.**
 42. ~~Перевести periodic bots-render `HB` delivery с прямого `Outbox` на typed `SessionBatch`, сохранив immutable snapshot, session-token guard и legacy payload.~~ **Готово.**
-43. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-44. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+43. ~~Перевести auction finalizer online `P$`/`IN` delivery с фонового прямого `Outbox` на `PresentationSender` → typed `SessionBatch`, сохранив legacy payload и session guard.~~ **Готово.**
+44. Следующий срез — выбрать следующий оставшийся production bypass; структурное распиливание монолитных модулей делать отдельным slice, не смешивая с wire migration.
+45. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

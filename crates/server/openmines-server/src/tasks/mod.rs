@@ -44,15 +44,22 @@ pub fn spawn_background_tasks(
     let mut persistence =
         crate::persistence::PersistenceRuntime::start(state.db.clone(), state.simulation_waker());
     let persistence_completions = persistence.take_completion_receiver();
+    let presentation = crate::net::presentation::PresentationRuntime::start(state.clone());
+    let presentation_sender = presentation.sender();
     let game_tick = simulation::spawn_game_tick_loop(
         Arc::clone(state),
         shutdown,
         persistence.handle(),
         persistence_completions,
+        presentation,
     );
 
     // 3. Обработка завершения аукционов
-    auction::spawn_auction_finalize_loop(Arc::clone(state), shutdown.subscribe());
+    auction::spawn_auction_finalize_loop(
+        Arc::clone(state),
+        presentation_sender,
+        shutdown.subscribe(),
+    );
 
     BackgroundTasks {
         game_tick,

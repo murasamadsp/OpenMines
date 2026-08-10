@@ -10,9 +10,10 @@
 //! `Order.Bet` + GUI аукциона (item-грид/list/card/input) — отдельный слайс.
 use crate::db::orders::OrderRow;
 use crate::game::player::{PlayerId, PlayerInventory, PlayerStats};
-use crate::game::{GameState, PlayerFlags};
+use crate::game::{GameEvent, GameState, PlayerFlags};
+use crate::net::presentation::PresentationSender;
 use crate::net::session::outbound::inventory_sync::send_inventory;
-use crate::net::session::wire::send_u_packet;
+use crate::net::session::wire::{PacketBatch, make_u_packet_bytes};
 use crate::protocol::packets::money;
 use anyhow::{Result, bail};
 use std::sync::Arc;
@@ -30,7 +31,11 @@ pub fn now_unix() -> i64 {
     crate::time::now_unix()
 }
 
-pub fn spawn_auction_finalize_loop(state: Arc<GameState>, mut shutdown: broadcast::Receiver<()>) {
+pub fn spawn_auction_finalize_loop(
+    state: Arc<GameState>,
+    presentation: PresentationSender,
+    mut shutdown: broadcast::Receiver<()>,
+) {
     tokio::spawn(async move {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_secs(CHECK_INTERVAL_SECS));
@@ -41,7 +46,7 @@ pub fn spawn_auction_finalize_loop(state: Arc<GameState>, mut shutdown: broadcas
                 _ = interval.tick() => {}
                 _ = shutdown.recv() => break,
             }
-            finalize_ready_orders(&state).await;
+            finalize_ready_orders(&state, &presentation).await;
         }
     });
 }
@@ -49,7 +54,7 @@ pub fn spawn_auction_finalize_loop(state: Arc<GameState>, mut shutdown: broadcas
 /// `Order.CheckReady` по всем готовым ордерам: удалить лот, отдать предмет
 /// покупателю, деньги — инициатору (id 0 = NPC-ордер, без выплаты, как C#
 /// `GetPlayer(0)` → null).
-async fn finalize_ready_orders(state: &Arc<GameState>) {
+async fn finalize_ready_orders(state: &Arc<GameState>, presentation: &PresentationSender) {
     let cutoff = now_unix() - BET_TIMEOUT_SECS;
     let ready = match state.db.list_ready_orders(cutoff).await {
         Ok(r) => r,
@@ -59,11 +64,15 @@ async fn finalize_ready_orders(state: &Arc<GameState>) {
         }
     };
     for o in ready {
-        finalize_ready_order(state, &o).await;
+        finalize_ready_order(state, presentation, &o).await;
     }
 }
 
-async fn finalize_ready_order(state: &Arc<GameState>, order: &OrderRow) {
+async fn finalize_ready_order(
+    state: &Arc<GameState>,
+    presentation: &PresentationSender,
+    order: &OrderRow,
+) {
     let buyer_id = PlayerId(order.buyer_id);
     let seller_id = PlayerId(order.initiator_id);
     let buyer_online = state.is_player_connected(buyer_id);
@@ -74,7 +83,8 @@ async fn finalize_ready_order(state: &Arc<GameState>, order: &OrderRow) {
     }
 
     if order.initiator_id != 0
-        && let Err(e) = credit_money(state, order.initiator_id.into(), order.cost).await
+        && let Err(e) =
+            credit_money_typed(state, presentation, order.initiator_id.into(), order.cost).await
     {
         tracing::error!(
             order_id = order.id,
@@ -85,7 +95,15 @@ async fn finalize_ready_order(state: &Arc<GameState>, order: &OrderRow) {
         );
         return;
     }
-    if let Err(e) = credit_inventory(state, order.buyer_id.into(), order.item_id, order.num).await {
+    if let Err(e) = credit_inventory_typed(
+        state,
+        presentation,
+        order.buyer_id.into(),
+        order.item_id,
+        order.num,
+    )
+    .await
+    {
         tracing::error!(
             order_id = order.id,
             buyer_id = order.buyer_id,
@@ -96,7 +114,8 @@ async fn finalize_ready_order(state: &Arc<GameState>, order: &OrderRow) {
         );
         if order.initiator_id != 0
             && let Err(rollback_err) =
-                credit_money(state, order.initiator_id.into(), -order.cost).await
+                credit_money_typed(state, presentation, order.initiator_id.into(), -order.cost)
+                    .await
         {
             tracing::error!(
                 order_id = order.id,
@@ -166,7 +185,37 @@ async fn finalize_offline_ready_order(state: &Arc<GameState>, order: &OrderRow) 
 
 /// Деньги игроку: online → ECS + `P$` (как C# `SendMoney`) + dirty; offline → БД.
 pub async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) -> Result<()> {
-    let tx = state.player_sender(pid);
+    let packet = credit_money_impl(state, pid, amount).await?;
+    if let Some((_, data)) = packet
+        && let Some(tx) = state.player_sender(pid)
+    {
+        let _ = tx.send(data);
+    }
+    Ok(())
+}
+
+async fn credit_money_typed(
+    state: &Arc<GameState>,
+    presentation: &PresentationSender,
+    pid: PlayerId,
+    amount: i64,
+) -> Result<()> {
+    if let Some((session_id, data)) = credit_money_impl(state, pid, amount).await? {
+        presentation.publish(GameEvent::SessionBatch {
+            session_id,
+            player_id: pid,
+            packets: vec![data],
+        });
+    }
+    Ok(())
+}
+
+async fn credit_money_impl(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    amount: i64,
+) -> Result<Option<(crate::game::SessionId, Vec<u8>)>> {
+    let session_id = state.sessions.session_for_player(pid);
     let applied = state.modify_player(pid, |ecs, e| {
         if ecs.get::<PlayerStats>(e).is_none() {
             tracing::error!(player_id = %pid, component = "PlayerStats", "Player component missing for auction money credit");
@@ -187,22 +236,61 @@ pub async fn credit_money(state: &Arc<GameState>, pid: PlayerId, amount: i64) ->
         let Some((m, c)) = online else {
             bail!("online player {pid}: player state missing for money credit");
         };
-        if let Some(tx) = tx {
-            send_u_packet(&tx, "P$", &money(m, c).1);
-        }
-        return Ok(());
+        let Some(session_id) = session_id else {
+            return Ok(None);
+        };
+        return Ok(Some((
+            session_id,
+            make_u_packet_bytes("P$", &money(m, c).1),
+        )));
     }
-    state.db.add_player_money(pid.into(), amount).await
+    state.db.add_player_money(pid.into(), amount).await?;
+    Ok(None)
 }
 
 /// Предмет в инвентарь: online → ECS + `IN` (sync) + dirty; offline → БД.
-pub async fn credit_inventory(
+#[cfg(test)]
+async fn credit_inventory(
     state: &Arc<GameState>,
     pid: PlayerId,
     item_id: i32,
     count: i32,
 ) -> Result<()> {
-    let tx = state.player_sender(pid);
+    let packet = credit_inventory_impl(state, pid, item_id, count).await?;
+    if let Some((_, packets)) = packet
+        && let Some(tx) = state.player_sender(pid)
+    {
+        for packet in packets {
+            let _ = tx.send(packet);
+        }
+    }
+    Ok(())
+}
+
+async fn credit_inventory_typed(
+    state: &Arc<GameState>,
+    presentation: &PresentationSender,
+    pid: PlayerId,
+    item_id: i32,
+    count: i32,
+) -> Result<()> {
+    if let Some((session_id, packets)) = credit_inventory_impl(state, pid, item_id, count).await? {
+        presentation.publish(GameEvent::SessionBatch {
+            session_id,
+            player_id: pid,
+            packets,
+        });
+    }
+    Ok(())
+}
+
+async fn credit_inventory_impl(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    item_id: i32,
+    count: i32,
+) -> Result<Option<(crate::game::SessionId, Vec<Vec<u8>>)>> {
+    let session_id = state.sessions.session_for_player(pid);
     let applied = state.modify_player(pid, |ecs, e| {
         if ecs.get::<PlayerInventory>(e).is_none() {
             tracing::error!(player_id = %pid, component = "PlayerInventory", "Player component missing for auction inventory credit");
@@ -214,23 +302,27 @@ pub async fn credit_inventory(
         }
         let mut inv = ecs.get_mut::<PlayerInventory>(e)?;
         *inv.items.entry(item_id).or_insert(0) += count;
-        if let Some(t) = &tx {
-            send_inventory(t, &mut inv);
-        }
+        let batch = PacketBatch::default();
+        send_inventory(&batch, &mut inv);
+        let packets = batch.into_packets();
         let mut f = ecs.get_mut::<PlayerFlags>(e)?;
         f.dirty = true;
-        Some(())
+        Some(packets)
     });
     if let Some(online) = applied {
-        if online.is_none() {
+        let Some(packets) = online else {
             bail!("online player {pid}: player state missing for inventory credit");
-        }
-        return Ok(());
+        };
+        let Some(session_id) = session_id else {
+            return Ok(None);
+        };
+        return Ok(Some((session_id, packets)));
     }
     state
         .db
         .add_player_inventory_item(pid.into(), item_id, count)
-        .await
+        .await?;
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -301,5 +393,34 @@ mod tests {
         assert!(err.to_string().contains("player state missing"));
         assert_eq!(item_count(&test.state, pid, 5), before_count);
         assert!(drain_events(&mut rx).is_empty());
+    }
+
+    #[tokio::test]
+    async fn typed_money_credit_reaches_current_session_through_presentation() {
+        let test = make_credit_test_state("typed_money_credit").await;
+        let (_tx, mut rx) = test.connect_with_outbox(1);
+        drain_events(&mut rx);
+
+        let presentation = crate::net::presentation::PresentationRuntime::start(test.state.clone());
+        credit_money_typed(
+            &test.state,
+            &presentation.sender(),
+            PlayerId(test.player.id),
+            100,
+        )
+        .await
+        .expect("typed auction money credit");
+
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("presentation worker did not deliver auction money credit")
+            .expect("auction outbox closed unexpectedly");
+        let mut bytes = bytes::BytesMut::from(frame.as_slice());
+        let packet = crate::protocol::Packet::try_decode(&mut bytes)
+            .expect("valid auction money packet")
+            .expect("complete auction money packet");
+        assert_eq!(packet.event_name, *b"P$");
+        assert_eq!(&packet.payload[..], br#"{"money":1100,"creds":0}"#);
+        presentation.shutdown();
     }
 }

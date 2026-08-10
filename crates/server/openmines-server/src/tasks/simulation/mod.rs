@@ -296,6 +296,7 @@ pub fn spawn_game_tick_loop(
     shutdown: &broadcast::Sender<()>,
     persistence: crate::persistence::PersistenceHandle,
     persistence_completions: tokio::sync::mpsc::Receiver<crate::game::PersistenceCompletion>,
+    presentation: crate::net::presentation::PresentationRuntime,
 ) -> std::thread::JoinHandle<()> {
     let commands = state
         .commands_rx
@@ -314,7 +315,6 @@ pub fn spawn_game_tick_loop(
 
     let (tick_log_tx, tick_log_rx) = std::sync::mpsc::sync_channel(1024);
     profiler::spawn_tick_log_worker(tick_log_rx);
-    let presentation = crate::net::presentation::PresentationRuntime::start(state.clone());
     let services = TickServices {
         heartbeat,
         tick_log_tx,

@@ -6,31 +6,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const QUEUE_CAPACITY: usize = 4_096;
 const WORLD_EFFECT_COALESCE_LIMIT: usize = 32;
 
-pub struct PresentationRuntime {
+#[derive(Clone)]
+pub struct PresentationSender {
     tx: std::sync::mpsc::SyncSender<GameEvent>,
     state: Arc<GameState>,
     depth: Arc<AtomicUsize>,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
 
-impl PresentationRuntime {
-    pub fn start(state: Arc<GameState>) -> Self {
-        let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE_CAPACITY);
-        let depth = Arc::new(AtomicUsize::new(0));
-        let worker_state = state.clone();
-        let worker_depth = depth.clone();
-        let worker = std::thread::Builder::new()
-            .name("openmines-presentation".to_owned())
-            .spawn(move || run_delivery(&worker_state, &rx, &worker_depth))
-            .expect("spawn presentation thread");
-        Self {
-            tx,
-            state,
-            depth,
-            worker: Some(worker),
-        }
-    }
-
+impl PresentationSender {
     pub fn publish(&self, event: GameEvent) {
         let kind = event.kind();
         self.depth.fetch_add(1, Ordering::Relaxed);
@@ -59,9 +42,39 @@ impl PresentationRuntime {
             }
         }
     }
+}
+
+pub struct PresentationRuntime {
+    sender: PresentationSender,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PresentationRuntime {
+    pub fn start(state: Arc<GameState>) -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE_CAPACITY);
+        let depth = Arc::new(AtomicUsize::new(0));
+        let worker_state = state.clone();
+        let worker_depth = depth.clone();
+        let worker = std::thread::Builder::new()
+            .name("openmines-presentation".to_owned())
+            .spawn(move || run_delivery(&worker_state, &rx, &worker_depth))
+            .expect("spawn presentation thread");
+        Self {
+            sender: PresentationSender { tx, state, depth },
+            worker: Some(worker),
+        }
+    }
+
+    pub fn publish(&self, event: GameEvent) {
+        self.sender.publish(event);
+    }
+
+    pub fn sender(&self) -> PresentationSender {
+        self.sender.clone()
+    }
 
     pub fn shutdown(mut self) {
-        drop(self.tx);
+        drop(self.sender);
         if let Some(worker) = self.worker.take() {
             worker.join().expect("presentation thread panicked");
         }
