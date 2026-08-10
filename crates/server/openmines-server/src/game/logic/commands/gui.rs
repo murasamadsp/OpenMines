@@ -652,6 +652,22 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if button == "clan_create_input" {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::commands_social::send_ok(
+            &batch,
+            "КЛАНЫ",
+            "Введите /clan create НАЗВАНИЕ ТЕГ в чате",
+        );
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if matches!(button.as_str(), "sellcrys" | "buycrys") {
         let batch = crate::net::session::wire::PacketBatch::default();
         crate::game::logic::gui::market_gui::handle_market_tab_switch_sync(
@@ -1766,6 +1782,38 @@ mod tests {
                     .and_then(|ui| ui.current_window.clone())
             }),
             Some("clan".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn clan_create_input_returns_typed_legacy_ok() {
+        let test = ServerTestHarness::new("clan_create_input_typed", "clan").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(18);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "clan_create_input".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("clan create input must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("clan create input packet must decode")
+            .expect("clan create input packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "КЛАНЫ#Введите /clan create НАЗВАНИЕ ТЕГ в чате".as_bytes()
         );
     }
 
