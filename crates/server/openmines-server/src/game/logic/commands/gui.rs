@@ -732,6 +732,18 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if state
+        .active_player_entity_for_session(player_id, session_id)
+        .is_some()
+        && state
+            .query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_window.is_none())
+            })
+            .is_some_and(|has_no_window| has_no_window)
+    {
+        return no_window_close_effects(session_id, player_id);
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
@@ -756,6 +768,23 @@ fn pack_remove_overload_effects(
             session_id,
             player_id,
             packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
+}
+
+fn no_window_close_effects(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+) -> CommandEffects {
+    let (event, payload) = crate::protocol::packets::gu_close();
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                event, &payload,
+            )],
         }],
         ..CommandEffects::default()
     }
@@ -1659,7 +1688,7 @@ fn spawn_gui_async_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_gui_button_command, pack_remove_overload_effects};
+    use super::{apply_gui_button_command, no_window_close_effects, pack_remove_overload_effects};
     use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
 
     #[test]
@@ -1681,6 +1710,22 @@ mod tests {
             packet.payload,
             "СЕРВЕР#Сервер перегружен, повторите действие.".as_bytes()
         );
+    }
+
+    #[test]
+    fn no_window_returns_typed_legacy_gu_close() {
+        let effects =
+            no_window_close_effects(crate::game::SessionId::new(21), crate::game::PlayerId(42));
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("no-window fallback must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("no-window packet must decode")
+            .expect("no-window packet must be complete");
+        assert_eq!(packet.event_name, *b"Gu");
+        assert_eq!(packet.payload, b"_"[..]);
     }
 
     #[tokio::test]
