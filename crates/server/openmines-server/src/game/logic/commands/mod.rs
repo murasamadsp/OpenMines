@@ -20,12 +20,14 @@ pub(super) mod completion_clan;
 pub(super) mod gui;
 mod gui_tasks;
 mod parsing;
+mod session_commands;
 pub(super) mod slash;
 
 pub(super) use building_tasks::{
     spawn_inventory_building_insert_task, spawn_paid_building_insert_task,
 };
 pub(super) use gui_tasks::spawn_gui_async_task;
+use session_commands::apply_session_command;
 
 use parsing::{
     decode_finv_index, decode_miss_enabled, decode_program_save, decode_rndm_hash, is_unit_payload,
@@ -208,48 +210,6 @@ pub fn apply_queued_player_command_with_due(
             slash::apply_slash_command(&context, player_id, session_id, command)
         }
     }
-}
-
-fn apply_session_command(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    command: PlayerCommand,
-) -> CommandEffects {
-    let mut effects = CommandEffects::default();
-    match command {
-        crate::game::PlayerCommand::Connect { row } => {
-            effects.append(crate::game::logic::player_init::connect_entity_in_tick(
-                state, &row, session_id,
-            ));
-        }
-        crate::game::PlayerCommand::Disconnect => {
-            effects.append(crate::game::logic::player_init::disconnect_in_tick(
-                state, player_id, session_id,
-            ));
-        }
-        crate::game::PlayerCommand::Move {
-            time: _,
-            x,
-            y,
-            direction,
-            programmatic,
-        } => {
-            effects.append(crate::game::logic::movement::apply_move_command(
-                state,
-                player_id,
-                session_id,
-                crate::game::logic::movement::MoveRequest {
-                    target_x: x,
-                    target_y: y,
-                    direction,
-                    programmatic,
-                },
-            ));
-        }
-        _ => unreachable!("non-session command routed to session command handler"),
-    }
-    effects
 }
 
 fn apply_open_box_command(
