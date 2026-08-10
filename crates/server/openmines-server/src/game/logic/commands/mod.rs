@@ -17,6 +17,7 @@
 mod building_tasks;
 pub(super) mod completion;
 pub(super) mod completion_clan;
+mod gameplay_commands;
 pub(super) mod gui;
 mod gui_tasks;
 mod parsing;
@@ -26,6 +27,7 @@ pub(super) mod slash;
 pub(super) use building_tasks::{
     spawn_inventory_building_insert_task, spawn_paid_building_insert_task,
 };
+use gameplay_commands::apply_gameplay_command;
 pub(super) use gui_tasks::spawn_gui_async_task;
 use session_commands::apply_session_command;
 
@@ -234,88 +236,6 @@ fn apply_open_box_command(
             session_id,
             player_id,
             packets: batch.into_packets(),
-        }],
-        ..CommandEffects::default()
-    }
-}
-
-fn apply_gameplay_command(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    command: PlayerCommand,
-) -> CommandEffects {
-    match command {
-        crate::game::PlayerCommand::Dig {
-            direction,
-            programmatic,
-        } => apply_gameplay_output(state, session_id, player_id, |batch| {
-            crate::game::logic::dig_build::handle_dig(
-                state,
-                batch,
-                player_id,
-                direction,
-                programmatic,
-            );
-        }),
-        crate::game::PlayerCommand::Build {
-            direction,
-            block_type,
-            programmatic,
-        } => apply_gameplay_output(state, session_id, player_id, |batch| {
-            let bld = crate::protocol::packets::XbldClient {
-                direction,
-                block_type: &block_type,
-            };
-            crate::game::logic::dig_build::handle_build(
-                state,
-                batch,
-                player_id,
-                &bld,
-                programmatic,
-            );
-        }),
-        crate::game::PlayerCommand::Geology { programmatic } => {
-            apply_gameplay_output(state, session_id, player_id, |batch| {
-                apply_geology_command(state, batch, player_id, programmatic);
-            })
-        }
-        crate::game::PlayerCommand::Heal { programmatic } => {
-            apply_gameplay_output(state, session_id, player_id, |batch| {
-                apply_heal_command(state, batch, player_id, programmatic);
-            })
-        }
-        crate::game::PlayerCommand::Respawn => {
-            crate::game::logic::death::request_death(state, player_id);
-            CommandEffects::default()
-        }
-        _ => unreachable!("non-gameplay command routed to gameplay command handler"),
-    }
-}
-
-fn apply_gameplay_output<F>(
-    state: &Arc<GameState>,
-    session_id: crate::game::SessionId,
-    player_id: crate::game::PlayerId,
-    apply: F,
-) -> CommandEffects
-where
-    F: FnOnce(&crate::net::session::wire::PacketBatch),
-{
-    if state.sessions.session_for_player(player_id) != Some(session_id) {
-        return CommandEffects::default();
-    }
-    let batch = crate::net::session::wire::PacketBatch::default();
-    apply(&batch);
-    let packets = batch.into_packets();
-    if packets.is_empty() {
-        return CommandEffects::default();
-    }
-    CommandEffects {
-        events: vec![crate::game::GameEvent::SessionBatch {
-            session_id,
-            player_id,
-            packets,
         }],
         ..CommandEffects::default()
     }

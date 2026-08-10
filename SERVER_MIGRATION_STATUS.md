@@ -71,8 +71,9 @@ git diff --check
 47. ~~Перевести `hurt_player_pure` в обычном `Xdig` с прямого `player_sender` на входящий typed `PacketBatch`, сохранив порядок `@S/@L/OK` и death admission.~~ **Готово.**
 48. ~~Перевести `ChatFanout` delivery с прямого `state.send_to_player` на `SessionHub::fanout`, собирая clan recipients вне ECS callback и сохраняя момент выбора получателей и legacy `mU`.~~ **Готово.**
 49. ~~Вынести connection/movement dispatcher из `commands/mod.rs` в `commands/session_commands.rs`, сохранив lifecycle, movement effects и legacy wire.~~ **Готово.**
-50. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-51. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+50. ~~Вынести gameplay command/output dispatcher из `commands/mod.rs` в `commands/gameplay_commands.rs`, сохранив `Dig/Build/Geology/Heal/Respawn` semantics и typed `SessionBatch`.~~ **Готово.**
+51. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+52. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
