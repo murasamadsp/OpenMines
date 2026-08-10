@@ -220,7 +220,7 @@ pub fn handle_gui_button_sync_fast_path(
     }
 }
 
-fn handle_clan_create_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
+pub fn open_clan_create_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb};
     // exit добавится builder-гарантией последним → Escape закроет окно.
     Horb::new("СОЗДАНИЕ КЛАНА")
@@ -228,6 +228,10 @@ fn handle_clan_create_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Pla
         .button(Button::new("ВВОД", "clan_create_input"))
         .button(Button::new("Назад", "clan_back"))
         .send(state, tx, pid, "clan");
+}
+
+fn handle_clan_create_view(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
+    open_clan_create_view(state, tx, pid);
 }
 
 /// Закрыть текущее GUI-окно игрока (сбросить `current_window` + `Gu`).

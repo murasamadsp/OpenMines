@@ -633,6 +633,25 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if matches!(
+        button.as_str(),
+        "clan_create_view" | "clancreate" | "clan_create"
+    ) {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::gui::gui_buttons::open_clan_create_view(state, &batch, player_id);
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
@@ -1687,6 +1706,48 @@ mod tests {
                     .and_then(|ui| ui.current_window.clone())
             }),
             Some("createprog".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn clan_create_view_returns_typed_legacy_gui() {
+        let test = ServerTestHarness::new("clan_create_view_typed", "clan").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(15);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "clan_create_view".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("clan create view must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("clan create view packet must decode")
+            .expect("clan create view packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        assert!(packet.payload.starts_with(b"horb:"));
+        assert!(
+            packet
+                .payload
+                .windows(17)
+                .any(|window| window == b"clan_create_input")
+        );
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .and_then(|ui| ui.current_window.clone())
+            }),
+            Some("clan".to_owned())
         );
     }
 }
