@@ -183,7 +183,7 @@ pub(super) fn apply_side_effects(
 
     let started_at = Instant::now();
     services.heartbeat.mark(TickStage::SideBotsRender);
-    render_bots(state, bots_render, tick_budget);
+    render_bots(state, &services.presentation, bots_render, tick_budget);
     side_profile.bots_render = started_at.elapsed();
 }
 
@@ -752,6 +752,7 @@ fn apply_deaths(
 
 fn render_bots(
     state: &Arc<GameState>,
+    presentation: &crate::net::presentation::PresentationRuntime,
     due: Vec<crate::game::BotsRenderDue>,
     tick_budget: Duration,
 ) {
@@ -774,6 +775,13 @@ fn render_bots(
         .inc_by(u64::try_from(result.bytes_enqueued).unwrap_or(u64::MAX));
     crate::metrics::BOTS_RENDER_SNAPSHOT_CHUNKS
         .set(i64::try_from(result.snapshot_chunks).unwrap_or(i64::MAX));
+    for (session_id, player_id, data) in result.deliveries {
+        presentation.publish(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: vec![data],
+        });
+    }
     let now = Instant::now();
     for observer in result.completed {
         state.reschedule_bots_render(observer, now + crate::game::GameState::BOTS_RENDER_INTERVAL);

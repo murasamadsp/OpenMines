@@ -387,7 +387,6 @@ struct BotsRenderSnapshotItem {
 
 struct BotsRenderObserver {
     due: crate::game::BotsRenderDue,
-    tx: Outbox,
     center: (u32, u32),
 }
 
@@ -398,6 +397,7 @@ pub struct BotsRenderBatchResult {
     pub observers_sent: usize,
     pub bytes_enqueued: usize,
     pub snapshot_chunks: usize,
+    pub deliveries: Vec<(crate::game::SessionId, crate::game::PlayerId, Vec<u8>)>,
 }
 
 /// Один immutable spatial snapshot на весь due batch. ECS был синхронизирован
@@ -414,13 +414,13 @@ pub fn bots_render_batch(
             unresolved.push(due);
             continue;
         };
-        let Some(tx) = state.player_sender(due.player_id) else {
+        let session_id = crate::game::SessionId::new(due.session_token);
+        if state.sessions.session_for_player(due.player_id) != Some(session_id) {
             unresolved.push(due);
             continue;
-        };
+        }
         observers.push(BotsRenderObserver {
             due,
-            tx,
             center: crate::world::World::chunk_pos(player.x, player.y),
         });
     }
@@ -501,7 +501,11 @@ pub fn bots_render_batch(
                     }
                 }
             }
-            send_b_packet(&observer.tx, "HB", &payload);
+            result.deliveries.push((
+                crate::game::SessionId::new(observer.due.session_token),
+                observer.due.player_id,
+                crate::net::session::wire::make_b_packet_bytes("HB", &payload),
+            ));
             result.observers_sent += 1;
             result.bytes_enqueued = result.bytes_enqueued.saturating_add(wire_len);
         }
@@ -582,8 +586,8 @@ mod tests {
         assert!(result.deferred.is_empty());
         assert_eq!(result.observers_sent, 2);
         assert_eq!(result.snapshot_chunks, 4);
-        for frame in [rx1.try_recv().unwrap(), rx2.try_recv().unwrap()] {
-            let mut encoded = bytes::BytesMut::from(&frame[..]);
+        for frame in result.deliveries.iter().map(|(_, _, frame)| frame) {
+            let mut encoded = bytes::BytesMut::from(frame.as_slice());
             let packet = crate::protocol::Packet::try_decode(&mut encoded)
                 .unwrap()
                 .unwrap();
@@ -591,5 +595,7 @@ mod tests {
             assert_eq!(packet.payload.len(), 12);
             assert_eq!(packet.payload[0], b'X');
         }
+        assert!(rx1.try_recv().is_err());
+        assert!(rx2.try_recv().is_err());
     }
 }
