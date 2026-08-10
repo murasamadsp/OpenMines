@@ -1370,6 +1370,22 @@ pub(super) fn apply_building_completion(
                 state, session_id, &placement, db_id,
             )
         }
+        crate::game::PlayerCommand::InventoryBuildingPlacementFailed => {
+            let batch = crate::net::session::wire::PacketBatch::default();
+            crate::net::session::wire::send_u_packet(
+                &batch,
+                "OK",
+                &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
+            );
+            crate::game::CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets: batch.into_packets(),
+                }],
+                ..crate::game::CommandEffects::default()
+            }
+        }
         crate::game::PlayerCommand::ApplyPaidBuildingPlaced { placement, db_id } => {
             crate::game::logic::buildings::apply_paid_building_placed_effects(
                 state, session_id, &placement, db_id,

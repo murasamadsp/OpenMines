@@ -436,6 +436,8 @@ pub enum PlayerCommand {
         placement: InventoryBuildingPlacement,
         db_id: i32,
     },
+    /// Report an inventory building placement whose DB insert failed.
+    InventoryBuildingPlacementFailed,
     /// Commit a paid GUI building placement after DB insert succeeded.
     ApplyPaidBuildingPlaced {
         placement: PaidBuildingPlacement,
@@ -656,6 +658,7 @@ impl PlayerCommand {
             Self::ProgramAction { .. } => "program_action",
             Self::ApplyDeletedProgram { .. } => "apply_deleted_program",
             Self::ApplyInventoryBuildingPlaced { .. } => "apply_inventory_building_placed",
+            Self::InventoryBuildingPlacementFailed => "inventory_building_placement_failed",
             Self::ApplyPaidBuildingPlaced { .. } => "apply_paid_building_placed",
             Self::RefundPaidBuildingPlacement { .. } => "refund_paid_building_placement",
             Self::RemovePack { .. } => "remove_pack",
@@ -771,6 +774,7 @@ impl PlayerCommand {
             Self::Connect { .. } | Self::Disconnect { .. } => CommandIngressClass::Lifecycle,
             Self::ApplyDeletedProgram { .. }
             | Self::ApplyInventoryBuildingPlaced { .. }
+            | Self::InventoryBuildingPlacementFailed
             | Self::ApplyPaidBuildingPlaced { .. }
             | Self::RefundPaidBuildingPlacement { .. }
             | Self::ApplyProgramEditorOpen { .. }

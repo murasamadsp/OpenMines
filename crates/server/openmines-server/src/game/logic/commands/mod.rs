@@ -160,6 +160,7 @@ pub fn apply_queued_player_command_with_due(
             apply_program_command(state, player_id, session_id, command)
         }
         command @ (PlayerCommand::ApplyInventoryBuildingPlaced { .. }
+        | PlayerCommand::InventoryBuildingPlacementFailed
         | PlayerCommand::ApplyPaidBuildingPlaced { .. }
         | PlayerCommand::RefundPaidBuildingPlacement { .. }) => {
             completion::apply_building_completion(state, player_id, session_id, command)
@@ -403,9 +404,8 @@ fn apply_inventory_use(
     }
     if let Some(placement) =
         crate::game::logic::heal_inventory::prepare_inventory_building_use(state, &batch, player_id)
-        && let Some(tx) = state.sessions.outbox_for_session(session_id)
     {
-        spawn_inventory_building_insert_task(state, tx, placement);
+        spawn_inventory_building_insert_task(state, placement);
     }
     effects.events.push(crate::game::GameEvent::SessionBatch {
         session_id,
@@ -1610,7 +1610,6 @@ fn decode_program_save(
 
 fn spawn_inventory_building_insert_task(
     state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
     placement: crate::game::logic::contracts::InventoryBuildingPlacement,
 ) {
     let Some(session_id) = state.sessions.session_for_player(placement.owner_id) else {
@@ -1651,11 +1650,13 @@ fn spawn_inventory_building_insert_task(
                     error = ?e,
                     "DB insert failed for inventory building placement"
                 );
-                crate::net::session::wire::send_u_packet(
-                    &tx,
-                    "OK",
-                    &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
-                );
+                task_state
+                    .enqueue_internal(
+                        placement.owner_id,
+                        session_id,
+                        crate::game::PlayerCommand::InventoryBuildingPlacementFailed,
+                    )
+                    .await;
             }
         }
     });
@@ -2561,6 +2562,38 @@ mod tests {
                 .clone()
         });
         assert_eq!(window.as_deref(), Some("open_box"));
+    }
+
+    #[tokio::test]
+    async fn inventory_building_db_failure_returns_typed_legacy_error() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "inventory_building_db_failure",
+            "inventory-building-db-failure",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(4);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::InventoryBuildingPlacementFailed,
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("inventory building DB failure must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed error packet must decode")
+            .expect("typed error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "Ошибка#Ошибка БД".as_bytes());
     }
 
     #[tokio::test]
