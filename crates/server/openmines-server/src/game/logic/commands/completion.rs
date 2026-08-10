@@ -710,9 +710,6 @@ pub fn apply_persistence_completion(
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();
             }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
             match result {
                 crate::game::ChatResyncResult::Success {
                     channel_name,
@@ -728,16 +725,27 @@ pub fn apply_persistence_completion(
                         crate::protocol::packets::chat_current(&request.channel_tag, &channel_name);
                     let mu =
                         crate::protocol::packets::chat_messages(&request.channel_tag, &messages);
-                    crate::net::session::wire::send_u_packet(&tx, "mO", &mo.1);
-                    crate::net::session::wire::send_u_packet(&tx, "mU", &mu.1);
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    crate::net::session::wire::send_u_packet(&batch, "mO", &mo.1);
+                    crate::net::session::wire::send_u_packet(&batch, "mU", &mu.1);
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
                 crate::game::ChatResyncResult::AccessDenied => {
                     tracing::warn!(player_id = %request.player_id, chat_tag = %request.channel_tag, "Resync access denied");
+                    CommandEffects::default()
                 }
                 crate::game::ChatResyncResult::PermanentFailure { message } => {
                     tracing::error!(player_id = %request.player_id, error = %message, "Resync failed permanently");
+                    let batch = crate::net::session::wire::PacketBatch::default();
                     crate::net::session::wire::send_u_packet(
-                        &tx,
+                        &batch,
                         "OK",
                         &crate::protocol::packets::ok_message(
                             "ЧАТ",
@@ -745,9 +753,16 @@ pub fn apply_persistence_completion(
                         )
                         .1,
                     );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
             }
-            CommandEffects::default()
         }
         crate::game::PersistenceCompletion::ChatMenuLoaded { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {

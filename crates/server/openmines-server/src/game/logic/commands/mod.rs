@@ -2951,6 +2951,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_resync_completion_preserves_typed_legacy_order_and_errors() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "chat_resync_completion_typed",
+            "chat-resync",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(206);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let success = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatResynced {
+                request: crate::game::ChatResyncRequest {
+                    player_id,
+                    session_id,
+                    channel_tag: "DNO".to_owned(),
+                    last_id: 0,
+                },
+                result: crate::game::ChatResyncResult::Success {
+                    channel_name: "Общий".to_owned(),
+                    messages: Vec::new(),
+                },
+            },
+        );
+        let packet_events = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("chat resync completion must return one typed session batch");
+            };
+            packets
+                .iter()
+                .map(|packet| {
+                    openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                        packet.as_slice(),
+                    ))
+                    .expect("chat packet must decode")
+                    .expect("chat packet must be complete")
+                    .event_name
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(packet_events(&success), vec![*b"mO", *b"mU"]);
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_chat.clone())
+            }),
+            Some("DNO".to_owned())
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let failure = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatResynced {
+                request: crate::game::ChatResyncRequest {
+                    player_id,
+                    session_id,
+                    channel_tag: "DNO".to_owned(),
+                    last_id: 0,
+                },
+                result: crate::game::ChatResyncResult::PermanentFailure {
+                    message: "database unavailable".to_owned(),
+                },
+            },
+        );
+        assert_eq!(packet_events(&failure), vec![*b"OK"]);
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = failure.events.as_slice()
+        else {
+            unreachable!();
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("chat error packet must decode")
+        .expect("chat error packet must be complete");
+        assert_eq!(
+            packet.payload,
+            "ЧАТ#Не удалось прочитать данные чата.".as_bytes()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn clan_gui_mutation_is_admitted_without_legacy_session_delivery() {
         let test = crate::test_support::ServerTestHarness::new("clan_gui_typed", "clan-gui").await;
         let player_id = crate::game::PlayerId(test.player.id);
