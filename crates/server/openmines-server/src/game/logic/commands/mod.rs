@@ -4050,7 +4050,7 @@ mod tests {
             }] if *id == player_id && *session_id == stale_session
         ));
 
-        apply_persistence_completion(
+        let effects = apply_persistence_completion(
             &test.state,
             crate::game::PersistenceCompletion::ChatColorCycled {
                 request: crate::game::ChatColorCycleRequest {
@@ -4060,15 +4060,23 @@ mod tests {
                 result: crate::game::ChatColorCycleResult::Cycled { color: 3 },
             },
         );
-        assert_eq!(
-            crate::test_support::ServerTestHarness::drain_events(&mut receiver),
-            vec![("mC".to_owned(), b"3".to_vec())]
-        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("chat color completion must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("chat color packet must decode")
+        .expect("chat color packet must be complete");
+        assert_eq!(packet.event_name, *b"mC");
+        assert_eq!(packet.payload, &b"3"[..]);
+        assert!(receiver.try_recv().is_err());
 
         let current_session = crate::game::SessionId::new(102);
         let mut current_receiver = test.connect(current_session.get());
         crate::test_support::ServerTestHarness::drain_events(&mut current_receiver);
-        apply_persistence_completion(
+        let effects = apply_persistence_completion(
             &test.state,
             crate::game::PersistenceCompletion::ChatColorCycled {
                 request: crate::game::ChatColorCycleRequest {
@@ -4078,9 +4086,35 @@ mod tests {
                 result: crate::game::ChatColorCycleResult::Cycled { color: 4 },
             },
         );
+        assert!(effects.events.is_empty());
         assert!(
             crate::test_support::ServerTestHarness::drain_events(&mut current_receiver).is_empty()
         );
+
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatColorCycled {
+                request: crate::game::ChatColorCycleRequest {
+                    player_id,
+                    session_id: current_session,
+                },
+                result: crate::game::ChatColorCycleResult::PermanentFailure {
+                    message: "database unavailable".to_owned(),
+                },
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("chat color failure must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("chat color error packet must decode")
+        .expect("chat color error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "Ошибка#Ошибка БД".as_bytes());
+        assert!(current_receiver.try_recv().is_err());
     }
 }
 

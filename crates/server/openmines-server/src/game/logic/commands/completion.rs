@@ -666,30 +666,45 @@ pub fn apply_persistence_completion(
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();
             }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
             match result {
                 crate::game::ChatColorCycleResult::Cycled { color } => {
+                    let batch = crate::net::session::wire::PacketBatch::default();
                     crate::net::session::wire::send_u_packet(
-                        &tx,
+                        &batch,
                         "mC",
                         &crate::protocol::packets::chat_color(color).1,
                     );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
                 crate::game::ChatColorCycleResult::Rejected => {
                     tracing::warn!(player_id = %request.player_id, "Chat color cycle rejected: player is missing");
+                    CommandEffects::default()
                 }
                 crate::game::ChatColorCycleResult::PermanentFailure { message } => {
                     tracing::error!(player_id = %request.player_id, error = message, "Chat color cycle failed");
+                    let batch = crate::net::session::wire::PacketBatch::default();
                     crate::net::session::wire::send_u_packet(
-                        &tx,
+                        &batch,
                         "OK",
                         &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
                     );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
             }
-            CommandEffects::default()
         }
         crate::game::PersistenceCompletion::ChatResynced { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
