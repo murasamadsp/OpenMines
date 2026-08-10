@@ -24,6 +24,7 @@ pub(super) mod gui;
 mod gui_tasks;
 mod inventory_commands;
 mod known_noop_commands;
+mod market_commands;
 mod parsing;
 mod session_commands;
 pub(super) mod slash;
@@ -37,6 +38,7 @@ use gameplay_commands::apply_gameplay_command;
 pub(super) use gui_tasks::spawn_gui_async_task;
 use inventory_commands::apply_inventory_command;
 use known_noop_commands::apply_known_noop_ty;
+use market_commands::apply_market_get_profit;
 use session_commands::apply_session_command;
 
 use parsing::{decode_program_save, parse_pack_remove_button, parse_program_rename_button};
@@ -977,134 +979,6 @@ pub(super) fn apply_market_buy(
             state, &batch, player_id, &view, "buycrys",
         );
     }
-
-    CommandEffects {
-        events: vec![crate::game::GameEvent::SessionBatch {
-            session_id,
-            player_id,
-            packets: batch.into_packets(),
-        }],
-        ..CommandEffects::default()
-    }
-}
-
-pub(super) fn apply_market_get_profit(
-    state: &Arc<GameState>,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    building_x: i32,
-    building_y: i32,
-) -> CommandEffects {
-    let batch = crate::net::session::wire::PacketBatch::default();
-
-    // Validate building is market and player is owner
-    let Some(view) = state.get_pack_at(building_x, building_y) else {
-        return CommandEffects::default();
-    };
-    if view.pack_type != crate::game::structures::buildings::PackType::Market
-        || view.owner_id != player_id
-    {
-        return CommandEffects::default();
-    }
-
-    // Validate player and building state
-    let player_ready = state
-        .query_player(player_id, |ecs, entity| {
-            ecs.get::<crate::game::player::PlayerStats>(entity)
-                .is_some()
-                && ecs
-                    .get::<crate::game::player::PlayerFlags>(entity)
-                    .is_some()
-        })
-        .unwrap_or(false);
-    if !player_ready {
-        crate::net::session::wire::send_u_packet(
-            &batch,
-            "OK",
-            &crate::protocol::packets::ok_message("РЫНОК", "Состояние игрока недоступно.").1,
-        );
-        return CommandEffects {
-            events: vec![crate::game::GameEvent::SessionBatch {
-                session_id,
-                player_id,
-                packets: batch.into_packets(),
-            }],
-            ..CommandEffects::default()
-        };
-    }
-
-    // Transfer profit from building to player
-    let mut amount = 0i64;
-    let updated = match crate::game::logic::buildings::modify_pack_with_db(
-        state,
-        building_x,
-        building_y,
-        |ecs, entity| {
-            let mut storage = ecs
-                .get_mut::<crate::game::buildings::BuildingStorage>(entity)
-                .expect("BuildingStorage checked before market profit mutation");
-            amount = storage.money;
-            storage.money = 0;
-            true
-        },
-    ) {
-        Ok(updated) => updated,
-        Err(e) => {
-            tracing::error!(x = building_x, y = building_y, error = %e, "Market profit withdrawal failed");
-            crate::net::session::wire::send_u_packet(
-                &batch,
-                "OK",
-                &crate::protocol::packets::ok_message("РЫНОК", "Ошибка снятия прибыли.").1,
-            );
-            return CommandEffects {
-                events: vec![crate::game::GameEvent::SessionBatch {
-                    session_id,
-                    player_id,
-                    packets: batch.into_packets(),
-                }],
-                ..CommandEffects::default()
-            };
-        }
-    };
-    if !updated {
-        crate::net::session::wire::send_u_packet(
-            &batch,
-            "OK",
-            &crate::protocol::packets::ok_message("РЫНОК", "Здание не найдено.").1,
-        );
-        return CommandEffects {
-            events: vec![crate::game::GameEvent::SessionBatch {
-                session_id,
-                player_id,
-                packets: batch.into_packets(),
-            }],
-            ..CommandEffects::default()
-        };
-    }
-
-    if amount > 0 {
-        let result = state.modify_player(player_id, |ecs, entity| {
-            let mut s = ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
-            s.money = s.money.saturating_add(amount);
-            let money_now = s.money;
-            let creds_now = s.creds;
-            let mut f = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
-            f.dirty = true;
-            Some((money_now, creds_now))
-        });
-        if let Some(Some((money_now, creds_now))) = result {
-            crate::net::session::wire::send_u_packet(
-                &batch,
-                "P$",
-                &crate::protocol::packets::money(money_now, creds_now).1,
-            );
-        }
-    }
-
-    // Re-open admin page with updated profit (now 0)
-    crate::game::logic::gui::market_gui::open_market_admin_gui(
-        state, &batch, player_id, building_x, building_y,
-    );
 
     CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
