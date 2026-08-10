@@ -54,8 +54,9 @@ git diff --check
 30. ~~Перевести GUI `open_buildings` HORB output (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив legacy HORB payload.~~ **Готово.**
 31. ~~Перевести GUI `createprog` HORB output (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив `createprog` window state и legacy payload.~~ **Готово.**
 32. ~~Перевести GUI `clan_create_view`/`clancreate`/`clan_create` HORB output (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив `clan` window state и legacy payload.~~ **Готово.**
-33. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-34. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+33. ~~Перевести GUI market tab switching `sellcrys`/`buycrys` (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив активную вкладку, `market` window state и legacy payload; auction и market mutations не смешивать.~~ **Готово.**
+34. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+35. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

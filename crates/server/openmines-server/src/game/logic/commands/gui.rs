@@ -652,6 +652,24 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if matches!(button.as_str(), "sellcrys" | "buycrys") {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::gui::market_gui::handle_market_tab_switch_sync(
+            state, &batch, player_id, &button,
+        );
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
@@ -1580,7 +1598,7 @@ fn spawn_gui_async_task(
 #[cfg(test)]
 mod tests {
     use super::{apply_gui_button_command, pack_remove_overload_effects};
-    use crate::test_support::{ServerTestHarness, drain_events};
+    use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
 
     #[test]
     fn pack_remove_overload_returns_typed_legacy_ok() {
@@ -1748,6 +1766,124 @@ mod tests {
                     .and_then(|ui| ui.current_window.clone())
             }),
             Some("clan".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn market_sell_tab_returns_typed_legacy_gui() {
+        let test = market_tab_test_state("market_sell_tab_typed").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(16);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                ui.current_window = Some("market:10:10:buycrys".to_owned());
+            }
+            Some(())
+        });
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "sellcrys".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert_market_tab_batch(&effects, b"buycrys");
+        assert_eq!(
+            current_window(&test.state, player_id),
+            Some("market:10:10:sellcrys".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn market_buy_tab_returns_typed_legacy_gui() {
+        let test = market_tab_test_state("market_buy_tab_typed").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(17);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            if let Some(mut ui) = ecs.get_mut::<crate::game::player::PlayerUI>(entity) {
+                ui.current_window = Some("market:10:10:sellcrys".to_owned());
+            }
+            Some(())
+        });
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "buycrys".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert_market_tab_batch(&effects, b"sellcrys");
+        assert_eq!(
+            current_window(&test.state, player_id),
+            Some("market:10:10:buycrys".to_owned())
+        );
+    }
+
+    fn current_window(
+        state: &crate::game::GameState,
+        player_id: crate::game::PlayerId,
+    ) -> Option<String> {
+        state.query_player_opt(player_id, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerUI>(entity)
+                .and_then(|ui| ui.current_window.clone())
+        })
+    }
+
+    async fn market_tab_test_state(label: &str) -> ServerTestHarness {
+        let mut builder = ServerTestHarnessBuilder::new(label, "market-tab-user").await;
+        builder.player.x = 10;
+        builder.player.y = 10;
+        builder.player.money = 10_000;
+        builder.player.crystals[0] = 100;
+        let extra = crate::db::BuildingExtra {
+            charge: 0,
+            max_charge: 0,
+            cost: 0,
+            hp: 1_000,
+            max_hp: 1_000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        builder
+            .database()
+            .insert_building("M", 10, 10, builder.player.id, 0, &extra)
+            .await
+            .expect("insert market test building");
+        builder.build().await
+    }
+
+    fn assert_market_tab_batch(effects: &crate::game::CommandEffects, tab: &[u8]) {
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("market tab must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("market tab packet must decode")
+            .expect("market tab packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        assert!(packet.payload.starts_with(b"horb:"));
+        assert!(
+            packet
+                .payload
+                .windows(tab.len())
+                .any(|window| window == tab)
         );
     }
 }
