@@ -73,7 +73,7 @@ pub fn apply_persistence_completion(
             }
             match result {
                 crate::game::ProgramOpenResult::Opened { program } => {
-                    apply_program_editor_completion(
+                    return apply_program_editor_completion(
                         state,
                         request.session_id,
                         request.player_id,
@@ -110,7 +110,7 @@ pub fn apply_persistence_completion(
             }
             match result {
                 crate::game::ProgramRenameResult::Renamed { program } => {
-                    apply_program_editor_completion(
+                    return apply_program_editor_completion(
                         state,
                         request.session_id,
                         request.player_id,
@@ -651,7 +651,7 @@ pub fn apply_persistence_completion(
             }
             match result {
                 crate::game::ProgramCreateResult::Created { program_id } => {
-                    apply_program_editor_completion(
+                    return apply_program_editor_completion(
                         state,
                         request.session_id,
                         request.player_id,
@@ -1405,19 +1405,17 @@ pub(super) fn apply_program_editor_completion(
     session_id: crate::game::SessionId,
     player_id: crate::game::PlayerId,
     command: PlayerCommand,
-) {
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
     match command {
         crate::game::PlayerCommand::ApplyProgramEditorOpen {
             program_id,
             program_name,
             source,
         } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
-            };
             crate::game::logic::programmer::apply_editor_open(
                 state,
-                &tx,
+                &batch,
                 player_id,
                 program_id,
                 &program_name,
@@ -1429,12 +1427,9 @@ pub(super) fn apply_program_editor_completion(
             program_name,
             source,
         } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return;
-            };
             crate::game::logic::programmer::apply_editor_rename(
                 state,
-                &tx,
+                &batch,
                 player_id,
                 program_id,
                 &program_name,
@@ -1442,5 +1437,13 @@ pub(super) fn apply_program_editor_completion(
             );
         }
         _ => unreachable!("non-editor command routed to editor completion handler"),
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
     }
 }

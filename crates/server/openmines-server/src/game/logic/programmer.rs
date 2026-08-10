@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 pub fn apply_editor_open(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     program_id: i32,
     name: &str,
@@ -52,7 +52,7 @@ pub fn apply_editor_open(
 
 pub fn apply_editor_rename(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     program_id: i32,
     name: &str,

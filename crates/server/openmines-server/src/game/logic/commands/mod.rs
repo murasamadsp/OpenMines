@@ -726,7 +726,9 @@ fn apply_program_command(
         }
         PlayerCommand::ApplyProgramEditorOpen { .. }
         | PlayerCommand::ApplyProgramEditorRename { .. } => {
-            completion::apply_program_editor_completion(state, session_id, player_id, command);
+            effects.append(completion::apply_program_editor_completion(
+                state, session_id, player_id, command,
+            ));
         }
         _ => unreachable!("non-program command routed to program command handler"),
     }
@@ -3181,6 +3183,88 @@ mod tests {
                 if request.player_id == player_id && request.session_id == session_id
         ));
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_editor_completion_preserves_typed_legacy_packet_order() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_editor_completion", "programmer")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(212);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let open = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramOpened {
+                request: crate::game::ProgramOpenRequest {
+                    player_id,
+                    session_id,
+                    program: 42,
+                },
+                result: crate::game::ProgramOpenResult::Opened {
+                    program: crate::db::ProgramRow {
+                        id: 42,
+                        player_id: test.player.id,
+                        name: "demo".to_owned(),
+                        code: "source".to_owned(),
+                    },
+                },
+            },
+        );
+        let rename = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramRenamed {
+                request: crate::game::ProgramRenameRequest {
+                    player_id,
+                    session_id,
+                    program_id: 42,
+                    name: "renamed".to_owned(),
+                },
+                result: crate::game::ProgramRenameResult::Renamed {
+                    program: crate::db::ProgramRow {
+                        id: 42,
+                        player_id: test.player.id,
+                        name: "renamed".to_owned(),
+                        code: "source".to_owned(),
+                    },
+                },
+            },
+        );
+
+        let events = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("program editor completion must return one typed session batch");
+            };
+            packets
+                .iter()
+                .map(|packet| {
+                    openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                        packet.as_slice(),
+                    ))
+                    .expect("program packet must decode")
+                    .expect("program packet must be complete")
+                    .event_name
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(events(&open), vec![*b"Gu", *b"#P", *b"Gu"]);
+        assert_eq!(events(&rename), vec![*b"#p", *b"Gu"]);
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                let program = ecs.get::<crate::game::programmator::ProgrammatorState>(entity)?;
+                let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+                Some((
+                    program.selected_id,
+                    program.selected_data.clone(),
+                    ui.current_window.clone(),
+                ))
+            }),
+            Some((Some(42), Some("source".to_owned()), None))
+        );
     }
 
     #[tokio::test]
