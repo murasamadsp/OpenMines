@@ -984,8 +984,14 @@ regression tests.
 **Выбор слота Up (`skill:{slot}`) переведён на typed session effect.** Подготовка
 `up:{json}` и изменение `current_window` больше не идут через legacy handler и
 не создают durable save; command layer возвращает тот же `GU` через
-`SessionBatch`. Durable `upgrade`/`delete`/`install`/`buyslot` пока остаются
+`SessionBatch`. Durable `upgrade`/`delete`/`install` пока остаются
 отдельным следующим Up-срезом.
+
+**`buyslot` переведён на typed Player persistence.** Проверки `creds > 1000` и
+лимита слотов, изменение `PlayerSkillsComp`, dirty semantics и `GU`-рендер
+сохранены; успешная операция возвращает полный `SaveCommand::Player`, а
+неуспешная остаётся тихим legacy no-op. Legacy Up handler для этой кнопки
+больше не вызывается из production command path.
 
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.

@@ -2198,6 +2198,9 @@ pub(super) fn apply_up_button(
     {
         return apply_up_skill_select(state, player_id, session_id, slot, batch);
     }
+    if button == "buyslot" {
+        return apply_up_buy_slot(state, player_id, session_id, batch);
+    }
     let durable = button == "upgrade"
         || button == "buyslot"
         || button.starts_with("delete:")
@@ -2278,6 +2281,97 @@ fn apply_up_skill_select(
             player_id,
             packets: batch.into_packets(),
         }],
+        ..CommandEffects::default()
+    }
+}
+
+fn apply_up_buy_slot(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    batch: crate::net::session::wire::PacketBatch,
+) -> CommandEffects {
+    let state_ready = state
+        .query_player_opt(player_id, |ecs, entity| {
+            Some(
+                crate::game::player::extract_player_row(ecs, entity).is_some()
+                    && ecs.get::<crate::game::PlayerFlags>(entity).is_some()
+                    && ecs.get::<crate::game::PlayerStats>(entity).is_some()
+                    && ecs
+                        .get::<crate::game::player::PlayerSkillsComp>(entity)
+                        .is_some(),
+            )
+        })
+        .unwrap_or(false);
+    if !state_ready {
+        crate::game::logic::up_building::send_up_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
+
+    let bought = state
+        .modify_player(player_id, |ecs, entity| {
+            let player_stats = ecs.get::<crate::game::PlayerStats>(entity)?;
+            let skills = ecs.get::<crate::game::player::PlayerSkillsComp>(entity)?;
+            if player_stats.creds <= 1000 || skills.states.total_slots >= 34 {
+                return Some(false);
+            }
+            ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)?
+                .states
+                .total_slots += 1;
+            ecs.get_mut::<crate::game::PlayerFlags>(entity)?.dirty = true;
+            Some(true)
+        })
+        .flatten()
+        .unwrap_or(false);
+    if !bought {
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
+
+    let Some(payload) = crate::game::logic::up_building::prepare_up_page(state, player_id, -1)
+    else {
+        crate::game::logic::up_building::send_up_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    };
+    crate::net::session::wire::send_u_packet(&batch, "GU", payload.as_bytes());
+    if !crate::game::logic::up_building::update_selected_slot(state, player_id, -1) {
+        crate::game::logic::up_building::send_up_state_error(&batch);
+    }
+    let row = state.get_player_entity(player_id).and_then(|entity| {
+        crate::game::player::extract_player_row(
+            &state.ecs_read_profiled("commands.up_buyslot_snapshot"),
+            entity,
+        )
+    });
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: row.map_or_else(Vec::new, |row| {
+            vec![crate::game::SaveCommand::Player { row: Box::new(row) }]
+        }),
         ..CommandEffects::default()
     }
 }
