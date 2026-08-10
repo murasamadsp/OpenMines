@@ -919,6 +919,14 @@ apply удалён. Порядок `IN full` и `IN full` → `IN choose/close` 
 `ChatMenu`; typed completion теперь выдаёт legacy-порядок `mO → mU` и только
 после session-check фиксирует выбранный канал. Обычный `Chat` не затрагивался.
 
+**Снятие средств из pack переведено на typed effects.** Кнопки
+`pack_op:take_money` и `pack_op:take_crys` теперь проходят command
+admission, возвращают legacy `P$`/`@B` через `SessionBatch` и сохраняют
+обнулённое состояние здания через существующий `Building` save. Legacy
+обработчики и их regression paths сохранены. Player economy помечается dirty
+для существующего player snapshot пути; атомарная транзакция player+building
+не входит в этот срез.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

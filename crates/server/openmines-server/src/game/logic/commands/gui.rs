@@ -379,6 +379,12 @@ fn apply_gui_button_command(
     if let Some(payload) = button.strip_prefix("transfer:") {
         return apply_storage_transfer(state, session_id, player_id, payload);
     }
+    if let Some(rest) = button.strip_prefix("pack_op:take_money:") {
+        return apply_pack_withdrawal(state, session_id, player_id, rest, false);
+    }
+    if let Some(rest) = button.strip_prefix("pack_op:take_crys:") {
+        return apply_pack_withdrawal(state, session_id, player_id, rest, true);
+    }
     if let Some(type_code) = button.strip_prefix("bld_place:") {
         if let Some(placement) = crate::game::logic::buildings::prepare_paid_building_placement(
             state, tx, player_id, type_code,
@@ -1001,6 +1007,157 @@ fn apply_storage_transfer(
                 broadcasts: Vec::new(),
             }
         }
+    }
+}
+
+fn apply_pack_withdrawal(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    coordinates: &str,
+    crystals: bool,
+) -> CommandEffects {
+    let Some((raw_x, raw_y)) = coordinates.split_once(':') else {
+        return pack_withdrawal_error(session_id, player_id, false);
+    };
+    let (Ok(x), Ok(y)) = (raw_x.parse::<i32>(), raw_y.parse::<i32>()) else {
+        return pack_withdrawal_error(session_id, player_id, false);
+    };
+    if !crate::game::logic::pack_command::withdraw_state_ready(state, player_id, x, y) {
+        return pack_withdrawal_error(session_id, player_id, true);
+    }
+    let Some(player_entity) = state.get_player_entity(player_id) else {
+        return pack_withdrawal_error(session_id, player_id, true);
+    };
+    let Some(building_entity) = state.building_entity_at(x, y) else {
+        return pack_withdrawal_error(session_id, player_id, true);
+    };
+
+    enum WithdrawalAmount {
+        Money(i64),
+        Crystals([i64; 6]),
+    }
+    let mut packets = Vec::new();
+    let building_row = {
+        let mut ecs = state.ecs_write_profiled("commands.pack_withdrawal");
+        let amount = {
+            let Some(mut storage) =
+                ecs.get_mut::<crate::game::buildings::BuildingStorage>(building_entity)
+            else {
+                return pack_withdrawal_error(session_id, player_id, true);
+            };
+            if crystals {
+                let amount = storage.crystals;
+                storage.crystals = [0; 6];
+                WithdrawalAmount::Crystals(amount)
+            } else {
+                let amount = storage.money;
+                storage.money = 0;
+                WithdrawalAmount::Money(amount)
+            }
+        };
+
+        match amount {
+            WithdrawalAmount::Crystals(amount) => {
+                if amount.iter().any(|value| *value > 0) {
+                    let now = {
+                        let Some(mut player_stats) =
+                            ecs.get_mut::<crate::game::player::PlayerStats>(player_entity)
+                        else {
+                            return pack_withdrawal_error(session_id, player_id, true);
+                        };
+                        for (current, delta) in player_stats.crystals.iter_mut().zip(amount) {
+                            *current = current.saturating_add(delta);
+                        }
+                        player_stats.crystals
+                    };
+                    packets.push(crate::net::session::wire::make_u_packet_bytes(
+                        "@B",
+                        &crate::protocol::packets::basket(&now, 1).1,
+                    ));
+                    if let Some(mut flags) =
+                        ecs.get_mut::<crate::game::player::PlayerFlags>(player_entity)
+                    {
+                        flags.dirty = true;
+                    }
+                }
+            }
+            WithdrawalAmount::Money(amount) if amount > 0 => {
+                let Some((now, creds)) = ecs
+                    .get_mut::<crate::game::player::PlayerStats>(player_entity)
+                    .map(|mut stats| {
+                        stats.money = stats.money.saturating_add(amount);
+                        (stats.money, stats.creds)
+                    })
+                else {
+                    return pack_withdrawal_error(session_id, player_id, true);
+                };
+                packets.push(crate::net::session::wire::make_u_packet_bytes(
+                    "P$",
+                    &crate::protocol::packets::money(now, creds).1,
+                ));
+                if let Some(mut flags) =
+                    ecs.get_mut::<crate::game::player::PlayerFlags>(player_entity)
+                {
+                    flags.dirty = true;
+                }
+            }
+            WithdrawalAmount::Money(_) => {}
+        }
+
+        let Some(mut flags) = ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+        else {
+            return pack_withdrawal_error(session_id, player_id, true);
+        };
+        flags.dirty = true;
+        ecs.resource_mut::<crate::game::DirtyBuildings>()
+            .0
+            .insert(building_entity);
+        let row = crate::game::buildings::extract_building_row(&ecs, building_entity);
+        drop(ecs);
+        row
+    };
+
+    let mut effects = CommandEffects {
+        events: if packets.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }]
+        },
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    };
+    if let Some(row) = building_row {
+        effects
+            .saves
+            .push(crate::game::SaveCommand::Building { row: Box::new(row) });
+    }
+    effects
+}
+
+fn pack_withdrawal_error(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    state_error: bool,
+) -> CommandEffects {
+    let packet = if state_error {
+        crate::protocol::packets::ok_message("ЗДАНИЕ", "Состояние здания недоступно.")
+    } else {
+        crate::protocol::packets::ok_message("ЗДАНИЕ", "Некорректное действие.")
+    };
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                packet.0, &packet.1,
+            )],
+        }],
+        ..CommandEffects::default()
     }
 }
 

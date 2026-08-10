@@ -1117,6 +1117,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pack_withdrawal_gui_command_returns_typed_effect_and_building_save() {
+        let test = make_market_test_state("typed_pack_withdrawal").await;
+        let session_id = crate::game::SessionId::new(2);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        let building_entity = test.state.building_entity_at(10, 10).unwrap();
+        {
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<BuildingStorage>(building_entity)
+                .unwrap()
+                .money = 777;
+        }
+        let before_money = player_money(&test.state, test.player.id.into());
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("pack_op:take_money:10:10".to_owned()),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Building { row }]
+                if row.money_inside == 0
+        ));
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::SessionBatch { session_id: event_session, packets, .. }]
+                if *event_session == session_id
+                    && packets.iter().any(|packet| {
+                        openmines_protocol::Packet::try_decode(
+                            &mut bytes::BytesMut::from(packet.as_slice()),
+                        )
+                        .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"P$"))
+                    })
+        ));
+        assert_eq!(
+            player_money(&test.state, test.player.id.into()),
+            before_money + 777
+        );
+        assert_eq!(market_storage_money(&test.state, 10, 10), 0);
+    }
+
+    #[tokio::test]
     async fn storage_transfer_missing_player_flags_is_explicit_error_without_crystal_mutation() {
         let test = make_storage_test_state("storage_transfer_missing_player_flags").await;
         let session_id = crate::game::SessionId::new(1);

@@ -714,6 +714,10 @@ impl PlayerCommand {
             } if raw.starts_with("aucminbet:") || raw.starts_with("aucbet:") => {
                 Some(SaveKind::AuctionBet)
             }
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("pack_op:take_money:")
+                || raw.starts_with("pack_op:take_crys:") => Some(SaveKind::Building),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
