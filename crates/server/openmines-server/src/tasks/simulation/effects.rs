@@ -4,8 +4,8 @@ use super::due::DueEffect;
 use super::profiler::{ProgrammatorActionProfile, QueueProfile, SideProfile};
 use super::snapshots::flush_due_dirty_snapshots;
 use super::{
-    PendingDeathEffect, TickPendingWork, TickServices, TickStage, apply_pending_box_pickups,
-    apply_pending_deaths,
+    PendingDeathEffect, TickHeartbeat, TickPendingWork, TickServices, TickStage,
+    apply_pending_box_pickups, apply_pending_deaths,
 };
 use crate::game::GameState;
 use crate::world::WorldProvider;
@@ -468,12 +468,19 @@ fn apply_cell_conversions(
         }
     }
     queue_profile.cell_conversions_remaining = remaining.len();
-    update_buildwar_skills(state, services, remaining, converted_owners);
+    update_buildwar_skills(
+        state,
+        &services.heartbeat,
+        &services.presentation,
+        remaining,
+        converted_owners,
+    );
 }
 
 fn update_buildwar_skills(
     state: &Arc<GameState>,
-    services: &TickServices,
+    heartbeat: &TickHeartbeat,
+    presentation: &crate::net::presentation::PresentationRuntime,
     remaining: Vec<crate::game::PendingConversion>,
     converted_owners: Vec<crate::game::PlayerId>,
 ) {
@@ -482,11 +489,9 @@ fn update_buildwar_skills(
     }
     let context =
         (!converted_owners.is_empty()).then(|| crate::game::ExpContext::from_state(state));
-    services
-        .heartbeat
-        .mark(TickStage::SideCellConversionsEcsLockWait);
+    heartbeat.mark(TickStage::SideCellConversionsEcsLockWait);
     let mut ecs = state.ecs_write_profiled("tick.side_cell_conversions");
-    services.heartbeat.mark(TickStage::SideCellConversions);
+    heartbeat.mark(TickStage::SideCellConversions);
     ecs.resource_mut::<crate::game::PendingCellConversions>().0 = remaining;
     let mut packets = Vec::new();
     for owner in converted_owners {
@@ -506,10 +511,14 @@ fn update_buildwar_skills(
     }
     drop(ecs);
     for (owner, packet) in packets {
-        if let Some(tx) = state.player_sender(owner) {
-            let _ = tx.send(crate::net::session::wire::make_u_packet_bytes(
-                packet.0, &packet.1,
-            ));
+        if let Some(session_id) = state.sessions.session_for_player(owner) {
+            presentation.publish(crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id: owner,
+                packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                    packet.0, &packet.1,
+                )],
+            });
         }
     }
 }
@@ -828,6 +837,49 @@ mod tests {
             .expect("presentation worker did not deliver programmator packet")
             .expect("test outbox closed");
         assert_eq!(delivered, expected);
+        presentation.shutdown();
+    }
+
+    #[tokio::test]
+    async fn buildwar_skill_update_uses_typed_session_effect() {
+        let test = crate::test_support::ServerTestHarness::new("buildwar_effect", "builder").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(1);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerSkillsComp>(entity)
+                .map(|mut skills| {
+                    skills.states.skills.insert(
+                        0,
+                        crate::db::SkillEntry {
+                            code: crate::game::skills::SkillType::BuildWar.code().to_owned(),
+                            level: 1,
+                            exp: 0.0,
+                        },
+                    );
+                })
+        });
+
+        let presentation = crate::net::presentation::PresentationRuntime::start(test.state.clone());
+        let heartbeat = super::super::TickHeartbeat::new(Instant::now());
+        update_buildwar_skills(
+            &test.state,
+            &heartbeat,
+            &presentation,
+            Vec::new(),
+            vec![player_id],
+        );
+
+        let packet = tokio::time::timeout(Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("presentation worker did not deliver BuildWar update")
+            .expect("test outbox closed");
+        let mut encoded = bytes::BytesMut::from(packet.as_slice());
+        let decoded = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("BuildWar packet must decode")
+            .expect("BuildWar packet must be complete");
+        assert_eq!(decoded.event_name, *b"@S");
         presentation.shutdown();
     }
 
