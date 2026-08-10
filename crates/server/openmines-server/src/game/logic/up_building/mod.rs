@@ -185,16 +185,16 @@ fn handle_skill_select(
 
 /// Upgrade the skill in the currently selected slot (increase level by 1).
 /// C# ref: `Skill.Up(Player p)` — requires `exp >= Experience`.
-fn handle_skill_upgrade(
+pub fn handle_skill_upgrade(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
-) {
+) -> bool {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
-        return;
+        return false;
     };
     if selected_slot < 0 {
-        return;
+        return false;
     }
 
     struct UpgradePackets {
@@ -227,8 +227,12 @@ fn handle_skill_upgrade(
                 }
                 // Цена в деньгах: base * текущий уровень (config-driven). В C#
                 // апгрейд бесплатный — намеренная экономик-девиация (DEVIATIONS.md).
-                let cost =
-                    state.config.gameplay.skills.upgrade_cost_base * i64::from(entry.level).max(1);
+                let cost = state
+                    .config
+                    .gameplay
+                    .skills
+                    .upgrade_cost_base
+                    .saturating_mul(i64::from(entry.level).max(1));
                 (stype, need, cost, next_level)
             };
 
@@ -347,6 +351,9 @@ fn handle_skill_upgrade(
         }
         // Re-render the page with the same slot selected
         send_up_page(state, tx, pid, selected_slot);
+        true
+    } else {
+        false
     }
 }
 

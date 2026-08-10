@@ -337,6 +337,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skill_upgrade_gui_command_returns_typed_player_save_in_legacy_order() {
+        let mut test = make_up_test_state("typed_skill_upgrade").await;
+        test.player.money = 1_000;
+        test.player.skills.skills.get_mut(&2).unwrap().exp = 1.0;
+        let session_id = crate::game::SessionId::new(86);
+        let (tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        open_test_up_gui(&test.state, &tx, test.player.id.into());
+        drain_events(&mut rx);
+
+        let _ = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("skill:2".to_owned()),
+            },
+        );
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("upgrade".to_owned()),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Player { .. }]
+        ));
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("upgrade must return one session batch");
+        };
+        let names: Vec<[u8; 2]> = packets
+            .iter()
+            .filter_map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .ok()
+                .flatten()
+                .map(|packet| packet.event_name)
+            })
+            .collect();
+        assert_eq!(names, vec![*b"P$", *b"@S", *b"LV", *b"@L", *b"sp", *b"GU"]);
+        assert_eq!(player_money(&test.state, test.player.id.into()), 900);
+        assert_eq!(skill_level_exp(&test.state, test.player.id.into(), 2).0, 2);
+    }
+
+    #[tokio::test]
     async fn skill_upgrade_sends_health_packet_for_non_health_skill() {
         let mut test = make_up_test_state("upgrade_health_packet").await;
         test.player.money = 1_000;

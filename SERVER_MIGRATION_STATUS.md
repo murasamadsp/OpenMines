@@ -27,7 +27,7 @@ git diff --check
 3. Перейти к Этапу 2 плана миграции: постепенному переносу хэндлеров сессий на команды с очисткой baseline-файла `docs/reference/ecs_bypass_baseline.txt`.
 4. ~~Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.~~ **Готово.**
 5. ~~Перевести покупку слота Up (`buyslot`) на typed mutation/effect/persistence путь с сохранением legacy `GU` wire.~~ **Готово.**
-6. Перевести durable Up `delete:{slot}` и `install:{code}#{slot}` на typed mutation/effect/persistence путь; `upgrade` оставить отдельным срезом из-за порядка `P$/@S/LV/@L/sp/GU`.
+6. ~~Перевести durable Up `delete:{slot}`, `install:{code}#{slot}` и `upgrade` на typed mutation/effect/persistence путь с сохранением порядка `P$/@S/LV/@L/sp/GU`.~~ **Готово.**
 7. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
@@ -986,14 +986,19 @@ regression tests.
 **Выбор слота Up (`skill:{slot}`) переведён на typed session effect.** Подготовка
 `up:{json}` и изменение `current_window` больше не идут через legacy handler и
 не создают durable save; command layer возвращает тот же `GU` через
-`SessionBatch`. Durable `upgrade`/`delete`/`install` пока остаются
-отдельным следующим Up-срезом.
+`SessionBatch`.
 
 **`buyslot` переведён на typed Player persistence.** Проверки `creds > 1000` и
 лимита слотов, изменение `PlayerSkillsComp`, dirty semantics и `GU`-рендер
 сохранены; успешная операция возвращает полный `SaveCommand::Player`, а
 неуспешная остаётся тихим legacy no-op. Legacy Up handler для этой кнопки
 больше не вызывается из production command path.
+
+**`delete`, `install` и `upgrade` переведены на typed Player persistence.**
+Командный путь вызывает отдельные typed mutation helpers, возвращает полный
+`SaveCommand::Player` только после успешной мутации и сохраняет legacy wire.
+Для `upgrade` проверен точный порядок `P$ → @S → LV → @L → sp → GU`; стоимость
+рассчитывается безопасным saturating multiply.
 
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.

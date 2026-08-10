@@ -2229,6 +2229,9 @@ pub(super) fn apply_up_button(
             ..CommandEffects::default()
         };
     }
+    if button == "upgrade" {
+        return apply_up_skill_upgrade(state, player_id, session_id, batch);
+    }
     if let Some(slot) = button
         .strip_prefix("delete:")
         .and_then(|slot| slot.parse().ok())
@@ -2409,6 +2412,36 @@ fn apply_up_skill_delete(
             state.get_player_entity(player_id).and_then(|entity| {
                 crate::game::player::extract_player_row(
                     &state.ecs_read_profiled("commands.up_delete_snapshot"),
+                    entity,
+                )
+            })
+        })
+        .flatten();
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: row.map_or_else(Vec::new, |row| {
+            vec![crate::game::SaveCommand::Player { row: Box::new(row) }]
+        }),
+        ..CommandEffects::default()
+    }
+}
+
+fn apply_up_skill_upgrade(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    batch: crate::net::session::wire::PacketBatch,
+) -> CommandEffects {
+    let changed = crate::game::logic::up_building::handle_skill_upgrade(state, &batch, player_id);
+    let row = changed
+        .then(|| {
+            state.get_player_entity(player_id).and_then(|entity| {
+                crate::game::player::extract_player_row(
+                    &state.ecs_read_profiled("commands.up_upgrade_snapshot"),
                     entity,
                 )
             })
