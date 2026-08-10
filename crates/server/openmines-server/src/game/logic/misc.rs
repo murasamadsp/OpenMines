@@ -420,12 +420,39 @@ fn reset_prog_ty(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     }
 }
 
+#[cfg(test)]
 pub fn handle_prog_rename_prompt_ty(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
     pid: PlayerId,
     payload: &[u8],
 ) {
+    rename_prompt_ty(state, tx, pid, payload);
+}
+
+pub fn apply_prog_rename_prompt_ty(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: PlayerId,
+    payload: &[u8],
+) -> crate::game::CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    rename_prompt_ty(state, &batch, player_id, payload);
+    let packets = batch.into_packets();
+    if packets.is_empty() {
+        return crate::game::CommandEffects::default();
+    }
+    crate::game::CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        }],
+        ..crate::game::CommandEffects::default()
+    }
+}
+
+fn rename_prompt_ty(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, payload: &[u8]) {
     // C# ref Session.cs:150 `StaticGUI.Rename(player, pren.Id)` — открывает
     // диалог переименования с полем ввода. pren.Id — ID программы из payload.
     let prog_id = std::str::from_utf8(payload)

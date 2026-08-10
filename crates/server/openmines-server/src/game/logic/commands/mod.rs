@@ -655,9 +655,7 @@ fn apply_program_command(
     let mut effects = CommandEffects::default();
     match command {
         crate::game::PlayerCommand::ProgramAction { event, payload } => {
-            if state.sessions.session_for_player(player_id) == Some(session_id)
-                && let Some(tx) = state.sessions.outbox_for_session(session_id)
-            {
+            if state.sessions.session_for_player(player_id) == Some(session_id) {
                 match event.as_str() {
                     "PROG" => match decode_program_save(&payload) {
                         None => {
@@ -741,9 +739,11 @@ fn apply_program_command(
                     "pRST" => effects.append(crate::game::logic::misc::apply_prog_reset_ty(
                         state, session_id, player_id,
                     )),
-                    "PREN" => crate::game::logic::misc::handle_prog_rename_prompt_ty(
-                        state, &tx, player_id, &payload,
-                    ),
+                    "PREN" => {
+                        effects.append(crate::game::logic::misc::apply_prog_rename_prompt_ty(
+                            state, session_id, player_id, &payload,
+                        ))
+                    }
                     "PCOP" => {
                         let Some(program) = std::str::from_utf8(&payload)
                             .ok()
@@ -3492,6 +3492,71 @@ mod tests {
             }),
             Some((false, false))
         );
+    }
+
+    #[tokio::test]
+    async fn program_rename_prompt_returns_typed_gui_or_status_effect() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "program_rename_prompt_typed",
+            "programmer-rename",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(211);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let valid = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PREN".to_owned(),
+                payload: Bytes::from_static(b"42"),
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = valid.events.as_slice() else {
+            panic!("valid rename prompt must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("rename prompt packet must decode")
+        .expect("rename prompt packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        let payload = std::str::from_utf8(&packet.payload).expect("HORB payload must be UTF-8");
+        assert!(payload.contains("ПЕРЕИМЕНОВАТЬ"));
+        assert!(payload.contains("rename:42:%I%"));
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_window.clone())
+            }),
+            Some(Some("pren:42".to_owned()))
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let invalid = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PREN".to_owned(),
+                payload: Bytes::from_static(b"not-an-id"),
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = invalid.events.as_slice()
+        else {
+            panic!("invalid rename prompt must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("rename status packet must decode")
+        .expect("rename status packet must be complete");
+        assert_eq!(packet.event_name, *b"@P");
+        assert_eq!(packet.payload, b"0".as_slice());
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
