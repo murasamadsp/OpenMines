@@ -1880,15 +1880,55 @@ pub(super) fn apply_up_button(
     button: &str,
 ) -> CommandEffects {
     let batch = crate::net::session::wire::PacketBatch::default();
+    let durable = button == "upgrade"
+        || button == "buyslot"
+        || button.starts_with("delete:")
+        || button.starts_with("install:");
+    if durable
+        && !state
+            .query_player_opt(player_id, |ecs, entity| {
+                Some(
+                    crate::game::player::extract_player_row(ecs, entity).is_some()
+                        && ecs.get::<crate::game::PlayerFlags>(entity).is_some(),
+                )
+            })
+            .unwrap_or(false)
+    {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("UP", "Состояние апгрейда недоступно.").1,
+        );
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    }
     crate::game::logic::up_building::handle_up_button(state, &batch, player_id, button);
-    CommandEffects {
+    let mut effects = CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
             session_id,
             player_id,
             packets: batch.into_packets(),
         }],
         ..CommandEffects::default()
+    };
+    if durable
+        && let Some(entity) = state.get_player_entity(player_id)
+        && let Some(row) = crate::game::player::extract_player_row(
+            &state.ecs_read_profiled("commands.up_snapshot"),
+            entity,
+        )
+    {
+        effects
+            .saves
+            .push(crate::game::SaveCommand::Player { row: Box::new(row) });
     }
+    effects
 }
 
 #[cfg(test)]

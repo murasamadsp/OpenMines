@@ -954,6 +954,12 @@ completion.
 ошибочные wire-ответы, меняет настройки под ECS write lock, помечает здание
 dirty, возвращает один refreshed `GU` и один полный `SaveCommand::Building`.
 
+**Durable Up-кнопки переведены на typed Player persistence.** `upgrade`,
+`delete`, `install` и `buyslot` сохраняют текущий `SessionBatch` wire, но теперь
+до мутации проходят `SaveKind::Player` admission и после успешного handler-а
+возвращают полный `SaveCommand::Player`. `skill:<slot>` оставлен
+presentation-only: он не создаёт durable save.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

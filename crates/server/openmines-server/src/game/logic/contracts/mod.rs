@@ -270,6 +270,13 @@ fn classify_gui_button(button: &str) -> GuiButtonKind {
     }
 }
 
+fn is_player_mutation_button(button: &str) -> bool {
+    button == "upgrade"
+        || button == "buyslot"
+        || button.starts_with("delete:")
+        || button.starts_with("install:")
+}
+
 #[derive(Debug, Clone)]
 pub struct TeleportGuiView {
     pub source: crate::game::WorldPos,
@@ -720,6 +727,9 @@ impl PlayerCommand {
                 || raw.starts_with("pack_op:take_crys:")
                 || raw.starts_with("pack_save:")
                 || raw.starts_with("resp_save:") => Some(SaveKind::Building),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if is_player_mutation_button(raw) => Some(SaveKind::Player),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
