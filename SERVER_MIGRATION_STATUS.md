@@ -18,7 +18,7 @@ git log -1 --oneline
 git diff --check
 ```
 
-Ожидаемый code checkpoint: Настроен ecs bypass baseline, ecs-bypass-guard.py, test_ecs_bypass_baseline_guard и WebSnapshot для stats/map.
+Ожидаемый code checkpoint: Настроен ecs bypass baseline, guards/ecs-bypass.py, test_ecs_bypass_baseline_guard и WebSnapshot для stats/map.
 
 Дальше:
 
@@ -270,7 +270,7 @@ event/due model и не появился injected simulation clock. Просты
 
 | Этап | Готовность | Фактическое состояние |
 | --- | ---: | --- |
-| 0. Evidence и guards | 80% | release traces, CPU/off-CPU classification, strict clippy, architecture guard, ecs-bypass-guard.py, test_ecs_bypass_baseline_guard |
+| 0. Evidence и guards | 80% | release traces, CPU/off-CPU classification, strict clippy, architecture guard, guards/ecs-bypass.py, test_ecs_bypass_baseline_guard |
 | 1. Session/output owner | 80% | `SessionId`, bounded outbox, `SessionHub`, presentation-owned PlayerInit, common authenticated envelope и movement coalescing есть |
 | 2. Command/effects boundary | 45% | connect/disconnect, move, teleport-open, delayed consumables, building delete и ProgramCreate перенесены; GUI/economy/chat/clan/admin ещё имеют bypass |
 | 3. Persistence owner | 50% | bounded writer, batching, retry, writer drain и `ProgramCreate` completion есть; GUI/auction bypass и crash journal остаются |
@@ -336,7 +336,7 @@ event/due model и не появился injected simulation clock. Просты
 
 - **Ликвидация ECS-блокировок в веб-API**: Для рутов `/stats` и `/api/map` внедрен фоновый сбор снимков `WebSnapshot` в Simulation Thread (раз в секунду). Сетевые Axum-руты теперь читают только иммутабельный `Arc<WebSnapshot>` без блокировок.
 - **Внедрение ECS Bypass Barrier**: Создан снимок текущего архитектурного долга `docs/reference/ecs_bypass_baseline.txt`.
-- **Автоматический гвард**: Написан скрипт `scripts/ecs-bypass-guard.py` и интегрирован в `scripts/arch-guard.sh`. Любой новый прямой вызов ECS из `net/session` блокируется.
+- **Автоматический гвард**: Написан скрипт `scripts/guards/ecs-bypass.py` и интегрирован в `scripts/guards/arch.sh`. Любой новый прямой вызов ECS из `net/session` блокируется.
 - **Интеграционный тест**: Добавлен тест `test_ecs_bypass_baseline_guard` в `tick/tests.rs` для проверки baseline на уровне `cargo test` с поддержкой автогенерации.
 - **Оптимизация Botspots**: Метод `remove_botspot_runtime` переведен с линейного сканирования O(N) чанков на точечное O(1) удаление по координатам чанка.
 
@@ -528,7 +528,7 @@ Quiescing
 6. `crates/server/openmines-server/src/tasks/simulation/tick.rs`: добавить узкий
    quiescing cycle без schedules, bots render и periodic dirty snapshot
    producers.
-7. `scripts/arch-guard.sh`: запретить возврат `enqueue_command` из
+7. `scripts/guards/arch.sh`: запретить возврат `enqueue_command` из
    `tasks/simulation/effects.rs`.
 
 Не менять порядок shutdown в `tasks/mod.rs` и `main.rs`: simulation сейчас
@@ -550,7 +550,7 @@ Targeted gate:
 CARGO_INCREMENTAL=0 cargo test -p openmines-server tasks::simulation:: -- --nocapture
 CARGO_INCREMENTAL=0 cargo test -p openmines-server game::logic::due:: -- --nocapture
 CARGO_INCREMENTAL=0 cargo clippy -p openmines-server --all-targets --all-features -- -D warnings -W clippy::pedantic -W clippy::nursery
-scripts/arch-guard.sh
+scripts/guards/arch.sh
 scripts/dev-smoke.sh
 ```
 
@@ -606,7 +606,7 @@ Release runtime gate на одном `8x8` local fixture:
 - Введен метод `fill_gun_candidate_batch`, собирающий кандидатов-пушек в чанках вокруг активных игроков.
 - Исправлено отсутствие dirty-меток для пушек: при изменении заряда (charge) пушка помечается в `DirtyBuildings` для сохранения.
 - Устранена флапающая ошибка/коллизия базы данных в тестах `schedule_intervals_come_from_config` путем изоляции временных путей SQLite для параллельных тестов.
-- Все тесты, clippy, `arch-guard.sh` и `dev-smoke.sh` успешно проходят.
+- Все тесты, clippy, `guards/arch.sh` и `dev-smoke.sh` успешно проходят.
 
 ## Завершённый кодовый срез
 
@@ -859,7 +859,7 @@ monotonic time, с delay - точному `now + delay`.
 `HorbDelivery` trait изменён с `&Outbox` на `&dyn PacketSink` для поддержки
 `PacketBatch`. Read-only tab switching (`sellcrys`/`buycrys`) остаётся в sync fast path.
 
-Проверка: 5 market tests, 637 total tests, strict clippy, fmt, wire smoke.
+Проверка: 5 market tests, 724 total tests, strict clippy, fmt, wire smoke.
 
 **Auction grid (`auc`) закрыт как первый auction vertical slice.** Кнопка
 `auc` больше не запускает legacy `spawn_gui_async_task`: admission резервирует
@@ -949,7 +949,7 @@ typed effects.** Crafting собирает session packets, building save и nea
 block update без прямой доставки из legacy handler; clan mutation buttons
 (`clan_request`, invite accept/decline/send) проходят существующий
 `ClanCommand` completion path. Legacy handlers сохранены для regression tests.
-Полный hook подтвердил `668/668` тестов, 2 skipped и legacy wire smoke.
+Полный hook подтвердил `724/724` тестов, 2 skipped и legacy wire smoke.
 Попытка перенести `open_buildings` в typed `BuildingMenu` откатана: empty-
 building HORB потерял legacy Spot/Up routes, что обнаружил smoke; этот путь
 остаётся legacy до сохранения полного wire поведения.
@@ -1063,6 +1063,32 @@ spawn.
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
+## Завершённый кодовый срез
+
+**Wire-in-lock regression в `hurt_player_pure` исправлен.** Коммит `1e0c8cc2`
+«Route hurt output through typed batch» заменил `player_sender()` + `conn_tx.send()`
+на `tx: &dyn PacketSink`, но оставил `send_u_packet` и `send_death_state_error`
+внутри `modify_player` closure (`death.rs:485,499`). Guard
+`scripts/guards/no-wire-in-lock.sh` выявил 2 нарушения. Исправление:
+
+1. Внутри closure собиратель `deferred: Vec<(&'static str, Vec<u8>)>` вместо прямой
+   `send_u_packet`/`send_death_state_error`.
+2. После `modify_player().flatten()` (когда ECS write-lock уже снят) — итерация
+   `deferred.into_iter()` и `send_u_packet` для каждого пакета.
+3. Семантика не меняется: те же `OK`/`@S`/`@L` пакеты, тот же порядок, но без
+   удержания ECS lock во время wire-кодирования.
+4. `send_death_state_error` сохранена как `pub fn` — всё ещё используется в
+   `tasks/simulation/mod.rs:283` вне closure.
+
+**Pre-commit gap закрыт.** `quality_run_no_wire_in_lock` (уже существовал в
+`scripts/quality/common.sh`) теперь вызывается из `scripts/quality/pre-commit.sh`
+после `quality_run_arch_guard`. До этого guard был только в `ci.sh`, поэтому
+регрессии просачивались через `git commit`.
+
+Проверка: `bash scripts/guards/no-wire-in-lock.sh` → `OK: no wire-in-lock violations`,
+`cargo test -p openmines-server game::logic::death` → 4 passed, 0 failed, strict clippy,
+`cargo fmt --all -- --check`, `git diff --check`.
+
 ## Wire-decoupling: &Outbox → &dyn PacketSink (полная миграция)
 
 Все game logic функции переведены с `&Outbox` на `&dyn PacketSink`:
@@ -1081,7 +1107,7 @@ Wire-in-lock violations были в:
 - `auction_gui.rs` (create_order, refund) — `send_inventory` через `PacketBatch`
 - `market_gui.rs`, `pack_gui.rs`, `buildings.rs`, `dig_build.rs`, `movement.rs`
 
-Проверка: 637 tests, clippy -D warnings, guard 0 violations.
+Проверка: 724 tests, clippy -D warnings, guard 0 violations.
 
 ## Видимые milestones
 
