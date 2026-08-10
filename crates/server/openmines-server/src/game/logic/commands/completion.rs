@@ -585,14 +585,12 @@ pub fn apply_persistence_completion(
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();
             }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
+            let batch = crate::net::session::wire::PacketBatch::default();
             match result {
                 crate::game::ProgramSaveResult::Saved { program_name } => {
                     crate::game::logic::misc::apply_saved_program_to_tick_state(
                         state,
-                        &tx,
+                        &batch,
                         request.player_id,
                         request.program_id,
                         &program_name,
@@ -605,9 +603,8 @@ pub fn apply_persistence_completion(
                         program_id = request.program_id,
                         "Program save rejected: missing or foreign row"
                     );
-                    return programmator_error_effect(
-                        request.session_id,
-                        request.player_id,
+                    crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                        &batch,
                         "Не удалось сохранить программу.",
                     );
                 }
@@ -618,14 +615,20 @@ pub fn apply_persistence_completion(
                         error = message,
                         "Program save permanently rejected by persistence"
                     );
-                    return programmator_error_effect(
-                        request.session_id,
-                        request.player_id,
+                    crate::game::logic::gui::programmator_gui::send_programmator_action_error(
+                        &batch,
                         "Не удалось сохранить программу.",
                     );
                 }
             }
-            CommandEffects::default()
+            CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id: request.session_id,
+                    player_id: request.player_id,
+                    packets: batch.into_packets(),
+                }],
+                ..CommandEffects::default()
+            }
         }
         crate::game::PersistenceCompletion::ProgramCreated { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {

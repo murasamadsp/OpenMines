@@ -3386,6 +3386,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn programmator_save_success_preserves_typed_legacy_packet_order() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "programmator_save_success",
+            "programmer-save-success",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(215);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramSaved {
+                request: crate::game::ProgramSaveRequest {
+                    player_id,
+                    session_id,
+                    program_id: 42,
+                    source: String::new(),
+                },
+                result: crate::game::ProgramSaveResult::Saved {
+                    program_name: "empty".to_owned(),
+                },
+            },
+        );
+
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("program save success must return one typed session batch");
+        };
+        let names = packets
+            .iter()
+            .map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .expect("program save packet must decode")
+                .expect("program save packet must be complete")
+                .event_name
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![*b"Gu", *b"@P", *b"BH", *b"OK"]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn auction_grid_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("auction_grid", "auction-grid").await;
