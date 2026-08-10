@@ -79,9 +79,9 @@ read model и spatial multicore - ещё впереди.
   доказывает дорогой hazard lookup, зато снова показывает цену global lock.
 
 Вывод: M1 закрыл только нулевой idle. Active command paths, один idle player и
-lock isolation не закрыты. Chat navigation и slash-command fallback всё ещё
-должны пройти тот же typed command/apply/persistence/effects boundary, но
-обычный `Chat` переносить повторно запрещено.
+lock isolation не закрыты. Chat navigation и slash-command fallback теперь
+проходят тот же typed command/apply/persistence/effects boundary; обычный
+`Chat` переносить повторно запрещено.
 
 ### Последний воспроизведённый movement stress
 
@@ -684,7 +684,11 @@ reconnect не повторяет уже показанную историю. `C
 старые handlers остаются только под `cfg(test)` до переноса их тест-кейсов.
 
 Проверка: targeted command/admission tests, `cargo check -p openmines-server`,
-`cargo fmt --all` и `git diff --check`.
+`cargo test -p openmines-server --all-targets local_chat_slash_is_applied_as_a_typed_command`,
+strict workspace clippy, `cargo fmt --all` и `git diff --check`. Старый
+`commands_social::handle_chat_command` и async clan helpers сохранены для
+legacy regression tests, но исключены из production compilation; production
+slash fallback теперь сразу возвращает `CommandEffects`.
 
 **Programmer menu (`Pope`) закрыт.** `OpenProgrammer`, `GUI_ prog`, `PROG` без
 выбранной программы и `PCOP` резервируют typed durable work до apply.

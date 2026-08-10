@@ -20,10 +20,15 @@
 
 use crate::game::logic::horb::{Button, Horb, HorbDelivery};
 use crate::game::{GameState, PlayerId};
+#[cfg(test)]
 use crate::net::session::util::{net_u8_clamped, net_u16_nonneg};
 use crate::net::session::wire::PacketSink;
-use crate::net::session::wire::{encode_hb_bundle, make_u_packet_bytes, send_u_packet};
-use crate::protocol::packets::{clan_hide, clan_show, hb_bot, hb_bundle, money, ok_message};
+#[cfg(test)]
+use crate::net::session::wire::encode_hb_bundle;
+use crate::net::session::wire::{make_u_packet_bytes, send_u_packet};
+#[cfg(test)]
+use crate::protocol::packets::{clan_hide, hb_bot, hb_bundle, money};
+use crate::protocol::packets::{clan_show, ok_message};
 use std::sync::Arc;
 
 // ─── Clans ─────────────────────────────────────────────────────────────
@@ -32,6 +37,7 @@ fn send_clan_state_error(tx: &dyn PacketSink) {
     send_clan_ok(tx, "КЛАН", "Состояние игрока недоступно.");
 }
 
+#[cfg(test)]
 fn online_player_state_ready(state: &Arc<GameState>, pid: PlayerId) -> bool {
     if state.get_player_entity(pid).is_none() {
         return true;
@@ -44,6 +50,7 @@ fn online_player_state_ready(state: &Arc<GameState>, pid: PlayerId) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
 fn ensure_online_player_state_ready(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -247,12 +254,14 @@ pub async fn handle_clan_preview(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 enum DebitResult {
     Ok { creds: i64, money: i64 },
     InsufficientFunds,
     StateError,
 }
 
+#[cfg(test)]
 pub async fn handle_clan_create(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -361,6 +370,7 @@ pub async fn handle_clan_create(
     }
 }
 
+#[cfg(test)]
 fn refund_clan_credits(state: &Arc<GameState>, pid: PlayerId) {
     state.modify_player(pid, |ecs, entity| {
         if let Some(mut s) = ecs.get_mut::<crate::game::PlayerStats>(entity) {
@@ -373,6 +383,7 @@ fn refund_clan_credits(state: &Arc<GameState>, pid: PlayerId) {
     });
 }
 
+#[cfg(test)]
 pub async fn handle_clan_leave(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     let clan_id = match player_clan_id(state, pid) {
         Some(id) => id,
@@ -813,6 +824,7 @@ pub async fn handle_clan_accept(
     }
 }
 
+#[cfg(test)]
 pub async fn handle_clan_kick(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -869,6 +881,7 @@ pub async fn handle_clan_kick(
     handle_clan_members_view(state, tx, pid).await;
 }
 
+#[cfg(test)]
 pub async fn handle_clan_kick_by_name(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,

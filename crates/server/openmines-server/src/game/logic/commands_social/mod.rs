@@ -19,16 +19,21 @@
 )]
 
 use crate::db::players::{PlayerRow, Role, SkillEntry};
+#[cfg(test)]
 use crate::game::logic::buildings::{
     building_extra_for_pack_type, modify_pack_with_db, validate_pack_footprint,
 };
+#[cfg(test)]
 use crate::game::logic::chunks::check_chunk_changed;
+#[cfg(test)]
 use crate::game::logic::clans::{handle_clan_create, handle_clan_kick_by_name, handle_clan_leave};
 use crate::game::logic::numeric::saturating_trunc_f32_to_i32;
+#[cfg(test)]
 use crate::game::player::PlayerInventory;
 use crate::game::player::{PlayerFlags, PlayerSkillsComp, PlayerStats};
 use crate::game::skills::MAX_SKILL_SLOTS;
 use crate::game::{ClanAction, SlashCommand, SlashPackCommand};
+#[cfg(test)]
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::outbound::player_sync::{
     send_player_basket, send_player_health, send_player_level, send_player_skills,
@@ -40,7 +45,10 @@ use crate::game::skills::{SkillType, get_player_skill_effect};
 use crate::game::{GameState, PlayerId};
 use crate::net::session::wire::PacketSink;
 use crate::net::session::wire::send_u_packet;
-use crate::protocol::packets::{money, ok_message, tp};
+use crate::protocol::packets::ok_message;
+#[cfg(test)]
+use crate::protocol::packets::{money, tp};
+#[cfg(test)]
 use crate::world::WorldProvider;
 use std::sync::Arc;
 
@@ -59,10 +67,13 @@ const CMD_USAGE_PACK_TYPE: &str = "Использование: /pack type X Y TY
 const CMD_USAGE_PACK: &str = "Команды: /pack owner X Y OWNER_ID | /pack clan X Y CLAN_ID | /pack move X Y NX NY | /pack type X Y TYPE";
 const CMD_USAGE_KICK: &str = "Использование: /kick ИМЯ";
 const CMD_USAGE_ROLE: &str = "Использование: /role ИМЯ admin|mod|player";
+#[cfg(test)]
 const CMD_USAGE_CLAN_CREATE: &str = "Использование: /clan create ИМЯ ТЕГ";
+#[cfg(test)]
 const CMD_USAGE_CLAN_KICK: &str = "Использование: /clan kick ИМЯ";
 const CMD_USAGE_CLAN: &str = "Команды: /clan create ИМЯ ТЕГ | /clan leave | /clan kick ИМЯ";
 
+#[cfg(test)]
 const ADMIN_COMMAND_NO_RIGHTS: &str = "Нет прав на админ-команду";
 
 pub fn parse_slash_command(message: &str) -> SlashCommand {
@@ -336,6 +347,7 @@ pub fn handle_admin_action(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Pla
     }
 }
 
+#[cfg(test)]
 fn ensure_admin(tx: &dyn PacketSink, state: &Arc<GameState>, pid: PlayerId) -> bool {
     if is_admin_command(state, pid) {
         true
@@ -347,6 +359,7 @@ fn ensure_admin(tx: &dyn PacketSink, state: &Arc<GameState>, pid: PlayerId) -> b
 
 // ─── Main dispatcher ────────────────────────────────────────────────────────
 
+#[cfg(test)]
 pub async fn handle_chat_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -421,6 +434,7 @@ pub async fn handle_chat_command(
 
 // ─── /giveall ───────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     if !ensure_admin(tx, state, pid) {
         return;
@@ -479,6 +493,7 @@ fn handle_chat_giveall_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid:
 
 // ─── /give ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_give_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -526,6 +541,7 @@ fn handle_chat_give_command(
 
 // ─── /money ─────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_money_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -550,6 +566,7 @@ fn handle_chat_money_command(
 
 // ─── /moneyall ──────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 async fn handle_chat_money_all_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -611,6 +628,7 @@ async fn handle_chat_money_all_command(
 
 // ─── /skill ────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 async fn handle_chat_skill_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -734,6 +752,7 @@ pub fn admin_skill_codes_help() -> String {
         .join(", ")
 }
 
+#[cfg(test)]
 fn resolve_online_player_arg(
     state: &Arc<GameState>,
     self_pid: PlayerId,
@@ -867,6 +886,7 @@ fn choose_admin_skill_slot(
 
 // ─── /tp ────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_teleport_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -930,6 +950,7 @@ fn handle_chat_teleport_command(
 
 // ─── /heal ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_heal_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     if !ensure_admin(tx, state, pid) {
         return;
@@ -945,6 +966,7 @@ fn handle_chat_heal_command(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Pl
 
 // ─── /clan ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 async fn handle_chat_clan_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -963,6 +985,7 @@ async fn handle_chat_clan_command(
     }
 }
 
+#[cfg(test)]
 async fn handle_chat_clan_create_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -978,6 +1001,7 @@ async fn handle_chat_clan_create_command(
     handle_clan_create(state, tx, pid, name, tag).await;
 }
 
+#[cfg(test)]
 async fn handle_chat_clan_kick_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -994,6 +1018,7 @@ async fn handle_chat_clan_kick_command(
 
 // ─── /pack ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_pack_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -1016,6 +1041,7 @@ fn handle_chat_pack_command(
     }
 }
 
+#[cfg(test)]
 fn handle_pack_owner_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_OWNER, 0, 1) {
         Some(p) => p,
@@ -1037,6 +1063,7 @@ fn handle_pack_owner_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts:
     }
 }
 
+#[cfg(test)]
 fn handle_pack_clan_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_CLAN, 0, 1) {
         Some(p) => p,
@@ -1058,6 +1085,7 @@ fn handle_pack_clan_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: 
     }
 }
 
+#[cfg(test)]
 fn handle_pack_move_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_MOVE, 0, 1) {
         Some(p) => p,
@@ -1096,6 +1124,7 @@ fn handle_pack_move_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: 
     }
 }
 
+#[cfg(test)]
 fn handle_pack_type_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: &[&str]) {
     let (x, y) = match parse_pack_pos(parts, tx, CMD_USAGE_PACK_TYPE, 0, 1) {
         Some(p) => p,
@@ -1135,6 +1164,7 @@ fn handle_pack_type_command(state: &Arc<GameState>, tx: &dyn PacketSink, parts: 
 
 // ─── /kick ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn handle_chat_kick_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -1171,6 +1201,7 @@ fn handle_chat_kick_command(
 
 // ─── /role ──────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
 async fn handle_chat_role_command(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -1223,6 +1254,7 @@ async fn handle_chat_role_command(
 
 // ─── Parsing helpers ────────────────────────────────────────────────────────
 
+#[cfg(test)]
 fn parse_required_arg<T: std::str::FromStr>(
     tx: &dyn PacketSink,
     args: &[&str],
@@ -1235,6 +1267,7 @@ fn parse_required_arg<T: std::str::FromStr>(
     })
 }
 
+#[cfg(test)]
 fn parse_optional_arg_with_default<T: std::str::FromStr>(
     tx: &dyn PacketSink,
     args: &[&str],
@@ -1252,6 +1285,7 @@ fn parse_optional_arg_with_default<T: std::str::FromStr>(
         .unwrap_or(Some(def))
 }
 
+#[cfg(test)]
 fn parse_pack_pos(
     parts: &[&str],
     tx: &dyn PacketSink,

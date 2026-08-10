@@ -414,10 +414,10 @@ fn apply_chat_command(
 ) -> CommandEffects {
     match command {
         crate::game::PlayerCommand::LocalChat { message } => {
-            apply_local_chat_command(state, player_id, message)
+            apply_local_chat_command(state, player_id, session_id, message)
         }
         crate::game::PlayerCommand::ChannelChat { payload } => {
-            apply_channel_chat_command(state, player_id, payload)
+            apply_channel_chat_command(state, player_id, session_id, payload)
         }
         crate::game::PlayerCommand::ChatResync { payload } => {
             let channel_tag = state
@@ -545,6 +545,7 @@ fn apply_chat_command(
 fn apply_local_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
     message: String,
 ) -> CommandEffects {
     let effects = CommandEffects::default();
@@ -558,23 +559,20 @@ fn apply_local_chat_command(
     if crate::game::logic::chat::handle_local_chat_non_command(state, &tx, player_id, &message) {
         return effects;
     }
-    let task_state = state.clone();
-    spawn_session_async_task(state, "local_chat_command", async move {
-        crate::game::logic::commands_social::handle_chat_command(
-            &task_state,
-            &tx,
-            player_id,
-            message.trim(),
-        )
-        .await;
-    });
-    effects
+    let command = crate::game::logic::commands_social::parse_slash_command(message.trim());
+    slash::apply_slash_command(
+        &crate::game::logic::kernel_context::KernelContext::new(state),
+        player_id,
+        session_id,
+        command,
+    )
 }
 
 #[allow(clippy::needless_pass_by_value)]
 fn apply_channel_chat_command(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
     payload: bytes::Bytes,
 ) -> CommandEffects {
     let mut effects = CommandEffects::default();
@@ -587,17 +585,13 @@ fn apply_channel_chat_command(
     }
     let text = crate::game::logic::chat::extract_channel_message_text(&payload);
     if text.trim().starts_with('/') {
-        let task_state = state.clone();
-        spawn_session_async_task(state, "channel_chat_command", async move {
-            crate::game::logic::commands_social::handle_chat_command(
-                &task_state,
-                &tx,
-                player_id,
-                text.trim(),
-            )
-            .await;
-        });
-        return effects;
+        let command = crate::game::logic::commands_social::parse_slash_command(text.trim());
+        return slash::apply_slash_command(
+            &crate::game::logic::kernel_context::KernelContext::new(state),
+            player_id,
+            session_id,
+            command,
+        );
     }
 
     if let Some(prepared) =
@@ -2061,6 +2055,39 @@ pub(super) fn apply_up_button(
 mod tests {
     use super::{apply_persistence_completion, apply_player_command};
     use bytes::Bytes;
+
+    #[tokio::test]
+    async fn local_chat_slash_is_applied_as_a_typed_command() {
+        let test =
+            crate::test_support::ServerTestHarness::new("local_chat_slash", "local-slash").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(2);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerStats>(entity)
+                .expect("connected player stats")
+                .role = 2;
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::LocalChat {
+                message: "/moneyall 15".to_owned(),
+            },
+        );
+
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::AdminMoneyAll { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.amount == 15
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn chat_color_completion_delivers_only_to_the_current_session() {
