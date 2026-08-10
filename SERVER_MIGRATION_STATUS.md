@@ -26,7 +26,9 @@ git diff --check
 2. Изучить утвержденный [docs/TARGET_ARCHITECTURE_PLAN.md](file:///Users/murasama/Projects/games/OpenMines/docs/TARGET_ARCHITECTURE_PLAN.md) по реструктуризации на изолированные крейты (Nested Crates).
 3. Перейти к Этапу 2 плана миграции: постепенному переносу хэндлеров сессий на команды с очисткой baseline-файла `docs/reference/ecs_bypass_baseline.txt`.
 4. ~~Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.~~ **Готово.**
-5. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+5. ~~Перевести покупку слота Up (`buyslot`) на typed mutation/effect/persistence путь с сохранением legacy `GU` wire.~~ **Готово.**
+6. Перевести durable Up `delete:{slot}` и `install:{code}#{slot}` на typed mutation/effect/persistence путь; `upgrade` оставить отдельным срезом из-за порядка `P$/@S/LV/@L/sp/GU`.
+7. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

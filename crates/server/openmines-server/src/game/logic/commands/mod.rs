@@ -2229,6 +2229,25 @@ pub(super) fn apply_up_button(
             ..CommandEffects::default()
         };
     }
+    if let Some(slot) = button
+        .strip_prefix("delete:")
+        .and_then(|slot| slot.parse().ok())
+    {
+        return apply_up_skill_delete(state, player_id, session_id, slot, batch);
+    }
+    if let Some(rest) = button.strip_prefix("install:")
+        && let Some(hash_pos) = rest.find('#')
+        && let Ok(slot) = rest[hash_pos + 1..].parse()
+    {
+        return apply_up_skill_install(
+            state,
+            player_id,
+            session_id,
+            &rest[..hash_pos],
+            slot,
+            batch,
+        );
+    }
     crate::game::logic::up_building::handle_up_button(state, &batch, player_id, button);
     let mut effects = CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
@@ -2363,6 +2382,71 @@ fn apply_up_buy_slot(
             entity,
         )
     });
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: row.map_or_else(Vec::new, |row| {
+            vec![crate::game::SaveCommand::Player { row: Box::new(row) }]
+        }),
+        ..CommandEffects::default()
+    }
+}
+
+fn apply_up_skill_delete(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    slot: i32,
+    batch: crate::net::session::wire::PacketBatch,
+) -> CommandEffects {
+    let changed =
+        crate::game::logic::up_building::handle_skill_delete(state, &batch, player_id, slot);
+    let row = changed
+        .then(|| {
+            state.get_player_entity(player_id).and_then(|entity| {
+                crate::game::player::extract_player_row(
+                    &state.ecs_read_profiled("commands.up_delete_snapshot"),
+                    entity,
+                )
+            })
+        })
+        .flatten();
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: row.map_or_else(Vec::new, |row| {
+            vec![crate::game::SaveCommand::Player { row: Box::new(row) }]
+        }),
+        ..CommandEffects::default()
+    }
+}
+
+fn apply_up_skill_install(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    code: &str,
+    slot: i32,
+    batch: crate::net::session::wire::PacketBatch,
+) -> CommandEffects {
+    let changed =
+        crate::game::logic::up_building::handle_skill_install(state, &batch, player_id, code, slot);
+    let row = changed
+        .then(|| {
+            state.get_player_entity(player_id).and_then(|entity| {
+                crate::game::player::extract_player_row(
+                    &state.ecs_read_profiled("commands.up_install_snapshot"),
+                    entity,
+                )
+            })
+        })
+        .flatten();
     CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
             session_id,

@@ -249,6 +249,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skill_delete_gui_command_returns_typed_player_save() {
+        let test = make_up_test_state("typed_skill_delete").await;
+        let session_id = crate::game::SessionId::new(84);
+        let (tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        open_test_up_gui(&test.state, &tx, test.player.id.into());
+        drain_events(&mut rx);
+        let _ = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("skill:1".to_owned()),
+            },
+        );
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("delete:1".to_owned()),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Player { .. }]
+        ));
+        assert!(effects.events.iter().any(|event| matches!(
+            event,
+            crate::game::GameEvent::SessionBatch { packets, .. }
+                if packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                })
+        )));
+        assert!(!skill_exists(&test.state, test.player.id.into(), 1));
+    }
+
+    #[tokio::test]
+    async fn skill_install_gui_command_returns_typed_player_save() {
+        let test = make_up_test_state("typed_skill_install").await;
+        let session_id = crate::game::SessionId::new(85);
+        let (tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        open_test_up_gui(&test.state, &tx, test.player.id.into());
+        drain_events(&mut rx);
+        let _ = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("skill:4".to_owned()),
+            },
+        );
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("install:p#4".to_owned()),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Player { .. }]
+        ));
+        assert!(effects.events.iter().any(|event| matches!(
+            event,
+            crate::game::GameEvent::SessionBatch { packets, .. }
+                if packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                })
+        )));
+        assert!(skill_exists(&test.state, test.player.id.into(), 4));
+    }
+
+    #[tokio::test]
     async fn skill_upgrade_sends_health_packet_for_non_health_skill() {
         let mut test = make_up_test_state("upgrade_health_packet").await;
         test.player.money = 1_000;

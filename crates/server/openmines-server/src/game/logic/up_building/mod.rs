@@ -352,17 +352,17 @@ fn handle_skill_upgrade(
 
 /// Delete skill from the selected slot.
 /// C# ref: `PlayerSkillsComp.DeleteSkill(Player p)`.
-fn handle_skill_delete(
+pub fn handle_skill_delete(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     slot: i32,
-) {
+) -> bool {
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
-        return;
+        return false;
     };
     if selected_slot < 0 || slot != selected_slot {
-        return;
+        return false;
     }
 
     let deleted = state
@@ -414,27 +414,28 @@ fn handle_skill_delete(
     if deleted {
         send_up_page(state, tx, pid, -1);
     }
+    deleted
 }
 
 /// Install a new skill into the selected empty slot.
 /// C# ref: `PlayerSkillsComp.InstallSkill(string type, int slot, Player p)`.
-fn handle_skill_install(
+pub fn handle_skill_install(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
     pid: PlayerId,
     code: &str,
     slot: i32,
-) {
+) -> bool {
     let Some(skill_type) = SkillType::from_code(code) else {
         tracing::warn!(pid = %pid, code, "Up: invalid skill code for install");
-        return;
+        return false;
     };
 
     let Some(selected_slot) = get_selected_slot(state, tx, pid) else {
-        return;
+        return false;
     };
     if selected_slot < 0 || slot != selected_slot {
-        return;
+        return false;
     }
 
     let installed = state
@@ -513,6 +514,7 @@ fn handle_skill_install(
     if installed {
         send_up_page(state, tx, pid, slot);
     }
+    installed
 }
 
 /// Buy an additional slot.
