@@ -242,6 +242,92 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if let Some(raw) = button.strip_prefix("aucsetnum:") {
+        let parts: Vec<&str> = raw.split(':').collect();
+        let Some((item_id, cost, num)) = (parts.len() == 3)
+            .then(|| {
+                Some((
+                    parts[0].parse::<i32>().ok()?,
+                    parts[1].parse::<i64>().ok()?,
+                    parts[2].parse::<i32>().ok()?,
+                ))
+            })
+            .flatten()
+        else {
+            let close = crate::protocol::packets::gu_close();
+            return CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                        close.0, &close.1,
+                    )],
+                }],
+                saves: Vec::new(),
+                broadcasts: Vec::new(),
+            };
+        };
+        let Some((building_x, building_y, _)) =
+            crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+        else {
+            return CommandEffects::default();
+        };
+        let Some(inventory_packets) = state
+            .modify_player(player_id, |ecs, entity| {
+                let batch = crate::net::session::wire::PacketBatch::default();
+                {
+                    let mut inventory =
+                        ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
+                    let have = inventory.items.get(&item_id).copied().unwrap_or_default();
+                    if num <= 0 || have < num {
+                        return Some(None);
+                    }
+                    *inventory.items.entry(item_id).or_default() -= num;
+                    crate::net::session::outbound::inventory_sync::send_inventory(
+                        &batch,
+                        &mut inventory,
+                    );
+                }
+                let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+                flags.dirty = true;
+                Some(Some(batch.into_packets()))
+            })
+            .flatten()
+            .flatten()
+        else {
+            let close = crate::protocol::packets::gu_close();
+            return CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                        close.0, &close.1,
+                    )],
+                }],
+                saves: Vec::new(),
+                broadcasts: Vec::new(),
+            };
+        };
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: inventory_packets,
+            }],
+            saves: vec![crate::game::SaveCommand::AuctionOrderCreate {
+                request: crate::game::AuctionOrderCreateRequest {
+                    player_id,
+                    session_id,
+                    building_x,
+                    building_y,
+                    item_id,
+                    num,
+                    cost,
+                },
+            }],
+            broadcasts: Vec::new(),
+        };
+    }
     if let Some(payload) = button.strip_prefix("transfer:") {
         return apply_storage_transfer(state, session_id, player_id, payload);
     }

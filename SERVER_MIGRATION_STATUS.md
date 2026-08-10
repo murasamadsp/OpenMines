@@ -805,6 +805,19 @@ Admission резервирует `AuctionOrder`, persistence worker загруж
 Проверка: admission, persistence completion-capacity и GU/HORB regression tests;
 `auc` и `choose` slices остаются зелёными.
 
+**Auction order creation (`aucsetnum:{item}:{cost}:{num}`) закрыт как mutation
+continuation.** Admission теперь резервирует `AuctionOrderCreate`, simulation
+атомарно проверяет и списывает предмет, а inventory `IN` уходит тем же legacy
+порядком до persistence. Worker вызывает прежний `create_order`; success
+completion собирает тот же success-HORB, permanent failure восстанавливает
+предмет и отправляет `IN` + `OK`. Session guard не позволяет stale completion
+отправить wire в новую сессию, но rollback остаётся authoritative. Legacy
+`create_order` сохранён для regression path; ставки и минимальная ставка ещё не
+перенесены.
+
+Проверка: два regression-теста на admission/deduction/success-HORB и
+permanent-failure refund, `cargo check -p openmines-server --all-targets`.
+
 **Kernel owner extraction закрыт как structural slice.** `GameState` больше не
 хранит пять кластеров реестров и очередей непосредственно в god-object:
 

@@ -2365,6 +2365,159 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auction_order_create_deducts_inventory_and_preserves_completion_wire() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "auction_order_create",
+            "auction-order-create",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(9);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerInventory>(entity)
+                .expect("connected player inventory")
+                .items
+                .insert(1, 5);
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("connected player UI")
+                .current_window = Some("market:12:34:auc".to_owned());
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("aucsetnum:1:100:2".to_owned()),
+            },
+        );
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::AuctionOrderCreate { request }]
+                if request.item_id == 1
+                    && request.num == 2
+                    && request.cost == 100
+                    && request.building_x == 12
+                    && request.building_y == 34
+        ));
+        assert_eq!(
+            test.state.query_player(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerInventory>(entity)
+                    .and_then(|inventory| inventory.items.get(&1).copied())
+            }),
+            Some(Some(3))
+        );
+
+        let completion = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::AuctionOrderCreated {
+                request: crate::game::AuctionOrderCreateRequest {
+                    player_id,
+                    session_id,
+                    building_x: 12,
+                    building_y: 34,
+                    item_id: 1,
+                    num: 2,
+                    cost: 100,
+                },
+                result: crate::game::AuctionOrderCreateResult::Created,
+            },
+        );
+        let packet = completion
+            .events
+            .into_iter()
+            .find_map(|event| match event {
+                crate::game::GameEvent::SessionBatch { packets, .. } => packets.into_iter().next(),
+                _ => None,
+            })
+            .expect("create completion must emit GU");
+        let decoded =
+            openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(packet.as_slice()))
+                .expect("GU packet must decode")
+                .expect("GU packet must be complete");
+        assert_eq!(decoded.event_name, *b"GU");
+        assert!(String::from_utf8_lossy(&decoded.payload).contains("u just created order"));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn auction_order_create_failure_refunds_inventory_without_success_page() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "auction_order_create_failure",
+            "auction-order-create-failure",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(10);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerInventory>(entity)
+                .expect("connected player inventory")
+                .items
+                .insert(1, 3);
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("connected player UI")
+                .current_window = Some("market:12:34:auc".to_owned());
+        });
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("aucsetnum:1:100:2".to_owned()),
+            },
+        );
+        assert_eq!(effects.saves.len(), 1);
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::AuctionOrderCreated {
+                request: crate::game::AuctionOrderCreateRequest {
+                    player_id,
+                    session_id,
+                    building_x: 12,
+                    building_y: 34,
+                    item_id: 1,
+                    num: 2,
+                    cost: 100,
+                },
+                result: crate::game::AuctionOrderCreateResult::PermanentFailure {
+                    message: "db failure".to_owned(),
+                },
+            },
+        );
+        assert_eq!(
+            test.state.query_player(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerInventory>(entity)
+                    .and_then(|inventory| inventory.items.get(&1).copied())
+            }),
+            Some(Some(3))
+        );
+        let packets = effects
+            .events
+            .into_iter()
+            .find_map(|event| match event {
+                crate::game::GameEvent::SessionBatch { packets, .. } => Some(packets),
+                _ => None,
+            })
+            .expect("failure completion must emit refund packets");
+        assert_eq!(
+            packets.last().and_then(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .ok()
+                .flatten()
+                .map(|packet| packet.event_name)
+            }),
+            Some(*b"OK")
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn chat_color_completion_delivers_only_to_the_current_session() {
         let test = crate::test_support::ServerTestHarness::new(
             "chat_color_completion_session_guard",

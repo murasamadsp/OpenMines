@@ -284,6 +284,78 @@ pub fn apply_persistence_completion(
                 }
             }
         }
+        crate::game::PersistenceCompletion::AuctionOrderCreated { request, result } => match result
+        {
+            crate::game::AuctionOrderCreateResult::Created => {
+                if state.sessions.session_for_player(request.player_id) != Some(request.session_id)
+                {
+                    return CommandEffects::default();
+                }
+                let batch = crate::net::session::wire::PacketBatch::default();
+                crate::game::logic::auction_gui::send_auc_order_created(
+                    state,
+                    &batch,
+                    request.player_id,
+                    request.building_x,
+                    request.building_y,
+                );
+                CommandEffects {
+                    events: vec![crate::game::GameEvent::SessionBatch {
+                        session_id: request.session_id,
+                        player_id: request.player_id,
+                        packets: batch.into_packets(),
+                    }],
+                    saves: Vec::new(),
+                    broadcasts: Vec::new(),
+                }
+            }
+            crate::game::AuctionOrderCreateResult::PermanentFailure { message } => {
+                tracing::error!(
+                    player_id = %request.player_id,
+                    error = %message,
+                    "Auction order creation failed permanently"
+                );
+                let refunded = state
+                    .modify_player(request.player_id, |ecs, entity| {
+                        let batch = crate::net::session::wire::PacketBatch::default();
+                        {
+                            let mut inventory =
+                                ecs.get_mut::<crate::game::player::PlayerInventory>(entity)?;
+                            *inventory.items.entry(request.item_id).or_default() += request.num;
+                            crate::net::session::outbound::inventory_sync::send_inventory(
+                                &batch,
+                                &mut inventory,
+                            );
+                        }
+                        if let Some(mut flags) =
+                            ecs.get_mut::<crate::game::player::PlayerFlags>(entity)
+                        {
+                            flags.dirty = true;
+                        }
+                        Some(batch.into_packets())
+                    })
+                    .flatten();
+                if state.sessions.session_for_player(request.player_id) != Some(request.session_id)
+                {
+                    return CommandEffects::default();
+                }
+                let mut packets = refunded.unwrap_or_default();
+                let error =
+                    crate::protocol::packets::ok_message("МАРКЕТ", "Не удалось создать ордер.");
+                packets.push(crate::net::session::wire::make_u_packet_bytes(
+                    "OK", &error.1,
+                ));
+                CommandEffects {
+                    events: vec![crate::game::GameEvent::SessionBatch {
+                        session_id: request.session_id,
+                        player_id: request.player_id,
+                        packets,
+                    }],
+                    saves: Vec::new(),
+                    broadcasts: Vec::new(),
+                }
+            }
+        },
         crate::game::PersistenceCompletion::ProgramSaved { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();

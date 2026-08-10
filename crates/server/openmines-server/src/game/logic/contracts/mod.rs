@@ -693,6 +693,9 @@ impl PlayerCommand {
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if raw.starts_with("openorder:") => Some(SaveKind::AuctionOrder),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("aucsetnum:") => Some(SaveKind::AuctionOrderCreate),
             Self::ChatSettings { .. } => Some(SaveKind::ChatColorCycle),
             Self::ChatResync { .. } | Self::ChatChoose { .. } => Some(SaveKind::ChatResync),
             Self::ChatMenu { .. } => Some(SaveKind::ChatMenu),
@@ -869,6 +872,9 @@ pub enum SaveCommand {
     AuctionOrder {
         request: AuctionOrderRequest,
     },
+    AuctionOrderCreate {
+        request: AuctionOrderCreateRequest,
+    },
     BuildingDelete {
         request: BuildingDeleteRequest,
     },
@@ -1026,6 +1032,7 @@ impl SaveCommand {
             Self::AuctionGrid { .. } => SaveKind::AuctionGrid,
             Self::AuctionItemOrders { .. } => SaveKind::AuctionItemOrders,
             Self::AuctionOrder { .. } => SaveKind::AuctionOrder,
+            Self::AuctionOrderCreate { .. } => SaveKind::AuctionOrderCreate,
             Self::BuildingDelete { .. } => SaveKind::BuildingDelete,
             Self::ChatAppend { .. } => SaveKind::ChatAppend,
             Self::ChatColorCycle { .. } => SaveKind::ChatColorCycle,
@@ -1102,6 +1109,17 @@ pub struct AuctionOrderRequest {
     pub order_id: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuctionOrderCreateRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub building_x: i32,
+    pub building_y: i32,
+    pub item_id: i32,
+    pub num: i32,
+    pub cost: i64,
+}
+
 #[derive(Debug)]
 pub enum PersistenceCompletion {
     ProgramCreated {
@@ -1135,6 +1153,10 @@ pub enum PersistenceCompletion {
     AuctionOrderLoaded {
         request: AuctionOrderRequest,
         result: AuctionOrderResult,
+    },
+    AuctionOrderCreated {
+        request: AuctionOrderCreateRequest,
+        result: AuctionOrderCreateResult,
     },
     BuildingDeleted {
         request: BuildingDeleteRequest,
@@ -1248,6 +1270,12 @@ pub enum AuctionOrderResult {
     PermanentFailure {
         message: String,
     },
+}
+
+#[derive(Debug)]
+pub enum AuctionOrderCreateResult {
+    Created,
+    PermanentFailure { message: String },
 }
 
 #[derive(Debug)]
@@ -1416,6 +1444,7 @@ pub enum SaveKind {
     AuctionGrid,
     AuctionItemOrders,
     AuctionOrder,
+    AuctionOrderCreate,
     BuildingDelete,
     ChatAppend,
     ChatColorCycle,
@@ -1444,6 +1473,7 @@ impl SaveKind {
             Self::AuctionGrid => "auction_grid",
             Self::AuctionItemOrders => "auction_item_orders",
             Self::AuctionOrder => "auction_order",
+            Self::AuctionOrderCreate => "auction_order_create",
             Self::BuildingDelete => "delete_building",
             Self::ChatAppend => "save_chat",
             Self::ChatColorCycle => "cycle_chat_color",

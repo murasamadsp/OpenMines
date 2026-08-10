@@ -81,6 +81,23 @@ fn send_auc_error(tx: &dyn PacketSink, message: &str) {
     send_u_packet(tx, "OK", &ok_message("МАРКЕТ", message).1);
 }
 
+pub fn auc_order_created_page() -> Horb {
+    auc_page("ok")
+        .text("u just created order u can cancel it within five mins after first bet")
+        .button(Button::new("НАЗАД", "auc"))
+        .close_button()
+}
+
+pub fn send_auc_order_created(
+    state: &Arc<GameState>,
+    tx: &dyn PacketSink,
+    pid: PlayerId,
+    bx: i32,
+    by: i32,
+) {
+    send_auc(&auc_order_created_page(), state, tx, pid, bx, by);
+}
+
 fn send_auc_state_error(tx: &dyn PacketSink) {
     send_auc_error(tx, "Данные игрока недоступны.");
 }
@@ -418,10 +435,7 @@ pub async fn create_order(
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
-    let page = auc_page("ok")
-        .text("u just created order u can cancel it within five mins after first bet")
-        .button(Button::new("НАЗАД", "auc"))
-        .close_button();
+    let page = auc_order_created_page();
     send_auc(&page, state, tx, pid, bx, by);
 }
 

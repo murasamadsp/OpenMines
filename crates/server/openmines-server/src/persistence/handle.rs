@@ -28,6 +28,7 @@ const fn needs_completion_permit(kind: SaveKind) -> bool {
             | SaveKind::AuctionGrid
             | SaveKind::AuctionItemOrders
             | SaveKind::AuctionOrder
+            | SaveKind::AuctionOrderCreate
     )
 }
 
