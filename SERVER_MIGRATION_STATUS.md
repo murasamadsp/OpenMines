@@ -30,7 +30,8 @@ git diff --check
 6. ~~Перевести durable Up `delete:{slot}`, `install:{code}#{slot}` и `upgrade` на typed mutation/effect/persistence путь с сохранением порядка `P$/@S/LV/@L/sp/GU`.~~ **Готово.**
 7. ~~Перевести building-placement completions (`ApplyPaidBuildingPlaced`, `ApplyInventoryBuildingPlaced`, refund) с прямого Outbox на typed `CommandEffects` с сохранением legacy `P$/Gu/IN/O`.~~ **Готово.**
 8. ~~Перевести `DPBX/OpenBox` с gameplay direct-Outbox на typed `SessionBatch`, сохранив `GU` и `open_box` window state.~~ **Готово.**
-9. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+9. ~~Перевести non-building `InventoryUse` output/errors на typed `SessionBatch`, сохранив legacy inventory packets и порядок delayed effects.~~ **Готово.** Building placement остаётся отдельным путём: его completion уже typed, а DB-failure path будет следующим срезом.
+10. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

@@ -98,19 +98,6 @@ pub fn prepare_dpbx_crystal_box(state: &Arc<GameState>, pid: PlayerId) -> Option
     Some(win.button(Button::new("ВЫЙТИ", "exit")).payload())
 }
 
-pub fn handle_dpbx_crystal_box(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
-    let Some(payload) = prepare_dpbx_crystal_box(state, pid) else {
-        return;
-    };
-    send_u_packet(tx, "GU", &payload);
-    state.modify_player(pid, |ecs, entity| {
-        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
-            ui.current_window = Some("open_box".to_string());
-        }
-        Some(())
-    });
-}
-
 pub fn handle_buildings_menu(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId) {
     use crate::game::logic::horb::{Button, Horb};
 

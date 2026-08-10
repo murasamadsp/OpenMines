@@ -323,11 +323,6 @@ fn apply_gameplay_command(
         crate::game::PlayerCommand::Respawn => {
             crate::game::logic::death::request_death(state, player_id);
         }
-        crate::game::PlayerCommand::OpenBox => {
-            if let Some(tx) = state.player_sender(player_id) {
-                crate::game::logic::buildings::handle_dpbx_crystal_box(state, &tx, player_id);
-            }
-        }
         _ => unreachable!("non-gameplay command routed to gameplay command handler"),
     }
 }
@@ -389,25 +384,34 @@ fn apply_inventory_use(
     {
         return CommandEffects::default();
     }
-    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-        return CommandEffects::default();
-    };
+    let batch = crate::net::session::wire::PacketBatch::default();
     let mut effects = CommandEffects::default();
     if crate::game::logic::heal_inventory::handle_inventory_use_sync_nonbuilding(
         state,
-        &tx,
+        &batch,
         player_id,
         session_id,
         due_actions,
         &mut effects.broadcasts,
     ) {
+        effects.events.push(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        });
         return effects;
     }
     if let Some(placement) =
-        crate::game::logic::heal_inventory::prepare_inventory_building_use(state, &tx, player_id)
+        crate::game::logic::heal_inventory::prepare_inventory_building_use(state, &batch, player_id)
+        && let Some(tx) = state.sessions.outbox_for_session(session_id)
     {
         spawn_inventory_building_insert_task(state, tx, placement);
     }
+    effects.events.push(crate::game::GameEvent::SessionBatch {
+        session_id,
+        player_id,
+        packets: batch.into_packets(),
+    });
     effects
 }
 
