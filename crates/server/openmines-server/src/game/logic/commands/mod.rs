@@ -3112,6 +3112,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chat_private_completion_preserves_typed_legacy_order_and_errors() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "chat_private_completion_typed",
+            "chat-private",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(208);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let success = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatPrivateOpened {
+                request: crate::game::ChatPrivateRequest {
+                    player_id,
+                    session_id,
+                    target_uid: crate::game::PlayerId(42),
+                },
+                result: crate::game::ChatPrivateResult::Success {
+                    target_name: "Друг".to_owned(),
+                    channel_tag: "P42".to_owned(),
+                    messages: Vec::new(),
+                },
+            },
+        );
+        let packet_events = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("private chat completion must return one typed session batch");
+            };
+            packets
+                .iter()
+                .map(|packet| {
+                    openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                        packet.as_slice(),
+                    ))
+                    .expect("private chat packet must decode")
+                    .expect("private chat packet must be complete")
+                    .event_name
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(packet_events(&success), vec![*b"mO", *b"mU"]);
+        assert_eq!(
+            test.state.query_player_opt(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerUI>(entity)
+                    .map(|ui| ui.current_chat.clone())
+            }),
+            Some("P42".to_owned())
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let missing = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatPrivateOpened {
+                request: crate::game::ChatPrivateRequest {
+                    player_id,
+                    session_id,
+                    target_uid: crate::game::PlayerId(404),
+                },
+                result: crate::game::ChatPrivateResult::TargetNotFound,
+            },
+        );
+        assert!(missing.events.is_empty());
+        assert!(receiver.try_recv().is_err());
+
+        let failure = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ChatPrivateOpened {
+                request: crate::game::ChatPrivateRequest {
+                    player_id,
+                    session_id,
+                    target_uid: crate::game::PlayerId(42),
+                },
+                result: crate::game::ChatPrivateResult::PermanentFailure {
+                    message: "database unavailable".to_owned(),
+                },
+            },
+        );
+        assert_eq!(packet_events(&failure), vec![*b"OK"]);
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = failure.events.as_slice()
+        else {
+            unreachable!();
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("private chat error packet must decode")
+        .expect("private chat error packet must be complete");
+        assert_eq!(packet.payload, "Ошибка#Ошибка БД".as_bytes());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn clan_gui_mutation_is_admitted_without_legacy_session_delivery() {
         let test = crate::test_support::ServerTestHarness::new("clan_gui_typed", "clan-gui").await;
         let player_id = crate::game::PlayerId(test.player.id);

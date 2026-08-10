@@ -829,9 +829,6 @@ pub fn apply_persistence_completion(
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
                 return CommandEffects::default();
             }
-            let Some(tx) = state.sessions.outbox_for_session(request.session_id) else {
-                return CommandEffects::default();
-            };
             match result {
                 crate::game::ChatPrivateResult::Success {
                     target_name,
@@ -846,22 +843,40 @@ pub fn apply_persistence_completion(
 
                     let mo = crate::protocol::packets::chat_current(&channel_tag, &target_name);
                     let mu = crate::protocol::packets::chat_messages(&channel_tag, &messages);
-                    crate::net::session::wire::send_u_packet(&tx, "mO", &mo.1);
-                    crate::net::session::wire::send_u_packet(&tx, "mU", &mu.1);
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    crate::net::session::wire::send_u_packet(&batch, "mO", &mo.1);
+                    crate::net::session::wire::send_u_packet(&batch, "mU", &mu.1);
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
                 crate::game::ChatPrivateResult::TargetNotFound => {
                     tracing::warn!(player_id = %request.player_id, target = ?request.target_uid, "Private chat target not found");
+                    CommandEffects::default()
                 }
                 crate::game::ChatPrivateResult::PermanentFailure { message } => {
                     tracing::error!(player_id = %request.player_id, error = %message, "Private chat open failed permanently");
+                    let batch = crate::net::session::wire::PacketBatch::default();
                     crate::net::session::wire::send_u_packet(
-                        &tx,
+                        &batch,
                         "OK",
                         &crate::protocol::packets::ok_message("Ошибка", "Ошибка БД").1,
                     );
+                    CommandEffects {
+                        events: vec![crate::game::GameEvent::SessionBatch {
+                            session_id: request.session_id,
+                            player_id: request.player_id,
+                            packets: batch.into_packets(),
+                        }],
+                        ..CommandEffects::default()
+                    }
                 }
             }
-            CommandEffects::default()
         }
         crate::game::PersistenceCompletion::WhoisLoaded { request, result } => {
             if state.sessions.session_for_player(request.player_id) != Some(request.session_id) {
