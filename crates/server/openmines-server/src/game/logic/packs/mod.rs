@@ -27,7 +27,7 @@ use crate::game::buildings::{PackType, PackView};
 use crate::game::logic::horb::HorbDelivery;
 use crate::game::{GameState, PlayerId};
 use crate::net::session::wire::send_u_packet;
-use crate::protocol::packets::{basket, money, ok_message};
+use crate::protocol::packets::{basket, ok_message};
 use std::sync::Arc;
 
 fn send_resp_action_error(tx: &dyn crate::net::session::wire::PacketSink) {
@@ -463,6 +463,7 @@ pub fn handle_resp_fill(
 }
 
 /// Handle resp profit withdrawal.
+#[cfg(test)]
 pub fn handle_resp_profit(
     state: &Arc<GameState>,
     tx: &dyn crate::net::session::wire::PacketSink,
@@ -537,13 +538,18 @@ pub fn handle_resp_profit(
     };
     if amount > 0 {
         assert!(state.mark_building_dirty(building_entity));
-        send_u_packet(tx, "P$", &money(money_now, creds_now).1);
+        send_u_packet(
+            tx,
+            "P$",
+            &crate::protocol::packets::money(money_now, creds_now).1,
+        );
     }
 
     // Refresh admin GUI
     open_resp_admin_gui(state, tx, pid, pack_x, pack_y);
 }
 
+#[cfg(test)]
 fn resp_profit_state_ready(
     state: &Arc<GameState>,
     pid: PlayerId,

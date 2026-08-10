@@ -174,7 +174,11 @@ async fn persist_batch<S>(
             SaveKind::ClanCommand => {
                 persist_clan_command_batch(store, &mut batch[start..end], simulation_waker).await;
             }
-            SaveKind::Player | SaveKind::Building | SaveKind::Box | SaveKind::ChatAppend => {
+            SaveKind::Player
+            | SaveKind::Building
+            | SaveKind::RespProfit
+            | SaveKind::Box
+            | SaveKind::ChatAppend => {
                 persist_compatible_batch(store, kind, &batch[start..end]).await;
             }
         }
@@ -1163,7 +1167,8 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Player { row } => row.as_ref().clone(),
-                        SaveCommand::Building { .. }
+                        SaveCommand::RespProfit { .. }
+                        | SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
@@ -1201,7 +1206,8 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Building { row } => row.as_ref().clone(),
-                        SaveCommand::Player { .. }
+                        SaveCommand::RespProfit { .. }
+                        | SaveCommand::Player { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
@@ -1239,7 +1245,8 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::Box { write } => write.clone(),
-                        SaveCommand::Player { .. }
+                        SaveCommand::RespProfit { .. }
+                        | SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Program { .. }
                         | SaveCommand::ProgramCreate { .. }
@@ -1277,7 +1284,8 @@ where
                     .iter()
                     .map(|envelope| match &envelope.command {
                         SaveCommand::ChatAppend { request } => request.clone(),
-                        SaveCommand::Player { .. }
+                        SaveCommand::RespProfit { .. }
+                        | SaveCommand::Player { .. }
                         | SaveCommand::Building { .. }
                         | SaveCommand::Box { .. }
                         | SaveCommand::Program { .. }
@@ -1309,6 +1317,18 @@ where
                     })
                     .collect::<Vec<_>>();
                 store.save_chat_messages_batch(&requests).await
+            }
+            SaveKind::RespProfit => {
+                let transfers = batch
+                    .iter()
+                    .map(|envelope| match &envelope.command {
+                        SaveCommand::RespProfit { player, building } => {
+                            (player.as_ref().clone(), building.as_ref().clone())
+                        }
+                        _ => unreachable!("compatible resp profit batch"),
+                    })
+                    .collect::<Vec<_>>();
+                store.save_resp_profit_batch(&transfers).await
             }
             SaveKind::Program
             | SaveKind::ProgramCreate

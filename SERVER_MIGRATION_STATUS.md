@@ -965,6 +965,14 @@ presentation-only: он не создаёт durable save.
 резервирует `SaveKind::Player` и возвращает полный snapshot с `resp_x/resp_y`
 вместе с прежним `GU` через `SessionBatch`.
 
+**`resp_profit` переведён на составной typed persistence.** Снятие денег теперь
+меняет Player и Building под одним ECS write lock, помечает оба владельца dirty
+и возвращает один `SaveCommand::RespProfit`. Worker сохраняет пару строк одной
+SQLite-транзакцией с rollback при ошибке второй записи; раздельные Player и
+Building saves для этой операции не допускаются. Legacy Rust wire сохранён
+точно: при положительной сумме `P$ → GU`, при нулевой сумме только `GU`; имя
+кнопки и payload клиента не менялись.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

@@ -301,6 +301,59 @@ async fn resp_bind_gui_command_returns_typed_player_save() {
 }
 
 #[tokio::test]
+async fn resp_profit_gui_command_returns_compound_typed_save() {
+    let test = make_charge_fill_test_state("typed_resp_profit", "R", 1, 100).await;
+    let session_id = crate::game::SessionId::new(80);
+    let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+    drain_events(&mut rx);
+    let building_entity = test.state.building_entity_at(10, 10).unwrap();
+    {
+        let mut ecs = test.state.ecs.write();
+        ecs.get_mut::<BuildingStorage>(building_entity)
+            .unwrap()
+            .money = 777;
+    }
+    let before_money = player_money(&test.state, test.player.id.into());
+
+    let effects = crate::game::logic::commands::apply_player_command(
+        &test.state,
+        test.player.id.into(),
+        session_id,
+        crate::game::PlayerCommand::Gui {
+            command: crate::game::GuiCommand::parse("resp_profit:10:10".to_owned()),
+        },
+    );
+
+    assert!(rx.try_recv().is_err());
+    assert!(matches!(
+        effects.saves.as_slice(),
+        [crate::game::SaveCommand::RespProfit { player, building }]
+            if player.money == before_money + 777
+                && building.money_inside == 0
+    ));
+    assert_eq!(
+        player_money(&test.state, test.player.id.into()),
+        before_money + 777
+    );
+    assert_eq!(building_storage_money(&test.state, 10, 10), 0);
+    let names = match &effects.events[..] {
+        [crate::game::GameEvent::SessionBatch { packets, .. }] => packets
+            .iter()
+            .filter_map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .ok()
+                .flatten()
+                .map(|packet| String::from_utf8_lossy(&packet.event_name).into_owned())
+            })
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    assert_eq!(names, ["P$", "GU"]);
+}
+
+#[tokio::test]
 async fn gun_fill_prog_missing_building_stats_does_not_dirty_building() {
     let test = make_charge_fill_test_state("gun_prog_missing_stats", "G", 5, 100).await;
     let (tx, _rx) = crate::net::session::outbox::channel();

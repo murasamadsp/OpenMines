@@ -28,6 +28,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         buildings: &[crate::db::buildings::BuildingRow],
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
+    fn save_resp_profit_batch(
+        &self,
+        transfers: &[(crate::db::PlayerRow, crate::db::buildings::BuildingRow)],
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
     fn save_boxes_batch(
         &self,
         writes: &[crate::db::BoxWrite],
@@ -170,6 +175,13 @@ impl PersistenceStore for Arc<crate::db::Database> {
         buildings: &[crate::db::BuildingRow],
     ) -> anyhow::Result<()> {
         crate::db::Database::save_buildings_batch(self, buildings).await
+    }
+
+    async fn save_resp_profit_batch(
+        &self,
+        transfers: &[(crate::db::PlayerRow, crate::db::buildings::BuildingRow)],
+    ) -> anyhow::Result<()> {
+        crate::db::Database::save_resp_profit_batch(self, transfers).await
     }
 
     async fn save_boxes_batch(&self, writes: &[crate::db::BoxWrite]) -> anyhow::Result<()> {

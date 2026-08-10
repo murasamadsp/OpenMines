@@ -277,6 +277,13 @@ fn is_player_mutation_button(button: &str) -> bool {
         || button.starts_with("install:")
 }
 
+fn is_building_mutation_button(button: &str) -> bool {
+    button.starts_with("pack_op:take_money:")
+        || button.starts_with("pack_op:take_crys:")
+        || button.starts_with("pack_save:")
+        || button.starts_with("resp_save:")
+}
+
 #[derive(Debug, Clone)]
 pub struct TeleportGuiView {
     pub source: crate::game::WorldPos,
@@ -723,10 +730,10 @@ impl PlayerCommand {
             }
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
-            } if raw.starts_with("pack_op:take_money:")
-                || raw.starts_with("pack_op:take_crys:")
-                || raw.starts_with("pack_save:")
-                || raw.starts_with("resp_save:") => Some(SaveKind::Building),
+            } if is_building_mutation_button(raw) => Some(SaveKind::Building),
+            Self::Gui {
+                command: GuiCommand::Button { raw, .. },
+            } if raw.starts_with("resp_profit:") => Some(SaveKind::RespProfit),
             Self::Gui {
                 command: GuiCommand::Button { raw, .. },
             } if is_player_mutation_button(raw) || raw.starts_with("resp_bind:") => {
@@ -879,6 +886,10 @@ pub enum SaveCommand {
     },
     Building {
         row: Box<openmines_storage::buildings::BuildingRow>,
+    },
+    RespProfit {
+        player: Box<PlayerRow>,
+        building: Box<openmines_storage::buildings::BuildingRow>,
     },
     Box {
         write: openmines_storage::BoxWrite,
@@ -1071,6 +1082,7 @@ impl SaveCommand {
         match self {
             Self::Player { .. } => SaveKind::Player,
             Self::Building { .. } => SaveKind::Building,
+            Self::RespProfit { .. } => SaveKind::RespProfit,
             Self::Box { .. } => SaveKind::Box,
             Self::ProgramCreate { .. } => SaveKind::ProgramCreate,
             Self::Program { .. } => SaveKind::Program,
@@ -1575,6 +1587,7 @@ pub enum BuildingDeleteResult {
 pub enum SaveKind {
     Player,
     Building,
+    RespProfit,
     Box,
     Program,
     ProgramCreate,
@@ -1608,6 +1621,7 @@ impl SaveKind {
         match self {
             Self::Player => "save_player",
             Self::Building => "save_building",
+            Self::RespProfit => "resp_profit",
             Self::Box => "save_box",
             Self::Program => "save_program",
             Self::ProgramCreate => "create_program",

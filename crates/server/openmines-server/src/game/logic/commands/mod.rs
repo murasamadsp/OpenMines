@@ -1874,13 +1874,119 @@ pub(super) fn apply_resp_profit(
     pack_y: i32,
 ) -> CommandEffects {
     let batch = crate::net::session::wire::PacketBatch::default();
-    crate::game::logic::packs::handle_resp_profit(state, &batch, player_id, pack_x, pack_y);
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return CommandEffects::default();
+    };
+    if view.owner_id != player_id {
+        return CommandEffects::default();
+    }
+    let Some(player_entity) = state.get_player_entity(player_id) else {
+        crate::game::logic::packs::send_resp_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    };
+    let Some(building_entity) = state.building_entity_at(pack_x, pack_y) else {
+        crate::game::logic::packs::send_resp_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    };
+
+    let result = {
+        let mut ecs = state.ecs_write_profiled("commands.resp_profit");
+        if ecs.get::<crate::game::PlayerStats>(player_entity).is_none()
+            || ecs.get::<crate::game::PlayerFlags>(player_entity).is_none()
+            || ecs
+                .get::<crate::game::structures::buildings::BuildingStorage>(building_entity)
+                .is_none()
+            || ecs
+                .get::<crate::game::structures::buildings::BuildingFlags>(building_entity)
+                .is_none()
+        {
+            None
+        } else {
+            let amount = ecs
+                .get::<crate::game::structures::buildings::BuildingStorage>(building_entity)
+                .expect("BuildingStorage checked before resp profit")
+                .money;
+            ecs.get_mut::<crate::game::structures::buildings::BuildingStorage>(building_entity)
+                .expect("BuildingStorage checked before resp profit")
+                .money = 0;
+            let (money_now, creds_now) = {
+                let mut player_stats = ecs
+                    .get_mut::<crate::game::PlayerStats>(player_entity)
+                    .expect("PlayerStats checked before resp profit");
+                player_stats.money = player_stats.money.saturating_add(amount);
+                (player_stats.money, player_stats.creds)
+            };
+            if amount > 0 {
+                ecs.get_mut::<crate::game::PlayerFlags>(player_entity)
+                    .expect("PlayerFlags checked before resp profit")
+                    .dirty = true;
+                ecs.get_mut::<crate::game::structures::buildings::BuildingFlags>(building_entity)
+                    .expect("BuildingFlags checked before resp profit")
+                    .dirty = true;
+                let incarnation = ecs
+                    .get::<crate::game::PlayerFlags>(player_entity)
+                    .expect("PlayerFlags checked before resp profit")
+                    .incarnation;
+                ecs.resource_mut::<crate::game::DirtyPlayers>()
+                    .0
+                    .insert((player_entity, incarnation));
+            }
+            let player = crate::game::player::extract_player_row(&ecs, player_entity);
+            let building =
+                crate::game::structures::buildings::extract_building_row(&ecs, building_entity);
+            drop(ecs);
+            Some((amount, money_now, creds_now, player, building))
+        }
+    };
+    let Some((amount, money_now, creds_now, Some(player), Some(building))) = result else {
+        tracing::error!(player_id = %player_id, pack_x, pack_y, "Resp profit state missing");
+        crate::game::logic::packs::send_resp_state_error(&batch);
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            }],
+            ..CommandEffects::default()
+        };
+    };
+    if amount > 0 {
+        assert!(state.mark_building_dirty(building_entity));
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "P$",
+            &crate::protocol::packets::money(money_now, creds_now).1,
+        );
+    }
+    crate::game::logic::packs::open_resp_admin_gui(state, &batch, player_id, pack_x, pack_y);
     CommandEffects {
         events: vec![crate::game::GameEvent::SessionBatch {
             session_id,
             player_id,
             packets: batch.into_packets(),
         }],
+        saves: if amount > 0 {
+            vec![crate::game::SaveCommand::RespProfit {
+                player: Box::new(player),
+                building: Box::new(building),
+            }]
+        } else {
+            Vec::new()
+        },
         ..CommandEffects::default()
     }
 }

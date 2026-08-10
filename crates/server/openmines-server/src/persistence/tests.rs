@@ -21,6 +21,7 @@ struct TestStore {
 enum SavedBatch {
     Players(Vec<i32>),
     Buildings(Vec<i32>),
+    RespProfit(Vec<(i32, i32)>),
     Boxes(Vec<(i32, i32)>),
     Program {
         player_id: i32,
@@ -218,6 +219,18 @@ impl PersistenceStore for TestStore {
             .collect::<Vec<_>>();
         let store = self.clone();
         async move { store.persist(SavedBatch::Buildings(ids)).await }
+    }
+
+    fn save_resp_profit_batch(
+        &self,
+        transfers: &[(crate::db::PlayerRow, crate::db::buildings::BuildingRow)],
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        let ids = transfers
+            .iter()
+            .map(|(player, building)| (player.id, building.id))
+            .collect();
+        let store = self.clone();
+        async move { store.persist(SavedBatch::RespProfit(ids)).await }
     }
 
     fn save_boxes_batch(
