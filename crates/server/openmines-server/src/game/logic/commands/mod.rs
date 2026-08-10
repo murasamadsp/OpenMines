@@ -659,13 +659,58 @@ fn apply_program_command(
                 && let Some(tx) = state.sessions.outbox_for_session(session_id)
             {
                 match event.as_str() {
-                    "PROG" => {
-                        if let Some(save) =
-                            prepare_program_save(tx, player_id, session_id, &payload)
-                        {
-                            effects.saves.push(save);
+                    "PROG" => match decode_program_save(&payload) {
+                        None => {
+                            tracing::warn!(
+                                player_id = %player_id,
+                                len = payload.len(),
+                                "PROGDIAG PROG decode FAILED"
+                            );
+                            let batch = crate::net::session::wire::PacketBatch::default();
+                            crate::net::session::wire::send_u_packet(
+                                &batch,
+                                "@P",
+                                &crate::protocol::packets::programmator_status(false).1,
+                            );
+                            crate::net::session::wire::send_u_packet(
+                                &batch,
+                                "OK",
+                                &crate::protocol::packets::ok_message(
+                                    "ПРОГРАММАТОР",
+                                    "Не удалось прочитать программу.",
+                                )
+                                .1,
+                            );
+                            effects.events.push(crate::game::GameEvent::SessionBatch {
+                                session_id,
+                                player_id,
+                                packets: batch.into_packets(),
+                            });
                         }
-                    }
+                        Some((program_id, _)) if program_id <= 0 => {
+                            tracing::warn!(
+                                player_id = %player_id,
+                                program_id,
+                                "PROG received no selected client program; opening program list"
+                            );
+                            effects.saves.push(crate::game::SaveCommand::ProgramMenu {
+                                request: crate::game::ProgramMenuRequest {
+                                    player_id,
+                                    session_id,
+                                },
+                            });
+                        }
+                        Some((program_id, source)) => {
+                            effects.saves.push(crate::game::SaveCommand::Program {
+                                request: crate::game::ProgramSaveRequest {
+                                    player_id,
+                                    session_id,
+                                    program_id,
+                                    source,
+                                },
+                            });
+                        }
+                    },
                     "PDEL" => {
                         let Some(program_id) = std::str::from_utf8(&payload)
                             .ok()
@@ -733,36 +778,6 @@ fn apply_program_command(
         _ => unreachable!("non-program command routed to program command handler"),
     }
     effects
-}
-
-fn prepare_program_save(
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    session_id: crate::game::SessionId,
-    payload: &[u8],
-) -> Option<crate::game::SaveCommand> {
-    let (program_id, source) = decode_program_save(&tx, player_id, payload)?;
-    if program_id <= 0 {
-        tracing::warn!(
-            player_id = %player_id,
-            program_id,
-            "PROG received no selected client program; opening program list"
-        );
-        return Some(crate::game::SaveCommand::ProgramMenu {
-            request: crate::game::ProgramMenuRequest {
-                player_id,
-                session_id,
-            },
-        });
-    }
-    Some(crate::game::SaveCommand::Program {
-        request: crate::game::ProgramSaveRequest {
-            player_id,
-            session_id,
-            program_id,
-            source,
-        },
-    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1595,34 +1610,8 @@ fn apply_heal_command(
     }
 }
 
-fn decode_program_save(
-    tx: &dyn crate::net::session::wire::PacketSink,
-    player_id: crate::game::PlayerId,
-    payload: &[u8],
-) -> Option<(i32, String)> {
-    let decoded = crate::game::programmator::ProgrammatorState::decode_prog_packet(payload);
-    if decoded.is_none() {
-        tracing::warn!(
-            player_id = %player_id,
-            len = payload.len(),
-            "PROGDIAG PROG decode FAILED"
-        );
-        crate::net::session::wire::send_u_packet(
-            tx,
-            "@P",
-            &crate::protocol::packets::programmator_status(false).1,
-        );
-        crate::net::session::wire::send_u_packet(
-            tx,
-            "OK",
-            &crate::protocol::packets::ok_message(
-                "ПРОГРАММАТОР",
-                "Не удалось прочитать программу.",
-            )
-            .1,
-        );
-    }
-    decoded
+fn decode_program_save(payload: &[u8]) -> Option<(i32, String)> {
+    crate::game::programmator::ProgrammatorState::decode_prog_packet(payload)
 }
 
 fn spawn_inventory_building_insert_task(
@@ -3407,6 +3396,47 @@ mod tests {
                     && request.session == session_id
                     && request.program == 42
         ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_program_save_returns_typed_legacy_error() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "program_malformed_save",
+            "programmer-malformed",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(209);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PROG".to_owned(),
+                payload: bytes::Bytes::from_static(b"malformed"),
+            },
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("malformed program save must return one typed session batch");
+        };
+        let events = packets
+            .iter()
+            .map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .expect("program error packet must decode")
+                .expect("program error packet must be complete")
+                .event_name
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events, vec![*b"@P", *b"OK"]);
+        assert!(effects.saves.is_empty());
         assert!(receiver.try_recv().is_err());
     }
 

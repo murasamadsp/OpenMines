@@ -40,8 +40,9 @@ git diff --check
 16. ~~Перевести `ChatResynced` success (`mO/mU`) и permanent DB failure (`OK`) на typed `SessionBatch`, сохранив `PlayerUI.current_chat`, rejected/access-denied semantics и legacy payload/order.~~ **Готово.**
 17. ~~Перевести `ChatMenuLoaded` success (`mL/mN`) и permanent DB failure (`OK`) на typed `SessionBatch`, сохранив legacy payload/order и rejected semantics.~~ **Готово.**
 18. ~~Перевести `ChatPrivateOpened` success (`mO/mU`) и permanent DB failure (`OK`) на typed `SessionBatch`, сохранив `PlayerUI.current_chat`, `TargetNotFound` semantics и legacy payload/order.~~ **Готово.**
-19. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-20. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+19. ~~Перевести malformed `PROG` decode error (`@P/OK`) на typed `SessionBatch`, сохранив legacy packet order/payload и отсутствие `SaveCommand`.~~ **Готово.**
+20. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+21. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
