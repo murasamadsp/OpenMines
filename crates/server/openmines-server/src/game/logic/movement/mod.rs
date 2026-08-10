@@ -450,7 +450,7 @@ fn deliver_move_application(
 
 fn run_move_followup(
     state: &Arc<GameState>,
-    tx: &Outbox,
+    tx: &dyn PacketSink,
     pid: PlayerId,
     followup: MoveFollowup,
     programmatic: bool,
@@ -477,10 +477,6 @@ pub fn apply_move_command(
     {
         return crate::game::CommandEffects::default();
     }
-    let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-        return crate::game::CommandEffects::default();
-    };
-
     let direct_packets = crate::net::session::wire::PacketBatch::default();
     let mut application = apply_move(state, &direct_packets, pid, request);
     let direct_packets = direct_packets.into_packets();
@@ -543,16 +539,23 @@ pub fn apply_move_command(
                 return effects;
             }
         }
-        // Пока auto-dig/open-pack сами не возвращают effects, весь редкий путь
-        // доставляется синхронно. Иначе GUI/dig output обгонит queued move output.
-        for packet in direct_packets {
-            if tx.send(packet).is_err() {
-                return crate::game::CommandEffects::default();
-            }
-        }
-        deliver_move_application(state, &tx, &mut application);
-        run_move_followup(state, &tx, pid, followup, request.programmatic);
-        return crate::game::CommandEffects::default();
+        let mut effects = crate::game::CommandEffects::default();
+        append_move_output_effects(&mut effects, session_id, pid, direct_packets, application);
+        let followup_packets = crate::net::session::wire::PacketBatch::default();
+        run_move_followup(
+            state,
+            &followup_packets,
+            pid,
+            followup,
+            request.programmatic,
+        );
+        append_session_packets(
+            &mut effects,
+            session_id,
+            pid,
+            followup_packets.into_packets(),
+        );
+        return effects;
     }
 
     let mut effects = crate::game::CommandEffects::default();
@@ -596,6 +599,21 @@ fn append_move_output_effects(
                 data: fanout.data,
             }
         }));
+}
+
+fn append_session_packets(
+    effects: &mut crate::game::CommandEffects,
+    session_id: crate::game::SessionId,
+    player_id: PlayerId,
+    packets: Vec<Vec<u8>>,
+) {
+    if !packets.is_empty() {
+        effects.events.push(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

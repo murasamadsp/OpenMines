@@ -48,8 +48,9 @@ git diff --check
 24. ~~Перевести `KnownNoopTy` output (`Help`/`Miso`) на typed `SessionBatch`, сохранив legacy packet payload и тихую семантику остальных известных no-op событий.~~ **Готово.**
 25. ~~Перевести manual `Geology`/`Heal` output (`GE`, `@L/@B/@S` или legacy `OK`) из command-path direct sink в typed `SessionBatch`, сохранив programmatic auto-action wrappers и legacy wire.~~ **Готово.**
 26. ~~Перевести manual/command-path `Dig` и `Build` output через typed `SessionBatch`, сохранив `OK` state errors, legacy packet payload и прежние world/broadcast effects.~~ **Готово.**
-27. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-28. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+27. ~~Перевести movement follow-up output (`Autodig`/fallback `OpenPack`) с синхронной доставки через outbox на typed `SessionBatch`, сохранив порядок move output → follow-up output и legacy wire.~~ **Готово.**
+28. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+29. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
