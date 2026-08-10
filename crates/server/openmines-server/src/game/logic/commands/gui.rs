@@ -3,6 +3,7 @@ use super::{
     parse_program_rename_button, spawn_paid_building_insert_task, spawn_program_editor_open_task,
     spawn_program_editor_rename_task, spawn_session_async_task,
 };
+use crate::game::logic::horb::HorbDelivery;
 
 pub(super) fn apply_presentation_command(
     state: &Arc<GameState>,
@@ -241,6 +242,29 @@ fn apply_gui_button_command(
             }],
             broadcasts: Vec::new(),
         };
+    }
+    if let Some(raw) = button.strip_prefix("auccreate:")
+        && let Ok(item_id) = raw.parse::<i32>()
+    {
+        return auction_presentation_effects(
+            state,
+            session_id,
+            player_id,
+            crate::game::logic::auction_gui::auc_order_creation_page(item_id),
+        );
+    }
+    if let Some(raw) = button.strip_prefix("aucsetcost:") {
+        let parts: Vec<&str> = raw.split(':').collect();
+        if parts.len() == 2
+            && let (Ok(item_id), Ok(cost)) = (parts[0].parse::<i32>(), parts[1].parse::<i64>())
+        {
+            return auction_presentation_effects(
+                state,
+                session_id,
+                player_id,
+                crate::game::logic::auction_gui::auc_order_creation_num_page(item_id, cost),
+            );
+        }
     }
     if let Some(raw) = button.strip_prefix("aucminbet:") {
         let Ok(order_id) = raw.parse::<i32>() else {
@@ -508,6 +532,35 @@ fn apply_gui_button_command(
     }
     spawn_gui_async_task(state, tx.clone(), player_id, button);
     CommandEffects::default()
+}
+
+fn auction_presentation_effects(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    page: openmines_protocol::gui::Horb,
+) -> CommandEffects {
+    let Some((building_x, building_y, _)) =
+        crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+    else {
+        return CommandEffects::default();
+    };
+    let batch = crate::net::session::wire::PacketBatch::default();
+    page.send(
+        state,
+        &batch,
+        player_id,
+        format!("market:{building_x}:{building_y}:auc"),
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
 }
 
 fn auction_bet_effects(

@@ -812,11 +812,13 @@ continuation.** Admission теперь резервирует `AuctionOrderCreat
 completion собирает тот же success-HORB, permanent failure восстанавливает
 предмет и отправляет `IN` + `OK`. Session guard не позволяет stale completion
 отправить wire в новую сессию, но rollback остаётся authoritative. Legacy
-`create_order` сохранён для regression path; ставки и минимальная ставка ещё не
-перенесены.
+`create_order` сохранён для regression path. Страницы `auccreate` и `aucsetcost`
+также собираются как typed presentation effects; старые GUI-функции сохранены
+для regression paths.
 
-Проверка: два regression-теста на admission/deduction/success-HORB и
-permanent-failure refund, `cargo check -p openmines-server --all-targets`.
+Проверка: regression-тесты на admission/deduction/success-HORB,
+permanent-failure refund и typed creation page, `cargo check -p
+openmines-server --all-targets`.
 
 **Auction bets (`aucminbet:{id}`/`aucbet:{id}:{amount}`) закрыты как mutation
 continuation.** Оба действия проходят через typed `AuctionBet` admission.

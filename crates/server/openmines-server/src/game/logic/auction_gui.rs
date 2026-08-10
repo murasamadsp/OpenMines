@@ -299,21 +299,38 @@ pub async fn open_order(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Player
 }
 
 /// `MarketSystem.OpenOrderCreation` — ввод стартовой цены.
-pub fn open_order_creation(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, item: i32) {
-    let Some((bx, by, _)) = resolve_market_window(state, pid) else {
-        return;
-    };
-    let page = auc_page(format!("Order creation {}", pack_name(item)))
+pub fn auc_order_creation_page(item: i32) -> Horb {
+    auc_page(format!("Order creation {}", pack_name(item)))
         .card(format!("i{item}:{}", pack_name(item)))
         .text("Enter cost")
         .input("cost", false)
         .button(Button::new("createorder", format!("aucsetcost:{item}:%I%")))
         .button(Button::new("НАЗАД", format!("choose:{item}")))
-        .close_button();
+        .close_button()
+}
+
+pub fn open_order_creation(state: &Arc<GameState>, tx: &dyn PacketSink, pid: PlayerId, item: i32) {
+    let Some((bx, by, _)) = resolve_market_window(state, pid) else {
+        return;
+    };
+    let page = auc_order_creation_page(item);
     send_auc(&page, state, tx, pid, bx, by);
 }
 
 /// `MarketSystem.OrderCreationNum` — ввод количества (цена уже выбрана).
+pub fn auc_order_creation_num_page(item: i32, cost: i64) -> Horb {
+    auc_page(format!("Order creation {}", pack_name(item)))
+        .card(format!("i{item}:{}", pack_name(item)))
+        .text("Enter count")
+        .input("num", false)
+        .button(Button::new(
+            "createorder",
+            format!("aucsetnum:{item}:{cost}:%I%"),
+        ))
+        .button(Button::new("НАЗАД", format!("auccreate:{item}")))
+        .close_button()
+}
+
 pub fn open_order_creation_num(
     state: &Arc<GameState>,
     tx: &dyn PacketSink,
@@ -324,16 +341,7 @@ pub fn open_order_creation_num(
     let Some((bx, by, _)) = resolve_market_window(state, pid) else {
         return;
     };
-    let page = auc_page(format!("Order creation {}", pack_name(item)))
-        .card(format!("i{item}:{}", pack_name(item)))
-        .text("Enter count")
-        .input("num", false)
-        .button(Button::new(
-            "createorder",
-            format!("aucsetnum:{item}:{cost}:%I%"),
-        ))
-        .button(Button::new("НАЗАД", format!("auccreate:{item}")))
-        .close_button();
+    let page = auc_order_creation_num_page(item, cost);
     send_auc(&page, state, tx, pid, bx, by);
 }
 

@@ -2266,6 +2266,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auction_order_creation_pages_are_typed_presentation_effects() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "auction_order_creation_pages",
+            "auction-order-pages",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(13);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("connected player UI")
+                .current_window = Some("market:12:34:auc".to_owned());
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("auccreate:1".to_owned()),
+            },
+        );
+        let packet = effects
+            .events
+            .into_iter()
+            .find_map(|event| match event {
+                crate::game::GameEvent::SessionBatch { packets, .. } => packets.into_iter().next(),
+                _ => None,
+            })
+            .expect("creation page must be returned as an effect");
+        let decoded =
+            openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(packet.as_slice()))
+                .expect("GU packet must decode")
+                .expect("GU packet must be complete");
+        assert_eq!(decoded.event_name, *b"GU");
+        let payload = String::from_utf8_lossy(&decoded.payload);
+        assert!(payload.contains("aucsetcost:1:%I%"));
+        assert!(effects.saves.is_empty());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn auction_order_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("auction_order", "auction-order").await;
