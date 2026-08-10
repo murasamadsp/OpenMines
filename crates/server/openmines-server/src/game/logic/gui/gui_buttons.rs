@@ -800,6 +800,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn craft_start_gui_command_returns_session_effect_and_building_save() {
+        let test = make_craft_test_state("typed_start", 10, 10).await;
+        let session_id = crate::game::SessionId::new(41);
+        let mut receiver = test.connect(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("craft_start:0:1:10:10".to_owned()),
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::SessionBatch { session_id: event_session, .. }]
+                if *event_session == session_id
+        ));
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Building { row }]
+                if row.craft_recipe_id == Some(0) && row.craft_num == 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn craft_claim_gui_command_returns_typed_reward_and_cleared_building_save() {
+        let test = make_craft_test_state("typed_claim", 10, 10).await;
+        let session_id = crate::game::SessionId::new(42);
+        let mut receiver = test.connect(session_id.get());
+        drain_events(&mut receiver);
+
+        let start = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("craft_start:0:1:10:10".to_owned()),
+            },
+        );
+        assert!(matches!(
+            start.saves.as_slice(),
+            [crate::game::SaveCommand::Building { .. }]
+        ));
+        let entity = test.state.building_entity_at(10, 10).unwrap();
+        let mut ecs = test.state.ecs.write();
+        ecs.get_mut::<BuildingCrafting>(entity).unwrap().end_ts = 0;
+        drop(ecs);
+        drain_events(&mut receiver);
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            test.player.id.into(),
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("craft_claim:10:10".to_owned()),
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Building { row }]
+                if row.craft_recipe_id.is_none() && row.craft_num == 0
+        ));
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::SessionBatch { packets, .. }]
+                if packets.iter().any(|packet| {
+                    openmines_protocol::Packet::try_decode(
+                        &mut bytes::BytesMut::from(packet.as_slice()),
+                    )
+                    .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"IN"))
+                })
+        ));
+    }
+
+    #[tokio::test]
     async fn craft_claim_clears_crafter_before_second_claim_can_duplicate_reward() {
         let test = make_craft_test_state("claim_once", 10, 10).await;
         let (tx, mut rx) = test.connect_with_outbox(1);

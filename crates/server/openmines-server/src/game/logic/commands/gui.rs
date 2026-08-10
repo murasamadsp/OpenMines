@@ -165,6 +165,13 @@ fn apply_gui_button_command(
     if let Some(action) = clan_menu_action_for_button(&button) {
         return clan_menu_effects(state, player_id, session_id, action);
     }
+    // All implemented clan GUI buttons are handled above by typed commands.
+    // Keep unknown clan actions out of the legacy async dispatcher: that path
+    // still performs direct ECS/session work and must not become a migration
+    // escape hatch for a new wire button.
+    if is_migrated_clan_button(&button) {
+        return CommandEffects::default();
+    }
     if button == "prog" {
         return CommandEffects {
             events: Vec::new(),
@@ -442,6 +449,24 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if let Some(args) = button.strip_prefix("craft_start:") {
+        return apply_crafter_mutation(
+            state,
+            session_id,
+            player_id,
+            args,
+            crate::game::logic::gui::crafter_gui::handle_craft_start,
+        );
+    }
+    if let Some(args) = button.strip_prefix("craft_claim:") {
+        return apply_crafter_mutation(
+            state,
+            session_id,
+            player_id,
+            args,
+            crate::game::logic::gui::crafter_gui::handle_craft_claim,
+        );
+    }
     if let Some((program_id, name)) = parse_program_rename_button(&button) {
         return CommandEffects {
             events: Vec::new(),
@@ -553,6 +578,70 @@ fn apply_gui_button_command(
     }
     spawn_gui_async_task(state, tx.clone(), player_id, button);
     CommandEffects::default()
+}
+
+fn apply_crafter_mutation(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    args: &str,
+    handler: fn(
+        &Arc<GameState>,
+        &dyn crate::net::session::prelude::PacketSink,
+        crate::game::PlayerId,
+        &str,
+    ),
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    handler(state, &batch, player_id, args);
+
+    let packets = batch.into_packets();
+    let mut effects = CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: packets.clone(),
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    };
+
+    let coordinates = args.split(':').collect::<Vec<_>>();
+    let coordinates = if coordinates.len() >= 4 {
+        (
+            coordinates[2].parse::<i32>().ok(),
+            coordinates[3].parse::<i32>().ok(),
+        )
+    } else if coordinates.len() >= 2 {
+        (
+            coordinates[0].parse::<i32>().ok(),
+            coordinates[1].parse::<i32>().ok(),
+        )
+    } else {
+        (None, None)
+    };
+    if let (Some(bx), Some(by)) = coordinates
+        && let Some(entity) = state.building_entity_at(bx, by)
+        && let Some(row) = crate::game::buildings::extract_building_row(
+            &state.ecs_read_profiled("commands.crafter_snapshot"),
+            entity,
+        )
+    {
+        effects
+            .saves
+            .push(crate::game::SaveCommand::Building { row: Box::new(row) });
+        if packets.iter().any(|packet| {
+            openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(packet.as_slice()))
+                .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+        }) {
+            effects
+                .broadcasts
+                .push(crate::game::BroadcastEffect::BlockUpdate(
+                    crate::game::WorldPos(bx, by),
+                ));
+        }
+    }
+    effects
 }
 
 fn apply_settings_save(
@@ -763,6 +852,27 @@ fn clan_menu_action_for_button(button: &str) -> Option<crate::game::ClanMenuActi
     }
 }
 
+fn is_migrated_clan_button(button: &str) -> bool {
+    matches!(
+        button,
+        "clan_menu"
+            | "clan_back"
+            | "clan_requests"
+            | "clan_members"
+            | "clan_invite_list"
+            | "clan_invites_view"
+            | "clan_leave"
+    ) || button.starts_with("clan_view:")
+        || button.starts_with("clan_invite_accept:")
+        || button.starts_with("clan_invite_decline:")
+        || button.starts_with("clan_accept:")
+        || button.starts_with("clan_decline:")
+        || button.starts_with("clan_promote:")
+        || button.starts_with("clan_kick_id:")
+        || button.starts_with("clan_invite_send:")
+        || button.starts_with("clan_request:")
+}
+
 pub(super) fn clan_menu_effects(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
@@ -897,7 +1007,6 @@ fn apply_storage_transfer(
 #[derive(Clone, Copy)]
 enum GuiAsyncHandler {
     Auction,
-    Clan,
     Other,
 }
 
@@ -909,14 +1018,11 @@ fn spawn_gui_async_task(
 ) {
     let handler = if crate::game::logic::gui::gui_buttons::is_auction_button(&button) {
         GuiAsyncHandler::Auction
-    } else if crate::game::logic::gui::gui_buttons::is_clan_button(&button) {
-        GuiAsyncHandler::Clan
     } else {
         GuiAsyncHandler::Other
     };
     let task_name = match handler {
         GuiAsyncHandler::Auction => "auction_gui",
-        GuiAsyncHandler::Clan => "clan_gui",
         GuiAsyncHandler::Other => "other_gui_button",
     };
     let task_state = state.clone();
@@ -924,15 +1030,6 @@ fn spawn_gui_async_task(
         match handler {
             GuiAsyncHandler::Auction => {
                 crate::game::logic::gui::gui_buttons::handle_auction_button(
-                    &task_state,
-                    &tx,
-                    player_id,
-                    &button,
-                )
-                .await;
-            }
-            GuiAsyncHandler::Clan => {
-                crate::game::logic::gui::gui_buttons::handle_clan_button(
                     &task_state,
                     &tx,
                     player_id,

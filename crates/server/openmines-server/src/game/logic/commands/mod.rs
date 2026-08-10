@@ -1944,6 +1944,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clan_gui_mutation_is_admitted_without_legacy_session_delivery() {
+        let test = crate::test_support::ServerTestHarness::new("clan_gui_typed", "clan-gui").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(202);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("clan_request:17".to_owned()),
+            },
+        );
+
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ClanCommand { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.action == (crate::game::ClanAction::Request { clan_id: 17 })
+        ));
+        assert!(effects.events.is_empty());
+        assert!(effects.broadcasts.is_empty());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn program_editor_open_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("program_open_durable", "programmer").await;

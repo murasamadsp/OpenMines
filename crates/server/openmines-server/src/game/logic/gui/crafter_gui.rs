@@ -23,7 +23,7 @@
 
 use crate::game::buildings::{BuildingCrafting, BuildingFlags};
 use crate::game::crafting;
-use crate::game::logic::buildings::{broadcast_pack_update, modify_pack_with_db};
+use crate::game::logic::buildings::modify_pack_with_db;
 use crate::game::player::{PlayerFlags, PlayerInventory, PlayerPosition, PlayerStats, PlayerUI};
 use crate::net::session::outbound::inventory_sync::send_inventory;
 use crate::net::session::prelude::*;
@@ -457,7 +457,6 @@ pub fn handle_craft_start(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Play
         state.schedule_crafting_completion(entity, end_ts);
     }
 
-    broadcast_pack_update(state, &view);
     show_crafter_progress(tx, &view, recipe_id, num, end_ts);
 }
 
@@ -567,6 +566,5 @@ pub fn handle_craft_claim(state: &Arc<GameState>, tx: &dyn PacketSink, pid: Play
     }
     assert!(state.mark_building_dirty(building_entity));
 
-    broadcast_pack_update(state, &view);
     show_crafter_recipes(tx, &view);
 }

@@ -891,6 +891,17 @@ completion-capacity tests, strict clippy и rustfmt.
 Проверка текущего среза: `cargo check -p openmines-server --all-targets
 --all-features`, workspace strict clippy с `-D warnings -W clippy::pedantic
 -W clippy::nursery`, `cargo fmt --all -- --check`, `git diff --check`.
+
+**Crafting GUI (`craft_start`/`craft_claim`) и clan GUI mutations закрыты через
+typed effects.** Crafting собирает session packets, building save и nearby
+block update без прямой доставки из legacy handler; clan mutation buttons
+(`clan_request`, invite accept/decline/send) проходят существующий
+`ClanCommand` completion path. Legacy handlers сохранены для regression tests.
+Полный hook подтвердил `668/668` тестов, 2 skipped и legacy wire smoke.
+Попытка перенести `open_buildings` в typed `BuildingMenu` откатана: empty-
+building HORB потерял legacy Spot/Up routes, что обнаружил smoke; этот путь
+остаётся legacy до сохранения полного wire поведения.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 
