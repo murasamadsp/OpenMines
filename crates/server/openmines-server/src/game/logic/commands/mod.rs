@@ -590,9 +590,7 @@ fn apply_channel_chat_command(
     payload: bytes::Bytes,
 ) -> CommandEffects {
     let mut effects = CommandEffects::default();
-    let Some(tx) = state.player_sender(player_id) else {
-        return effects;
-    };
+    let batch = crate::net::session::wire::PacketBatch::default();
     if !state.check_chat_rate(player_id) {
         tracing::debug!(player_id = %player_id, "chat rate limited (Chat)");
         return effects;
@@ -609,7 +607,7 @@ fn apply_channel_chat_command(
     }
 
     if let Some(prepared) =
-        crate::game::logic::chat::prepare_channel_chat_non_command(state, &tx, player_id, &text)
+        crate::game::logic::chat::prepare_channel_chat_non_command(state, &batch, player_id, &text)
     {
         let msg_id = state.next_chat_id();
         let msg = openmines_protocol::chat::ChatMessage {
@@ -635,6 +633,14 @@ fn apply_channel_chat_command(
         effects.events.push(crate::game::GameEvent::ChatFanout {
             route: prepared.route,
             message: msg,
+        });
+    }
+    let packets = batch.into_packets();
+    if !packets.is_empty() {
+        effects.events.push(crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets,
         });
     }
     effects
@@ -2603,6 +2609,45 @@ mod tests {
         let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
         else {
             panic!("local chat state error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("typed chat error packet must decode")
+            .expect("typed chat error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "ЧАТ#Состояние чата недоступно.".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn channel_chat_state_error_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "channel_chat_state_error",
+            "channel-chat-state-error",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(6);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerUI>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ChannelChat {
+                payload: bytes::Bytes::from_static(b"_:hello"),
+            },
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("channel chat state error must return one typed session batch");
         };
         let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
         let packet = openmines_protocol::Packet::try_decode(&mut encoded)
