@@ -599,6 +599,22 @@ fn apply_gui_button_command(
     {
         return super::apply_up_button(state, player_id, session_id, &button);
     }
+    if button == "open_buildings" {
+        let batch = crate::net::session::wire::PacketBatch::default();
+        crate::game::logic::buildings::handle_buildings_menu(state, &batch, player_id);
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
+    }
     if crate::game::logic::gui::gui_buttons::handle_gui_button_sync_fast_path(
         state, tx, player_id, &button,
     ) {
@@ -1577,5 +1593,40 @@ mod tests {
             .expect("paid building error packet must be complete");
         assert_eq!(packet.event_name, *b"OK");
         assert_eq!(packet.payload, "Ошибка#Некорректное здание".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn open_buildings_returns_typed_legacy_gui() {
+        let test = ServerTestHarness::new("open_buildings_typed", "blds").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(13);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "open_buildings".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("open buildings must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("open buildings packet must decode")
+            .expect("open buildings packet must be complete");
+        assert_eq!(packet.event_name, *b"GU");
+        assert!(packet.payload.starts_with(b"horb:"));
+        assert!(
+            packet
+                .payload
+                .windows(11)
+                .any(|window| window == b"bld_place:R")
+        );
     }
 }
