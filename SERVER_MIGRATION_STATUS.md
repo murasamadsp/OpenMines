@@ -57,8 +57,9 @@ git diff --check
 33. ~~Перевести GUI market tab switching `sellcrys`/`buycrys` (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив активную вкладку, `market` window state и legacy payload; auction и market mutations не смешивать.~~ **Готово.**
 34. ~~Перевести GUI `clan_create_input` legacy `OK` output с sync fast-path direct sink на typed `SessionBatch`, сохранив точный payload.~~ **Готово.**
 35. ~~Перевести GUI `craft_recipe` presentation (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив recipe details и `craft_start` action.~~ **Готово.**
-36. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-37. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+36. ~~Перевести оставшийся sync `pack_op:*` output/error path на typed `SessionBatch`, сохранив async `Clans` exception и typed mutation routing (`take_*`/`remove`).~~ **Готово.**
+37. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+38. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

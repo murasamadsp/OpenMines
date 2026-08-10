@@ -686,6 +686,34 @@ fn apply_gui_button_command(
             ..CommandEffects::default()
         };
     }
+    if let Some(rest) = button.strip_prefix("pack_op:") {
+        let is_clan_open = rest
+            .strip_prefix("open:")
+            .and_then(|coords| coords.split_once(':'))
+            .and_then(|(x, y)| Some((x.parse::<i32>().ok()?, y.parse::<i32>().ok()?)))
+            .and_then(|(x, y)| state.get_pack_at(x, y))
+            .is_some_and(|view| view.pack_type == crate::game::PackType::Clans);
+        if !is_clan_open {
+            let batch = crate::net::session::wire::PacketBatch::default();
+            if !crate::game::logic::gui::pack_gui::handle_pack_operation_sync_fast_path(
+                state, &batch, player_id, rest,
+            ) {
+                return CommandEffects::default();
+            }
+            let packets = batch.into_packets();
+            if packets.is_empty() {
+                return CommandEffects::default();
+            }
+            return CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets,
+                }],
+                ..CommandEffects::default()
+            };
+        }
+    }
     if matches!(button.as_str(), "sellcrys" | "buycrys") {
         let batch = crate::net::session::wire::PacketBatch::default();
         crate::game::logic::gui::market_gui::handle_market_tab_switch_sync(
@@ -1868,6 +1896,35 @@ mod tests {
                 .windows(12)
                 .any(|window| window == b"craft_start:")
         );
+    }
+
+    #[tokio::test]
+    async fn pack_operation_error_returns_typed_legacy_ok() {
+        let test = ServerTestHarness::new("pack_operation_error_typed", "pack").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(20);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "pack_op:malformed".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("pack operation error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("pack operation error packet must decode")
+            .expect("pack operation error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "ЗДАНИЕ#Некорректное действие.".as_bytes());
     }
 
     #[tokio::test]
