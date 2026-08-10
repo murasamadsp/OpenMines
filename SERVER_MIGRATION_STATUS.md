@@ -46,10 +46,12 @@ git diff --check
 
 ## Состояние на одном экране
 
-Ориентировочно выполнено **45-50% архитектурной миграции**. Это не процент строк
-кода и не обещание срока. Главные ownership boundaries уже появились, но самые
-тяжёлые этапы - удаление внешних ECS writers, active/due registries, interest
-read model и spatial multicore - ещё впереди.
+Ориентировочно выполнено **55% архитектурной миграции; около 45% осталось**.
+Это не процент строк кода и не обещание срока: оценка пересчитана по stage-gates
+после закрытия command/effects GUI, chat/clan, auction и programmer slices.
+Этапы перекрываются, поэтому число служит только operational estimate. Главные
+незакрытые ownership-блоки — удаление `RwLock<EcsWorld>`/внешних ECS writers,
+immutable per-chunk interest read model и spatial multicore; последний пока 0%.
 
 Первый измеримый performance milestone закрыт:
 
