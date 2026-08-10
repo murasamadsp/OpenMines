@@ -41,7 +41,7 @@ use crate::protocol::packets::{gu_close, money, ok_message};
 use std::sync::Arc;
 
 /// Минимальная ставка: `buyer>0 ? ceil(cost*1.01) : cost` (1:1 C#).
-fn min_bid(cost: i64, has_buyer: bool) -> i64 {
+pub fn min_bid(cost: i64, has_buyer: bool) -> i64 {
     if has_buyer {
         #[allow(
             clippy::cast_precision_loss,

@@ -9,6 +9,7 @@
     clippy::missing_panics_doc
 )]
 use super::{Arc, CommandEffects, GameState, KernelContext, PlayerCommand};
+use crate::net::session::wire::PacketSink;
 use openmines_protocol::gui::{Button, Horb};
 use std::fmt::Write;
 
@@ -354,6 +355,122 @@ pub fn apply_persistence_completion(
                     saves: Vec::new(),
                     broadcasts: Vec::new(),
                 }
+            }
+        },
+        crate::game::PersistenceCompletion::AuctionBetCompleted { request, result } => match result
+        {
+            crate::game::AuctionBetResult::Won {
+                amount,
+                previous_buyer_id,
+                previous_cost,
+                order,
+                buyer_name,
+            } => {
+                let bidder_packets = state
+                    .modify_player(request.player_id, |ecs, entity| {
+                        let mut player_stats =
+                            ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                        player_stats.money = player_stats.money.saturating_sub(amount);
+                        let money = (player_stats.money, player_stats.creds);
+                        let mut flags = ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+                        flags.dirty = true;
+                        let batch = crate::net::session::wire::PacketBatch::default();
+                        let packet = crate::protocol::packets::money(money.0, money.1);
+                        batch.send_packet(crate::net::session::wire::make_u_packet_bytes(
+                            "P$", &packet.1,
+                        ));
+                        Some(batch.into_packets())
+                    })
+                    .flatten()
+                    .unwrap_or_default();
+                let old_buyer_packets = if previous_buyer_id != 0 {
+                    state
+                        .modify_player(crate::game::PlayerId(previous_buyer_id), |ecs, entity| {
+                            let mut player_stats =
+                                ecs.get_mut::<crate::game::player::PlayerStats>(entity)?;
+                            player_stats.money = player_stats.money.saturating_add(previous_cost);
+                            let money = (player_stats.money, player_stats.creds);
+                            let mut flags =
+                                ecs.get_mut::<crate::game::player::PlayerFlags>(entity)?;
+                            flags.dirty = true;
+                            let batch = crate::net::session::wire::PacketBatch::default();
+                            let packet = crate::protocol::packets::money(money.0, money.1);
+                            batch.send_packet(crate::net::session::wire::make_u_packet_bytes(
+                                "P$", &packet.1,
+                            ));
+                            Some(batch.into_packets())
+                        })
+                        .flatten()
+                } else {
+                    None
+                };
+                let mut effects = CommandEffects::default();
+                if let Some(packets) = old_buyer_packets
+                    && let Some(old_session) = state
+                        .sessions
+                        .session_for_player(crate::game::PlayerId(previous_buyer_id))
+                {
+                    effects.events.push(crate::game::GameEvent::SessionBatch {
+                        session_id: old_session,
+                        player_id: crate::game::PlayerId(previous_buyer_id),
+                        packets,
+                    });
+                }
+                if state.sessions.session_for_player(request.player_id) == Some(request.session_id)
+                {
+                    let batch = crate::net::session::wire::PacketBatch::default();
+                    for packet in bidder_packets {
+                        batch.send_packet(packet);
+                    }
+                    crate::game::logic::auction_gui::send_auc_order(
+                        &order,
+                        buyer_name.as_deref(),
+                        state,
+                        &batch,
+                        request.player_id,
+                        request.building_x,
+                        request.building_y,
+                    );
+                    effects.events.push(crate::game::GameEvent::SessionBatch {
+                        session_id: request.session_id,
+                        player_id: request.player_id,
+                        packets: batch.into_packets(),
+                    });
+                }
+                effects
+            }
+            crate::game::AuctionBetResult::LostRace
+            | crate::game::AuctionBetResult::Rejected
+            | crate::game::AuctionBetResult::NotFound => CommandEffects {
+                events: Vec::new(),
+                saves: vec![crate::game::SaveCommand::AuctionOrder {
+                    request: crate::game::AuctionOrderRequest {
+                        player_id: request.player_id,
+                        session_id: request.session_id,
+                        building_x: request.building_x,
+                        building_y: request.building_y,
+                        order_id: request.order_id,
+                    },
+                }],
+                broadcasts: Vec::new(),
+            },
+            crate::game::AuctionBetResult::PermanentFailure { message } => {
+                tracing::error!(
+                    player_id = %request.player_id,
+                    order_id = request.order_id,
+                    error = %message,
+                    "Auction bet failed permanently"
+                );
+                if state.sessions.session_for_player(request.player_id) != Some(request.session_id)
+                {
+                    return CommandEffects::default();
+                }
+                KernelContext::new(state).slash_ok_effect(
+                    request.session_id,
+                    request.player_id,
+                    "МАРКЕТ",
+                    "Не удалось сделать ставку.",
+                )
             }
         },
         crate::game::PersistenceCompletion::ProgramSaved { request, result } => {

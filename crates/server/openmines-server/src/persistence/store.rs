@@ -138,6 +138,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         request: &crate::game::AuctionOrderCreateRequest,
     ) -> impl Future<Output = Result<crate::game::AuctionOrderCreateResult, PersistenceStoreFailure>>
     + Send;
+
+    fn auction_bet(
+        &self,
+        request: &crate::game::AuctionBetRequest,
+    ) -> impl Future<Output = Result<crate::game::AuctionBetResult, PersistenceStoreFailure>> + Send;
 }
 
 impl PersistenceStore for Arc<crate::db::Database> {
@@ -685,5 +690,80 @@ impl PersistenceStore for Arc<crate::db::Database> {
         .await
         .map(|_| crate::game::AuctionOrderCreateResult::Created)
         .map_err(PersistenceStoreFailure::Transient)
+    }
+
+    async fn auction_bet(
+        &self,
+        request: &crate::game::AuctionBetRequest,
+    ) -> Result<crate::game::AuctionBetResult, PersistenceStoreFailure> {
+        let Some(order) = self
+            .get_order(request.order_id)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?
+        else {
+            return Ok(crate::game::AuctionBetResult::NotFound);
+        };
+        let previous_buyer_id = order.buyer_id;
+        let previous_cost = order.cost;
+        let amount = request.requested_amount.unwrap_or_else(|| {
+            crate::game::logic::auction_gui::min_bid(order.cost, order.buyer_id > 0)
+        });
+        let required = crate::game::logic::auction_gui::min_bid(order.cost, order.buyer_id > 0);
+        if required > amount || request.bidder_money < amount {
+            return Ok(crate::game::AuctionBetResult::Rejected);
+        }
+        let buyer_name = self
+            .get_player_by_id(request.player_id.into())
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?
+            .map(|player| player.name);
+        let bet_time = crate::tasks::auction::now_unix();
+        let won = self
+            .try_update_order_bet_cas(
+                request.order_id,
+                amount,
+                request.player_id.into(),
+                bet_time,
+                order.buyer_id,
+                order.cost,
+            )
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?;
+        if won == 0 {
+            return Ok(crate::game::AuctionBetResult::LostRace);
+        }
+        if order.buyer_id != 0
+            && let Err(error) = self.add_player_money(order.buyer_id, order.cost).await
+        {
+            let rollback = self
+                .try_update_order_bet_cas(
+                    request.order_id,
+                    order.cost,
+                    order.buyer_id,
+                    order.bet_time,
+                    request.player_id.into(),
+                    amount,
+                )
+                .await;
+            if let Err(rollback_error) = rollback {
+                tracing::error!(
+                    order_id = request.order_id,
+                    error = ?rollback_error,
+                    "Auction bet order rollback failed after buyer refund failure"
+                );
+            }
+            return Err(PersistenceStoreFailure::Permanent(error));
+        }
+        let mut updated_order = order;
+        updated_order.cost = amount;
+        updated_order.buyer_id = request.player_id.into();
+        updated_order.bet_time = bet_time;
+        Ok(crate::game::AuctionBetResult::Won {
+            amount,
+            previous_buyer_id,
+            previous_cost,
+            order: updated_order,
+            buyer_name,
+        })
     }
 }

@@ -2518,6 +2518,126 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auction_bet_is_admitted_and_completion_preserves_money_then_order_wire() {
+        let test = crate::test_support::ServerTestHarness::new("auction_bet", "auction-bet").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(11);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerStats>(entity)
+                .expect("connected player stats")
+                .money = 1_000;
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("connected player UI")
+                .current_window = Some("market:12:34:auc".to_owned());
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("aucbet:42:100".to_owned()),
+            },
+        );
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::AuctionBet { request }]
+                if request.order_id == 42
+                    && request.requested_amount == Some(100)
+                    && request.bidder_money == 1_000
+        ));
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::AuctionBetCompleted {
+                request: crate::game::AuctionBetRequest {
+                    player_id,
+                    session_id,
+                    building_x: 12,
+                    building_y: 34,
+                    order_id: 42,
+                    requested_amount: Some(100),
+                    bidder_money: 1_000,
+                },
+                result: crate::game::AuctionBetResult::Won {
+                    amount: 100,
+                    previous_buyer_id: 0,
+                    previous_cost: 50,
+                    order: crate::db::orders::OrderRow {
+                        id: 42,
+                        initiator_id: 1,
+                        item_id: 1,
+                        num: 3,
+                        cost: 100,
+                        buyer_id: player_id.into(),
+                        bet_time: crate::tasks::auction::now_unix(),
+                    },
+                    buyer_name: Some("auction-bet".to_owned()),
+                },
+            },
+        );
+        assert_eq!(
+            test.state.query_player(player_id, |ecs, entity| {
+                ecs.get::<crate::game::player::PlayerStats>(entity)
+                    .map(|stats| stats.money)
+            }),
+            Some(Some(900))
+        );
+        let packets = effects
+            .events
+            .into_iter()
+            .find_map(|event| match event {
+                crate::game::GameEvent::SessionBatch { packets, .. } => Some(packets),
+                _ => None,
+            })
+            .expect("bet completion must emit bidder packets");
+        let decoded = packets
+            .iter()
+            .map(|packet| {
+                openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+                    packet.as_slice(),
+                ))
+                .expect("packet must decode")
+                .expect("packet must be complete")
+                .event_name
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, vec![*b"P$", *b"GU"]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_auction_bet_amount_reopens_order_through_typed_read() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "auction_bet_malformed",
+            "auction-bet-malformed",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(12);
+        let _receiver = test.connect(session_id.get());
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerUI>(entity)
+                .expect("connected player UI")
+                .current_window = Some("market:12:34:auc".to_owned());
+        });
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("aucbet:42:%I%".to_owned()),
+            },
+        );
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::AuctionOrder { request }]
+                if request.order_id == 42
+        ));
+    }
+
+    #[tokio::test]
     async fn chat_color_completion_delivers_only_to_the_current_session() {
         let test = crate::test_support::ServerTestHarness::new(
             "chat_color_completion_session_guard",

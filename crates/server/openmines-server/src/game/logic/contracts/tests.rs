@@ -113,6 +113,19 @@ fn auction_order_reserves_its_durable_kind_before_apply() {
 }
 
 #[test]
+fn auction_bet_mutations_reserve_their_durable_kind_before_apply() {
+    for action in ["aucminbet:42", "aucbet:42:100"] {
+        assert_eq!(
+            PlayerCommand::Gui {
+                command: super::GuiCommand::parse(action.to_owned()),
+            }
+            .persistence_kind(),
+            Some(SaveKind::AuctionBet)
+        );
+    }
+}
+
+#[test]
 fn whois_reserves_its_durable_kind_before_apply() {
     assert_eq!(
         PlayerCommand::Whois { ids: vec![1] }.persistence_kind(),

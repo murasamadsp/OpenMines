@@ -242,6 +242,24 @@ fn apply_gui_button_command(
             broadcasts: Vec::new(),
         };
     }
+    if let Some(raw) = button.strip_prefix("aucminbet:") {
+        let Ok(order_id) = raw.parse::<i32>() else {
+            return CommandEffects::default();
+        };
+        return auction_bet_effects(state, player_id, session_id, order_id, None);
+    }
+    if let Some(raw) = button.strip_prefix("aucbet:") {
+        let Some((raw_id, raw_amount)) = raw.split_once(':') else {
+            return CommandEffects::default();
+        };
+        let Ok(order_id) = raw_id.parse::<i32>() else {
+            return CommandEffects::default();
+        };
+        let Some(amount) = raw_amount.parse::<i64>().ok() else {
+            return open_auction_order_effects(state, player_id, session_id, order_id);
+        };
+        return auction_bet_effects(state, player_id, session_id, order_id, Some(amount));
+    }
     if let Some(raw) = button.strip_prefix("aucsetnum:") {
         let parts: Vec<&str> = raw.split(':').collect();
         let Some((item_id, cost, num)) = (parts.len() == 3)
@@ -490,6 +508,67 @@ fn apply_gui_button_command(
     }
     spawn_gui_async_task(state, tx.clone(), player_id, button);
     CommandEffects::default()
+}
+
+fn auction_bet_effects(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    order_id: i32,
+    requested_amount: Option<i64>,
+) -> CommandEffects {
+    let Some((building_x, building_y, _)) =
+        crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+    else {
+        return CommandEffects::default();
+    };
+    let Some(bidder_money) = state.query_player_opt(player_id, |ecs, entity| {
+        ecs.get::<crate::game::player::PlayerStats>(entity)
+            .map(|stats| stats.money)
+    }) else {
+        return CommandEffects::default();
+    };
+    CommandEffects {
+        events: Vec::new(),
+        saves: vec![crate::game::SaveCommand::AuctionBet {
+            request: crate::game::AuctionBetRequest {
+                player_id,
+                session_id,
+                building_x,
+                building_y,
+                order_id,
+                requested_amount,
+                bidder_money,
+            },
+        }],
+        broadcasts: Vec::new(),
+    }
+}
+
+fn open_auction_order_effects(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    order_id: i32,
+) -> CommandEffects {
+    let Some((building_x, building_y, _)) =
+        crate::game::logic::gui::market_gui::resolve_market_window(state, player_id)
+    else {
+        return CommandEffects::default();
+    };
+    CommandEffects {
+        events: Vec::new(),
+        saves: vec![crate::game::SaveCommand::AuctionOrder {
+            request: crate::game::AuctionOrderRequest {
+                player_id,
+                session_id,
+                building_x,
+                building_y,
+                order_id,
+            },
+        }],
+        broadcasts: Vec::new(),
+    }
 }
 
 fn clan_mutation_action_for_button(button: &str) -> Option<crate::game::ClanAction> {

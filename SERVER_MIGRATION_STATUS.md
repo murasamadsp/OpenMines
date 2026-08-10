@@ -818,6 +818,21 @@ completion собирает тот же success-HORB, permanent failure восс
 Проверка: два regression-теста на admission/deduction/success-HORB и
 permanent-failure refund, `cargo check -p openmines-server --all-targets`.
 
+**Auction bets (`aucminbet:{id}`/`aucbet:{id}:{amount}`) закрыты как mutation
+continuation.** Оба действия проходят через typed `AuctionBet` admission.
+Persistence worker читает актуальный order, вычисляет legacy minimum, проверяет
+сумму и snapshot денег, выполняет CAS update и в той же durable operation
+возвращает деньги предыдущему buyer с rollback order при ошибке refund.
+Completion списывает деньги победившего online игрока, синхронизирует `P$`,
+возвращает старому online buyer его `P$` и собирает прежний order-detail HORB.
+CAS race/reject/not-found переоткрывают detail через уже перенесённый
+`AuctionOrder` read path. Невалидная сумма `aucbet` также переоткрывает detail
+через typed read; legacy `place_minimal_bet`/`place_bet` оставлены для
+regression paths и не являются production entry point.
+
+Проверка: admission, malformed-input, success wire/money и persistence
+completion-capacity tests, strict clippy и rustfmt.
+
 **Kernel owner extraction закрыт как structural slice.** `GameState` больше не
 хранит пять кластеров реестров и очередей непосредственно в god-object:
 

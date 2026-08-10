@@ -143,6 +143,27 @@ impl PersistenceStore for TestStore {
         Ok(crate::game::AuctionOrderCreateResult::Created)
     }
 
+    async fn auction_bet(
+        &self,
+        _request: &crate::game::AuctionBetRequest,
+    ) -> Result<crate::game::AuctionBetResult, PersistenceStoreFailure> {
+        Ok(crate::game::AuctionBetResult::Won {
+            amount: 100,
+            previous_buyer_id: 0,
+            previous_cost: 100,
+            order: crate::db::orders::OrderRow {
+                id: 42,
+                initiator_id: 1,
+                item_id: 1,
+                num: 1,
+                cost: 100,
+                buyer_id: 7,
+                bet_time: 1,
+            },
+            buyer_name: Some("bidder".to_owned()),
+        })
+    }
+
     fn save_players_batch(
         &self,
         players: &[crate::db::PlayerRow],
@@ -604,6 +625,23 @@ fn publish_auction_order_create(handle: &PersistenceHandle, player_id: i32, sess
         });
 }
 
+fn publish_auction_bet(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::AuctionBet)
+        .expect("auction bet persistence capacity")
+        .publish(SaveCommand::AuctionBet {
+            request: crate::game::AuctionBetRequest {
+                player_id: crate::game::PlayerId(player_id),
+                session_id: crate::game::SessionId::new(session_id),
+                building_x: 12,
+                building_y: 34,
+                order_id: 42,
+                requested_amount: Some(100),
+                bidder_money: 1_000,
+            },
+        });
+}
+
 fn building(id: i32) -> crate::db::BuildingRow {
     crate::db::BuildingRow {
         id,
@@ -1053,6 +1091,35 @@ async fn auction_order_create_reserves_completion_and_publishes_result() {
             && item_id == 1
             && num == 2
             && cost == 100
+    ));
+
+    drop(handle);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn auction_bet_reserves_completion_and_publishes_result() {
+    let store = TestStore::new(false, 0);
+    let mut runtime = PersistenceRuntime::start_with_store(store, 1);
+    let mut completions = runtime.take_completion_receiver();
+    let handle = runtime.handle();
+    publish_auction_bet(&handle, 7, 11);
+
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::AuctionBet),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::AuctionBetCompleted {
+            request: crate::game::AuctionBetRequest { player_id, session_id, order_id, .. },
+            result: crate::game::AuctionBetResult::Won { amount: 100, .. },
+        }) if player_id == crate::game::PlayerId(7)
+            && session_id == crate::game::SessionId::new(11)
+            && order_id == 42
     ));
 
     drop(handle);
