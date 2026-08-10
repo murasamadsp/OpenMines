@@ -605,14 +605,10 @@ pub fn apply_persistence_completion(
                         program_id = request.program_id,
                         "Program save rejected: missing or foreign row"
                     );
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "OK",
-                        &crate::protocol::packets::ok_message(
-                            "ПРОГРАММАТОР",
-                            "Не удалось сохранить программу.",
-                        )
-                        .1,
+                    return programmator_error_effect(
+                        request.session_id,
+                        request.player_id,
+                        "Не удалось сохранить программу.",
                     );
                 }
                 crate::game::ProgramSaveResult::PermanentFailure { message } => {
@@ -622,14 +618,10 @@ pub fn apply_persistence_completion(
                         error = message,
                         "Program save permanently rejected by persistence"
                     );
-                    crate::net::session::wire::send_u_packet(
-                        &tx,
-                        "OK",
-                        &crate::protocol::packets::ok_message(
-                            "ПРОГРАММАТОР",
-                            "Не удалось сохранить программу.",
-                        )
-                        .1,
+                    return programmator_error_effect(
+                        request.session_id,
+                        request.player_id,
+                        "Не удалось сохранить программу.",
                     );
                 }
             }

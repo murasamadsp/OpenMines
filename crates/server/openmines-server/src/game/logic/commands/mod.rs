@@ -3345,6 +3345,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn programmator_save_errors_return_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "programmator_save_errors",
+            "programmer-save-errors",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(214);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramSaved {
+                request: crate::game::ProgramSaveRequest {
+                    player_id,
+                    session_id,
+                    program_id: 42,
+                    source: "source".to_owned(),
+                },
+                result: crate::game::ProgramSaveResult::Rejected,
+            },
+        );
+
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("program save error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("program save error packet must decode")
+            .expect("program save error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "ПРОГРАММАТОР#Не удалось сохранить программу.".as_bytes()
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn auction_grid_is_admitted_without_legacy_gui_task() {
         let test =
             crate::test_support::ServerTestHarness::new("auction_grid", "auction-grid").await;

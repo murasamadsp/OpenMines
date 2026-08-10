@@ -35,8 +35,9 @@ git diff --check
 11. ~~Перевести channel-chat state errors на typed `SessionBatch`, сохранив отдельный `ChatFanout` для нормального сообщения и legacy `OK` payload.~~ **Готово.**
 12. ~~Перевести programmator editor completion (`Gu/#P/Gu`, `#p/Gu`) на typed `SessionBatch`, сохранив точный legacy packet order и state mutation.~~ **Готово.**
 13. ~~Перевести programmator persistence errors для `open/rename/create` на typed `SessionBatch`, сохранив rejected/permanent-failure semantics и legacy `OK` payload.~~ **Готово.**
-14. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-15. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+14. ~~Перевести `ProgramSaved` rejected/permanent-failure output на typed `SessionBatch`, сохранив legacy `ПРОГРАММАТОР#Не удалось сохранить программу.` payload.~~ **Готово.** Success path с порядком `Gu/@P/BH/#p` остаётся отдельным срезом.
+15. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+16. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
