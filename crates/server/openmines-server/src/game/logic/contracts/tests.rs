@@ -81,7 +81,11 @@ fn building_menu_reserves_its_durable_kind_before_apply() {
 
 #[test]
 fn pack_withdrawals_reserve_building_persistence_before_apply() {
-    for action in ["pack_op:take_money:10:10", "pack_op:take_crys:10:10"] {
+    for action in [
+        "pack_op:take_money:10:10",
+        "pack_op:take_crys:10:10",
+        "pack_save:cost:1234#clan:0#",
+    ] {
         assert_eq!(
             PlayerCommand::Gui {
                 command: super::GuiCommand::parse(action.to_owned()),

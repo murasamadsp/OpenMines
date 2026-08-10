@@ -940,6 +940,14 @@ completion.
 но direct socket write из command apply удалён. Admin mutations (`pack_save`,
 `resp_save`, upgrade/market actions) остаются отдельными slices.
 
+**`pack_save` переведён на typed mutation/effect.** Legacy-клиент присылает
+`pack_save:cost:...#clan:...#` с завершающим `#`; parser теперь принимает этот
+фактический RichList wire. Команда валидирует owner/window и оба поля до ECS
+мутации, меняет cost/clan под одним write lock, помечает building dirty,
+возвращает один refreshed `GU` через `SessionBatch` и один полный
+`SaveCommand::Building`. Wire-порядок и `pack:x:y` current-window semantics
+сохранены.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

@@ -580,6 +580,9 @@ fn apply_gui_button_command(
     if let Some(rest) = button.strip_prefix("resp_save:") {
         return super::apply_resp_save(state, player_id, session_id, rest);
     }
+    if let Some(rest) = button.strip_prefix("pack_save:") {
+        return apply_pack_save(state, player_id, session_id, rest);
+    }
     if let Some(rest) = button.strip_prefix("tp:") {
         return super::apply_teleport(state, player_id, session_id, rest);
     }
@@ -1152,6 +1155,134 @@ fn apply_pack_withdrawal(
             .push(crate::game::SaveCommand::Building { row: Box::new(row) });
     }
     effects
+}
+
+fn apply_pack_save(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    richlist_data: &str,
+) -> CommandEffects {
+    let Some((pack_x, pack_y)) = state.query_player_opt(player_id, |ecs, entity| {
+        let ui = ecs.get::<crate::game::player::PlayerUI>(entity)?;
+        let window = ui.current_window.as_deref()?.strip_prefix("pack:")?;
+        let mut parts = window.split(':');
+        let x = parts.next()?.parse::<i32>().ok()?;
+        let y = parts.next()?.parse::<i32>().ok()?;
+        (parts.next().is_none()).then_some((x, y))
+    }) else {
+        return pack_save_error(session_id, player_id);
+    };
+    let Some(view) = state.get_pack_at(pack_x, pack_y) else {
+        return pack_save_error(session_id, player_id);
+    };
+    if view.owner_id != player_id {
+        return pack_save_error(session_id, player_id);
+    }
+    let Some(fields) = crate::game::logic::gui::gui_buttons::parse_rich_key_values(richlist_data)
+    else {
+        return pack_save_error(session_id, player_id);
+    };
+    let cost = match fields.get("cost") {
+        Some(raw) => match raw.parse::<i32>() {
+            Ok(value) if (0..=5000).contains(&value) => Some(value),
+            _ => return pack_save_error(session_id, player_id),
+        },
+        None => None,
+    };
+    let clan_enabled = match fields.get("clan") {
+        Some(raw) => match crate::game::logic::gui::gui_buttons::parse_rich_bool(raw) {
+            Some(value) => Some(value),
+            None => return pack_save_error(session_id, player_id),
+        },
+        None => None,
+    };
+    let owner_clan = state
+        .query_player_opt(player_id, |ecs, entity| {
+            ecs.get::<crate::game::player::PlayerStats>(entity)
+                .and_then(|stats| stats.clan_id)
+        })
+        .unwrap_or(0);
+    let Some(building_entity) = state.building_entity_at(pack_x, pack_y) else {
+        return pack_save_error(session_id, player_id);
+    };
+
+    let row = {
+        let mut ecs = state.ecs_write_profiled("commands.pack_save");
+        if ecs
+            .get::<crate::game::buildings::BuildingFlags>(building_entity)
+            .is_none()
+            || ecs
+                .get::<crate::game::buildings::BuildingStats>(building_entity)
+                .is_none()
+            || ecs
+                .get::<crate::game::buildings::BuildingOwnership>(building_entity)
+                .is_none()
+        {
+            drop(ecs);
+            return pack_save_error(session_id, player_id);
+        }
+        let updated = cost.is_some() || clan_enabled.is_some();
+        if !updated {
+            drop(ecs);
+            return pack_save_error(session_id, player_id);
+        }
+        if let Some(cost) = cost {
+            ecs.get_mut::<crate::game::buildings::BuildingStats>(building_entity)
+                .expect("BuildingStats checked before pack save")
+                .cost = cost;
+        }
+        if let Some(clan_enabled) = clan_enabled {
+            ecs.get_mut::<crate::game::buildings::BuildingOwnership>(building_entity)
+                .expect("BuildingOwnership checked before pack save")
+                .clan_id = if clan_enabled { owner_clan } else { 0 };
+        }
+        ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+            .expect("BuildingFlags checked before pack save")
+            .dirty = true;
+        ecs.resource_mut::<crate::game::DirtyBuildings>()
+            .0
+            .insert(building_entity);
+        let row = crate::game::buildings::extract_building_row(&ecs, building_entity);
+        drop(ecs);
+        row
+    };
+    let Some(row) = row else {
+        return pack_save_error(session_id, player_id);
+    };
+
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::game::logic::gui::pack_gui::open_pack_admin_gui(
+        state, &batch, player_id, pack_x, pack_y,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: vec![crate::game::SaveCommand::Building { row: Box::new(row) }],
+        broadcasts: Vec::new(),
+    }
+}
+
+fn pack_save_error(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+) -> CommandEffects {
+    let packet = crate::net::session::wire::make_u_packet_bytes(
+        "OK",
+        &crate::protocol::packets::ok_message("ЗДАНИЕ", "Некорректное действие.").1,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: vec![packet],
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
 }
 
 fn pack_withdrawal_error(

@@ -34,6 +34,9 @@ pub fn parse_rich_key_values(data: &str) -> Option<std::collections::HashMap<&st
         return Some(fields);
     }
     for pair in data.split('#') {
+        if pair.is_empty() {
+            continue;
+        }
         let (key, value) = pair.split_once(':')?;
         if key.is_empty() || value.is_empty() {
             return None;
@@ -485,12 +488,12 @@ pub async fn handle_auction_button(
 mod tests {
     use super::*;
     use crate::game::buildings::{
-        BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStorage,
+        BuildingCrafting, BuildingFlags, BuildingOwnership, BuildingStats, BuildingStorage,
     };
     use crate::game::logic::gui::crafter_gui;
     use crate::game::logic::gui::market_gui;
     use crate::game::logic::gui::pack_gui;
-    use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats};
+    use crate::game::player::{PlayerFlags, PlayerInventory, PlayerStats, PlayerUI};
     use crate::test_support::{ServerTestHarness, ServerTestHarnessBuilder, drain_events};
     use std::sync::Arc;
 
@@ -522,6 +525,7 @@ mod tests {
         let parsed = parse_rich_key_values("cost:10#clan:1").unwrap();
         assert_eq!(parsed.get("cost"), Some(&"10"));
         assert_eq!(parsed.get("clan"), Some(&"1"));
+        assert_eq!(parse_rich_key_values("cost:10#clan:1#").unwrap(), parsed);
         assert!(parse_rich_key_values("cost").is_none());
         assert!(parse_rich_key_values("cost:").is_none());
         assert!(parse_rich_key_values(":10").is_none());
@@ -1162,6 +1166,55 @@ mod tests {
             before_money + 777
         );
         assert_eq!(market_storage_money(&test.state, 10, 10), 0);
+    }
+
+    #[tokio::test]
+    async fn pack_save_gui_command_returns_typed_effect_and_building_save() {
+        let test = make_market_test_state("typed_pack_save").await;
+        let session_id = crate::game::SessionId::new(3);
+        let (_tx, mut rx) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut rx);
+        let player_id = test.player.id.into();
+        {
+            let entity = test.state.get_player_entity(player_id).unwrap();
+            let mut ecs = test.state.ecs.write();
+            ecs.get_mut::<PlayerUI>(entity).unwrap().current_window = Some("pack:10:10".into());
+        }
+
+        let effects = crate::game::logic::commands::apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::Gui {
+                command: crate::game::GuiCommand::parse("pack_save:cost:1234#clan:0#".to_owned()),
+            },
+        );
+
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::Building { row }]
+                if row.cost == 1234 && row.clan_id == 0
+        ));
+        assert!(matches!(
+            effects.events.as_slice(),
+            [crate::game::GameEvent::SessionBatch { session_id: event_session, packets, .. }]
+                if *event_session == session_id
+                    && packets.iter().any(|packet| {
+                        openmines_protocol::Packet::try_decode(
+                            &mut bytes::BytesMut::from(packet.as_slice()),
+                        )
+                        .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"GU"))
+                    })
+        ));
+        assert_eq!(
+            test.state
+                .query_building_opt(10, 10, |ecs, entity| {
+                    Some(ecs.get::<BuildingStats>(entity)?.cost)
+                })
+                .unwrap(),
+            1234
+        );
     }
 
     #[tokio::test]
