@@ -1728,7 +1728,6 @@ fn spawn_inventory_building_insert_task(
 
 fn spawn_paid_building_insert_task(
     state: &Arc<GameState>,
-    _tx: crate::net::session::outbox::Outbox,
     placement: crate::game::logic::contracts::PaidBuildingPlacement,
 ) {
     let Some(session_id) = state.sessions.session_for_player(placement.owner_id) else {

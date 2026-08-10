@@ -50,8 +50,9 @@ git diff --check
 26. ~~Перевести manual/command-path `Dig` и `Build` output через typed `SessionBatch`, сохранив `OK` state errors, legacy packet payload и прежние world/broadcast effects.~~ **Готово.**
 27. ~~Перевести movement follow-up output (`Autodig`/fallback `OpenPack`) с синхронной доставки через outbox на typed `SessionBatch`, сохранив порядок move output → follow-up output и legacy wire.~~ **Готово.**
 28. ~~Перевести GUI `pack_remove` admission-overload output (`OK`) с прямого outbox sink на typed `SessionBatch`, сохранив enqueue semantics и legacy payload.~~ **Готово.**
-29. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-30. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+29. ~~Перевести GUI `bld_place` preparation output (`P$` и validation `OK`) на typed `SessionBatch`, сохранив paid-placement admission, async DB task и legacy payload/order.~~ **Готово.**
+30. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+31. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

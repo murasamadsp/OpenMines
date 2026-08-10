@@ -401,12 +401,24 @@ fn apply_gui_button_command(
         return apply_pack_withdrawal(state, session_id, player_id, rest, true);
     }
     if let Some(type_code) = button.strip_prefix("bld_place:") {
+        let batch = crate::net::session::wire::PacketBatch::default();
         if let Some(placement) = crate::game::logic::buildings::prepare_paid_building_placement(
-            state, tx, player_id, type_code,
+            state, &batch, player_id, type_code,
         ) {
-            spawn_paid_building_insert_task(state, tx.clone(), placement);
+            spawn_paid_building_insert_task(state, placement);
         }
-        return CommandEffects::default();
+        let packets = batch.into_packets();
+        if packets.is_empty() {
+            return CommandEffects::default();
+        }
+        return CommandEffects {
+            events: vec![crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets,
+            }],
+            ..CommandEffects::default()
+        };
     }
     if let Some((x, y)) = parse_pack_remove_button(&button) {
         if !state.enqueue_command(
@@ -1514,7 +1526,8 @@ fn spawn_gui_async_task(
 
 #[cfg(test)]
 mod tests {
-    use super::pack_remove_overload_effects;
+    use super::{apply_gui_button_command, pack_remove_overload_effects};
+    use crate::test_support::{ServerTestHarness, drain_events};
 
     #[test]
     fn pack_remove_overload_returns_typed_legacy_ok() {
@@ -1535,5 +1548,34 @@ mod tests {
             packet.payload,
             "СЕРВЕР#Сервер перегружен, повторите действие.".as_bytes()
         );
+    }
+
+    #[tokio::test]
+    async fn paid_building_error_returns_typed_legacy_ok() {
+        let test = ServerTestHarness::new("paid_building_error", "bld").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(12);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "bld_place:INVALID".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("paid building error must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("paid building error packet must decode")
+            .expect("paid building error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(packet.payload, "Ошибка#Некорректное здание".as_bytes());
     }
 }
