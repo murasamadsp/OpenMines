@@ -75,7 +75,13 @@ pub(super) fn collect_pending_effects(
     // Respawn is a liveness boundary and must not wait behind pickup bursts.
     let started_at = Instant::now();
     pending_work.deaths.extend(state.drain_player_deaths());
-    let deaths = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
+    let mut command_events = sources.command_events;
+    let deaths = apply_pending_deaths(
+        state,
+        &services.persistence,
+        &mut pending_work.deaths,
+        &mut command_events,
+    );
     side_profile.death = started_at.elapsed();
 
     let started_at = Instant::now();
@@ -109,7 +115,7 @@ pub(super) fn collect_pending_effects(
         Vec::new()
     };
     let effects = PendingEffects {
-        command_events: sources.command_events,
+        command_events,
         broadcasts,
         pack_resends: sources.pack_resends,
         cell_conversions: sources.cell_conversions,
@@ -205,7 +211,13 @@ pub(super) fn apply_quiescing_effects(
     adapt_due_effects(state, pending_work, due_effects, &mut broadcasts);
 
     pending_work.deaths.extend(state.drain_player_deaths());
-    let deaths = apply_pending_deaths(state, &services.persistence, &mut pending_work.deaths);
+    let mut command_events = command_effects.events;
+    let deaths = apply_pending_deaths(
+        state,
+        &services.persistence,
+        &mut pending_work.deaths,
+        &mut command_events,
+    );
     pending_work.box_pickups.extend(state.drain_box_pickups());
     apply_pending_box_pickups(
         state,
@@ -220,7 +232,7 @@ pub(super) fn apply_quiescing_effects(
         state,
         services,
         PendingEffects {
-            command_events: command_effects.events,
+            command_events,
             broadcasts,
             pack_resends: Vec::new(),
             cell_conversions: Vec::new(),

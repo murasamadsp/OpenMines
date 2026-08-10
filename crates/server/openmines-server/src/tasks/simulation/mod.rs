@@ -227,6 +227,7 @@ fn apply_pending_deaths(
     state: &Arc<GameState>,
     persistence: &crate::persistence::PersistenceHandle,
     backlog: &mut DeathBacklog,
+    events: &mut Vec<crate::game::GameEvent>,
 ) -> Vec<PendingDeathEffect> {
     let mut admitted = Vec::new();
     while let Some(player_id) = backlog.queue.front().copied() {
@@ -277,8 +278,14 @@ fn apply_pending_deaths(
     }
     for (player_id, error) in errors {
         tracing::error!(player_id = %player_id, ?error, "Queued player death aborted");
-        if let Some(tx) = state.player_sender(player_id) {
-            crate::game::logic::death::send_death_state_error(&tx);
+        if let Some(session_id) = state.sessions.session_for_player(player_id) {
+            let batch = crate::net::session::wire::PacketBatch::default();
+            crate::game::logic::death::send_death_state_error(&batch);
+            events.push(crate::game::GameEvent::SessionBatch {
+                session_id,
+                player_id,
+                packets: batch.into_packets(),
+            });
         }
     }
     effects

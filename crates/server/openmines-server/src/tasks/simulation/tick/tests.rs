@@ -1007,7 +1007,7 @@ async fn death_box_drop_waits_for_capacity_then_persists_once() {
     backlog.extend(state.drain_player_deaths());
     assert_eq!(backlog.queue.len(), 1);
 
-    let effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+    let effects = apply_pending_deaths(&state, &persistence, &mut backlog, &mut Vec::new());
 
     assert!(effects.is_empty());
     assert_eq!(backlog.queue.len(), 1);
@@ -1026,7 +1026,7 @@ async fn death_box_drop_waits_for_capacity_then_persists_once() {
     assert!(!dirty);
 
     assert!(persisted.try_recv().is_some());
-    let effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+    let effects = apply_pending_deaths(&state, &persistence, &mut backlog, &mut Vec::new());
 
     assert_eq!(effects.len(), 1);
     assert!(backlog.queue.is_empty());
@@ -1049,9 +1049,46 @@ async fn death_box_drop_waits_for_capacity_then_persists_once() {
 
     state.request_player_death(player_id);
     backlog.extend(state.drain_player_deaths());
-    let second_effects = apply_pending_deaths(&state, &persistence, &mut backlog);
+    let second_effects = apply_pending_deaths(&state, &persistence, &mut backlog, &mut Vec::new());
     assert_eq!(second_effects.len(), 1);
     assert!(persisted.try_recv().is_none());
+}
+
+#[tokio::test]
+async fn death_state_error_is_returned_as_typed_session_effect() {
+    let test = make_persistence_test_state("death_state_error_effect").await;
+    let state = test.state.clone();
+    let player_id = crate::game::PlayerId(test.player.id);
+    let session_id = crate::game::SessionId::new(46);
+    let (_outbox, mut receiver) = test.connect_with_outbox(session_id.get());
+    crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+    state.modify_player(player_id, |ecs, entity| {
+        ecs.entity_mut(entity)
+            .remove::<crate::game::player::PlayerFlags>();
+        Some(())
+    });
+    state.request_player_death(player_id);
+
+    let (persistence, _persisted) = crate::persistence::PersistenceHandle::test_channel(1);
+    let mut backlog = DeathBacklog::default();
+    backlog.extend(state.drain_player_deaths());
+    let mut events = Vec::new();
+    let effects = apply_pending_deaths(&state, &persistence, &mut backlog, &mut events);
+
+    assert!(effects.is_empty());
+    assert!(receiver.try_recv().is_err());
+    let [crate::game::GameEvent::SessionBatch { packets, .. }] = events.as_slice() else {
+        panic!("death state error must be one typed session batch");
+    };
+    let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+    let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+        .expect("death error packet must decode")
+        .expect("death error packet must be complete");
+    assert_eq!(packet.event_name, *b"OK");
+    assert_eq!(
+        packet.payload,
+        "СМЕРТЬ#Состояние игрока недоступно.".as_bytes()
+    );
 }
 
 #[tokio::test]
