@@ -687,6 +687,16 @@ fn apply_gui_button_command(
         };
     }
     if let Some(rest) = button.strip_prefix("pack_op:") {
+        if let Some((raw_x, raw_y)) = rest
+            .strip_prefix("open:")
+            .and_then(|coords| coords.split_once(':'))
+            && let (Ok(x), Ok(y)) = (raw_x.parse::<i32>(), raw_y.parse::<i32>())
+            && state
+                .get_pack_at(x, y)
+                .is_some_and(|view| view.pack_type == crate::game::PackType::Clans)
+        {
+            return clan_pack_menu_effects(state, player_id, session_id, x, y);
+        }
         let is_clan_open = rest
             .strip_prefix("open:")
             .and_then(|coords| coords.split_once(':'))
@@ -1970,6 +1980,62 @@ mod tests {
             .expect("pack operation error packet must be complete");
         assert_eq!(packet.event_name, *b"OK");
         assert_eq!(packet.payload, "ЗДАНИЕ#Некорректное действие.".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn clans_pack_open_uses_typed_menu_effects() {
+        let test = ServerTestHarness::new("clans_pack_open_typed", "clans-pack").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(21);
+        let (tx, mut receiver) = test.connect_with_outbox(session_id.get());
+        drain_events(&mut receiver);
+
+        let extra = crate::db::BuildingExtra {
+            charge: 0,
+            max_charge: 0,
+            cost: 0,
+            hp: 1_000,
+            max_hp: 1_000,
+            money_inside: 0,
+            crystals_inside: [0; 6],
+            items_inside: std::collections::HashMap::new(),
+            craft_recipe_id: None,
+            craft_num: 0,
+            craft_end_ts: 0,
+            craft_ready: false,
+            clanzone: 0,
+        };
+        test.state
+            .insert_building_runtime(&crate::game::BuildingInsertSpec {
+                type_code: "D",
+                pack_type: crate::game::PackType::Clans,
+                x: 10,
+                y: 10,
+                owner_id: player_id,
+                clan_id: 0,
+                extra: &extra,
+            })
+            .await
+            .expect("insert clans pack");
+        drain_events(&mut receiver);
+
+        let effects = apply_gui_button_command(
+            &test.state,
+            &tx,
+            session_id,
+            player_id,
+            "pack_op:open:10:10".to_owned(),
+        );
+
+        assert!(receiver.try_recv().is_err());
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ClanMenu { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.action == crate::game::ClanMenuAction::Main
+        ));
     }
 
     #[tokio::test]

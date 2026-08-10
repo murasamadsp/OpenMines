@@ -59,8 +59,9 @@ git diff --check
 35. ~~Перевести GUI `craft_recipe` presentation (`GU`) с sync fast-path direct sink на typed `SessionBatch`, сохранив recipe details и `craft_start` action.~~ **Готово.**
 36. ~~Перевести оставшийся sync `pack_op:*` output/error path на typed `SessionBatch`, сохранив async `Clans` exception и typed mutation routing (`take_*`/`remove`).~~ **Готово.**
 37. ~~Перевести raw GUI `no-window` fallback (`Gu/_`) с sync fast-path direct sink на typed `SessionBatch`, сохранив close semantics; typed `Close` flow не дублировать.~~ **Готово.**
-38. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-39. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+38. ~~Перевести рабочее открытие Clan pack (`pack_op:open:x:y`) с async legacy direct-output на typed `ClanMenu` admission, сохранив доступ и legacy `GU` через completion.~~ **Готово.**
+39. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+40. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
