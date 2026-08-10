@@ -934,6 +934,12 @@ admission, возвращают legacy `P$`/`@B` через `SessionBatch` и с
 HORB содержит Spot/Up placement routes, которых нет в typed `BuildingMenu`
 completion.
 
+**`ADMN` переведён на typed session effect для presentation-only открытия.**
+Команда сохраняет session guard и передаёт существующим admin renderers
+`PacketBatch`, поэтому `GU`/`OK` wire и current-window semantics не меняются,
+но direct socket write из command apply удалён. Admin mutations (`pack_save`,
+`resp_save`, upgrade/market actions) остаются отдельными slices.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

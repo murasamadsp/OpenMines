@@ -6,13 +6,28 @@ use crate::game::logic::horb::HorbDelivery;
 
 pub(super) fn apply_presentation_command(
     state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
     player_id: crate::game::PlayerId,
     command: &PlayerCommand,
-) {
+) -> CommandEffects {
     match command {
         crate::game::PlayerCommand::AdminAction => {
-            if let Some(tx) = state.player_sender(player_id) {
-                crate::game::logic::commands_social::handle_admin_action(state, &tx, player_id);
+            if state
+                .active_player_entity_for_session(player_id, session_id)
+                .is_none()
+            {
+                return CommandEffects::default();
+            }
+            let batch = crate::net::session::wire::PacketBatch::default();
+            crate::game::logic::commands_social::handle_admin_action(state, &batch, player_id);
+            CommandEffects {
+                events: vec![crate::game::GameEvent::SessionBatch {
+                    session_id,
+                    player_id,
+                    packets: batch.into_packets(),
+                }],
+                saves: Vec::new(),
+                broadcasts: Vec::new(),
             }
         }
         _ => unreachable!("non-presentation command routed to presentation command handler"),

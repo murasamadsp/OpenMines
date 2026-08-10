@@ -103,10 +103,12 @@ pub fn apply_queued_player_command_with_due(
         PlayerCommand::Gui { command } => {
             gui::apply_gui_command(state, session_id, player_id, command)
         }
-        PlayerCommand::AdminAction => {
-            gui::apply_presentation_command(state, player_id, &PlayerCommand::AdminAction);
-            CommandEffects::default()
-        }
+        PlayerCommand::AdminAction => gui::apply_presentation_command(
+            state,
+            session_id,
+            player_id,
+            &PlayerCommand::AdminAction,
+        ),
         PlayerCommand::OpenProgrammer => CommandEffects {
             events: Vec::new(),
             saves: vec![crate::game::SaveCommand::ProgramMenu {
@@ -2035,6 +2037,39 @@ mod tests {
         let settings_packet = packet_event(&settings);
         assert_eq!(settings_packet.event_name, *b"GU");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_action_returns_typed_session_effect_without_direct_write() {
+        let test = crate::test_support::ServerTestHarness::new("admin_typed", "admin").await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(203);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::player::PlayerStats>(entity)
+                .expect("connected player stats")
+                .role = 2;
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::AdminAction,
+        );
+
+        assert!(receiver.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("admin action must return one session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.event_name, *b"OK");
     }
 
     #[tokio::test]
