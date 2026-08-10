@@ -14,11 +14,16 @@
 //! kernel migration is in progress. The important boundary is that lifecycle
 //! drains commands and this module owns command application.
 
+mod building_tasks;
 pub(super) mod completion;
 pub(super) mod completion_clan;
 pub(super) mod gui;
 mod parsing;
 pub(super) mod slash;
+
+pub(super) use building_tasks::{
+    spawn_inventory_building_insert_task, spawn_paid_building_insert_task,
+};
 
 use parsing::{
     decode_finv_index, decode_miss_enabled, decode_program_save, decode_rndm_hash, is_unit_payload,
@@ -1672,113 +1677,6 @@ fn apply_heal_command(
         }
         crate::game::logic::healing::HealResult::SilentNoop => {}
     }
-}
-
-fn spawn_inventory_building_insert_task(
-    state: &Arc<GameState>,
-    placement: crate::game::logic::contracts::InventoryBuildingPlacement,
-) {
-    let Some(session_id) = state.sessions.session_for_player(placement.owner_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "inventory_building_insert", async move {
-        let inserted = task_state
-            .db
-            .insert_building(
-                &placement.type_code,
-                placement.x,
-                placement.y,
-                placement.owner_id.into(),
-                placement.clan_id,
-                &placement.extra,
-            )
-            .await;
-        match inserted {
-            Ok(db_id) => {
-                task_state
-                    .enqueue_internal(
-                        placement.owner_id,
-                        session_id,
-                        crate::game::PlayerCommand::ApplyInventoryBuildingPlaced {
-                            placement,
-                            db_id,
-                        },
-                    )
-                    .await;
-            }
-            Err(e) => {
-                tracing::error!(
-                    player_id = %placement.owner_id,
-                    x = placement.x,
-                    y = placement.y,
-                    pack_type = ?placement.pack_type,
-                    error = ?e,
-                    "DB insert failed for inventory building placement"
-                );
-                task_state
-                    .enqueue_internal(
-                        placement.owner_id,
-                        session_id,
-                        crate::game::PlayerCommand::InventoryBuildingPlacementFailed,
-                    )
-                    .await;
-            }
-        }
-    });
-}
-
-fn spawn_paid_building_insert_task(
-    state: &Arc<GameState>,
-    placement: crate::game::logic::contracts::PaidBuildingPlacement,
-) {
-    let Some(session_id) = state.sessions.session_for_player(placement.owner_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "paid_building_insert", async move {
-        let inserted = task_state
-            .db
-            .insert_building(
-                &placement.type_code,
-                placement.x,
-                placement.y,
-                placement.owner_id.into(),
-                placement.building_clan_id,
-                &placement.extra,
-            )
-            .await;
-        match inserted {
-            Ok(db_id) => {
-                task_state
-                    .enqueue_internal(
-                        placement.owner_id,
-                        session_id,
-                        crate::game::PlayerCommand::ApplyPaidBuildingPlaced { placement, db_id },
-                    )
-                    .await;
-            }
-            Err(e) => {
-                tracing::error!(
-                    player_id = %placement.owner_id,
-                    x = placement.x,
-                    y = placement.y,
-                    pack_type = ?placement.pack_type,
-                    error = ?e,
-                    "DB insert failed for paid building placement"
-                );
-                task_state
-                    .enqueue_internal(
-                        placement.owner_id,
-                        session_id,
-                        crate::game::PlayerCommand::RefundPaidBuildingPlacement {
-                            cost: placement.cost,
-                        },
-                    )
-                    .await;
-            }
-        }
-    });
 }
 
 pub(super) fn apply_resp_bind(
