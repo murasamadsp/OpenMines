@@ -28,7 +28,8 @@ git diff --check
 4. ~~Следующий конкретный vertical slice — перевести **мутации рынка** GUI (`sell`, `buy`, `sellall`, `getprofit`) на typed command/admission/apply/persistence/effects. Read-only tab switching не смешивать с продажей/покупкой.~~ **Готово.**
 5. ~~Перевести покупку слота Up (`buyslot`) на typed mutation/effect/persistence путь с сохранением legacy `GU` wire.~~ **Готово.**
 6. ~~Перевести durable Up `delete:{slot}`, `install:{code}#{slot}` и `upgrade` на typed mutation/effect/persistence путь с сохранением порядка `P$/@S/LV/@L/sp/GU`.~~ **Готово.**
-7. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+7. ~~Перевести building-placement completions (`ApplyPaidBuildingPlaced`, `ApplyInventoryBuildingPlaced`, refund) с прямого Outbox на typed `CommandEffects` с сохранением legacy `P$/Gu/IN/O`.~~ **Готово.**
+8. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
@@ -999,6 +1000,12 @@ regression tests.
 `SaveCommand::Player` только после успешной мутации и сохраняет legacy wire.
 Для `upgrade` проверен точный порядок `P$ → @S → LV → @L → sp → GU`; стоимость
 рассчитывается безопасным saturating multiply.
+
+**Building placement completions переведены на typed effects.** Completion после
+DB insert теперь возвращает `SessionBatch` и `BlockUpdate`; платная установка
+сохраняет `Gu`, refund — `P$ → OK`, а inventory placement — `IN` и nearby `O`.
+Прямой `Outbox` из completion удалён, stale session отбрасывается до runtime
+spawn.
 
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.

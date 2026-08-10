@@ -12,13 +12,11 @@
     clippy::significant_drop_tightening
 )]
 //! Лечение и инвентарь.
-use crate::game::logic::buildings::{
-    broadcast_building_placed, building_extra_for_pack_type, validate_building_area,
-};
+use crate::game::logic::buildings::{building_extra_for_pack_type, validate_building_area};
 use crate::game::logic::death::request_death;
 use crate::game::player::{
-    PlayerConnection, PlayerCooldowns, PlayerInventory, PlayerPosition, PlayerSkillsComp,
-    PlayerStats,
+    PlayerConnection, PlayerCooldowns, PlayerFlags, PlayerInventory, PlayerPosition,
+    PlayerSkillsComp, PlayerStats,
 };
 use crate::net::session::outbound::inventory_sync::send_inventory;
 
@@ -406,12 +404,12 @@ pub fn prepare_inventory_building_use(
     })
 }
 
-pub fn apply_inventory_building_placed(
+pub fn apply_inventory_building_placed_effects(
     state: &Arc<GameState>,
-    tx: &dyn PacketSink,
+    session_id: crate::game::SessionId,
     placement: &crate::game::logic::contracts::InventoryBuildingPlacement,
     db_id: i32,
-) {
+) -> crate::game::CommandEffects {
     let spawn_spec = crate::game::BuildingSpawnSpec {
         id: db_id,
         pack_type: placement.pack_type,
@@ -434,8 +432,19 @@ pub fn apply_inventory_building_placed(
         hp: placement.extra.hp,
         max_hp: placement.extra.max_hp,
     };
-    broadcast_building_placed(state, tx, placement.owner_id, &view, false);
-    consume_selected_inventory_item(state, tx, placement.owner_id, placement.selected_item);
+    let packets =
+        consume_selected_inventory_item_packets(state, placement.owner_id, placement.selected_item);
+    crate::game::CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id: placement.owner_id,
+            packets,
+        }],
+        broadcasts: vec![crate::game::BroadcastEffect::BlockUpdate(
+            crate::game::WorldPos(view.x, view.y),
+        )],
+        ..crate::game::CommandEffects::default()
+    }
 }
 
 fn consume_selected_inventory_item(
@@ -444,24 +453,37 @@ fn consume_selected_inventory_item(
     pid: PlayerId,
     selected: i32,
 ) {
-    let packets = state
-        .modify_player(pid, |ecs, entity| {
-            let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
-            let c = inv.items.entry(selected).or_insert(0);
-            *c -= 1;
-            if *c <= 0 {
-                inv.items.remove(&selected);
-                inv.miniq.retain(|&x| x != selected);
-            }
-            let batch = crate::net::session::wire::PacketBatch::default();
-            send_inventory(&batch, &mut inv);
-            Some(batch.into_packets())
-        })
-        .flatten()
-        .unwrap_or_default();
-    for pkt in packets {
+    for pkt in consume_selected_inventory_item_packets(state, pid, selected) {
         tx.send_packet(pkt);
     }
+}
+
+fn consume_selected_inventory_item_packets(
+    state: &Arc<GameState>,
+    pid: PlayerId,
+    selected: i32,
+) -> Vec<Vec<u8>> {
+    state
+        .modify_player(pid, |ecs, entity| {
+            let packets = {
+                let mut inv = ecs.get_mut::<PlayerInventory>(entity)?;
+                let c = inv.items.entry(selected).or_insert(0);
+                *c -= 1;
+                if *c <= 0 {
+                    inv.items.remove(&selected);
+                    inv.miniq.retain(|&x| x != selected);
+                }
+                let batch = crate::net::session::wire::PacketBatch::default();
+                send_inventory(&batch, &mut inv);
+                batch.into_packets()
+            };
+            if let Some(mut flags) = ecs.get_mut::<PlayerFlags>(entity) {
+                flags.dirty = true;
+            }
+            Some(packets)
+        })
+        .flatten()
+        .unwrap_or_default()
 }
 
 fn consume_inventory_item_effect(
@@ -744,7 +766,7 @@ async fn place_building_from_item_with(
             hp: extra.hp,
             max_hp: extra.max_hp,
         };
-        broadcast_building_placed(state, tx, pid, &view, false);
+        crate::game::logic::buildings::broadcast_building_placed(state, tx, pid, &view, false);
         true
     } else {
         false

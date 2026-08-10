@@ -1361,35 +1361,27 @@ pub(super) fn apply_building_completion(
     session_id: crate::game::SessionId,
     command: PlayerCommand,
 ) -> CommandEffects {
-    let effects = CommandEffects::default();
+    if state.sessions.session_for_player(player_id) != Some(session_id) {
+        return CommandEffects::default();
+    }
     match command {
         crate::game::PlayerCommand::ApplyInventoryBuildingPlaced { placement, db_id } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::game::logic::heal_inventory::apply_inventory_building_placed(
-                state, &tx, &placement, db_id,
-            );
+            crate::game::logic::heal_inventory::apply_inventory_building_placed_effects(
+                state, session_id, &placement, db_id,
+            )
         }
         crate::game::PlayerCommand::ApplyPaidBuildingPlaced { placement, db_id } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::game::logic::buildings::apply_paid_building_placed(
-                state, &tx, &placement, db_id,
-            );
+            crate::game::logic::buildings::apply_paid_building_placed_effects(
+                state, session_id, &placement, db_id,
+            )
         }
         crate::game::PlayerCommand::RefundPaidBuildingPlacement { cost } => {
-            let Some(tx) = state.sessions.outbox_for_session(session_id) else {
-                return effects;
-            };
-            crate::game::logic::buildings::refund_paid_building_placement(
-                state, &tx, player_id, cost,
-            );
+            crate::game::logic::buildings::refund_paid_building_placement_effects(
+                state, session_id, player_id, cost,
+            )
         }
         _ => unreachable!("non-building command routed to building completion handler"),
     }
-    effects
 }
 
 pub(super) fn apply_program_editor_completion(

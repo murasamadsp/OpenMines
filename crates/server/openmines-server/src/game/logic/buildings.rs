@@ -366,12 +366,12 @@ pub fn prepare_paid_building_placement(
     })
 }
 
-pub fn apply_paid_building_placed(
+pub fn apply_paid_building_placed_effects(
     state: &Arc<GameState>,
-    tx: &dyn PacketSink,
+    session_id: crate::game::SessionId,
     placement: &crate::game::logic::contracts::PaidBuildingPlacement,
     db_id: i32,
-) {
+) -> crate::game::CommandEffects {
     let spawn_spec = crate::game::BuildingSpawnSpec {
         id: db_id,
         pack_type: placement.pack_type,
@@ -404,20 +404,40 @@ pub fn apply_paid_building_placed(
         hp: placement.extra.hp,
         max_hp: placement.extra.max_hp,
     };
-    broadcast_building_placed(state, tx, placement.owner_id, &view, true);
+    state.modify_player(placement.owner_id, |ecs, entity| {
+        if let Some(mut ui) = ecs.get_mut::<PlayerUI>(entity) {
+            ui.current_window = None;
+        }
+        Some(())
+    });
+    let close = gu_close();
+    crate::game::CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id: placement.owner_id,
+            packets: vec![crate::net::session::wire::make_u_packet_bytes(
+                close.0, &close.1,
+            )],
+        }],
+        broadcasts: vec![crate::game::BroadcastEffect::BlockUpdate(
+            crate::game::WorldPos(view.x, view.y),
+        )],
+        ..crate::game::CommandEffects::default()
+    }
 }
 
-pub fn refund_paid_building_placement(
+pub fn refund_paid_building_placement_effects(
     state: &Arc<GameState>,
-    tx: &dyn PacketSink,
+    session_id: crate::game::SessionId,
     pid: PlayerId,
     cost: i64,
-) {
+) -> crate::game::CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
     let refunded = state
         .modify_player(pid, |ecs, entity| {
             if ecs.get::<PlayerStats>(entity).is_none() || ecs.get::<PlayerFlags>(entity).is_none()
             {
-                send_building_state_error(tx);
+                send_building_state_error(&batch);
                 return None;
             }
             let mut s = ecs.get_mut::<PlayerStats>(entity)?;
@@ -430,9 +450,17 @@ pub fn refund_paid_building_placement(
         })
         .flatten();
     if let Some((m, c)) = refunded {
-        send_u_packet(tx, "P$", &money(m, c).1);
+        send_u_packet(&batch, "P$", &money(m, c).1);
     }
-    send_u_packet(tx, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+    send_u_packet(&batch, "OK", &ok_message("Ошибка", "Ошибка БД").1);
+    crate::game::CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id: pid,
+            packets: batch.into_packets(),
+        }],
+        ..crate::game::CommandEffects::default()
+    }
 }
 
 pub fn broadcast_building_placed(
