@@ -49,8 +49,9 @@ git diff --check
 25. ~~Перевести manual `Geology`/`Heal` output (`GE`, `@L/@B/@S` или legacy `OK`) из command-path direct sink в typed `SessionBatch`, сохранив programmatic auto-action wrappers и legacy wire.~~ **Готово.**
 26. ~~Перевести manual/command-path `Dig` и `Build` output через typed `SessionBatch`, сохранив `OK` state errors, legacy packet payload и прежние world/broadcast effects.~~ **Готово.**
 27. ~~Перевести movement follow-up output (`Autodig`/fallback `OpenPack`) с синхронной доставки через outbox на typed `SessionBatch`, сохранив порядок move output → follow-up output и legacy wire.~~ **Готово.**
-28. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-29. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+28. ~~Перевести GUI `pack_remove` admission-overload output (`OK`) с прямого outbox sink на typed `SessionBatch`, сохранив enqueue semantics и legacy payload.~~ **Готово.**
+29. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+30. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

@@ -425,15 +425,7 @@ fn apply_gui_button_command(
                 },
             }),
         ) {
-            crate::net::session::wire::send_u_packet(
-                tx,
-                "OK",
-                &crate::protocol::packets::ok_message(
-                    "СЕРВЕР",
-                    "Сервер перегружен, повторите действие.",
-                )
-                .1,
-            );
+            return pack_remove_overload_effects(session_id, player_id);
         }
         return CommandEffects::default();
     }
@@ -602,6 +594,26 @@ fn apply_gui_button_command(
     }
     spawn_gui_async_task(state, tx.clone(), player_id, button);
     CommandEffects::default()
+}
+
+fn pack_remove_overload_effects(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "OK",
+        &crate::protocol::packets::ok_message("СЕРВЕР", "Сервер перегружен, повторите действие.").1,
+    );
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        ..CommandEffects::default()
+    }
 }
 
 fn apply_crafter_mutation(
@@ -1498,4 +1510,30 @@ fn spawn_gui_async_task(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pack_remove_overload_effects;
+
+    #[test]
+    fn pack_remove_overload_returns_typed_legacy_ok() {
+        let effects = pack_remove_overload_effects(
+            crate::game::SessionId::new(11),
+            crate::game::PlayerId(42),
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("pack remove overload must return one typed session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .expect("pack remove overload packet must decode")
+            .expect("pack remove overload packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "СЕРВЕР#Сервер перегружен, повторите действие.".as_bytes()
+        );
+    }
 }
