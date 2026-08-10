@@ -91,7 +91,7 @@ pub fn apply_queued_player_command_with_due(
             CommandEffects::default()
         }
         PlayerCommand::OpenBox => apply_open_box_command(state, player_id, session_id),
-        PlayerCommand::ClaimBonus => apply_bonus_claim(state, player_id),
+        PlayerCommand::ClaimBonus => apply_bonus_claim(state, player_id, session_id),
         command @ (PlayerCommand::InventoryToggle
         | PlayerCommand::InventoryChoose { .. }
         | PlayerCommand::InventoryUse
@@ -1099,10 +1099,15 @@ where
     });
 }
 
-fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -> CommandEffects {
-    let Some(tx) = state.player_sender(player_id) else {
+fn apply_bonus_claim(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+) -> CommandEffects {
+    if state.sessions.session_for_player(player_id) != Some(session_id) {
         return CommandEffects::default();
-    };
+    }
+    let batch = crate::net::session::wire::PacketBatch::default();
     let mut effects = CommandEffects::default();
     match crate::game::logic::bonus::claim_bonus(state, player_id) {
         crate::game::logic::bonus::BonusClaim::Claimed {
@@ -1113,13 +1118,13 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
             row,
         } => {
             crate::net::session::wire::send_u_packet(
-                &tx,
+                &batch,
                 "P$",
                 &crate::protocol::packets::money(new_money, creds).1,
             );
-            crate::net::session::wire::send_u_packet(&tx, "DR", b"0");
+            crate::net::session::wire::send_u_packet(&batch, "DR", b"0");
             crate::game::logic::commands_social::send_ok(
-                &tx,
+                &batch,
                 "Бонус",
                 &format!(
                     "Вы получили {reward_money}$!\nВозвращайтесь через {cooldown_hours} часов."
@@ -1130,19 +1135,24 @@ fn apply_bonus_claim(state: &Arc<GameState>, player_id: crate::game::PlayerId) -
         }
         crate::game::logic::bonus::BonusClaim::NotReady { hours, minutes } => {
             crate::game::logic::commands_social::send_ok(
-                &tx,
+                &batch,
                 "Бонус",
                 &format!("Бонус ещё не готов.\nПриходите через {hours}ч {minutes}м."),
             );
         }
         crate::game::logic::bonus::BonusClaim::MissingState => {
             crate::net::session::wire::send_u_packet(
-                &tx,
+                &batch,
                 "OK",
                 &crate::protocol::packets::ok_message("Бонус", "Состояние бонуса недоступно.").1,
             );
         }
     }
+    effects.events.push(crate::game::GameEvent::SessionBatch {
+        session_id,
+        player_id,
+        packets: batch.into_packets(),
+    });
     effects
 }
 
@@ -2746,6 +2756,46 @@ mod tests {
         .expect("slash OK packet must be complete");
         assert_eq!(packet.event_name, *b"OK");
         assert_eq!(packet.payload, "Ошибка#Некорректная команда.".as_bytes());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn bonus_missing_state_returns_typed_legacy_ok() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "bonus_missing_state_typed",
+            "bonus-missing-state",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(213);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.entity_mut(entity)
+                .remove::<crate::game::player::PlayerStats>();
+            Some(())
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ClaimBonus,
+        );
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("bonus error must return one typed session batch");
+        };
+        let packet = openmines_protocol::Packet::try_decode(&mut bytes::BytesMut::from(
+            packets[0].as_slice(),
+        ))
+        .expect("bonus error packet must decode")
+        .expect("bonus error packet must be complete");
+        assert_eq!(packet.event_name, *b"OK");
+        assert_eq!(
+            packet.payload,
+            "Бонус#Состояние бонуса недоступно.".as_bytes()
+        );
         assert!(receiver.try_recv().is_err());
     }
 

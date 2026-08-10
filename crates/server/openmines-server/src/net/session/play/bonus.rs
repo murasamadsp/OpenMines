@@ -34,6 +34,34 @@ mod tests {
             .unwrap()
     }
 
+    fn typed_events(effects: &crate::game::CommandEffects) -> Vec<(String, Vec<u8>)> {
+        effects
+            .events
+            .iter()
+            .find_map(|event| {
+                let crate::game::GameEvent::SessionBatch { packets, .. } = event else {
+                    return None;
+                };
+                Some(
+                    packets
+                        .iter()
+                        .map(|packet| {
+                            let decoded = openmines_protocol::Packet::try_decode(
+                                &mut bytes::BytesMut::from(packet.as_slice()),
+                            )
+                            .expect("bonus packet must decode")
+                            .expect("bonus packet must be complete");
+                            (
+                                String::from_utf8_lossy(&decoded.event_name).into_owned(),
+                                decoded.payload.to_vec(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
     fn claim_bonus(
         state: &Arc<crate::game::GameState>,
         pid: crate::game::PlayerId,
@@ -65,8 +93,9 @@ mod tests {
 
         let effects = claim_bonus(&test.state, pid);
 
-        let events = drain_events(&mut rx);
+        let events = typed_events(&effects);
         assert!(events.iter().any(|(event, _)| event == "P$"));
+        assert!(drain_events(&mut rx).is_empty());
         assert_eq!(player_money(&test.state, pid), before_money + reward_money);
         assert!(matches!(
             effects.saves.as_slice(),
@@ -90,8 +119,9 @@ mod tests {
         let pid = crate::game::PlayerId(test.player.id);
         let effects = claim_bonus(&test.state, pid);
 
-        let events = drain_events(&mut rx);
+        let events = typed_events(&effects);
         assert!(events.iter().any(|(event, _)| event == "P$"));
+        assert!(drain_events(&mut rx).is_empty());
         assert_eq!(effects.saves.len(), 1);
 
         rt.block_on(async {
@@ -115,11 +145,12 @@ mod tests {
 
         let effects = claim_bonus(&test.state, pid);
 
-        let events = drain_events(&mut rx);
+        let events = typed_events(&effects);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние бонуса недоступно."));
+        assert!(drain_events(&mut rx).is_empty());
         assert!(effects.saves.is_empty());
     }
 
@@ -140,11 +171,12 @@ mod tests {
 
         let effects = claim_bonus(&test.state, pid);
 
-        let events = drain_events(&mut rx);
+        let events = typed_events(&effects);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].0, "OK");
         let message = std::str::from_utf8(&events[0].1).unwrap();
         assert!(message.contains("Состояние бонуса недоступно."));
+        assert!(drain_events(&mut rx).is_empty());
         assert_eq!(player_money(&test.state, pid), before_money);
         assert!(effects.saves.is_empty());
     }

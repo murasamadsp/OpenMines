@@ -44,8 +44,10 @@ git diff --check
 20. ~~Перевести program `pRST` running→stopped output (`Gu/@P/BH`) на typed `SessionBatch`, сохранив reset state transition, stopped pre-open no-op и legacy packet order.~~ **Готово.**
 21. ~~Перевести program `PREN` rename prompt (`GU` или malformed `@P`) на typed `SessionBatch`, сохранив `pren:{id}` UI state, HORB payload и legacy semantics.~~ **Готово.**
 22. ~~Перевести общий `KernelContext::slash_ok_effect` на typed `SessionBatch`, сохранив session guard и legacy `OK` payload для slash/completion ошибок.~~ **Готово.**
-23. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
-24. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+23. ~~Перевести `ClaimBonus` output (`P$/DR/OK`) на typed `SessionBatch`, сохранив legacy packet order/payload, Player save и not-ready/missing-state semantics.~~ **Готово.**
+24. ~~Перевести `ClaimBonus` output (`P$/DR/OK`) на typed `SessionBatch`, сохранив legacy packet order/payload, Player save и not-ready/missing-state semantics.~~ **Готово.**
+25. Следующий срез — выбрать следующий оставшийся session direct-output path и перевести его через тот же typed boundary; не удалять незавершённые feature-заготовки.
+26. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
