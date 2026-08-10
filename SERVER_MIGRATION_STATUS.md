@@ -69,8 +69,9 @@ git diff --check
 45. ~~Вынести async building-placement DB tasks из монолитного `commands/mod.rs` в `commands/building_tasks.rs`, сохранив session guard, completion commands и legacy behavior.~~ **Готово.**
 46. ~~Вынести async GUI/Auction dispatcher из `commands/gui.rs` в `commands/gui_tasks.rs`, сохранив handler selection и legacy async behavior.~~ **Готово.**
 47. ~~Перевести `hurt_player_pure` в обычном `Xdig` с прямого `player_sender` на входящий typed `PacketBatch`, сохранив порядок `@S/@L/OK` и death admission.~~ **Готово.**
-48. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-49. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+48. ~~Перевести `ChatFanout` delivery с прямого `state.send_to_player` на `SessionHub::fanout`, собирая clan recipients вне ECS callback и сохраняя момент выбора получателей и legacy `mU`.~~ **Готово.**
+49. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+50. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 

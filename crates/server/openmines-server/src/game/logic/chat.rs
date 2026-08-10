@@ -320,31 +320,38 @@ fn send_mu_bytes(data: &[u8]) -> Vec<u8> {
 /// Рассылка `mU` ВСЕМ активным (global, 1:1 C# `Chat.AddMessage`).
 fn send_mu_to_all(state: &Arc<GameState>, data: &[u8]) {
     let pkt = send_mu_bytes(data);
-    for pid in state.active_player_ids() {
-        state.send_to_player(pid, pkt.clone());
-    }
+    fanout_mu_to_players(state, &state.active_player_ids(), &pkt);
 }
 
 /// Рассылка `mU` только членам клана `clan_id`.
 fn send_mu_to_clan(state: &Arc<GameState>, data: &[u8], clan_id: i32) {
     let pkt = send_mu_bytes(data);
+    let mut recipients = Vec::new();
     for pid in state.active_player_ids() {
         state.query_player(pid, |ecs: &bevy_ecs::prelude::World, entity| {
             if let Some(s) = ecs.get::<crate::game::player::PlayerStats>(entity)
                 && s.clan_id == Some(clan_id)
             {
-                state.send_to_player(pid, pkt.clone());
+                recipients.push(pid);
             }
         });
     }
+    fanout_mu_to_players(state, &recipients, &pkt);
 }
 
 /// Рассылка `mU` ТОЛЬКО указанным игрокам (приват — не утекает третьим).
 fn send_mu_to_users(state: &Arc<GameState>, data: &[u8], user_ids: &[i32]) {
     let pkt = send_mu_bytes(data);
-    for &uid in user_ids {
-        state.send_to_player(uid.into(), pkt.clone());
-    }
+    let recipients: Vec<_> = user_ids.iter().copied().map(PlayerId::from).collect();
+    fanout_mu_to_players(state, &recipients, &pkt);
+}
+
+fn fanout_mu_to_players(state: &Arc<GameState>, players: &[PlayerId], packet: &[u8]) {
+    let recipients: Vec<_> = players
+        .iter()
+        .filter_map(|player_id| state.sessions.session_for_player(*player_id))
+        .collect();
+    state.sessions.fanout(&recipients, packet);
 }
 
 #[cfg(test)]
