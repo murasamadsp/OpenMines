@@ -667,6 +667,13 @@ impl PlayerCommand {
                 )
             }
             Self::ProgramAction { event, .. } if event == "PCOP" => Some(SaveKind::ProgramCopy),
+            Self::ProgramAction { event, payload } if event == "PDEL" => {
+                std::str::from_utf8(payload)
+                    .ok()
+                    .and_then(|raw| raw.trim().parse::<i32>().ok())
+                    .filter(|program_id| *program_id > 0)
+                    .map(|_| SaveKind::ProgramDelete)
+            }
             Self::OpenProgrammer => Some(SaveKind::ProgramMenu),
             Self::RequestMyBuildings => Some(SaveKind::BuildingMenu),
             Self::OpenClan
@@ -873,6 +880,9 @@ pub enum SaveCommand {
     ProgramRename {
         request: ProgramRenameRequest,
     },
+    ProgramDelete {
+        request: ProgramDeleteRequest,
+    },
     #[allow(dead_code)]
     ProgramCopy {
         request: ProgramCopyRequest,
@@ -1049,6 +1059,7 @@ impl SaveCommand {
             Self::ProgramMenu { .. } => SaveKind::ProgramMenu,
             Self::ProgramOpen { .. } => SaveKind::ProgramOpen,
             Self::ProgramRename { .. } => SaveKind::ProgramRename,
+            Self::ProgramDelete { .. } => SaveKind::ProgramDelete,
             Self::ProgramCopy { .. } => SaveKind::ProgramCopy,
             Self::BuildingMenu { .. } => SaveKind::BuildingMenu,
             Self::AuctionGrid { .. } => SaveKind::AuctionGrid,
@@ -1106,6 +1117,14 @@ pub struct ProgramRenameRequest {
     pub session_id: SessionId,
     pub program_id: i32,
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgramDeleteRequest {
+    pub player_id: PlayerId,
+    pub session_id: SessionId,
+    pub program_id: i32,
+    pub clear_selected: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1190,6 +1209,10 @@ pub enum PersistenceCompletion {
     ProgramRenamed {
         request: ProgramRenameRequest,
         result: ProgramRenameResult,
+    },
+    ProgramDeleted {
+        request: ProgramDeleteRequest,
+        result: ProgramDeleteResult,
     },
     ProgramCopied {
         request: ProgramCopyRequest,
@@ -1300,6 +1323,13 @@ pub enum ProgramRenameResult {
     Renamed { program: crate::db::ProgramRow },
     Rejected,
     PermanentFailure { message: String },
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ProgramDeleteResult {
+    Deleted,
+    Rejected,
+    PermanentFailure,
 }
 
 #[derive(Debug)]
@@ -1533,6 +1563,7 @@ pub enum SaveKind {
     ProgramMenu,
     ProgramOpen,
     ProgramRename,
+    ProgramDelete,
     ProgramCopy,
     BuildingMenu,
     AuctionGrid,
@@ -1565,6 +1596,7 @@ impl SaveKind {
             Self::ProgramMenu => "program_menu",
             Self::ProgramOpen => "program_open",
             Self::ProgramRename => "program_rename",
+            Self::ProgramDelete => "program_delete",
             Self::ProgramCopy => "program_copy",
             Self::BuildingMenu => "building_menu",
             Self::AuctionGrid => "auction_grid",

@@ -706,6 +706,15 @@ binary `PROG`; persistence completion-capacity tests для `ProgramOpen` и
 `ProgramRename`; targeted `program_` suite, `cargo check -p openmines-server
 --all-targets --all-features`.
 
+`PDEL` также закрыт через `ProgramDelete`: ownership delete и conditional
+selected-program clear выполняются в persistence worker, completion очищает
+только runtime state и не отправляет success wire (как C# reference). Reject и
+permanent failure дают прежний `OK` только актуальной session. Legacy
+`misc::handle_prog_ty` сохранён для regression path.
+
+Проверка: admission/completion regression, persistence saturation для
+`ProgramDelete`, targeted `program_` suite и strict server clippy.
+
 **My buildings (`Blds`) закрыт.** Запрос резервирует `BuildingMenu` до apply;
 persistence worker читает owned buildings, а completion с session guard строит
 прежний `Мои здания` GU и обновляет UI state. Старый renderer оставлен только

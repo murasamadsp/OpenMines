@@ -646,7 +646,33 @@ fn apply_program_command(
                             effects.saves.push(save);
                         }
                     }
-                    "PDEL" => spawn_program_delete_task(state, tx, player_id, payload),
+                    "PDEL" => {
+                        let Some(program_id) = std::str::from_utf8(&payload)
+                            .ok()
+                            .and_then(|raw| raw.trim().parse::<i32>().ok())
+                            .filter(|program_id| *program_id > 0)
+                        else {
+                            return effects;
+                        };
+                        let clear_selected = state
+                            .query_player_opt(player_id, |ecs, entity| {
+                                Some(
+                                    ecs.get::<crate::game::programmator::ProgrammatorState>(entity)
+                                        .is_some_and(|program| {
+                                            program.selected_id == Some(program_id)
+                                        }),
+                                )
+                            })
+                            .unwrap_or(false);
+                        effects.saves.push(crate::game::SaveCommand::ProgramDelete {
+                            request: crate::game::ProgramDeleteRequest {
+                                player_id,
+                                session_id,
+                                program_id,
+                                clear_selected,
+                            },
+                        });
+                    }
                     "pRST" => crate::game::logic::misc::handle_prog_reset_ty(state, &tx, player_id),
                     "PREN" => crate::game::logic::misc::handle_prog_rename_prompt_ty(
                         state, &tx, player_id, &payload,
@@ -673,21 +699,7 @@ fn apply_program_command(
             }
         }
         crate::game::PlayerCommand::ApplyDeletedProgram { program_id } => {
-            let cleared = crate::game::logic::misc::clear_deleted_program_runtime(
-                state, player_id, program_id,
-            );
-            if cleared {
-                let task_state = state.clone();
-                spawn_session_async_task(state, "program_clear_selected", async move {
-                    if let Err(e) = task_state
-                        .db
-                        .set_selected_program(player_id.into(), None)
-                        .await
-                    {
-                        tracing::error!(player_id = %player_id, program_id, error = ?e, "DB selected program clear failed after delete");
-                    }
-                });
-            }
+            crate::game::logic::misc::clear_deleted_program_runtime(state, player_id, program_id);
         }
         PlayerCommand::ApplyProgramEditorOpen { .. }
         | PlayerCommand::ApplyProgramEditorRename { .. } => {
@@ -1639,67 +1651,6 @@ fn parse_pack_remove_button(button: &str) -> Option<(i32, i32)> {
     Some((x, y))
 }
 
-fn spawn_program_delete_task(
-    state: &Arc<GameState>,
-    tx: crate::net::session::outbox::Outbox,
-    player_id: crate::game::PlayerId,
-    payload: bytes::Bytes,
-) {
-    let Some(session_id) = state.sessions.session_for_player(player_id) else {
-        return;
-    };
-    let task_state = state.clone();
-    spawn_session_async_task(state, "program_delete", async move {
-        let program_id = std::str::from_utf8(&payload)
-            .ok()
-            .and_then(|s| s.trim().parse::<i32>().ok());
-        let Some(program_id) = program_id else {
-            return;
-        };
-
-        match task_state
-            .db
-            .delete_program_owned(player_id.into(), program_id)
-            .await
-        {
-            Ok(true) => {
-                task_state
-                    .enqueue_internal(
-                        player_id,
-                        session_id,
-                        crate::game::PlayerCommand::ApplyDeletedProgram { program_id },
-                    )
-                    .await;
-            }
-            Ok(false) => {
-                tracing::warn!(
-                    player_id = %player_id,
-                    program_id,
-                    "Program delete rejected: missing or foreign row"
-                );
-                crate::net::session::wire::send_u_packet(
-                    &tx,
-                    "OK",
-                    &crate::protocol::packets::ok_message("ПРОГРАММАТОР", "Программа не найдена.")
-                        .1,
-                );
-            }
-            Err(e) => {
-                tracing::error!(player_id = %player_id, program_id, error = ?e, "DB delete failed");
-                crate::net::session::wire::send_u_packet(
-                    &tx,
-                    "OK",
-                    &crate::protocol::packets::ok_message(
-                        "ПРОГРАММАТОР",
-                        "Не удалось удалить программу.",
-                    )
-                    .1,
-                );
-            }
-        }
-    });
-}
-
 fn decode_finv_index(payload: &[u8]) -> Option<u8> {
     match payload {
         [b'0'..=b'9'] => Some(payload[0] - b'0'),
@@ -2009,6 +1960,91 @@ mod tests {
                     && request.program_id == 42
                     && request.name == "new-name"
         ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_delete_is_admitted_without_legacy_gui_task() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_delete_durable", "programmer")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(208);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            ecs.get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                .expect("programmator state")
+                .selected_id = Some(42);
+        });
+
+        let effects = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ProgramAction {
+                event: "PDEL".to_owned(),
+                payload: bytes::Bytes::from_static(b"42"),
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert!(matches!(
+            effects.saves.as_slice(),
+            [crate::game::SaveCommand::ProgramDelete { request }]
+                if request.player_id == player_id
+                    && request.session_id == session_id
+                    && request.program_id == 42
+                    && request.clear_selected
+        ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn program_delete_completion_clears_runtime_without_wire() {
+        let test =
+            crate::test_support::ServerTestHarness::new("program_delete_completion", "programmer")
+                .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(209);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+        test.state.modify_player(player_id, |ecs, entity| {
+            let mut program = ecs
+                .get_mut::<crate::game::programmator::ProgrammatorState>(entity)
+                .expect("programmator state");
+            program.selected_id = Some(42);
+            program.selected_data = Some("source".to_owned());
+            program.running = true;
+        });
+
+        let effects = apply_persistence_completion(
+            &test.state,
+            crate::game::PersistenceCompletion::ProgramDeleted {
+                request: crate::game::ProgramDeleteRequest {
+                    player_id,
+                    session_id,
+                    program_id: 42,
+                    clear_selected: true,
+                },
+                result: crate::game::ProgramDeleteResult::Deleted,
+            },
+        );
+
+        assert!(effects.events.is_empty());
+        assert_eq!(
+            test.state.query_player(player_id, |ecs, entity| {
+                let program = ecs
+                    .get::<crate::game::programmator::ProgrammatorState>(entity)
+                    .expect("programmator state");
+                (
+                    program.selected_id,
+                    program.selected_data.clone(),
+                    program.running,
+                )
+            }),
+            Some((None, None, false))
+        );
         assert!(receiver.try_recv().is_err());
     }
 

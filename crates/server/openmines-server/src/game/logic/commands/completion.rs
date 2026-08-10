@@ -141,6 +141,42 @@ pub fn apply_persistence_completion(
             }
             CommandEffects::default()
         }
+        crate::game::PersistenceCompletion::ProgramDeleted { request, result } => match result {
+            crate::game::ProgramDeleteResult::Deleted => {
+                crate::game::logic::misc::clear_deleted_program_runtime(
+                    state,
+                    request.player_id,
+                    request.program_id,
+                );
+                CommandEffects::default()
+            }
+            crate::game::ProgramDeleteResult::Rejected => {
+                if state.sessions.session_for_player(request.player_id) == Some(request.session_id)
+                {
+                    KernelContext::new(state).slash_ok_effect(
+                        request.session_id,
+                        request.player_id,
+                        "ПРОГРАММАТОР",
+                        "Программа не найдена.",
+                    )
+                } else {
+                    CommandEffects::default()
+                }
+            }
+            crate::game::ProgramDeleteResult::PermanentFailure => {
+                if state.sessions.session_for_player(request.player_id) == Some(request.session_id)
+                {
+                    KernelContext::new(state).slash_ok_effect(
+                        request.session_id,
+                        request.player_id,
+                        "ПРОГРАММАТОР",
+                        "Не удалось удалить программу.",
+                    )
+                } else {
+                    CommandEffects::default()
+                }
+            }
+        },
         crate::game::PersistenceCompletion::ProgramCopied { request, result } => {
             if state.sessions.session_for_player(request.player) != Some(request.session) {
                 return CommandEffects::default();

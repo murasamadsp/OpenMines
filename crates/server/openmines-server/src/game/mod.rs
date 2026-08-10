@@ -23,11 +23,11 @@ pub use logic::contracts::{
     ClanMenuListEntry, ClanMenuRequest, ClanMenuResult, CommandEffects, CommandIngressClass,
     CommandSeq, GameCommand, GameEvent, GuiCommand, GuiView, PersistenceCompletion, PlayerCommand,
     PlayerInitView, ProgramCopyRequest, ProgramCopyResult, ProgramCreateRequest,
-    ProgramCreateResult, ProgramMenuRequest, ProgramMenuResult, ProgramOpenRequest,
-    ProgramOpenResult, ProgramRenameRequest, ProgramRenameResult, ProgramSaveRequest,
-    ProgramSaveResult, QueuedGameCommand, RemovePack, SaveCommand, SaveKind, SessionId, SimTick,
-    SlashCommand, SlashPackCommand, SpotGuiView, StorageGuiView, TeleportGuiView, WhoisRequest,
-    WhoisResult,
+    ProgramCreateResult, ProgramDeleteRequest, ProgramDeleteResult, ProgramMenuRequest,
+    ProgramMenuResult, ProgramOpenRequest, ProgramOpenResult, ProgramRenameRequest,
+    ProgramRenameResult, ProgramSaveRequest, ProgramSaveResult, QueuedGameCommand, RemovePack,
+    SaveCommand, SaveKind, SessionId, SimTick, SlashCommand, SlashPackCommand, SpotGuiView,
+    StorageGuiView, TeleportGuiView, WhoisRequest, WhoisResult,
 };
 pub use logic::{crafting, skills};
 pub use mechanics::{building_damage, chat, combat};

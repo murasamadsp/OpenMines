@@ -118,6 +118,11 @@ pub trait PersistenceStore: Clone + Send + Sync + 'static {
         request: &crate::game::ProgramRenameRequest,
     ) -> impl Future<Output = Result<crate::game::ProgramRenameResult, PersistenceStoreFailure>> + Send;
 
+    fn program_delete(
+        &self,
+        request: &crate::game::ProgramDeleteRequest,
+    ) -> impl Future<Output = Result<crate::game::ProgramDeleteResult, PersistenceStoreFailure>> + Send;
+
     fn copy_program(
         &self,
         request: &crate::game::ProgramCopyRequest,
@@ -653,6 +658,32 @@ impl PersistenceStore for Arc<crate::db::Database> {
                 ..program
             },
         })
+    }
+
+    async fn program_delete(
+        &self,
+        request: &crate::game::ProgramDeleteRequest,
+    ) -> Result<crate::game::ProgramDeleteResult, PersistenceStoreFailure> {
+        let deleted = self
+            .delete_program_owned(request.player_id.into(), request.program_id)
+            .await
+            .map_err(PersistenceStoreFailure::Transient)?;
+        if !deleted {
+            return Ok(crate::game::ProgramDeleteResult::Rejected);
+        }
+        if request.clear_selected
+            && let Err(error) = self
+                .set_selected_program(request.player_id.into(), None)
+                .await
+        {
+            tracing::error!(
+                player_id = %request.player_id,
+                program_id = request.program_id,
+                error = ?error,
+                "Selected program clear failed after delete"
+            );
+        }
+        Ok(crate::game::ProgramDeleteResult::Deleted)
     }
 
     async fn copy_program(

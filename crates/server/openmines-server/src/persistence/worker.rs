@@ -109,6 +109,9 @@ async fn persist_batch<S>(
             SaveKind::ProgramRename => {
                 persist_program_rename_batch(store, &mut batch[start..end], simulation_waker).await;
             }
+            SaveKind::ProgramDelete => {
+                persist_program_delete_batch(store, &mut batch[start..end], simulation_waker).await;
+            }
             SaveKind::ProgramCopy => {
                 persist_program_copy_batch(store, &mut batch[start..end], simulation_waker).await;
             }
@@ -998,6 +1001,48 @@ async fn persist_program_rename_batch<S>(
     }
 }
 
+async fn persist_program_delete_batch<S>(
+    store: &S,
+    batch: &mut [PersistenceEnvelope],
+    simulation_waker: &crate::simulation_waker::SimulationWaker,
+) where
+    S: PersistenceStore,
+{
+    for envelope in batch {
+        let SaveCommand::ProgramDelete { request } = &envelope.command else {
+            unreachable!("compatible program-delete batch");
+        };
+        let request = request.clone();
+        let result = loop {
+            match store.program_delete(&request).await {
+                Ok(result) => break result,
+                Err(PersistenceStoreFailure::Permanent(_)) => {
+                    break crate::game::ProgramDeleteResult::PermanentFailure;
+                }
+                Err(PersistenceStoreFailure::Transient(error)) => {
+                    tracing::warn!(
+                        error = ?error,
+                        player_id = %request.player_id,
+                        program_id = request.program_id,
+                        "Program delete persistence failed transiently; retrying"
+                    );
+                    tokio::time::sleep(RETRY_INITIAL_BACKOFF).await;
+                }
+            }
+        };
+        envelope
+            .completion
+            .take()
+            .expect("program delete command must reserve completion capacity")
+            .send(crate::game::PersistenceCompletion::ProgramDeleted { request, result });
+        simulation_waker.wake();
+        crate::metrics::PERSISTENCE_COMMANDS_TOTAL
+            .with_label_values(&[SaveKind::ProgramDelete.name(), "persisted"])
+            .inc();
+        crate::metrics::PERSISTENCE_BATCH_SIZE.observe(1.0);
+    }
+}
+
 async fn persist_program_copy_batch<S>(
     store: &S,
     batch: &mut [PersistenceEnvelope],
@@ -1125,6 +1170,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramOpen { .. }
                         | SaveCommand::ProgramRename { .. }
+                        | SaveCommand::ProgramDelete { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1162,6 +1208,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramOpen { .. }
                         | SaveCommand::ProgramRename { .. }
+                        | SaveCommand::ProgramDelete { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1199,6 +1246,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramOpen { .. }
                         | SaveCommand::ProgramRename { .. }
+                        | SaveCommand::ProgramDelete { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1237,6 +1285,7 @@ where
                         | SaveCommand::ProgramMenu { .. }
                         | SaveCommand::ProgramOpen { .. }
                         | SaveCommand::ProgramRename { .. }
+                        | SaveCommand::ProgramDelete { .. }
                         | SaveCommand::ProgramCopy { .. }
                         | SaveCommand::BuildingMenu { .. }
                         | SaveCommand::AuctionGrid { .. }
@@ -1266,6 +1315,7 @@ where
             | SaveKind::ProgramMenu
             | SaveKind::ProgramOpen
             | SaveKind::ProgramRename
+            | SaveKind::ProgramDelete
             | SaveKind::ProgramCopy
             | SaveKind::BuildingMenu
             | SaveKind::AuctionGrid

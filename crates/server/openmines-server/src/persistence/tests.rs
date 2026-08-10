@@ -129,6 +129,13 @@ impl PersistenceStore for TestStore {
         })
     }
 
+    async fn program_delete(
+        &self,
+        _request: &crate::game::ProgramDeleteRequest,
+    ) -> Result<crate::game::ProgramDeleteResult, PersistenceStoreFailure> {
+        Ok(crate::game::ProgramDeleteResult::Deleted)
+    }
+
     async fn copy_program(
         &self,
         _request: &crate::game::ProgramCopyRequest,
@@ -574,6 +581,20 @@ fn publish_program_rename(handle: &PersistenceHandle, player_id: i32, session_id
         });
 }
 
+fn publish_program_delete(handle: &PersistenceHandle, player_id: i32, session_id: u64) {
+    handle
+        .try_reserve(SaveKind::ProgramDelete)
+        .expect("program-delete persistence capacity")
+        .publish(SaveCommand::ProgramDelete {
+            request: crate::game::ProgramDeleteRequest {
+                player_id: crate::game::PlayerId(player_id),
+                session_id: crate::game::SessionId::new(session_id),
+                program_id: 42,
+                clear_selected: true,
+            },
+        });
+}
+
 fn publish_building_delete(handle: &PersistenceHandle, building_id: i32, operation_id: u64) {
     handle
         .try_reserve(SaveKind::BuildingDelete)
@@ -944,6 +965,22 @@ async fn program_editor_completion_capacity_covers_open_and_rename() {
         Ok(crate::game::PersistenceCompletion::ProgramRenamed {
             request: crate::game::ProgramRenameRequest { program_id: 42, .. },
             result: crate::game::ProgramRenameResult::Renamed { .. },
+        })
+    ));
+
+    publish_program_delete(&handle, 7, 11);
+    while handle.backlog() != 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        handle.try_reserve(SaveKind::ProgramDelete),
+        Err(PersistenceAdmissionError::Full)
+    ));
+    assert!(matches!(
+        completions.try_recv(),
+        Ok(crate::game::PersistenceCompletion::ProgramDeleted {
+            request: crate::game::ProgramDeleteRequest { program_id: 42, .. },
+            result: crate::game::ProgramDeleteResult::Deleted,
         })
     ));
 
