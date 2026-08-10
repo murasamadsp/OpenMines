@@ -326,36 +326,23 @@ fn apply_inventory_command(
         PlayerCommand::InventoryUse => {
             apply_inventory_use(state, session_id, player_id, due_actions)
         }
-        PlayerCommand::ToggleAutoDig => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_auto_dig_result(
-                    &tx,
-                    player_id,
-                    crate::game::logic::settings::toggle_auto_dig(state, player_id),
-                    "toggle",
-                );
-            }
-            CommandEffects::default()
-        }
-        PlayerCommand::ToggleAggression => {
-            if let Some(tx) = state.player_sender(player_id) {
-                apply_aggression_result(
-                    &tx,
-                    player_id,
-                    crate::game::logic::settings::toggle_aggression(state, player_id),
-                    "toggle",
-                );
-            }
-            CommandEffects::default()
-        }
+        PlayerCommand::ToggleAutoDig => setting_toggle_effects(
+            session_id,
+            player_id,
+            crate::game::logic::settings::toggle_auto_dig(state, player_id),
+            "auto-dig",
+        ),
+        PlayerCommand::ToggleAggression => setting_toggle_effects(
+            session_id,
+            player_id,
+            crate::game::logic::settings::toggle_aggression(state, player_id),
+            "aggression",
+        ),
         PlayerCommand::SettingsSave { payload } => {
-            if let Some(tx) = state.player_sender(player_id) {
-                if !payload.is_empty() {
-                    tracing::debug!(player_id = %player_id, bytes = payload.len(), "Sett TY payload ignored");
-                }
-                crate::net::session::ui::settings::open(state, &tx, player_id);
+            if !payload.is_empty() {
+                tracing::debug!(player_id = %player_id, bytes = payload.len(), "Sett TY payload ignored");
             }
-            CommandEffects::default()
+            settings_open_effects(state, session_id, player_id)
         }
         _ => unreachable!("non-inventory command routed to inventory command handler"),
     }
@@ -839,6 +826,61 @@ fn send_settings_state_error(tx: &dyn crate::net::session::wire::PacketSink) {
     tx.send_packet(crate::net::session::wire::make_u_packet_bytes(
         packet.0, &packet.1,
     ));
+}
+
+fn settings_open_effects(
+    state: &Arc<GameState>,
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    crate::net::session::ui::settings::open(state, &batch, player_id);
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
+}
+
+fn setting_toggle_effects(
+    session_id: crate::game::SessionId,
+    player_id: crate::game::PlayerId,
+    result: crate::game::logic::settings::PlayerSettingMutation,
+    action: &'static str,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+    match result {
+        crate::game::logic::settings::PlayerSettingMutation::Changed(value) => {
+            let packet = if action == "auto-dig" {
+                crate::protocol::packets::auto_digg(value)
+            } else {
+                crate::protocol::packets::aggression(value)
+            };
+            crate::net::session::wire::send_u_packet(&batch, packet.0, &packet.1);
+        }
+        crate::game::logic::settings::PlayerSettingMutation::Unchanged => {}
+        crate::game::logic::settings::PlayerSettingMutation::MissingState(component) => {
+            tracing::error!(player_id = %player_id, component, action, "Player component missing for setting mutation");
+            send_settings_state_error(&batch);
+        }
+        crate::game::logic::settings::PlayerSettingMutation::MissingEntity => {
+            tracing::error!(player_id = %player_id, action, "Player entity missing for setting mutation");
+            send_settings_state_error(&batch);
+        }
+    }
+    CommandEffects {
+        events: vec![crate::game::GameEvent::SessionBatch {
+            session_id,
+            player_id,
+            packets: batch.into_packets(),
+        }],
+        saves: Vec::new(),
+        broadcasts: Vec::new(),
+    }
 }
 
 fn apply_inventory_result(
@@ -1937,6 +1979,61 @@ mod tests {
                     .is_ok_and(|decoded| decoded.is_some_and(|packet| packet.event_name == *b"#S"))
                 })
         ));
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn settings_toggles_and_open_are_typed_legacy_wire_effects() {
+        let test = crate::test_support::ServerTestHarness::new(
+            "settings_typed_effects",
+            "settings-effects",
+        )
+        .await;
+        let player_id = crate::game::PlayerId(test.player.id);
+        let session_id = crate::game::SessionId::new(202);
+        let mut receiver = test.connect(session_id.get());
+        crate::test_support::ServerTestHarness::drain_events(&mut receiver);
+
+        let auto_dig = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ToggleAutoDig,
+        );
+        let aggression = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::ToggleAggression,
+        );
+        let settings = apply_player_command(
+            &test.state,
+            player_id,
+            session_id,
+            crate::game::PlayerCommand::SettingsSave {
+                payload: bytes::Bytes::new(),
+            },
+        );
+
+        let packet_event = |effects: &crate::game::CommandEffects| {
+            let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+            else {
+                panic!("setting command must emit one session batch")
+            };
+            let mut bytes = bytes::BytesMut::from(packets[0].as_slice());
+            openmines_protocol::Packet::try_decode(&mut bytes)
+                .expect("setting packet must decode")
+                .expect("setting packet must be complete")
+        };
+
+        let auto_packet = packet_event(&auto_dig);
+        assert_eq!(auto_packet.event_name, *b"BD");
+        assert_eq!(auto_packet.payload, &b"1"[..]);
+        let aggression_packet = packet_event(&aggression);
+        assert_eq!(aggression_packet.event_name, *b"BA");
+        assert_eq!(aggression_packet.payload, &b"1"[..]);
+        let settings_packet = packet_event(&settings);
+        assert_eq!(settings_packet.event_name, *b"GU");
         assert!(receiver.try_recv().is_err());
     }
 

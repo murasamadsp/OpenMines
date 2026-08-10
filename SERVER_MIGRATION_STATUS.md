@@ -927,6 +927,13 @@ admission, возвращают legacy `P$`/`@B` через `SessionBatch` и с
 для существующего player snapshot пути; атомарная транзакция player+building
 не входит в этот срез.
 
+**`Sett`/настройки переведены на typed effects.**
+Переключатели auto-dig/aggression и открытие окна настроек возвращают
+`SessionBatch` с теми же `BD`/`BA`/`GU`, без прямой доставки из command apply.
+`open_buildings` намеренно оставлен на legacy renderer: его empty-building
+HORB содержит Spot/Up placement routes, которых нет в typed `BuildingMenu`
+completion.
+
 Следующий архитектурный срез не смешивать с ECS ownership: продолжать перенос
 оставшихся session GUI/chat paths через typed command/admission/apply/effects.
 

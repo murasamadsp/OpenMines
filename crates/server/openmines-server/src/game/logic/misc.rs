@@ -621,7 +621,7 @@ mod tests {
                 .remove::<crate::game::player::PlayerFlags>();
         }
 
-        crate::game::logic::commands::apply_player_command(
+        let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
             pid,
             crate::game::SessionId::new(1),
@@ -638,11 +638,17 @@ mod tests {
             })
             .unwrap();
         assert!(!auto_dig);
-        let events = drain_events(&mut rx);
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, "OK");
-        assert!(!events.iter().any(|(event, _)| event == "BD"));
-        let message = std::str::from_utf8(&events[0].1).unwrap();
+        assert!(rx.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("auto-dig toggle must return one session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.event_name, *b"OK");
+        let message = std::str::from_utf8(&packet.payload).unwrap();
         assert!(message.contains("Состояние настроек недоступно."));
     }
 
@@ -690,7 +696,7 @@ mod tests {
         drain_events(&mut rx);
 
         let pid = PlayerId(test.player.id);
-        crate::game::logic::commands::apply_player_command(
+        let effects = crate::game::logic::commands::apply_player_command(
             &test.state,
             pid,
             crate::game::SessionId::new(1),
@@ -708,8 +714,17 @@ mod tests {
         assert!(aggression);
         assert!(dirty);
 
-        let events = drain_events(&mut rx);
-        assert_eq!(events, vec![("BA".to_string(), b"1".to_vec())]);
+        assert!(rx.try_recv().is_err());
+        let [crate::game::GameEvent::SessionBatch { packets, .. }] = effects.events.as_slice()
+        else {
+            panic!("aggression toggle must return one session batch");
+        };
+        let mut encoded = bytes::BytesMut::from(packets[0].as_slice());
+        let packet = openmines_protocol::Packet::try_decode(&mut encoded)
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.event_name, *b"BA");
+        assert_eq!(packet.payload, &b"1"[..]);
     }
 
     #[tokio::test]
