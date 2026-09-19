@@ -3,7 +3,197 @@
 use crate::game::{CommandEffects, GameState};
 use std::sync::Arc;
 
-pub(super) fn apply_market_get_profit(
+pub fn apply_market_buy(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    sliders: &[i64; 6],
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+
+    let Some(outcome) = crate::game::economy::market::buy_crystals(state, player_id, sliders)
+    else {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("РЫНОК", "Невозможно купить кристаллы.").1,
+        );
+        return session_batch(session_id, player_id, batch);
+    };
+
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "@B",
+        &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+    );
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "P$",
+        &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+    );
+
+    // Re-render buy tab
+    if let Some(view) = state.get_pack_at(building_x, building_y) {
+        crate::game::logic::gui::market_gui::open_market_gui(
+            state, &batch, player_id, &view, "buycrys",
+        );
+    }
+
+    session_batch(session_id, player_id, batch)
+}
+
+pub fn apply_market_sell(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    sliders: &[i64; 6],
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+
+    let Some(building_entity) = state.building_entity_at(building_x, building_y) else {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("РЫНОК", "Здание рынка не найдено.").1,
+        );
+        return session_batch(session_id, player_id, batch);
+    };
+
+    // Validate building has required components
+    {
+        let ecs = state.ecs_read_profiled("market.sell_check");
+        if ecs
+            .get::<crate::game::buildings::BuildingFlags>(building_entity)
+            .is_none()
+            || ecs
+                .get::<crate::game::buildings::BuildingStorage>(building_entity)
+                .is_none()
+        {
+            crate::net::session::wire::send_u_packet(
+                &batch,
+                "OK",
+                &crate::protocol::packets::ok_message("РЫНОК", "Состояние здания недоступно.").1,
+            );
+            return session_batch(session_id, player_id, batch);
+        }
+    }
+
+    let Some(outcome) = crate::game::economy::market::sell_crystals(state, player_id, sliders)
+    else {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("РЫНОК", "Невозможно продать кристаллы.").1,
+        );
+        return session_batch(session_id, player_id, batch);
+    };
+
+    // Update building moneyinside
+    {
+        let mut ecs = state.ecs_write_profiled("market.sell_building");
+        if let Some(mut storage) =
+            ecs.get_mut::<crate::game::buildings::BuildingStorage>(building_entity)
+        {
+            storage.money += outcome.earned / 10;
+        }
+        if let Some(mut flags) =
+            ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+        {
+            flags.dirty = true;
+        }
+    }
+    state.mark_building_dirty(building_entity);
+
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "@B",
+        &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+    );
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "P$",
+        &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+    );
+
+    // Re-render sell tab
+    if let Some(view) = state.get_pack_at(building_x, building_y) {
+        crate::game::logic::gui::market_gui::open_market_gui(
+            state, &batch, player_id, &view, "sellcrys",
+        );
+    }
+
+    session_batch(session_id, player_id, batch)
+}
+
+pub fn apply_market_sell_all(
+    state: &Arc<GameState>,
+    player_id: crate::game::PlayerId,
+    session_id: crate::game::SessionId,
+    building_x: i32,
+    building_y: i32,
+) -> CommandEffects {
+    let batch = crate::net::session::wire::PacketBatch::default();
+
+    let Some(building_entity) = state.building_entity_at(building_x, building_y) else {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("РЫНОК", "Здание рынка не найдено.").1,
+        );
+        return session_batch(session_id, player_id, batch);
+    };
+
+    let Some(outcome) = crate::game::economy::market::sell_all_crystals(state, player_id) else {
+        crate::net::session::wire::send_u_packet(
+            &batch,
+            "OK",
+            &crate::protocol::packets::ok_message("РЫНОК", "Невозможно продать кристаллы.").1,
+        );
+        return session_batch(session_id, player_id, batch);
+    };
+
+    // Update building moneyinside
+    {
+        let mut ecs = state.ecs_write_profiled("market.sell_all_building");
+        if let Some(mut storage) =
+            ecs.get_mut::<crate::game::buildings::BuildingStorage>(building_entity)
+        {
+            storage.money += outcome.earned / 10;
+        }
+        if let Some(mut flags) =
+            ecs.get_mut::<crate::game::buildings::BuildingFlags>(building_entity)
+        {
+            flags.dirty = true;
+        }
+    }
+    state.mark_building_dirty(building_entity);
+
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "@B",
+        &crate::protocol::packets::basket(&outcome.crystals, 1).1,
+    );
+    crate::net::session::wire::send_u_packet(
+        &batch,
+        "P$",
+        &crate::protocol::packets::money(outcome.money, outcome.creds).1,
+    );
+
+    // Re-render sell tab
+    if let Some(view) = state.get_pack_at(building_x, building_y) {
+        crate::game::logic::gui::market_gui::open_market_gui(
+            state, &batch, player_id, &view, "sellcrys",
+        );
+    }
+
+    session_batch(session_id, player_id, batch)
+}
+
+pub fn apply_market_get_profit(
     state: &Arc<GameState>,
     player_id: crate::game::PlayerId,
     session_id: crate::game::SessionId,

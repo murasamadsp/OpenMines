@@ -78,8 +78,10 @@ git diff --check
 54. ~~Вынести `ClaimBonus` command/effect wrapper из `commands/mod.rs` в `commands/bonus_commands.rs`, сохранив `P$/DR/OK`, Player save и not-ready semantics.~~ **Готово.**
 55. ~~Убрать wire writes из ECS closure в `hurt_player_pure` и включить `no-wire-in-lock` в pre-commit guard, сохранив packet order и error semantics.~~ **Готово.**
 56. ~~Вынести `MarketGetProfit` mutation/effect path из `commands/mod.rs` в `commands/market_commands.rs`, сохранив owner checks, dirty/save semantics и legacy `P$/GU/OK` wire.~~ **Готово.**
-57. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
-58. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
+57. ~~Вынести `MarketBuy` mutation/effect path из `commands/mod.rs` в `commands/market_commands.rs`, сохранив `OK` error, `@B/P$` success и buy-tab `GU` wire.~~ **Готово.**
+58. ~~Вынести `MarketSell` и `MarketSellAll` mutation/effect path из `commands/mod.rs` в `commands/market_commands.rs`, сохранив building checks, dirty/save semantics и legacy `@B/P$/GU/OK` wire.~~ **Готово.**
+59. Следующий срез — выбрать следующий оставшийся production bypass; дальнейшее распиливание монолитов делать отдельными pure/responsibility slices.
+60. После каждого среза обновлять этот файл в том же commit. Не создавать новый handoff.
 
 ## Проверенный checkpoint
 
